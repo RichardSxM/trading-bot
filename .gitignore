@@ -1,0 +1,13 @@
+# Secrets: Kraken API keys must never be committed
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+secrets/
+
+# Local Claude Code settings
+.claude/settings.local.json
+
+# OS noise
+.DS_Store
