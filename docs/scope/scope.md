@@ -63,7 +63,7 @@ spec [0002](../specs/0002-data-model/index.md) · code in [packages/core/src/tra
 - [x] Verify it: `/check verify data model`
 - [x] Test it: `/test data model`
 - [x] Review it (fresh model): `/check review data model`
-- [ ] Document it: `/document data model`
+- [x] Document it: `/document data model`
 
 ### 4. API keys & secrets · needs a decision
 Keep Kraken API keys safe: least privilege keys (trade only, never withdraw), separate demo and live keys, never in the repo or logs.
