@@ -10,7 +10,7 @@ class RecordingConfig(ActorConfig, frozen=True):
     instrument_ids: list[str]
 
 
-class RecordingActor(Actor):
+class RecordingActor(Actor):  # type: ignore[misc]  # Actor is Cython with no stubs
     def __init__(self, config: RecordingConfig) -> None:
         super().__init__(config)
         self._instrument_ids = [InstrumentId.from_str(i) for i in config.instrument_ids]

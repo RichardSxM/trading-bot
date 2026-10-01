@@ -10,7 +10,10 @@ def test_demo_config_records_into_catalog_without_redis(monkeypatch):
     config = build_config(settings)
 
     assert config.trader_id.value == "RECORDER-DEMO"
+    assert config.cache is not None
+    assert config.cache is not None
     assert config.cache.database is None
+    assert config.streaming is not None
     assert config.streaming.catalog_path == "/tmp/catalog"
     assert config.exec_clients == {}
 
@@ -48,6 +51,7 @@ def test_live_config_uses_the_live_tag_and_still_no_redis(monkeypatch):
     config = build_config(RecorderSettings(trading_env="live"))
 
     assert config.trader_id.value == "RECORDER-LIVE"
+    assert config.cache is not None
     assert config.cache.database is None
     assert config.exec_clients == {}
 
@@ -62,7 +66,9 @@ def test_explicit_recorder_id_must_match_env(monkeypatch):
 
 def test_catalog_is_flushed_every_second(monkeypatch):
     monkeypatch.delenv("RECORDER_ID", raising=False)
-    assert build_config(RecorderSettings(trading_env="demo")).streaming.flush_interval_ms == 1_000
+    streaming = build_config(RecorderSettings(trading_env="demo")).streaming
+    assert streaming is not None
+    assert streaming.flush_interval_ms == 1_000
 
 
 def test_instrument_list_trims_and_drops_blanks():
@@ -82,5 +88,5 @@ def test_recording_actor_accepts_the_pinned_instruments():
 def test_recording_actor_rejects_a_malformed_instrument_id():
     from recorder.actor import RecordingActor, RecordingConfig
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=r"missing '\.' separator"):
         RecordingActor(RecordingConfig(instrument_ids=["PF_XBTUSD"]))

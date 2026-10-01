@@ -199,7 +199,28 @@ services:
       interval: 30s
     mem_limit: 128m
 
+  tools:
+    # Never started by `up`: run on demand, e.g. `docker compose run --rm tools scripts/typecheck.sh`.
+    # The repo is bind mounted over /app, so it checks your working tree without a rebuild.
+    profiles: ["tools"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: tools
+      args:
+        PACKAGE: trader
+        APP_DIR: .
+    image: kfs/tools:latest
+    restart: "no"
+    network_mode: none
+    environment:
+      MYPY_CACHE_DIR: /cache/mypy
+    volumes:
+      - .:/app
+      - tools-cache:/cache
+
 volumes:
+  tools-cache:
   pgdata:
   redisdata:
   catalog:

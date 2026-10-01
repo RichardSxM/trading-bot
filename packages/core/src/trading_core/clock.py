@@ -93,9 +93,7 @@ def enforce(result: ClockResult, kind: ProcessKind, env: TradingEnv, max_offset_
         return
     if abs(result.offset_ms) > max_offset_ms:
         if kind == "node":
-            raise ClockCheckFailed(
-                f"clock offset {result.offset_ms:.1f} ms exceeds limit {max_offset_ms} ms"
-            )
+            raise ClockCheckFailed(f"clock offset {result.offset_ms:.1f} ms exceeds limit {max_offset_ms} ms")
         log.warning("clock check: offset over limit, dashboard starts anyway", extra={"fields": fields})
         return
     level = logging.WARNING if kind == "dashboard" else logging.INFO

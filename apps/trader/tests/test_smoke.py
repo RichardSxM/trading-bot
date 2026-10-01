@@ -1,11 +1,13 @@
+from typing import Any, ClassVar
+
 import pytest
 
 from trader.main import build_config
 from trading_core.naming import NodeIdMismatch
-from trading_core.settings import Settings
+from trading_core.settings import Settings, TradingEnv
 
 
-def _settings(env: str) -> Settings:
+def _settings(env: TradingEnv) -> Settings:
     return Settings(trading_env=env, redis_host="redis", redis_port=6379)
 
 
@@ -14,6 +16,8 @@ def test_demo_config_uses_env_tagged_id_and_stable_redis_cache(monkeypatch):
     config = build_config(_settings("demo"))
 
     assert config.trader_id.value == "TRADER-DEMO"
+    assert config.cache is not None
+    assert config.cache.database is not None
     assert config.cache.database.type == "redis"
     assert config.cache.use_trader_prefix is True
     assert config.cache.use_instance_id is False
@@ -61,7 +65,10 @@ def test_cache_points_at_the_configured_redis(monkeypatch):
     monkeypatch.delenv("TRADER_ID", raising=False)
     settings = Settings(trading_env="demo", redis_host="cache.internal", redis_port=6380)
 
-    database = build_config(settings).cache.database
+    cache = build_config(settings).cache
+    assert cache is not None
+    database = cache.database
+    assert database is not None
 
     assert (database.host, database.port) == ("cache.internal", 6380)
 
@@ -76,7 +83,7 @@ def test_trader_in_live_may_see_kraken_keys(monkeypatch):
 
 
 class _FakeNode:
-    instances: list = []
+    instances: ClassVar[list[Any]] = []
 
     def __init__(self, config):
         self.config = config

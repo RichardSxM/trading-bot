@@ -15,7 +15,7 @@ class HeartbeatConfig(ActorConfig, frozen=True):
     interval_secs: int = 10
 
 
-class HeartbeatActor(Actor):
+class HeartbeatActor(Actor):  # type: ignore[misc]  # Actor is Cython with no stubs
     def __init__(self, config: HeartbeatConfig | None = None) -> None:
         config = config or HeartbeatConfig()
         super().__init__(config)

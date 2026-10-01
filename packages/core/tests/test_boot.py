@@ -27,7 +27,7 @@ def env(monkeypatch):
 def clock_calls(monkeypatch):
     """Replace the network query; tests set ``clock_calls.result`` to steer the outcome."""
 
-    class Calls(list):
+    class Calls(list[list[str]]):
         result = ClockResult(offset_ms=12.0, answered=2, queried=2)
 
     calls = Calls()

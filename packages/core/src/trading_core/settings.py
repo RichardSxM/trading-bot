@@ -51,4 +51,4 @@ class Settings(BaseSettings):
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    return Settings()  # type: ignore[call-arg]  # fields come from the environment
+    return Settings()  # fields come from the environment

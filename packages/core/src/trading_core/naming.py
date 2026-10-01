@@ -33,7 +33,6 @@ def node_id(name: str, env: TradingEnv, explicit: str | None = None) -> str:
     _, sep, tag = explicit.partition("-")
     if not sep or tag.lower() != env:
         raise NodeIdMismatch(
-            f"node id {explicit!r} does not match TRADING_ENV={env!r}; "
-            f"expected a tag of {env_tag(env)!r}"
+            f"node id {explicit!r} does not match TRADING_ENV={env!r}; expected a tag of {env_tag(env)!r}"
         )
     return explicit

@@ -49,8 +49,7 @@ def check(
     extra = sorted(name for name in exec_clients if name not in allowed)
     if extra:
         raise EnvGuardRefused(
-            f"{process} in {env} may not build execution client(s) {extra}; "
-            f"allowed: {sorted(allowed) or 'none'}"
+            f"{process} in {env} may not build execution client(s) {extra}; allowed: {sorted(allowed) or 'none'}"
         )
     if env == "demo" or process == "recorder":
         present = [name for name in KRAKEN_KEY_VARS if environ.get(name, "").strip()]

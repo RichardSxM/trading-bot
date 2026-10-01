@@ -7,17 +7,18 @@ import pytest
 
 pytest.importorskip("nautilus_trader")
 
-from nautilus_trader.adapters.kraken import KrakenEnvironment, KrakenProductType  # noqa: E402
+from nautilus_trader.adapters.kraken import KrakenEnvironment, KrakenProductType
 
-from trading_core import health  # noqa: E402
-from trading_core.node.heartbeat import HeartbeatConfig  # noqa: E402
-from trading_core.node.kraken import futures_data_client  # noqa: E402
+from trading_core import health
+from trading_core.node.heartbeat import HeartbeatConfig
+from trading_core.node.kraken import futures_data_client
 
 
 def test_data_client_reads_kraken_live_public_futures_feeds():
     config = futures_data_client()
 
     assert config.environment == KrakenEnvironment.LIVE
+    assert config.product_types is not None
     assert tuple(config.product_types) == (KrakenProductType.FUTURES,)
     assert config.instrument_provider.load_all is True
 
