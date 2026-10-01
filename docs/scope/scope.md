@@ -62,7 +62,7 @@ spec [0002](../specs/0002-data-model/index.md) · code in [packages/core/src/tra
   - [x] Guards and retention: role permission, no float, downsample, and migration round trip tests (AC-1, AC-9, AC-11, AC-12)
 - [x] Verify it: `/check verify data model`
 - [x] Test it: `/test data model`
-- [ ] Review it (fresh model): `/check review data model`
+- [x] Review it (fresh model): `/check review data model`
 - [ ] Document it: `/document data model`
 
 ### 4. API keys & secrets · needs a decision
