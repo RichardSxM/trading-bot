@@ -11,3 +11,9 @@ secrets/
 
 # OS noise
 .DS_Store
+
+# Python and local data
+.venv/
+__pycache__/
+.pytest_cache/
+data/

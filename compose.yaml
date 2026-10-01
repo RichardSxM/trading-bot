@@ -1,0 +1,205 @@
+# One Compose file for the laptop (demo: live market data, sandbox execution, Docker
+# Desktop 4.41.2) and the VPS.
+# Settings come from .env (copy .env.example), but only through ${VAR} substitution: no
+# service loads .env whole. Each one gets just the variables listed for it below, so a
+# secret added to .env reaches no service until it is listed under that service.
+# No service publishes a port on 0.0.0.0: only the dashboard, on the host's 127.0.0.1,
+# exposed to the tailnet with `tailscale serve`.
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+x-app: &app
+  restart: unless-stopped
+  logging: *logging
+
+# Defaults match trading_core.settings.Settings. TRADING_ENV has no default on purpose:
+# when it is unset the process itself refuses to start.
+x-base-env: &base-env
+  TRADING_ENV: ${TRADING_ENV:-}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  CLOCK_SERVERS: ${CLOCK_SERVERS:-0.pool.ntp.org,1.pool.ntp.org,2.pool.ntp.org}
+  MAX_CLOCK_OFFSET_MS: ${MAX_CLOCK_OFFSET_MS:-250}
+
+x-postgres-env: &postgres-env
+  POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+  POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+  POSTGRES_DB: ${POSTGRES_DB:-trading}
+  POSTGRES_USER: ${POSTGRES_USER:-trading}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+
+x-redis-env: &redis-env
+  REDIS_HOST: ${REDIS_HOST:-redis}
+  REDIS_PORT: ${REDIS_PORT:-6379}
+
+x-node-healthcheck: &node-healthcheck
+  # Heartbeat actor touches the file every 10 s; healthy while it is under 30 s old.
+  test: ["CMD", "python", "-m", "trading_core.health", "/run/heartbeat/alive", "30"]
+  interval: 10s
+  timeout: 5s
+  retries: 3
+  start_period: 90s
+
+services:
+  postgres:
+    image: postgres:16-bookworm
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-trading}
+      POSTGRES_USER: ${POSTGRES_USER:-trading}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      TZ: UTC
+      PGTZ: UTC
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    mem_limit: 512m
+
+  redis:
+    image: redis:7-bookworm
+    restart: unless-stopped
+    logging: *logging
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    mem_limit: 256m
+
+  migrate:
+    <<: *app
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: ${IMAGE_TARGET:-runtime}
+      args:
+        PACKAGE: trading-core
+        APP_DIR: packages/core
+    image: kfs/core:${IMAGE_TARGET:-runtime}
+    restart: "no"
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      <<: [*base-env, *postgres-env]
+      PROCESS_NAME: migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+    mem_limit: 256m
+
+  trader:
+    <<: *app
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: ${IMAGE_TARGET:-runtime}
+      args:
+        PACKAGE: trader
+        APP_DIR: apps/trader
+    image: kfs/trader:${IMAGE_TARGET:-runtime}
+    command: ["python", "-m", "trader.main"]
+    # Kraken keys (feature 4) are listed here only, for live only; no other service gets them.
+    # An explicit TRADER_ID goes in a compose override: an empty value would be refused.
+    environment:
+      <<: [*base-env, *redis-env]
+      PROCESS_NAME: trader
+    volumes:
+      - catalog:/data/catalog:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck: *node-healthcheck
+    # The kernel must never pick the process holding positions first.
+    oom_score_adj: -900
+    stop_grace_period: 30s
+    mem_limit: 1g
+
+  recorder:
+    <<: *app
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: ${IMAGE_TARGET:-runtime}
+      args:
+        PACKAGE: recorder
+        APP_DIR: apps/recorder
+    image: kfs/recorder:${IMAGE_TARGET:-runtime}
+    command: ["python", "-m", "recorder.main"]
+    # No Redis, no Postgres, never Kraken keys (the env guard refuses them in any env).
+    environment:
+      <<: *base-env
+      PROCESS_NAME: recorder
+      CATALOG_PATH: /data/catalog
+      RECORDER_INSTRUMENTS: ${RECORDER_INSTRUMENTS:-PF_XBTUSD.KRAKEN,PF_ETHUSD.KRAKEN}
+    volumes:
+      - catalog:/data/catalog
+    healthcheck: *node-healthcheck
+    mem_limit: 768m
+
+  dashboard:
+    <<: *app
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: ${IMAGE_TARGET:-runtime}
+      args:
+        PACKAGE: dashboard
+        APP_DIR: apps/dashboard
+    image: kfs/dashboard:${IMAGE_TARGET:-runtime}
+    command: ["python", "-m", "dashboard.main"]
+    environment:
+      <<: [*base-env, *redis-env, *postgres-env]
+      PROCESS_NAME: dashboard
+    ports:
+      - "127.0.0.1:${DASHBOARD_HOST_PORT:-8000}:8000"
+    volumes:
+      - catalog:/data/catalog:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3).status != 200)"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    mem_limit: 256m
+
+  backup:
+    # Stub until feature 4 supplies restic and Backblaze B2 keys.
+    image: alpine:3.20
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      TZ: UTC
+    command:
+      - sh
+      - -c
+      - 'echo "{\"ts\":\"$$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"level\":\"WARNING\",\"process\":\"backup\",\"logger\":\"backup\",\"msg\":\"backup not configured\"}"; exec sleep infinity'
+    healthcheck:
+      test: ["CMD", "true"]
+      interval: 30s
+    mem_limit: 128m
+
+volumes:
+  pgdata:
+  redisdata:
+  catalog:

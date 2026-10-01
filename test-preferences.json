@@ -1,0 +1,10 @@
+{
+  "tool": "pytest",
+  "gate": null,
+  "additionalTools": [],
+  "e2eTool": "none",
+  "testDir": "tests/ inside each workspace package (packages/core/tests, apps/<app>/tests)",
+  "filePattern": "test_*.py",
+  "packageManager": "uv",
+  "runCommand": "docker compose run --rm --no-deps -T <app> pytest -q (core: -w /app/packages/core trader); rebuild the image first, tests are baked in"
+}
