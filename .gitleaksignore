@@ -1,0 +1,4 @@
+# Known false positives, one gitleaks fingerprint per line (spec 0003). Never add a real secret here:
+# a real one is rotated, not ignored.
+# A fake test value in commit 9d469e1 (test_boot.py, since replaced by a value generated at runtime).
+9d469e16258ec19165e7daa94e2b39d7d2b8fa6a:packages/core/tests/test_boot.py:generic-api-key:160

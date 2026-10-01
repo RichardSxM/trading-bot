@@ -1,0 +1,20 @@
+# Live only, on the VPS (spec 0003). Adds the Kraken key, as files, to the trader alone:
+#   docker compose -f compose.yaml -f compose.live.yaml up -d
+# The base compose.yaml never names the Kraken secrets, so the laptop needs no Kraken file.
+# Until feature 19 adds Kraken to the env guard's allowlist, the live trader refuses to start.
+
+services:
+  trader:
+    environment:
+      # UTC date the live key was created (a non secret); required in live.
+      KRAKEN_KEY_ROTATED_ON: ${KRAKEN_KEY_ROTATED_ON:-}
+      KRAKEN_KEY_CHECK_TIMEOUT_S: ${KRAKEN_KEY_CHECK_TIMEOUT_S:-60}
+    secrets:
+      - kraken_api_key
+      - kraken_api_secret
+
+secrets:
+  kraken_api_key:
+    file: ${SECRETS_DIR:?set SECRETS_DIR to the VPS secrets folder}/kraken_api_key
+  kraken_api_secret:
+    file: ${SECRETS_DIR:?set SECRETS_DIR to the VPS secrets folder}/kraken_api_secret

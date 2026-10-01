@@ -1,6 +1,7 @@
 """covers: spec 0001 and 0003 boot order (settings, logs, env guard, secrets, config guard, clock) and refusals."""
 
 import json
+from uuid import uuid4
 
 import pytest
 
@@ -157,7 +158,8 @@ def test_log_level_from_settings_hides_info_lines(env, clock_calls, capsys):
     assert _lines(capsys) == []
 
 
-SECRET = "0123456789abcdef0123456789abcdef"
+# Generated per run, so no literal ever looks like a key to the secret scanner.
+SECRET = uuid4().hex
 
 
 def test_kraken_key_variable_refuses_before_secrets_are_read(env, clock_calls, capsys):
@@ -211,3 +213,14 @@ def test_an_unusable_secret_exits_1_with_one_critical_line_and_no_value(
         reason,
     )
     assert line["env"] == "demo"
+
+
+def test_secret_names_may_depend_on_the_settings(env, clock_calls, secret_files):
+    secret_files(postgres_password=SECRET, kraken_api_key=SECRET[::-1])
+    env.setenv("TRADING_ENV", "live")
+    clock_calls.result = ClockResult(offset_ms=12.0, answered=2, queried=2)
+
+    def names(settings):
+        return ("postgres_password", "kraken_api_key") if settings.trading_env == "live" else ("postgres_password",)
+
+    assert set(boot("node", secrets=names).secrets) == {"postgres_password", "kraken_api_key"}

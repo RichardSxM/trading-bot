@@ -84,4 +84,8 @@ The sub decisions follow the same logic:
 
 ## History scan
 
-Filled in by milestone 5 of the build: the date, the gitleaks version, the command (`gitleaks git --log-opts=--all`), and either "no findings" or each finding with the secret it exposed and the date it was rotated.
+Run on 2026-10-01 with gitleaks v8.30.1: `gitleaks git --redact --config .gitleaks.toml --log-opts=--all .` over all 24 commits.
+
+- **One finding, a false positive, nothing to rotate.** Rule `generic-api-key` matched `SECRET = "<32 hex>"` in `packages/core/tests/test_boot.py`, commit `9d469e1` on `feat/api-keys-secrets` (never pushed when found). It was a fake value written by the build for a unit test, not a credential. The test now generates the value at runtime, and the finding's fingerprint is in `.gitleaksignore` with that reason.
+- **Before this feature**, the history held only the development passwords from `.env.example` (`change-me-dev-only` and friends), which gitleaks does not flag and which never protected anything real; the laptop now uses generated values from `scripts/dev-secrets.sh`.
+- After the fix: `no leaks found`.

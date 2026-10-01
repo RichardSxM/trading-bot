@@ -55,3 +55,16 @@ Run at feature 19, on Kraken's futures site, from your own device:
 3. Rotate every secret that may have been exposed (see Rotation), starting with any that sat in the same place as the leak.
 4. Find the leak path (log, repo, screenshot, VPS), remove it, and if it was a log or the repo, add a test or a gitleaks rule that would have caught it.
 5. Record what happened in `docs/` (a `/document postmortem`).
+
+## Build notes (added by /develop, 2026-10-01)
+
+What the build found that changes how some steps above read:
+
+- **Step 3 counts.** Migrate logs five `secret loaded` lines per run: four from role setup, then the owner password again from Alembic, which is its own process.
+- **Step 6, a missing file.** Docker itself refuses to start a service whose secret file is missing (`bind source path does not exist`), before our code runs; that still fails closed. The `missing` reason is what our loader reports when the file vanishes inside a running container, and what the unit tests cover.
+- **Step 9 timing.** The canary run takes about 70 seconds: NautilusTrader waits its own 60 second connection timeout before it acts on the stop.
+- **Key check mechanism.** When the Kraken client cannot connect, NautilusTrader never starts the trader, so an actor never runs. The key check is therefore a task on the node's event loop (`trading_core.secrets.watch_key_check`), not the `KeyCheckActor` index.md describes; the contract (exit 1 with `kraken_auth_failed` after the timeout) is unchanged. index.md needs a one line update via `/architect`.
+- **Step 12, done by hand.** After the Redis ACL went live, a trader restart logged in as `trader` and cached 281 currencies and 302 instruments from Redis, exactly the 583 keys counted before the restart, with no auth error. There is no automated restart test; `apps/trader/tests/test_redis_acl.py` covers the denials.
+- **Laptop cutover, done once.** The existing `pgdata` volume kept its old owner password; `scripts/set-pg-owner-password.sh` moved it to the file value.
+- **History scan.** One false positive (a fake 32 character test value in commit `9d469e1`) is listed in `.gitleaksignore`; see [rationale.md](rationale.md#history-scan).
+

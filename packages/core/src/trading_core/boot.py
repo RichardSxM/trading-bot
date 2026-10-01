@@ -33,7 +33,9 @@ def boot[S: Settings = Settings](
     # mypy cannot tie a parameter default to a type parameter (python/mypy#3737).
     settings_cls: type[S] = Settings,  # type: ignore[assignment]
     guard: Callable[[S, Secrets], None] | None = None,
-    secrets: tuple[str, ...] = (),
+    # The secret names, or a function of the validated settings when they depend on them
+    # (the trader needs its Kraken files only in live).
+    secrets: tuple[str, ...] | Callable[[S], tuple[str, ...]] = (),
 ) -> Boot[S]:
     """Start a process in this order, exiting with status 1 at the first refusal.
 
@@ -65,7 +67,8 @@ def boot[S: Settings = Settings](
         _refuse_guard(exc)
 
     try:
-        loaded = load_required(secrets, settings.secrets_dir)
+        names = secrets(settings) if callable(secrets) else secrets
+        loaded = load_required(names, settings.secrets_dir)
     except SecretUnavailable as exc:
         log.critical(
             "secret unavailable, refusing to start",

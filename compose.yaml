@@ -230,16 +230,22 @@ services:
     mem_limit: 256m
 
   backup:
-    # Stub until feature 4 supplies restic and Backblaze B2 keys.
+    # Stub: checks and fingerprints its secret files, then idles (spec 0003). The real job
+    # (downsample, pg_dump, restic to Backblaze B2) arrives with feature 7.
     image: alpine:3.20
     restart: unless-stopped
     logging: *logging
     environment:
       TZ: UTC
-    command:
-      - sh
-      - -c
-      - 'echo "{\"ts\":\"$$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"level\":\"WARNING\",\"process\":\"backup\",\"logger\":\"backup\",\"msg\":\"backup not configured\"}"; exec sleep infinity'
+    command: ["sh", "/usr/local/bin/kfs-backup-stub"]
+    volumes:
+      - ./docker/backup/stub.sh:/usr/local/bin/kfs-backup-stub:ro
+    secrets:
+      - source: postgres_backup_password
+        target: postgres_password
+      - restic_password
+      - b2_key_id
+      - b2_application_key
     healthcheck:
       test: ["CMD", "true"]
       interval: 30s
@@ -278,6 +284,12 @@ secrets:
     file: ${SECRETS_DIR:-./secrets}/redis_trader_password
   redis_dashboard_password:
     file: ${SECRETS_DIR:-./secrets}/redis_dashboard_password
+  restic_password:
+    file: ${SECRETS_DIR:-./secrets}/restic_password
+  b2_key_id:
+    file: ${SECRETS_DIR:-./secrets}/b2_key_id
+  b2_application_key:
+    file: ${SECRETS_DIR:-./secrets}/b2_application_key
 
 volumes:
   tools-cache:
