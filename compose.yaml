@@ -33,10 +33,12 @@ x-postgres-env: &postgres-env
 
 # Passwords of the app roles (spec 0002). Only migrate gets all three, for role setup;
 # trader and dashboard each log in as their own role with just their own password.
+# No :? here on purpose: role setup itself refuses a missing one (exit 1, one JSON log line),
+# and trader and dashboard wait for migrate to succeed, so neither starts without them.
 x-role-passwords: &role-passwords
-  POSTGRES_TRADER_PASSWORD: ${POSTGRES_TRADER_PASSWORD:?set POSTGRES_TRADER_PASSWORD in .env}
-  POSTGRES_DASHBOARD_PASSWORD: ${POSTGRES_DASHBOARD_PASSWORD:?set POSTGRES_DASHBOARD_PASSWORD in .env}
-  POSTGRES_BACKUP_PASSWORD: ${POSTGRES_BACKUP_PASSWORD:?set POSTGRES_BACKUP_PASSWORD in .env}
+  POSTGRES_TRADER_PASSWORD: ${POSTGRES_TRADER_PASSWORD:-}
+  POSTGRES_DASHBOARD_PASSWORD: ${POSTGRES_DASHBOARD_PASSWORD:-}
+  POSTGRES_BACKUP_PASSWORD: ${POSTGRES_BACKUP_PASSWORD:-}
 
 x-app-db-env: &app-db-env
   POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
@@ -129,7 +131,7 @@ services:
       <<: [*base-env, *redis-env, *app-db-env]
       PROCESS_NAME: trader
       POSTGRES_USER: trader_app
-      POSTGRES_PASSWORD: ${POSTGRES_TRADER_PASSWORD:?set POSTGRES_TRADER_PASSWORD in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_TRADER_PASSWORD:-}
     volumes:
       - catalog:/data/catalog:ro
     depends_on:
@@ -184,7 +186,7 @@ services:
       <<: [*base-env, *redis-env, *app-db-env]
       PROCESS_NAME: dashboard
       POSTGRES_USER: dashboard_app
-      POSTGRES_PASSWORD: ${POSTGRES_DASHBOARD_PASSWORD:?set POSTGRES_DASHBOARD_PASSWORD in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_DASHBOARD_PASSWORD:-}
     ports:
       - "127.0.0.1:${DASHBOARD_HOST_PORT:-8000}:8000"
     volumes:
