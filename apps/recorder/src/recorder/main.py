@@ -51,7 +51,9 @@ def guard(settings: RecorderSettings) -> None:
 def main() -> None:
     settings = boot("node", settings_cls=RecorderSettings, guard=guard)
     node = TradingNode(config=build_config(settings))
-    node.trader.add_actor(HeartbeatActor(HeartbeatConfig(path=os.environ.get("HEARTBEAT_FILE", "/run/heartbeat/alive"))))
+    node.trader.add_actor(
+        HeartbeatActor(HeartbeatConfig(path=os.environ.get("HEARTBEAT_FILE", "/run/heartbeat/alive")))
+    )
     node.trader.add_actor(RecordingActor(RecordingConfig(instrument_ids=settings.instrument_list)))
     node.add_data_client_factory(KRAKEN, KrakenLiveDataClientFactory)
     node.build()

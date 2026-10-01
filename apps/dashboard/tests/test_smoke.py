@@ -1,5 +1,6 @@
 import sys
 
+import uvicorn
 from fastapi.testclient import TestClient
 
 from dashboard.main import app
@@ -30,7 +31,7 @@ def test_main_boots_as_dashboard_then_serves_without_uvicorn_log_config(monkeypa
 
     calls = []
     monkeypatch.setattr(dashboard_main, "boot", lambda kind: calls.append(("boot", kind)))
-    monkeypatch.setattr(dashboard_main.uvicorn, "run", lambda app, **kw: calls.append(("run", kw)))
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kw: calls.append(("run", kw)))
     monkeypatch.setenv("DASHBOARD_HOST", "127.0.0.1")
     monkeypatch.setenv("DASHBOARD_PORT", "9001")
 
@@ -44,7 +45,7 @@ def test_main_listens_on_all_container_interfaces_on_8000_by_default(monkeypatch
 
     seen = {}
     monkeypatch.setattr(dashboard_main, "boot", lambda kind: None)
-    monkeypatch.setattr(dashboard_main.uvicorn, "run", lambda app, **kw: seen.update(kw))
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kw: seen.update(kw))
     monkeypatch.delenv("DASHBOARD_HOST", raising=False)
     monkeypatch.delenv("DASHBOARD_PORT", raising=False)
 

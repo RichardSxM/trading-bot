@@ -1,0 +1,19 @@
+# Runs on every commit. Install once on the host: `uv tool install pre-commit && pre-commit install`.
+# Ruff runs on the host; mypy needs NautilusTrader, so scripts/typecheck.sh hands it to the
+# Linux `tools` container (Docker must be running). Skip one hook in a pinch: SKIP=mypy git commit.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.9 # keep in step with ruff in pyproject.toml's dev group
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy (strict, in the tools container)
+        entry: scripts/typecheck.sh
+        language: system
+        types: [python]
+        pass_filenames: false

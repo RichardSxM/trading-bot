@@ -1,11 +1,13 @@
 """covers: spec 0001 Clock check (startup SNTP offset, median, per process policy)."""
 
 import logging
+import socket
 import struct
+import time
+from typing import ClassVar
 
 import pytest
 
-from trading_core import clock
 from trading_core.clock import ClockCheckFailed, ClockResult, enforce, measure, sntp_offset_ms
 
 LIMIT = 250.0
@@ -113,7 +115,7 @@ def test_measure_does_not_swallow_unexpected_errors():
 
 class _FakeSocket:
     reply = b""
-    sent: list = []
+    sent: ClassVar[list[tuple[bytes, tuple[str, int]]]] = []
 
     def __init__(self, *args):
         pass
@@ -149,12 +151,12 @@ def _reply(server_receive, server_transmit):
 @pytest.fixture
 def fake_sntp(monkeypatch):
     _FakeSocket.sent = []
-    monkeypatch.setattr(clock.socket, "socket", _FakeSocket)
+    monkeypatch.setattr(socket, "socket", _FakeSocket)
 
     def use(reply, local_times):
         _FakeSocket.reply = reply
         times = iter(local_times)
-        monkeypatch.setattr(clock.time, "time", lambda: next(times))
+        monkeypatch.setattr(time, "time", lambda: next(times))
 
     return use
 
@@ -190,5 +192,5 @@ def test_sntp_short_reply_raises_value_error(fake_sntp):
     t = 1_790_000_000.0
     fake_sntp(b"\x00" * 20, [t, t])
 
-    with pytest.raises(ValueError, match="short SNTP reply from pool.example"):
+    with pytest.raises(ValueError, match=r"short SNTP reply from pool\.example"):
         sntp_offset_ms("pool.example")

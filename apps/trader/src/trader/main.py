@@ -59,7 +59,9 @@ def main() -> None:
         sys.exit(1)
 
     node = TradingNode(config=build_config(settings))
-    node.trader.add_actor(HeartbeatActor(HeartbeatConfig(path=os.environ.get("HEARTBEAT_FILE", "/run/heartbeat/alive"))))
+    node.trader.add_actor(
+        HeartbeatActor(HeartbeatConfig(path=os.environ.get("HEARTBEAT_FILE", "/run/heartbeat/alive")))
+    )
     node.add_data_client_factory(KRAKEN, KrakenLiveDataClientFactory)
     node.build()
     try:

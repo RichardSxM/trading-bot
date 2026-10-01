@@ -15,9 +15,10 @@ from trading_core.settings import Settings
 log = logging.getLogger(__name__)
 
 
-def boot[S: Settings](
+def boot[S: Settings = Settings](
     kind: clock.ProcessKind,
-    settings_cls: type[S] = Settings,
+    # mypy cannot tie a parameter default to a type parameter (python/mypy#3737).
+    settings_cls: type[S] = Settings,  # type: ignore[assignment]
     guard: Callable[[S], None] | None = None,
 ) -> S:
     """Load settings, set up JSON logs, run the env guard, then the startup clock check.
@@ -28,7 +29,7 @@ def boot[S: Settings](
     """
     process = os.environ.get("PROCESS_NAME", "unknown")
     try:
-        settings = settings_cls()  # type: ignore[call-arg]  # fields come from the environment
+        settings = settings_cls()  # fields come from the environment
     except ValidationError as exc:
         # Logging is not configured yet (it needs the env), so log with what we have.
         configure_logging(process=process, env=os.environ.get("TRADING_ENV", ""), level="INFO")

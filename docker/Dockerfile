@@ -53,3 +53,14 @@ USER root
 RUN --mount=type=cache,target=/root/.cache/uv \
     cd /app && uv sync --frozen --package "$PACKAGE"
 USER app
+
+
+# Tools image: every workspace package plus all dev groups in one env, for mypy and
+# pytest across the whole repo. Compose bind mounts the repo over /app (service `tools`).
+FROM runtime AS tools
+USER root
+RUN --mount=type=cache,target=/root/.cache/uv \
+    cd /app && uv sync --frozen --all-packages --group dev \
+    && mkdir -p /cache && chown app:app /cache
+USER app
+WORKDIR /app

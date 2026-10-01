@@ -6,7 +6,8 @@ requires-python = ">=3.14,<3.15"
 dependencies = []
 
 [dependency-groups]
-dev = ["pytest>=8"]
+# ruff is pinned to the same version as the hook in .pre-commit-config.yaml; bump both together.
+dev = ["pytest>=8", "ruff==0.16.9", "mypy==2.3.1"]
 research = ["duckdb>=1.1", "jupyterlab>=4"]
 
 [tool.uv]
@@ -20,3 +21,35 @@ members = ["packages/*", "apps/*"]
 
 [tool.uv.sources]
 trading-core = { workspace = true }
+
+[tool.ruff]
+line-length = 120
+target-version = "py314"
+extend-exclude = [".claude"]
+
+[tool.ruff.lint]
+# DTZ catches naive datetimes (the UTC everywhere rule).
+select = ["E", "W", "F", "I", "B", "UP", "SIM", "RUF", "DTZ", "PT"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["trading_core", "trader", "recorder", "dashboard"]
+
+# Strict everywhere; scripts/typecheck.sh runs it once per workspace package, inside Linux
+# (NautilusTrader has no Intel Mac wheel).
+[tool.mypy]
+python_version = "3.14"
+strict = true
+plugins = ["pydantic.mypy"]
+warn_unreachable = true
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
+
+# Parts of NautilusTrader are compiled Cython with no stubs. Only modules mypy cannot find
+# are affected; the typed parts stay checked. Subclassing an untyped Nautilus base gets a
+# narrow `# type: ignore[misc]` on that line.
+[[tool.mypy.overrides]]
+module = ["nautilus_trader.*"]
+ignore_missing_imports = true
