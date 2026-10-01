@@ -34,16 +34,12 @@ def test_data_client_reads_live_public_feeds(monkeypatch):
 
 
 @pytest.mark.parametrize("env", ["demo", "live"])
-def test_env_guard_refuses_kraken_keys_in_every_env(monkeypatch, env):
+def test_config_guard_passes_a_recorder_without_execution_clients(monkeypatch, env):
+    # The Kraken key variables are refused by boot for every process (core test_env_guard).
     from recorder.main import guard
-    from trading_core.env_guard import EnvGuardRefused
 
     monkeypatch.delenv("RECORDER_ID", raising=False)
-    settings = RecorderSettings(trading_env=env)
-    guard(settings)  # clean environment passes
-    monkeypatch.setenv("KRAKEN_FUTURES_DEMO_API_SECRET", "x")
-    with pytest.raises(EnvGuardRefused):
-        guard(settings)
+    guard(RecorderSettings(trading_env=env), {})
 
 
 def test_live_config_uses_the_live_tag_and_still_no_redis(monkeypatch):

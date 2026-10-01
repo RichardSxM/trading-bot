@@ -9,6 +9,8 @@ import logging
 import sys
 from datetime import UTC, datetime
 
+from trading_core.secrets import redact
+
 _UVICORN_LOGGERS = ("uvicorn", "uvicorn.error", "uvicorn.access")
 
 
@@ -32,7 +34,8 @@ class JsonFormatter(logging.Formatter):
             entry.update(extra)
         if record.exc_info:
             entry["exc"] = self.formatException(record.exc_info)
-        return json.dumps(entry, default=str)
+        # Last step, so the message, every field, and exception text are all covered (spec 0003).
+        return redact(json.dumps(entry, default=str))
 
 
 def configure_logging(process: str, env: str, level: str = "INFO") -> None:

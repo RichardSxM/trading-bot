@@ -1,6 +1,7 @@
 """Recorder entry point: a Nautilus node with data clients only and an in memory cache."""
 
 import os
+from collections.abc import Mapping
 
 from nautilus_trader.adapters.kraken import KRAKEN, KrakenLiveDataClientFactory
 from nautilus_trader.config import (
@@ -12,6 +13,7 @@ from nautilus_trader.config import (
 )
 from nautilus_trader.live.node import TradingNode
 from nautilus_trader.model.identifiers import TraderId
+from pydantic import SecretStr
 
 from recorder.actor import RecordingActor, RecordingConfig
 from trading_core import env_guard
@@ -44,12 +46,13 @@ def build_config(settings: RecorderSettings) -> TradingNodeConfig:
     )
 
 
-def guard(settings: RecorderSettings) -> None:
-    env_guard.check(build_config(settings).exec_clients, process="recorder", env=settings.trading_env)
+def guard(settings: RecorderSettings, secrets: Mapping[str, SecretStr]) -> None:
+    env_guard.check_exec_clients(build_config(settings).exec_clients, process="recorder", env=settings.trading_env)
 
 
 def main() -> None:
-    settings = boot("node", settings_cls=RecorderSettings, guard=guard)
+    # The recorder holds no secret at all (spec 0003).
+    settings = boot("node", settings_cls=RecorderSettings, guard=guard).settings
     node = TradingNode(config=build_config(settings))
     node.trader.add_actor(
         HeartbeatActor(HeartbeatConfig(path=os.environ.get("HEARTBEAT_FILE", "/run/heartbeat/alive")))

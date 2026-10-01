@@ -11,6 +11,14 @@ trader = "trader.main:main"
 [dependency-groups]
 dev = ["pytest>=8"]
 
+[tool.pytest.ini_options]
+# Tests that need a running service are opt in (a later -m overrides this one).
+addopts = "-m 'not redis and not canary'"
+markers = [
+    "redis: needs the Compose Redis and this service's mounted password (run with -m redis)",
+    "canary: live startup with canary secrets, checks nothing leaks (spec 0003 AC-6; dev image)",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

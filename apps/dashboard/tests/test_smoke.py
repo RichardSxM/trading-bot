@@ -29,22 +29,25 @@ def test_unknown_route_is_404():
 def test_main_boots_as_dashboard_then_serves_without_uvicorn_log_config(monkeypatch):
     import dashboard.main as dashboard_main
 
-    calls = []
-    monkeypatch.setattr(dashboard_main, "boot", lambda kind: calls.append(("boot", kind)))
+    calls: list[tuple[object, ...]] = []
+    monkeypatch.setattr(dashboard_main, "boot", lambda kind, secrets: calls.append(("boot", kind, secrets)))
     monkeypatch.setattr(uvicorn, "run", lambda app, **kw: calls.append(("run", kw)))
     monkeypatch.setenv("DASHBOARD_HOST", "127.0.0.1")
     monkeypatch.setenv("DASHBOARD_PORT", "9001")
 
     dashboard_main.main()
 
-    assert calls == [("boot", "dashboard"), ("run", {"host": "127.0.0.1", "port": 9001, "log_config": None})]
+    assert calls == [
+        ("boot", "dashboard", ("postgres_password", "redis_password")),
+        ("run", {"host": "127.0.0.1", "port": 9001, "log_config": None}),
+    ]
 
 
 def test_main_listens_on_all_container_interfaces_on_8000_by_default(monkeypatch):
     import dashboard.main as dashboard_main
 
     seen = {}
-    monkeypatch.setattr(dashboard_main, "boot", lambda kind: None)
+    monkeypatch.setattr(dashboard_main, "boot", lambda kind, secrets: None)
     monkeypatch.setattr(uvicorn, "run", lambda app, **kw: seen.update(kw))
     monkeypatch.delenv("DASHBOARD_HOST", raising=False)
     monkeypatch.delenv("DASHBOARD_PORT", raising=False)

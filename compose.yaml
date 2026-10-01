@@ -1,8 +1,11 @@
 # One Compose file for the laptop (demo: live market data, sandbox execution, Docker
 # Desktop 4.41.2) and the VPS.
 # Settings come from .env (copy .env.example), but only through ${VAR} substitution: no
-# service loads .env whole. Each one gets just the variables listed for it below, so a
-# secret added to .env reaches no service until it is listed under that service.
+# service loads .env whole. Each one gets just the variables listed for it below.
+# Secrets are never variables (spec 0003): each is a file in ${SECRETS_DIR} (./secrets on the
+# laptop, made by scripts/dev-secrets.sh; /etc/kfs/secrets on the VPS), mounted read only at
+# /run/secrets/<name> into only the services listed below. The live Kraken key is added only
+# by compose.live.yaml.
 # No service publishes a port on 0.0.0.0: only the dashboard, on the host's 127.0.0.1,
 # exposed to the tailnet with `tailscale serve`.
 
@@ -29,16 +32,6 @@ x-postgres-env: &postgres-env
   POSTGRES_PORT: ${POSTGRES_PORT:-5432}
   POSTGRES_DB: ${POSTGRES_DB:-trading}
   POSTGRES_USER: ${POSTGRES_USER:-trading}
-  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
-
-# Passwords of the app roles (spec 0002). Only migrate gets all three, for role setup;
-# trader and dashboard each log in as their own role with just their own password.
-# No :? here on purpose: role setup itself refuses a missing one (exit 1, one JSON log line),
-# and trader and dashboard wait for migrate to succeed, so neither starts without them.
-x-role-passwords: &role-passwords
-  POSTGRES_TRADER_PASSWORD: ${POSTGRES_TRADER_PASSWORD:-}
-  POSTGRES_DASHBOARD_PASSWORD: ${POSTGRES_DASHBOARD_PASSWORD:-}
-  POSTGRES_BACKUP_PASSWORD: ${POSTGRES_BACKUP_PASSWORD:-}
 
 x-app-db-env: &app-db-env
   POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
@@ -65,9 +58,14 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-trading}
       POSTGRES_USER: ${POSTGRES_USER:-trading}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      # Read only when the volume is first initialised; scripts/set-pg-owner-password.sh
+      # applies a changed file to an existing volume.
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
       TZ: UTC
       PGTZ: UTC
+    secrets:
+      - source: postgres_owner_password
+        target: postgres_password
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -81,9 +79,17 @@ services:
     image: redis:7-bookworm
     restart: unless-stopped
     logging: *logging
-    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory-policy", "noeviction"]
+    # One ACL user per service from the hashed password files (spec 0003); see docker/redis/start.sh.
+    entrypoint: ["/usr/local/bin/kfs-redis-start"]
+    command: ["--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory-policy", "noeviction"]
     volumes:
       - redisdata:/data
+      - ./docker/redis/start.sh:/usr/local/bin/kfs-redis-start:ro
+    tmpfs:
+      - /run/redis-acl
+    secrets:
+      - redis_trader_password
+      - redis_dashboard_password
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -106,8 +112,15 @@ services:
     # Role setup first (idempotent), then the schema, both as the owner role.
     command: ["sh", "-c", "python -m trading_core.db_roles && alembic upgrade head"]
     environment:
-      <<: [*base-env, *postgres-env, *role-passwords]
+      <<: [*base-env, *postgres-env]
       PROCESS_NAME: migrate
+    # The owner password, plus every role password for role setup (the only service with all three).
+    secrets:
+      - source: postgres_owner_password
+        target: postgres_password
+      - postgres_trader_password
+      - postgres_dashboard_password
+      - postgres_backup_password
     depends_on:
       postgres:
         condition: service_healthy
@@ -125,13 +138,18 @@ services:
         GIT_COMMIT: ${GIT_COMMIT:-unknown}
     image: kfs/trader:${IMAGE_TARGET:-runtime}
     command: ["python", "-m", "trader.main"]
-    # Kraken keys (feature 4) are listed here only, for live only; no other service gets them.
+    # Kraken keys are added by compose.live.yaml only; no other service ever gets them.
     # An explicit TRADER_ID goes in a compose override: an empty value would be refused.
     environment:
       <<: [*base-env, *redis-env, *app-db-env]
       PROCESS_NAME: trader
       POSTGRES_USER: trader_app
-      POSTGRES_PASSWORD: ${POSTGRES_TRADER_PASSWORD:-}
+      REDIS_USERNAME: trader
+    secrets:
+      - source: postgres_trader_password
+        target: postgres_password
+      - source: redis_trader_password
+        target: redis_password
     volumes:
       - catalog:/data/catalog:ro
     depends_on:
@@ -186,7 +204,12 @@ services:
       <<: [*base-env, *redis-env, *app-db-env]
       PROCESS_NAME: dashboard
       POSTGRES_USER: dashboard_app
-      POSTGRES_PASSWORD: ${POSTGRES_DASHBOARD_PASSWORD:-}
+      REDIS_USERNAME: dashboard
+    secrets:
+      - source: postgres_dashboard_password
+        target: postgres_password
+      - source: redis_dashboard_password
+        target: redis_password
     ports:
       - "127.0.0.1:${DASHBOARD_HOST_PORT:-8000}:8000"
     volumes:
@@ -207,16 +230,22 @@ services:
     mem_limit: 256m
 
   backup:
-    # Stub until feature 4 supplies restic and Backblaze B2 keys.
+    # Stub: checks and fingerprints its secret files, then idles (spec 0003). The real job
+    # (downsample, pg_dump, restic to Backblaze B2) arrives with feature 7.
     image: alpine:3.20
     restart: unless-stopped
     logging: *logging
     environment:
       TZ: UTC
-    command:
-      - sh
-      - -c
-      - 'echo "{\"ts\":\"$$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"level\":\"WARNING\",\"process\":\"backup\",\"logger\":\"backup\",\"msg\":\"backup not configured\"}"; exec sleep infinity'
+    command: ["sh", "/usr/local/bin/kfs-backup-stub"]
+    volumes:
+      - ./docker/backup/stub.sh:/usr/local/bin/kfs-backup-stub:ro
+    secrets:
+      - source: postgres_backup_password
+        target: postgres_password
+      - restic_password
+      - b2_key_id
+      - b2_application_key
     healthcheck:
       test: ["CMD", "true"]
       interval: 30s
@@ -241,6 +270,26 @@ services:
     volumes:
       - .:/app
       - tools-cache:/cache
+
+secrets:
+  postgres_owner_password:
+    file: ${SECRETS_DIR:-./secrets}/postgres_owner_password
+  postgres_trader_password:
+    file: ${SECRETS_DIR:-./secrets}/postgres_trader_password
+  postgres_dashboard_password:
+    file: ${SECRETS_DIR:-./secrets}/postgres_dashboard_password
+  postgres_backup_password:
+    file: ${SECRETS_DIR:-./secrets}/postgres_backup_password
+  redis_trader_password:
+    file: ${SECRETS_DIR:-./secrets}/redis_trader_password
+  redis_dashboard_password:
+    file: ${SECRETS_DIR:-./secrets}/redis_dashboard_password
+  restic_password:
+    file: ${SECRETS_DIR:-./secrets}/restic_password
+  b2_key_id:
+    file: ${SECRETS_DIR:-./secrets}/b2_key_id
+  b2_application_key:
+    file: ${SECRETS_DIR:-./secrets}/b2_application_key
 
 volumes:
   tools-cache:

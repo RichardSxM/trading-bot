@@ -9,7 +9,7 @@ from sqlalchemy.exc import ProgrammingError
 
 from trading_core.db_roles import BACKUP_ROLE, DASHBOARD_ROLE, TRADER_ROLE, role_passwords, setup_roles
 
-from .conftest import owner_settings, role_settings
+from .conftest import migrate_secrets, owner_url, role_url
 
 TABLES = (
     "instruments",
@@ -47,10 +47,7 @@ def role_engine(database: str) -> Iterator[Callable[[str], Engine]]:
     engines: list[Engine] = []
 
     def connect(role: str) -> Engine:
-        settings = owner_settings(database).model_copy(
-            update={"postgres_user": role, "postgres_password": role_passwords(role_settings())[role]}
-        )
-        engine = create_engine(settings.database_url, poolclass=pool.NullPool)
+        engine = create_engine(role_url(database, role), poolclass=pool.NullPool)
         engines.append(engine)
         return engine
 
@@ -121,7 +118,7 @@ def test_backup_app_runs_the_downsample(role_engine):
 
 
 def test_role_setup_runs_twice_without_error(database: str):
-    passwords = role_passwords(role_settings())
+    passwords = role_passwords(migrate_secrets())
     for _ in range(2):
-        with psycopg.connect(owner_settings(database).database_url.replace("+psycopg", "")) as conn:
+        with psycopg.connect(owner_url(database).replace("+psycopg", "")) as conn:
             setup_roles(conn, database, passwords)

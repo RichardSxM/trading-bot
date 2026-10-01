@@ -1,0 +1,14 @@
+# gitleaks config (spec 0003): the default rules plus one for Kraken keys, which gitleaks
+# has no built in rule for. Pinned to the same gitleaks version in .pre-commit-config.yaml
+# and .github/workflows/ci.yml; bump them together.
+title = "Kraken Futures Scalper"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "kraken-api-secret"
+description = "A Kraken API key or secret assigned to a variable or key named after Kraken"
+regex = '''(?i)kraken[a-z0-9_]*(?:key|secret)[a-z0-9_]*["']?\s*[:=]\s*["']?([A-Za-z0-9+/]{40,}={0,2})'''
+secretGroup = 1
+keywords = ["kraken"]
