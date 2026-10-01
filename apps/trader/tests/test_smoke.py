@@ -286,3 +286,66 @@ def test_demo_run_has_no_key_actors_and_exits_0(fake_main):
     assert code == 0
     assert ("add_actor", "KeyAgeActor") not in node.calls
     assert ("exec_factory", "KRAKEN") not in node.calls
+
+
+def _cache_with_kraken_account(ts_init):
+    from nautilus_trader.accounting.factory import AccountFactory
+    from nautilus_trader.cache.cache import Cache
+    from nautilus_trader.core.uuid import UUID4
+    from nautilus_trader.model.currencies import USD
+    from nautilus_trader.model.enums import AccountType
+    from nautilus_trader.model.events import AccountState
+    from nautilus_trader.model.identifiers import AccountId
+    from nautilus_trader.model.objects import AccountBalance, Money
+
+    state = AccountState(
+        account_id=AccountId("KRAKEN-001"),
+        account_type=AccountType.MARGIN,
+        base_currency=USD,
+        reported=True,
+        balances=[AccountBalance(Money(100, USD), Money(0, USD), Money(100, USD))],
+        margins=[],
+        info={},
+        event_id=UUID4(),
+        ts_event=ts_init,
+        ts_init=ts_init,
+    )
+    cache = Cache()
+    cache.add_account(AccountFactory.create(state))
+    return cache
+
+
+@pytest.mark.parametrize(("ts_init", "confirmed"), [(999, False), (1000, True), (1001, True)])
+def test_only_an_account_state_from_this_run_confirms_the_key(ts_init, confirmed):
+    # covers: AC-8. A restart reloads the last run's account from Redis; it must not count.
+    from trader.main import kraken_account_confirmed
+
+    assert kraken_account_confirmed(_cache_with_kraken_account(ts_init), since_ns=1000) is confirmed
+
+
+def test_no_kraken_account_does_not_confirm_the_key():
+    from nautilus_trader.cache.cache import Cache
+
+    from trader.main import kraken_account_confirmed
+
+    assert kraken_account_confirmed(Cache(), since_ns=0) is False
+
+
+def test_an_account_reloaded_from_a_previous_run_still_fails_the_check(fake_main):
+    # covers: AC-8. The revoked key on restart case from the review of 2026-10-01.
+    class StaleAccountNode(_FakeNode):
+        cache = _cache_with_kraken_account(ts_init=0)
+
+        def run(self):
+            self.calls.append("run")
+            self.get_event_loop().run_until_complete(asyncio.sleep(0.3))
+
+    original = fake_main.TradingNode
+    fake_main.TradingNode = StaleAccountNode
+    try:
+        code = fake_main.run_node(build_config(_settings("live"), SECRETS), _settings("live"), 0.1, fail_backoff_s=0)
+    finally:
+        fake_main.TradingNode = original
+
+    assert code == 1
+    assert "stop" in _FakeNode.instances[0].calls

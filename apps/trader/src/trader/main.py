@@ -15,6 +15,7 @@ from nautilus_trader.adapters.kraken import (
     KrakenLiveDataClientFactory,
     KrakenLiveExecClientFactory,
 )
+from nautilus_trader.cache.cache import Cache
 from nautilus_trader.config import (
     CacheConfig,
     DatabaseConfig,
@@ -125,6 +126,16 @@ def guard(
     )
 
 
+def kraken_account_confirmed(cache: Cache, since_ns: int) -> bool:
+    """True once the cache holds a Kraken account whose latest state arrived at or after ``since_ns``.
+
+    On a restart Nautilus reloads the last run's account from Redis before Kraken connects, so
+    only a state created by this run proves the key works (spec 0003 AC-8).
+    """
+    account = cache.account_for_venue(Venue(KRAKEN))
+    return account is not None and account.last_event.ts_init >= since_ns
+
+
 def run_node(
     config: TradingNodeConfig,
     settings: TraderSettings,
@@ -145,7 +156,7 @@ def run_node(
     failed: list[bool] = []
     if settings.trading_env == "live" and settings.kraken_key_rotated_on is not None:
         node.trader.add_actor(KeyAgeActor(KeyAgeConfig(rotated_on=settings.kraken_key_rotated_on)))
-        venue = Venue(KRAKEN)
+        started_ns = time.time_ns()
 
         def stop() -> None:
             failed.append(True)
@@ -156,7 +167,7 @@ def run_node(
             raise RuntimeError("trading node has no event loop for the Kraken key check")
         loop.create_task(
             watch_key_check(
-                lambda: node.cache.account_for_venue(venue) is not None,
+                lambda: kraken_account_confirmed(node.cache, started_ns),
                 stop,
                 key_check_timeout_s,
                 poll_s=min(1.0, key_check_timeout_s / 4),
