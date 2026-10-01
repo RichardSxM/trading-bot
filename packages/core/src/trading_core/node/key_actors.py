@@ -19,6 +19,8 @@ _AGE_TIMER = "kraken_key_age"
 
 
 class KeyAgeConfig(ActorConfig, frozen=True):
+    """The live key's UTC creation date and how many days it may live before rotation is due."""
+
     rotated_on: date
     max_age_days: int = KEY_MAX_AGE_DAYS
 

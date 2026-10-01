@@ -26,7 +26,7 @@ from nautilus_trader.config import (
 )
 from nautilus_trader.live.node import TradingNode
 from nautilus_trader.model.identifiers import TraderId, Venue
-from pydantic import Field, SecretStr, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 
 from trading_core import env_guard
 from trading_core.boot import boot
@@ -59,6 +59,12 @@ class TraderSettings(Settings):
     kraken_key_rotated_on: date | None = None
     # How long a live start waits for an authenticated Kraken account (spec 0003 AC-8).
     kraken_key_check_timeout_s: float = Field(default=60.0, gt=0)
+
+    @field_validator("kraken_key_rotated_on", mode="before")
+    @classmethod
+    def _empty_rotation_date_is_unset(cls, value: object) -> object:
+        # compose.live.yaml passes ${KRAKEN_KEY_ROTATED_ON:-}, so unset arrives as "".
+        return None if isinstance(value, str) and not value.strip() else value
 
     @model_validator(mode="after")
     def _live_needs_a_valid_rotation_date(self) -> Self:

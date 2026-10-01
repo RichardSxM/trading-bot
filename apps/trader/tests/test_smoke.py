@@ -238,6 +238,19 @@ def test_rotation_date_is_required_in_live_only(monkeypatch):
     assert TraderSettings().kraken_key_rotated_on is None
 
 
+@pytest.mark.parametrize("value", ["", "  "])
+def test_an_empty_rotation_date_counts_as_unset(monkeypatch, value):
+    # covers: AC-9 (compose.live.yaml passes ${KRAKEN_KEY_ROTATED_ON:-}, empty when unset)
+    from pydantic import ValidationError
+
+    monkeypatch.setenv("KRAKEN_KEY_ROTATED_ON", value)
+    monkeypatch.setenv("TRADING_ENV", "live")
+    with pytest.raises(ValidationError, match="KRAKEN_KEY_ROTATED_ON is required"):
+        TraderSettings()
+    monkeypatch.setenv("TRADING_ENV", "demo")
+    assert TraderSettings().kraken_key_rotated_on is None
+
+
 @pytest.mark.parametrize(("value", "match"), [("2026-13-01", "date"), ("2999-01-01", "in the future")])
 def test_rotation_date_must_be_a_past_iso_date(monkeypatch, value, match):
     from pydantic import ValidationError
