@@ -23,13 +23,13 @@ from trading_core.naming import node_id
 from trading_core.node.heartbeat import HeartbeatActor, HeartbeatConfig
 from trading_core.node.kraken import futures_data_client
 from trading_core.redis_check import redis_reachable
-from trading_core.secrets import POSTGRES_PASSWORD
+from trading_core.secrets import POSTGRES_PASSWORD, REDIS_PASSWORD
 from trading_core.settings import Settings
 
 log = logging.getLogger("trader")
 
 
-def build_config(settings: Settings) -> TradingNodeConfig:
+def build_config(settings: Settings, secrets: Mapping[str, SecretStr]) -> TradingNodeConfig:
     env = settings.trading_env
     return TradingNodeConfig(
         trader_id=TraderId(node_id("TRADER", env, os.environ.get("TRADER_ID"))),
@@ -37,7 +37,14 @@ def build_config(settings: Settings) -> TradingNodeConfig:
         # Keys stay stable across restarts (trader-TRADER-<ENV>:...) so the trader
         # reloads its state, then reconciles with Kraken (feature 11).
         cache=CacheConfig(
-            database=DatabaseConfig(type="redis", host=settings.redis_host, port=settings.redis_port),
+            # Logs in as its own Redis ACL user (spec 0003).
+            database=DatabaseConfig(
+                type="redis",
+                host=settings.redis_host,
+                port=settings.redis_port,
+                username=settings.redis_username,
+                password=secrets[REDIS_PASSWORD].get_secret_value(),
+            ),
             use_trader_prefix=True,
             use_instance_id=False,
             flush_on_start=False,
@@ -49,11 +56,14 @@ def build_config(settings: Settings) -> TradingNodeConfig:
 
 
 def guard(settings: Settings, secrets: Mapping[str, SecretStr]) -> None:
-    env_guard.check_exec_clients(build_config(settings).exec_clients, process="trader", env=settings.trading_env)
+    env_guard.check_exec_clients(
+        build_config(settings, secrets).exec_clients, process="trader", env=settings.trading_env
+    )
 
 
 def main() -> None:
-    settings = boot("node", guard=guard, secrets=(POSTGRES_PASSWORD,)).settings
+    started = boot("node", guard=guard, secrets=(POSTGRES_PASSWORD, REDIS_PASSWORD))
+    settings = started.settings
     if not redis_reachable(settings.redis_host, settings.redis_port):
         log.critical(
             "redis unreachable, refusing to start",
@@ -61,7 +71,7 @@ def main() -> None:
         )
         sys.exit(1)
 
-    node = TradingNode(config=build_config(settings))
+    node = TradingNode(config=build_config(settings, started.secrets))
     node.trader.add_actor(
         HeartbeatActor(HeartbeatConfig(path=os.environ.get("HEARTBEAT_FILE", "/run/heartbeat/alive")))
     )

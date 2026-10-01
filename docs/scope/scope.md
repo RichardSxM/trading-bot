@@ -73,7 +73,7 @@ spec [0003](../specs/0003-api-keys-secrets/index.md) · code in [packages/core/s
 - [ ] Build it: `/develop API keys & secrets`
   - [x] Secret file thread: loader, redaction, boot order, split env guard, dev script, one secret end to end (AC-1 to AC-5, AC-14)
   - [x] All Postgres secrets from files, owner password cutover (AC-1, AC-11)
-  - [ ] Redis ACL users for trader and dashboard (AC-10)
+  - [x] Redis ACL users for trader and dashboard (AC-10)
   - [ ] Kraken live path: exec client factory, live override, key age, key check, canary leak test (AC-4, AC-6 to AC-9)
   - [ ] Backup secrets, gitleaks, runbook (AC-12, AC-13, AC-15)
 - [ ] Verify it: `/check verify API keys & secrets`

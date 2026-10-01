@@ -1,11 +1,14 @@
 from typing import Any, ClassVar
 
 import pytest
+from pydantic import SecretStr
 
 from trader.main import build_config
 from trading_core.boot import Boot
 from trading_core.naming import NodeIdMismatch
 from trading_core.settings import Settings, TradingEnv
+
+SECRETS = {"redis_password": SecretStr("r" * 32), "postgres_password": SecretStr("p" * 32)}
 
 
 def _settings(env: TradingEnv) -> Settings:
@@ -14,7 +17,7 @@ def _settings(env: TradingEnv) -> Settings:
 
 def test_demo_config_uses_env_tagged_id_and_stable_redis_cache(monkeypatch):
     monkeypatch.delenv("TRADER_ID", raising=False)
-    config = build_config(_settings("demo"))
+    config = build_config(_settings("demo"), SECRETS)
 
     assert config.trader_id.value == "TRADER-DEMO"
     assert config.cache is not None
@@ -30,14 +33,14 @@ def test_demo_config_uses_env_tagged_id_and_stable_redis_cache(monkeypatch):
 def test_explicit_trader_id_must_match_env(monkeypatch):
     monkeypatch.setenv("TRADER_ID", "TRADER-LIVE")
     with pytest.raises(NodeIdMismatch):
-        build_config(_settings("demo"))
+        build_config(_settings("demo"), SECRETS)
 
 
 def test_data_client_reads_live_public_feeds_in_demo(monkeypatch):
     from nautilus_trader.adapters.kraken import KrakenEnvironment
 
     monkeypatch.delenv("TRADER_ID", raising=False)
-    config = build_config(_settings("demo"))
+    config = build_config(_settings("demo"), SECRETS)
     assert config.data_clients["KRAKEN"].environment == KrakenEnvironment.LIVE
 
 
@@ -46,29 +49,41 @@ def test_config_guard_passes_a_demo_node_without_execution_clients(monkeypatch):
     from trader.main import guard
 
     monkeypatch.delenv("TRADER_ID", raising=False)
-    guard(_settings("demo"), {})
+    guard(_settings("demo"), SECRETS)
 
 
 def test_live_config_uses_the_live_tag(monkeypatch):
     monkeypatch.delenv("TRADER_ID", raising=False)
-    assert build_config(_settings("live")).trader_id.value == "TRADER-LIVE"
+    assert build_config(_settings("live"), SECRETS).trader_id.value == "TRADER-LIVE"
 
 
 def test_explicit_trader_id_with_matching_tag_is_used(monkeypatch):
     monkeypatch.setenv("TRADER_ID", "TRADER-demo")
-    assert build_config(_settings("demo")).trader_id.value == "TRADER-demo"
+    assert build_config(_settings("demo"), SECRETS).trader_id.value == "TRADER-demo"
 
 
 def test_cache_points_at_the_configured_redis(monkeypatch):
     monkeypatch.delenv("TRADER_ID", raising=False)
     settings = Settings(trading_env="demo", redis_host="cache.internal", redis_port=6380)
 
-    cache = build_config(settings).cache
+    cache = build_config(settings, SECRETS).cache
     assert cache is not None
     database = cache.database
     assert database is not None
 
     assert (database.host, database.port) == ("cache.internal", 6380)
+
+
+def test_cache_logs_in_as_the_services_redis_user(monkeypatch):
+    monkeypatch.delenv("TRADER_ID", raising=False)
+    settings = Settings(trading_env="demo", redis_username="trader")
+
+    cache = build_config(settings, SECRETS).cache
+    assert cache is not None
+    database = cache.database
+    assert database is not None
+
+    assert (database.username, database.password) == ("trader", "r" * 32)
 
 
 class _FakeNode:
@@ -107,7 +122,7 @@ def fake_main(monkeypatch):
 
     _FakeNode.instances = []
     monkeypatch.delenv("TRADER_ID", raising=False)
-    monkeypatch.setattr(trader_main, "boot", lambda kind, guard, secrets: Boot(_settings("demo"), {}))
+    monkeypatch.setattr(trader_main, "boot", lambda kind, guard, secrets: Boot(_settings("demo"), SECRETS))
     monkeypatch.setattr(trader_main, "TradingNode", _FakeNode)
     return trader_main
 

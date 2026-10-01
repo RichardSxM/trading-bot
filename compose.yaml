@@ -79,9 +79,17 @@ services:
     image: redis:7-bookworm
     restart: unless-stopped
     logging: *logging
-    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory-policy", "noeviction"]
+    # One ACL user per service from the hashed password files (spec 0003); see docker/redis/start.sh.
+    entrypoint: ["/usr/local/bin/kfs-redis-start"]
+    command: ["--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory-policy", "noeviction"]
     volumes:
       - redisdata:/data
+      - ./docker/redis/start.sh:/usr/local/bin/kfs-redis-start:ro
+    tmpfs:
+      - /run/redis-acl
+    secrets:
+      - redis_trader_password
+      - redis_dashboard_password
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -136,9 +144,12 @@ services:
       <<: [*base-env, *redis-env, *app-db-env]
       PROCESS_NAME: trader
       POSTGRES_USER: trader_app
+      REDIS_USERNAME: trader
     secrets:
       - source: postgres_trader_password
         target: postgres_password
+      - source: redis_trader_password
+        target: redis_password
     volumes:
       - catalog:/data/catalog:ro
     depends_on:
@@ -193,9 +204,12 @@ services:
       <<: [*base-env, *redis-env, *app-db-env]
       PROCESS_NAME: dashboard
       POSTGRES_USER: dashboard_app
+      REDIS_USERNAME: dashboard
     secrets:
       - source: postgres_dashboard_password
         target: postgres_password
+      - source: redis_dashboard_password
+        target: redis_password
     ports:
       - "127.0.0.1:${DASHBOARD_HOST_PORT:-8000}:8000"
     volumes:
@@ -260,6 +274,10 @@ secrets:
     file: ${SECRETS_DIR:-./secrets}/postgres_dashboard_password
   postgres_backup_password:
     file: ${SECRETS_DIR:-./secrets}/postgres_backup_password
+  redis_trader_password:
+    file: ${SECRETS_DIR:-./secrets}/redis_trader_password
+  redis_dashboard_password:
+    file: ${SECRETS_DIR:-./secrets}/redis_dashboard_password
 
 volumes:
   tools-cache:

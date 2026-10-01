@@ -38,7 +38,7 @@ def test_main_boots_as_dashboard_then_serves_without_uvicorn_log_config(monkeypa
     dashboard_main.main()
 
     assert calls == [
-        ("boot", "dashboard", ("postgres_password",)),
+        ("boot", "dashboard", ("postgres_password", "redis_password")),
         ("run", {"host": "127.0.0.1", "port": 9001, "log_config": None}),
     ]
 
