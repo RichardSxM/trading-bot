@@ -1,6 +1,7 @@
 """Trader entry point. Runs a node with no strategy yet: public Kraken data, and in live the Kraken
 execution client with its startup key check (spec 0003; allowed by the env guard from feature 19)."""
 
+import asyncio
 import logging
 import os
 import sys
@@ -165,7 +166,8 @@ def run_node(
         loop = node.get_event_loop()
         if loop is None:  # the live node always has one; without it the check could not run
             raise RuntimeError("trading node has no event loop for the Kraken key check")
-        loop.create_task(
+        # Kept in a local so the task lives as long as the node runs; a crash fails closed.
+        key_check = loop.create_task(
             watch_key_check(
                 lambda: kraken_account_confirmed(node.cache, started_ns),
                 stop,
@@ -173,6 +175,18 @@ def run_node(
                 poll_s=min(1.0, key_check_timeout_s / 4),
             )
         )
+
+        def key_check_ended(task: asyncio.Task[object]) -> None:
+            if task.cancelled() or task.exception() is None:
+                return
+            log.critical(
+                "kraken key check crashed, stopping the node",
+                exc_info=task.exception(),
+                extra={"fields": {"code": "kraken_key_check_crashed"}},
+            )
+            stop()
+
+        key_check.add_done_callback(key_check_ended)
     if config.data_clients:
         node.add_data_client_factory(KRAKEN, KrakenLiveDataClientFactory)
     if config.exec_clients:

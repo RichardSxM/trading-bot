@@ -349,3 +349,23 @@ def test_an_account_reloaded_from_a_previous_run_still_fails_the_check(fake_main
 
     assert code == 1
     assert "stop" in _FakeNode.instances[0].calls
+
+
+def test_a_crashing_key_check_stops_the_node(fake_main):
+    # covers: AC-8, fails closed. The fire and forget finding from the review of 2026-10-01.
+    class BrokenCacheNode(_FakeNode):
+        cache = None  # account_for_venue raises AttributeError inside the check
+
+        def run(self):
+            self.calls.append("run")
+            self.get_event_loop().run_until_complete(asyncio.sleep(0.3))
+
+    original = fake_main.TradingNode
+    fake_main.TradingNode = BrokenCacheNode
+    try:
+        code = fake_main.run_node(build_config(_settings("live"), SECRETS), _settings("live"), 5.0, fail_backoff_s=0)
+    finally:
+        fake_main.TradingNode = original
+
+    assert code == 1
+    assert "stop" in _FakeNode.instances[0].calls
