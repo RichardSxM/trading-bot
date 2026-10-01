@@ -14,7 +14,7 @@ concurrency:
 jobs:
   check:
     # Linux, because NautilusTrader only ships wheels there (and the lock targets Linux).
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
       UV_VERSION: "0.12.21" # same as docker/Dockerfile
