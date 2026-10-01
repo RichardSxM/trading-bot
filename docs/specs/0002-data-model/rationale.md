@@ -47,6 +47,16 @@ One append only `events` table holds everything. Orders, positions, and P&L are 
 **Pros**: perfect history, and no current state to drift.
 **Cons**: every dashboard read aggregates or needs projection tables anyway; replaying projections after a schema change is heavy work for one operator; Nautilus already does the event sourcing in its own cache.
 
+### Journal amounts (added 2026-10-01)
+
+The stored signs disagree (a paid `fee` is positive, a paid funding `amount` is negative), and the first draft never defined a fill row's `amount`. Three ways to define it were weighed:
+
+- **Signed cash flow (chosen)**: every row is money in (positive) or out (negative). A fill is `quantity × price × multiplier`, negative for a buy; a fee is minus the stored fee; funding is as stored. One sign rule for everything, and for an instrument that is flat at both ends of the range, the rows sum to the period's net result with a plain SQL `SUM`, with no replay. The claim deliberately avoids `positions.realized_pnl`: journal rows can't be tied to positions reliably (a side flip closes one position and opens another on the same fill, positions span restarts, and Nautilus rounds P&L and knows nothing of funding). So the exact match against the dashboard is feature 18's reconciliation, with a tolerance. The cost: it holds for linear contracts only, so an inverse instrument raises `UnsupportedInstrumentError` rather than giving a wrong number. All traded perps (`PF_`) are linear.
+- **Realized P&L per fill** (rejected): reads like a gains statement, but positions store only a running total, so the query would replay fills to rebuild the average entry price. That is more logic, and it can drift from the dashboard.
+- **Unsigned notional plus side** (rejected): a readable trade log, but the rows sum to nothing, so feature 18 would have to compute P&L itself.
+
+How Dutch tax treats these results is for you or your tax adviser to decide; the journal only promises exact, traceable numbers.
+
 ## Rationale
 
 Option 2 is the only one that serves traceability, one schema across modes, and at least once delivery together. Option 1 fails traceability outright. Option 4 rebuilds what Nautilus already does, and the dashboard would pay for it on every read. Option 3 optimizes for a volume problem nobody has measured yet. Option 2 keeps that door open: if sim tables grow past a few GB, sim fills can move to Parquet without changing the live schema (Follow-up).
