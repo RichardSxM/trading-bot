@@ -14,7 +14,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 1 | Stack & architecture | Foundation | done |
 | 2 | Coding standards & tooling | Foundation | done |
 | 3 | Data model | Foundation | in-progress |
-| 4 | API keys & secrets | Foundation | planned |
+| 4 | API keys & secrets | Foundation | in-progress |
 | 5 | Design system & dashboard shell | Foundation | planned |
 | 6 | Core paper trading loop | Slice 1 | planned |
 | 7 | Always on cloud deployment | Slice 2 | planned |
@@ -65,10 +65,21 @@ spec [0002](../specs/0002-data-model/index.md) · code in [packages/core/src/tra
 - [x] Review it (fresh model): `/check review data model`
 - [x] Document it: `/document data model`
 
-### 4. API keys & secrets · needs a decision
+### 4. API keys & secrets · in-progress
 Keep Kraken API keys safe: least privilege keys (trade only, never withdraw), separate demo and live keys, never in the repo or logs.
 **Done when:** the bot loads keys from a secret store, live keys cannot withdraw funds, and a leaked log or repo contains no secret.
-- [ ] Design it (spec): `/architect API keys & secrets`
+spec [0003](../specs/0003-api-keys-secrets/index.md)
+- [x] Design it (spec): `/architect API keys & secrets`
+- [ ] Build it: `/develop API keys & secrets`
+  - [ ] Secret file thread: loader, redaction, boot order, split env guard, dev script, one secret end to end (AC-1 to AC-5, AC-14)
+  - [ ] All Postgres secrets from files, owner password cutover (AC-1, AC-11)
+  - [ ] Redis ACL users for trader and dashboard (AC-10)
+  - [ ] Kraken live path: exec client factory, live override, key age, key check, canary leak test (AC-4, AC-6 to AC-9)
+  - [ ] Backup secrets, gitleaks, runbook (AC-12, AC-13, AC-15)
+- [ ] Verify it: `/check verify API keys & secrets`
+- [ ] Test it: `/test API keys & secrets`
+- [ ] Review it (fresh model): `/check review API keys & secrets`
+- [ ] Document it: `/document API keys & secrets`
 
 ### 5. Design system & dashboard shell · needs a decision · Beta
 A small, clear visual language for a private dashboard: numbers, tables, charts, status colors, and an always visible stop button.
