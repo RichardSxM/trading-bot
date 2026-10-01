@@ -17,7 +17,7 @@ Steps you may run to prove the build against [index.md](index.md), then the runb
 - [x] **11. Redis permissions.** `docker compose exec redis redis-cli GET x` → `NOAUTH` or `NOPERM`; `redis-cli PING` → `PONG`; `redis-cli --user dashboard --pass "$(cat secrets/redis_dashboard_password)" SET x 1` → `NOPERM`; same user `XADD demo:control '*' k v` → an id; `--user trader … FLUSHALL` → `NOPERM`. (AC-10)
 - [x] **12. Trader reloads under its user.** The Redis integration test writes a cache entry as the trader, restarts the node, and reads it back; then `docker compose restart trader` by hand: healthy again, no `NOPERM` or auth error in its log. (AC-10)
 - [x] **13. Backup gets its keys.** `docker compose logs backup`: four `secret loaded` lines, then `backup not configured`. (AC-12)
-- [ ] **14. gitleaks.** Put a fake key in a scratch file, `git add` it, `git commit`: the hook blocks it. Push a branch with one to see CI fail, then delete the branch. (AC-13)
+- [x] **14. gitleaks.** Put a fake key in a scratch file, `git add` it, `git commit`: the hook blocks it. Push a branch with one to see CI fail, then delete the branch. (AC-13) _Done 2026-10-01: the hook blocked a random fake key (`kraken-api-secret`); pushed with `--no-verify` on `scratch/gitleaks-canary`, CI run 36931484359 failed at gitleaks (`leaks found: 1`, checksum `OK`), branch deleted. CI run 36931387463 on `feat/api-keys-secrets` 5ee2fc3 passed every step, canary included._
 - [x] **15. History scan recorded.** [rationale.md](rationale.md#history-scan) has the scan result. (AC-13)
 
 ## Runbook (AC-15)
