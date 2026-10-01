@@ -13,7 +13,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 |---|---------|-------|--------|
 | 1 | Stack & architecture | Foundation | done |
 | 2 | Coding standards & tooling | Foundation | done |
-| 3 | Data model | Foundation | planned |
+| 3 | Data model | Foundation | in-progress |
 | 4 | API keys & secrets | Foundation | planned |
 | 5 | Design system & dashboard shell | Foundation | planned |
 | 6 | Core paper trading loop | Slice 1 | planned |
@@ -50,10 +50,20 @@ Capture conventions and tooling from the real scaffolded project, then install l
 code in [AGENTS.md](../../AGENTS.md), [pyproject.toml](../../pyproject.toml), [.pre-commit-config.yaml](../../.pre-commit-config.yaml), [scripts/typecheck.sh](../../scripts/typecheck.sh), [.github/workflows/ci.yml](../../.github/workflows/ci.yml)
 - [x] Capture conventions + tooling choices: `/audit`
 
-### 3. Data model · needs a decision
+### 3. Data model · in-progress
 Core records every feature builds on: market data (trades, book snapshots, candles), orders, fills, positions, funding payments, strategy runs, backtest results, risk events.
 **Done when:** the model supports paper and live trading, backtests, and the journal export without a breaking migration, and every order traces to the strategy decision that caused it.
-- [ ] Design it (spec): `/architect data model`
+spec [0002](../specs/0002-data-model/index.md)
+- [x] Design it (spec): `/architect data model`
+- [ ] Build it: `/develop data model`
+  - [ ] Schema and roles: recording package, settings, role setup, models, migration `0002` (AC-1, AC-2, AC-4, AC-9, AC-11, AC-13)
+  - [ ] Traceable write thread: core repository from instrument to fill, stub orders, conflicts, integration test setup (AC-3 to AC-8)
+  - [ ] Full write API: events, snapshots, funding, risk, control, promotions and live gate, run bundles, journal query (AC-5, AC-10, AC-14, AC-15)
+  - [ ] Guards and retention: role permission, no float, downsample, and migration round trip tests (AC-1, AC-9, AC-11, AC-12)
+- [ ] Verify it: `/check verify data model`
+- [ ] Test it: `/test data model`
+- [ ] Review it (fresh model): `/check review data model`
+- [ ] Document it: `/document data model`
 
 ### 4. API keys & secrets · needs a decision
 Keep Kraken API keys safe: least privilege keys (trade only, never withdraw), separate demo and live keys, never in the repo or logs.
