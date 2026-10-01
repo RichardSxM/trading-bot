@@ -245,6 +245,20 @@ def test_control_commands_replay_and_move_to_one_final_outcome(session: Session,
         repository.record_control_command(session, replace(command, cmd=ControlCmd.FLATTEN))
 
 
+def test_a_control_outcome_must_be_final_and_name_a_known_command(session: Session, world: World):
+    command = _command(world)
+    repository.record_control_command(session, command)
+
+    with pytest.raises(InvalidTransitionError):
+        repository.set_control_outcome(session, command.id, ControlOutcome.RECEIVED, world.tick())
+    with pytest.raises(MissingParentError):
+        repository.set_control_outcome(session, uuid7(), ControlOutcome.EXECUTED, world.tick())
+
+    stored = session.get(models.ControlCommand, command.id)
+    assert stored is not None
+    assert stored.outcome == "received"
+
+
 def _sim_run(world: World, mode: RunMode = RunMode.BACKTEST) -> RunRow:
     return RunRow(
         env=Env.DEMO,
@@ -302,6 +316,38 @@ def test_a_bad_row_rolls_back_the_whole_bundle(engine, session: Session, world: 
     with Session(engine) as check:
         assert check.get(models.StrategyRun, run.id) is None
         assert _count(check, models.Order, run_id=run.id) == 0
+
+
+def test_a_bundle_with_a_fill_for_an_order_it_does_not_carry_writes_nothing(engine, session: Session, world: World):
+    # covers: AC-10
+    run = _sim_run(world)
+    on_run = replace(world, run_id=run.id)
+    order = on_run.order(decision_id=None, origin=OrderOrigin.RECONCILIATION)
+    bundle = RunBundle(run=run, orders=[order], fills=[on_run.fill("O-not-in-bundle")])
+
+    with pytest.raises(MissingParentError):
+        repository.write_run_bundle(session, bundle)
+
+    with Session(engine) as check:
+        assert check.get(models.StrategyRun, run.id) is None
+        assert _count(check, models.Order, run_id=run.id) == 0
+
+
+def test_a_sim_bundle_of_the_other_env_lands_from_a_demo_process(engine, session: Session, world: World):
+    # covers: AC-4 (sim bundles are excepted from the TRADING_ENV check)
+    run = replace(_sim_run(world), env=Env.LIVE)
+    on_run = replace(world, run_id=run.id)
+    order = on_run.order(env=Env.LIVE, decision_id=None, origin=OrderOrigin.RECONCILIATION)
+    bundle = RunBundle(run=run, orders=[order], fills=[on_run.fill(order.client_order_id, env=Env.LIVE)])
+
+    assert get_settings().trading_env == "demo"
+    repository.write_run_bundle(session, bundle)
+
+    with Session(engine) as check:
+        stored = check.get(models.StrategyRun, run.id)
+        assert stored is not None
+        assert stored.env == "live"
+        assert _count(check, models.Fill, run_id=run.id) == 1
 
 
 @pytest.mark.parametrize("mode", [RunMode.PAPER, RunMode.LIVE])
@@ -375,3 +421,9 @@ def test_a_live_run_refuses_an_unknown_commit(session: Session, world: World, li
 
     with pytest.raises(UnknownCommitError):
         _start_live(session, unknown)
+
+
+def test_a_live_run_refuses_a_version_that_does_not_exist(session: Session, world: World, live_process):
+    # covers: AC-15
+    with pytest.raises(MissingParentError):
+        _start_live(session, uuid7())

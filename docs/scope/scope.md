@@ -60,8 +60,8 @@ spec [0002](../specs/0002-data-model/index.md) · code in [packages/core/src/tra
   - [x] Traceable write thread: core repository from instrument to fill, stub orders, conflicts, integration test setup (AC-3 to AC-8)
   - [x] Full write API: events, snapshots, funding, risk, control, promotions and live gate, run bundles, journal query (AC-5, AC-10, AC-14, AC-15)
   - [x] Guards and retention: role permission, no float, downsample, and migration round trip tests (AC-1, AC-9, AC-11, AC-12)
-- [ ] Verify it: `/check verify data model`
-- [ ] Test it: `/test data model`
+- [x] Verify it: `/check verify data model`
+- [x] Test it: `/test data model`
 - [ ] Review it (fresh model): `/check review data model`
 - [ ] Document it: `/document data model`
 

@@ -22,7 +22,12 @@ from trading_core.recording.enums import (
     Severity,
     StrategyKind,
 )
-from trading_core.recording.errors import EnvMismatchError, InvalidTransitionError, RecordConflictError
+from trading_core.recording.errors import (
+    EnvMismatchError,
+    InvalidTransitionError,
+    MissingParentError,
+    RecordConflictError,
+)
 
 from .conftest import INSTRUMENT, World, instrument_row
 
@@ -195,6 +200,31 @@ def test_an_order_may_not_change_side_or_lose_its_decision_once_real(session: Se
         repository.upsert_order(session, replace(order, order_type=OrderType.MARKET, last_event_ns=world.tick()))
 
 
+def test_an_order_update_with_the_same_last_event_ns_applies(session: Session, world: World):
+    # covers: AC-8 (greater than or equal applies)
+    order = world.order(decision_id=None, origin=OrderOrigin.RECONCILIATION)
+    repository.upsert_order(session, order)
+    repository.upsert_order(session, replace(order, status=OrderStatus.CANCELED))
+
+    stored = session.execute(
+        select(models.Order).where(models.Order.client_order_id == order.client_order_id)
+    ).scalar_one()
+    assert (stored.status, stored.last_event_ns) == ("canceled", order.last_event_ns)
+
+
+def test_a_newer_order_update_moves_the_order_forward(session: Session, world: World):
+    # covers: AC-8
+    order = world.order(decision_id=None, origin=OrderOrigin.RECONCILIATION)
+    repository.upsert_order(session, order)
+    newer = replace(order, status=OrderStatus.FILLED, last_event_ns=world.tick())
+    repository.upsert_order(session, newer)
+
+    stored = session.execute(
+        select(models.Order).where(models.Order.client_order_id == order.client_order_id)
+    ).scalar_one()
+    assert (stored.status, stored.last_event_ns) == ("filled", newer.last_event_ns)
+
+
 def test_an_older_position_update_is_ignored(session: Session, world: World):
     position = world.position(last_event_ns=world.tick())
     repository.upsert_position(session, position)
@@ -243,6 +273,38 @@ def test_the_database_rejects_a_live_run_in_demo(session: Session, world: World)
             ),
             {"id": uuid7(), "version": world.version_id},
         )
+
+
+def test_the_database_limits_env_to_demo_or_live(session: Session, world: World):
+    # covers: AC-4
+    with pytest.raises(IntegrityError, match="ck_strategy_runs_env_valid"):
+        session.execute(
+            text(
+                "INSERT INTO strategy_runs (id, env, mode, status, strategy_version_id, trader_id, run_config,"
+                " started_at) VALUES (:id, 'paper', 'paper', 'running', :version, 'T', '{}', now())"
+            ),
+            {"id": uuid7(), "version": world.version_id},
+        )
+
+
+def test_a_fill_for_an_unknown_run_is_refused_without_a_stub(session: Session, world: World):
+    fill = world.fill("O-nowhere", run_id=uuid7())
+
+    with pytest.raises(MissingParentError):
+        repository.record_fill(session, fill)
+
+    assert _count(session, models.Order, client_order_id="O-nowhere") == 0
+
+
+def test_finish_run_refuses_running_and_an_unknown_run(session: Session, world: World):
+    with pytest.raises(InvalidTransitionError):
+        repository.finish_run(session, world.run_id, RunStatus.RUNNING, world.tick())
+    with pytest.raises(MissingParentError):
+        repository.finish_run(session, uuid7(), RunStatus.COMPLETED, world.tick())
+
+    run = session.get(models.StrategyRun, world.run_id)
+    assert run is not None
+    assert run.status == RunStatus.RUNNING
 
 
 def test_the_write_api_rejects_a_row_from_the_other_env(session: Session, world: World):
