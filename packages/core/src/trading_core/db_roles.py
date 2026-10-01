@@ -2,8 +2,9 @@
 
 Runs as the owner role ``trading`` in the migrate service: ``python -m trading_core.db_roles``.
 Roles are cluster wide and live outside Alembic, so a downgrade leaves them in place. Running
-it again only resets the passwords and grants, so it is safe to repeat. A missing or empty
-password variable stops it with exit 1 and one JSON error line.
+it again only resets the passwords and grants, so it is safe to repeat. The owner password and
+the three role passwords are secret files (spec 0003); an unusable one stops it with exit 1
+and one JSON error line.
 """
 
 import logging
@@ -15,10 +16,11 @@ from typing import Final
 import psycopg
 from psycopg import sql
 from psycopg.rows import TupleRow
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
 from trading_core.logs import configure_logging
-from trading_core.settings import RoleSettings, Settings, get_settings
+from trading_core.secrets import POSTGRES_PASSWORD, SecretUnavailable, load_required
+from trading_core.settings import Settings
 
 log = logging.getLogger(__name__)
 
@@ -27,16 +29,21 @@ DASHBOARD_ROLE: Final = "dashboard_app"
 BACKUP_ROLE: Final = "backup_app"
 APP_ROLES: Final = (TRADER_ROLE, DASHBOARD_ROLE, BACKUP_ROLE)
 
+# Each app role's password file as the migrate service mounts it.
+ROLE_SECRETS: Final = {
+    TRADER_ROLE: "postgres_trader_password",
+    DASHBOARD_ROLE: "postgres_dashboard_password",
+    BACKUP_ROLE: "postgres_backup_password",
+}
+# Everything role setup and Alembic read: the owner password, then the three role passwords.
+MIGRATE_SECRETS: Final = (POSTGRES_PASSWORD, *ROLE_SECRETS.values())
+
 _ATTRIBUTES: Final = sql.SQL("LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD {}")
 
 
-def role_passwords(roles: RoleSettings) -> dict[str, str]:
-    """Map each app role to its password variable."""
-    return {
-        TRADER_ROLE: roles.postgres_trader_password,
-        DASHBOARD_ROLE: roles.postgres_dashboard_password,
-        BACKUP_ROLE: roles.postgres_backup_password,
-    }
+def role_passwords(secrets: Mapping[str, SecretStr]) -> dict[str, str]:
+    """Map each app role to its password from the loaded secrets."""
+    return {role: secrets[name].get_secret_value() for role, name in ROLE_SECRETS.items()}
 
 
 def setup_roles(conn: psycopg.Connection[TupleRow], database: str, passwords: Mapping[str, str]) -> None:
@@ -56,14 +63,14 @@ def setup_roles(conn: psycopg.Connection[TupleRow], database: str, passwords: Ma
         conn.execute(sql.SQL("GRANT USAGE ON SCHEMA public TO {}").format(name))
 
 
-def connect(settings: Settings, database: str | None = None) -> psycopg.Connection[TupleRow]:
+def connect(settings: Settings, password: SecretStr, database: str | None = None) -> psycopg.Connection[TupleRow]:
     """Open a psycopg connection as the configured (owner) user, optionally to another database."""
     return psycopg.connect(
         host=settings.postgres_host,
         port=settings.postgres_port,
         dbname=database or settings.postgres_db,
         user=settings.postgres_user,
-        password=settings.postgres_password,
+        password=password.get_secret_value(),
     )
 
 
@@ -71,22 +78,24 @@ def main() -> None:
     """Entry point of the migrate service's first step."""
     configure_logging(process=os.environ.get("PROCESS_NAME", "migrate"), env=os.environ.get("TRADING_ENV", ""))
     try:
-        roles = RoleSettings()  # fields come from the environment
+        settings = Settings()  # fields come from the environment
     except ValidationError as exc:
-        log.error(
-            "role passwords missing, refusing to set up roles",
-            extra={
-                "fields": {
-                    "code": "role_passwords_missing",
-                    "errors": exc.errors(include_url=False, include_input=False),
-                }
-            },
+        log.critical(
+            "invalid configuration, refusing to start",
+            extra={"fields": {"errors": exc.errors(include_url=False, include_input=False)}},
+        )
+        sys.exit(1)
+    try:
+        secrets = load_required(MIGRATE_SECRETS, settings.secrets_dir)
+    except SecretUnavailable as exc:
+        log.critical(
+            "secret unavailable, refusing to start",
+            extra={"fields": {"code": "secret_unavailable", "secret": exc.name, "reason": exc.reason}},
         )
         sys.exit(1)
 
-    settings = get_settings()
-    with connect(settings) as conn:
-        setup_roles(conn, settings.postgres_db, role_passwords(roles))
+    with connect(settings, secrets[POSTGRES_PASSWORD]) as conn:
+        setup_roles(conn, settings.postgres_db, role_passwords(secrets))
     log.info("app roles ready", extra={"fields": {"roles": list(APP_ROLES)}})
 
 

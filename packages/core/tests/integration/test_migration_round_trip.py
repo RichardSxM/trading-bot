@@ -6,7 +6,7 @@ from sqlalchemy import Connection, create_engine, pool, text
 
 from trading_core.db_roles import APP_ROLES
 
-from .conftest import create_database, drop_database, migrate, owner_settings
+from .conftest import create_database, drop_database, migrate, owner_url
 
 SCHEMA = text(
     """
@@ -36,7 +36,7 @@ def _schema(conn: Connection) -> list[tuple[str, str]]:
 
 def test_upgrade_downgrade_upgrade_gives_the_same_schema_and_keeps_the_roles():
     name = create_database()
-    engine = create_engine(owner_settings(name).database_url, poolclass=pool.NullPool)
+    engine = create_engine(owner_url(name), poolclass=pool.NullPool)
     try:
         migrate(engine)
         with engine.connect() as conn:

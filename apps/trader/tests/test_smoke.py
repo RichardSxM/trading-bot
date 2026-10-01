@@ -3,6 +3,7 @@ from typing import Any, ClassVar
 import pytest
 
 from trader.main import build_config
+from trading_core.boot import Boot
 from trading_core.naming import NodeIdMismatch
 from trading_core.settings import Settings, TradingEnv
 
@@ -40,15 +41,12 @@ def test_data_client_reads_live_public_feeds_in_demo(monkeypatch):
     assert config.data_clients["KRAKEN"].environment == KrakenEnvironment.LIVE
 
 
-def test_env_guard_refuses_kraken_keys_in_demo(monkeypatch):
+def test_config_guard_passes_a_demo_node_without_execution_clients(monkeypatch):
+    # The Kraken key variables are refused by boot for every process (core test_env_guard).
     from trader.main import guard
-    from trading_core.env_guard import EnvGuardRefused
 
     monkeypatch.delenv("TRADER_ID", raising=False)
-    guard(_settings("demo"))  # clean environment passes
-    monkeypatch.setenv("KRAKEN_FUTURES_API_KEY", "x")
-    with pytest.raises(EnvGuardRefused):
-        guard(_settings("demo"))
+    guard(_settings("demo"), {})
 
 
 def test_live_config_uses_the_live_tag(monkeypatch):
@@ -71,15 +69,6 @@ def test_cache_points_at_the_configured_redis(monkeypatch):
     assert database is not None
 
     assert (database.host, database.port) == ("cache.internal", 6380)
-
-
-def test_trader_in_live_may_see_kraken_keys(monkeypatch):
-    # covers: Env guard; live execution (features 4 and 6) will need them.
-    from trader.main import guard
-
-    monkeypatch.delenv("TRADER_ID", raising=False)
-    monkeypatch.setenv("KRAKEN_FUTURES_API_KEY", "x")
-    guard(_settings("live"))
 
 
 class _FakeNode:
@@ -118,7 +107,7 @@ def fake_main(monkeypatch):
 
     _FakeNode.instances = []
     monkeypatch.delenv("TRADER_ID", raising=False)
-    monkeypatch.setattr(trader_main, "boot", lambda kind, guard: _settings("demo"))
+    monkeypatch.setattr(trader_main, "boot", lambda kind, guard, secrets: Boot(_settings("demo"), {}))
     monkeypatch.setattr(trader_main, "TradingNode", _FakeNode)
     return trader_main
 

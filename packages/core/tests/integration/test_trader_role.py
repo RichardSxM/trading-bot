@@ -10,7 +10,7 @@ import pytest
 from sqlalchemy import Engine, create_engine, pool, select
 from sqlalchemy.orm import Session
 
-from trading_core.db_roles import TRADER_ROLE, role_passwords
+from trading_core.db_roles import TRADER_ROLE
 from trading_core.recording import models, repository
 from trading_core.recording.enums import (
     ControlCmd,
@@ -23,15 +23,12 @@ from trading_core.recording.enums import (
 )
 from trading_core.recording.rows import ControlCommandRow
 
-from .conftest import World, instrument_row, owner_settings, role_settings
+from .conftest import World, instrument_row, role_url
 
 
 @pytest.fixture
 def trader_session(database: str, trading_env: None) -> Iterator[Session]:
-    settings = owner_settings(database).model_copy(
-        update={"postgres_user": TRADER_ROLE, "postgres_password": role_passwords(role_settings())[TRADER_ROLE]}
-    )
-    engine: Engine = create_engine(settings.database_url, poolclass=pool.NullPool)
+    engine: Engine = create_engine(role_url(database, TRADER_ROLE), poolclass=pool.NullPool)
     with Session(engine) as db:
         yield db
         db.rollback()

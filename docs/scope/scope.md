@@ -68,11 +68,11 @@ spec [0002](../specs/0002-data-model/index.md) · code in [packages/core/src/tra
 ### 4. API keys & secrets · in-progress
 Keep Kraken API keys safe: least privilege keys (trade only, never withdraw), separate demo and live keys, never in the repo or logs.
 **Done when:** the bot loads keys from a secret store, live keys cannot withdraw funds, and a leaked log or repo contains no secret.
-spec [0003](../specs/0003-api-keys-secrets/index.md)
+spec [0003](../specs/0003-api-keys-secrets/index.md) · code in [packages/core/src/trading_core/secrets.py](../../packages/core/src/trading_core/secrets.py), [compose.yaml](../../compose.yaml), [scripts/](../../scripts/)
 - [x] Design it (spec): `/architect API keys & secrets`
 - [ ] Build it: `/develop API keys & secrets`
-  - [ ] Secret file thread: loader, redaction, boot order, split env guard, dev script, one secret end to end (AC-1 to AC-5, AC-14)
-  - [ ] All Postgres secrets from files, owner password cutover (AC-1, AC-11)
+  - [x] Secret file thread: loader, redaction, boot order, split env guard, dev script, one secret end to end (AC-1 to AC-5, AC-14)
+  - [x] All Postgres secrets from files, owner password cutover (AC-1, AC-11)
   - [ ] Redis ACL users for trader and dashboard (AC-10)
   - [ ] Kraken live path: exec client factory, live override, key age, key check, canary leak test (AC-4, AC-6 to AC-9)
   - [ ] Backup secrets, gitleaks, runbook (AC-12, AC-13, AC-15)

@@ -1,4 +1,4 @@
-"""covers: spec 0002 AC-13 (role setup refuses to run without every role password)."""
+"""covers: spec 0002 AC-13 and spec 0003 AC-2 (role setup refuses to run without every password file)."""
 
 import json
 import os
@@ -6,29 +6,46 @@ import subprocess
 import sys
 
 import pytest
+from pydantic import SecretStr
 
-from trading_core.db_roles import APP_ROLES, role_passwords
-from trading_core.settings import RoleSettings
+from trading_core.db_roles import APP_ROLES, MIGRATE_SECRETS, role_passwords
+
+PASSWORDS = {name: f"{name}-0123456789abcdef" for name in MIGRATE_SECRETS}
 
 
 def test_role_passwords_cover_every_app_role():
-    roles = RoleSettings(postgres_trader_password="t", postgres_dashboard_password="d", postgres_backup_password="b")
+    secrets = {name: SecretStr(value) for name, value in PASSWORDS.items()}
 
-    assert role_passwords(roles) == {"trader_app": "t", "dashboard_app": "d", "backup_app": "b"}
-    assert set(role_passwords(roles)) == set(APP_ROLES)
+    assert role_passwords(secrets) == {
+        "trader_app": PASSWORDS["postgres_trader_password"],
+        "dashboard_app": PASSWORDS["postgres_dashboard_password"],
+        "backup_app": PASSWORDS["postgres_backup_password"],
+    }
+    assert set(role_passwords(secrets)) == set(APP_ROLES)
 
 
-@pytest.mark.parametrize("dashboard_password", [None, ""])
-def test_role_setup_exits_1_with_one_json_error_when_a_password_is_missing(dashboard_password):
+def test_migrate_reads_the_owner_and_three_role_files():
+    assert MIGRATE_SECRETS == (
+        "postgres_password",
+        "postgres_trader_password",
+        "postgres_dashboard_password",
+        "postgres_backup_password",
+    )
+
+
+@pytest.mark.parametrize(("content", "reason"), [(None, "missing"), ("", "empty")])
+def test_role_setup_exits_1_with_one_json_error_when_a_password_file_is_unusable(tmp_path, content, reason):
+    for name, value in PASSWORDS.items():
+        if name != "postgres_dashboard_password":
+            (tmp_path / name).write_text(value)
+    if content is not None:
+        (tmp_path / "postgres_dashboard_password").write_text(content)
     env = {
         "PATH": os.environ["PATH"],
         "TRADING_ENV": "demo",
         "PROCESS_NAME": "migrate",
-        "POSTGRES_TRADER_PASSWORD": "t",
-        "POSTGRES_BACKUP_PASSWORD": "b",
+        "SECRETS_DIR_IN_CONTAINER": str(tmp_path),
     }
-    if dashboard_password is not None:
-        env["POSTGRES_DASHBOARD_PASSWORD"] = dashboard_password
 
     result = subprocess.run(
         [sys.executable, "-m", "trading_core.db_roles"],
@@ -40,9 +57,17 @@ def test_role_setup_exits_1_with_one_json_error_when_a_password_is_missing(dashb
     )
 
     assert result.returncode == 1
-    lines = result.stdout.strip().splitlines()
-    assert len(lines) == 1
-    entry = json.loads(lines[0])
-    assert (entry["level"], entry["code"], entry["process"]) == ("ERROR", "role_passwords_missing", "migrate")
-    assert "postgres_dashboard_password" in lines[0]
-    assert all("input" not in error for error in entry["errors"])
+    lines = [json.loads(line) for line in result.stdout.strip().splitlines()]
+    assert [line["msg"] for line in lines] == [
+        "secret loaded",
+        "secret loaded",
+        "secret unavailable, refusing to start",
+    ]
+    assert (lines[-1]["level"], lines[-1]["code"], lines[-1]["process"]) == (
+        "CRITICAL",
+        "secret_unavailable",
+        "migrate",
+    )
+    assert (lines[-1]["secret"], lines[-1]["reason"]) == ("postgres_dashboard_password", reason)
+    for value in PASSWORDS.values():
+        assert value not in result.stdout

@@ -3,7 +3,8 @@
 Run in the migrate service, which is on the Compose network as the owner role ``trading``:
 ``docker compose run --rm -T migrate pytest -q -m integration``. The session creates
 ``trading_test_<hex>``, runs role setup and ``alembic upgrade head`` into it, and drops it at
-the end. Roles are cluster wide and shared with the dev stack; setup is idempotent.
+the end. Roles are cluster wide and shared with the dev stack; setup is idempotent. Passwords
+come from the migrate service's mounted secret files (spec 0003).
 """
 
 import os
@@ -19,10 +20,11 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from psycopg import sql
+from pydantic import SecretStr
 from sqlalchemy import Engine, create_engine, pool
 from sqlalchemy.orm import Session
 
-from trading_core.db_roles import role_passwords, setup_roles
+from trading_core.db_roles import MIGRATE_SECRETS, role_passwords, setup_roles
 from trading_core.recording import repository
 from trading_core.recording.enums import (
     Env,
@@ -39,7 +41,8 @@ from trading_core.recording.enums import (
     TimeInForce,
 )
 from trading_core.recording.rows import DecisionRow, FillRow, InstrumentRow, OrderRow, PositionRow
-from trading_core.settings import RoleSettings, Settings, get_settings
+from trading_core.secrets import DEFAULT_SECRETS_DIR, POSTGRES_PASSWORD, load_required
+from trading_core.settings import Settings, get_settings
 
 ALEMBIC_INI = Path(__file__).resolve().parents[2] / "alembic.ini"
 INSTRUMENT = "PF_XBTUSD.KRAKEN"
@@ -48,6 +51,9 @@ INSTRUMENT = "PF_XBTUSD.KRAKEN"
 _ENV = {name: value for name, value in os.environ.items() if name.startswith("POSTGRES_")}
 
 _HERE = Path(__file__).resolve().parent
+
+# The migrate service mounts the owner password and the three role passwords here.
+_SECRETS_DIR = Path(os.environ.get("SECRETS_DIR_IN_CONTAINER", str(DEFAULT_SECRETS_DIR)))
 
 
 @pytest.hookimpl(tryfirst=True)
@@ -66,17 +72,23 @@ def owner_settings(database: str | None = None) -> Settings:
         postgres_port=int(_ENV.get("POSTGRES_PORT", "5432")),
         postgres_db=database or _ENV.get("POSTGRES_DB", "trading"),
         postgres_user=_ENV.get("POSTGRES_USER", "trading"),
-        postgres_password=_ENV.get("POSTGRES_PASSWORD", ""),
     )
 
 
-def role_settings() -> RoleSettings:
-    """The app role passwords from the captured environment."""
-    return RoleSettings(
-        postgres_trader_password=_ENV["POSTGRES_TRADER_PASSWORD"],
-        postgres_dashboard_password=_ENV["POSTGRES_DASHBOARD_PASSWORD"],
-        postgres_backup_password=_ENV["POSTGRES_BACKUP_PASSWORD"],
-    )
+def migrate_secrets() -> dict[str, SecretStr]:
+    """The owner password and the three role passwords from the mounted files."""
+    return load_required(MIGRATE_SECRETS, _SECRETS_DIR)
+
+
+def owner_url(database: str | None = None) -> str:
+    """SQLAlchemy URL for the owner role, optionally to another database."""
+    return owner_settings(database).database_url(migrate_secrets()[POSTGRES_PASSWORD])
+
+
+def role_url(database: str, role: str) -> str:
+    """SQLAlchemy URL for one app role on ``database``."""
+    settings = owner_settings(database).model_copy(update={"postgres_user": role})
+    return settings.database_url(SecretStr(role_passwords(migrate_secrets())[role]))
 
 
 def _admin() -> psycopg.Connection:
@@ -86,7 +98,7 @@ def _admin() -> psycopg.Connection:
         port=settings.postgres_port,
         dbname=settings.postgres_db,
         user=settings.postgres_user,
-        password=settings.postgres_password,
+        password=migrate_secrets()[POSTGRES_PASSWORD].get_secret_value(),
         autocommit=True,
     )
 
@@ -107,8 +119,8 @@ def create_database() -> str:
     name = f"trading_test_{secrets.token_hex(4)}"
     with _admin() as admin:
         admin.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
-    with psycopg.connect(owner_settings(name).database_url.replace("+psycopg", "")) as conn:
-        setup_roles(conn, name, role_passwords(role_settings()))
+    with psycopg.connect(owner_url(name).replace("+psycopg", "")) as conn:
+        setup_roles(conn, name, role_passwords(migrate_secrets()))
     return name
 
 
@@ -123,7 +135,7 @@ def database() -> Iterator[str]:
     """Name of a fresh database with roles set up and every migration applied."""
     name = create_database()
     try:
-        engine = create_engine(owner_settings(name).database_url, poolclass=pool.NullPool)
+        engine = create_engine(owner_url(name), poolclass=pool.NullPool)
         migrate(engine)
         engine.dispose()
         yield name
@@ -134,7 +146,7 @@ def database() -> Iterator[str]:
 @pytest.fixture(scope="session")
 def engine(database: str) -> Iterator[Engine]:
     """Owner engine on the test database."""
-    owner = create_engine(owner_settings(database).database_url, poolclass=pool.NullPool)
+    owner = create_engine(owner_url(database), poolclass=pool.NullPool)
     yield owner
     owner.dispose()
 

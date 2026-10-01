@@ -1,9 +1,11 @@
-"""covers: spec 0001 configuration, spec 0002 git_commit and role passwords (AC-13)."""
+"""covers: spec 0001 configuration, spec 0002 git_commit, spec 0003 secrets folder and database URL."""
+
+from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
-from trading_core.settings import RoleSettings, Settings
+from trading_core.settings import Settings
 
 
 def test_trading_env_is_required():
@@ -60,22 +62,41 @@ def test_max_clock_offset_must_be_positive(value):
 
 
 def test_database_url_uses_psycopg_and_every_part():
-    settings = Settings(
-        trading_env="demo",
-        postgres_user="u",
-        postgres_password="p",
-        postgres_host="h",
-        postgres_port=5433,
-        postgres_db="d",
-    )
+    settings = Settings(trading_env="demo", postgres_user="u", postgres_host="h", postgres_port=5433, postgres_db="d")
 
-    assert settings.database_url == "postgresql+psycopg://u:p@h:5433/d"
+    assert settings.database_url(SecretStr("p")) == "postgresql+psycopg://u:p@h:5433/d"
+    assert settings.database_url(SecretStr("p"), "other").endswith("/other")
 
 
 def test_database_url_quotes_user_and_password():
-    settings = Settings(trading_env="demo", postgres_user="a@b", postgres_password="p:w/d@#")
+    settings = Settings(trading_env="demo", postgres_user="a@b")
 
-    assert settings.database_url.startswith("postgresql+psycopg://a%40b:p%3Aw%2Fd%40%23@")
+    assert settings.database_url(SecretStr("p:w/d@#")).startswith("postgresql+psycopg://a%40b:p%3Aw%2Fd%40%23@")
+
+
+def test_no_password_is_read_from_the_environment(monkeypatch):
+    monkeypatch.setenv("TRADING_ENV", "demo")
+    monkeypatch.setenv("POSTGRES_PASSWORD", "from-env")
+
+    assert "postgres_password" not in Settings().model_dump()
+
+
+def test_secrets_dir_defaults_to_run_secrets_and_only_the_test_alias_moves_it(monkeypatch, tmp_path):
+    monkeypatch.setenv("TRADING_ENV", "demo")
+    monkeypatch.setenv("SECRETS_DIR", "/host/only")  # the Compose substitution variable is ignored
+
+    assert Settings().secrets_dir == Path("/run/secrets")
+
+    monkeypatch.setenv("SECRETS_DIR_IN_CONTAINER", str(tmp_path))
+    assert Settings().secrets_dir == tmp_path
+
+
+def test_redis_username_defaults_to_none_and_reads_the_environment(monkeypatch):
+    monkeypatch.setenv("TRADING_ENV", "demo")
+    assert Settings().redis_username is None
+
+    monkeypatch.setenv("REDIS_USERNAME", "dashboard")
+    assert Settings().redis_username == "dashboard"
 
 
 def test_git_commit_defaults_to_unknown_and_reads_the_environment(monkeypatch):
@@ -85,36 +106,3 @@ def test_git_commit_defaults_to_unknown_and_reads_the_environment(monkeypatch):
     monkeypatch.setenv("GIT_COMMIT", "abc123")
 
     assert Settings().git_commit == "abc123"
-
-
-def _set_role_passwords(monkeypatch, **overrides):
-    values = {
-        "POSTGRES_TRADER_PASSWORD": "t",
-        "POSTGRES_DASHBOARD_PASSWORD": "d",
-        "POSTGRES_BACKUP_PASSWORD": "b",
-    } | overrides
-    for name, value in values.items():
-        if value is None:
-            monkeypatch.delenv(name, raising=False)
-        else:
-            monkeypatch.setenv(name, value)
-
-
-def test_role_settings_read_every_password(monkeypatch):
-    _set_role_passwords(monkeypatch)
-
-    roles = RoleSettings()
-
-    assert (roles.postgres_trader_password, roles.postgres_dashboard_password, roles.postgres_backup_password) == (
-        "t",
-        "d",
-        "b",
-    )
-
-
-@pytest.mark.parametrize("value", [None, ""])
-def test_role_settings_refuse_a_missing_or_empty_password(monkeypatch, value):
-    _set_role_passwords(monkeypatch, POSTGRES_DASHBOARD_PASSWORD=value)
-
-    with pytest.raises(ValidationError, match="postgres_dashboard_password"):
-        RoleSettings()

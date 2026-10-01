@@ -1,0 +1,146 @@
+"""covers: spec 0003 AC-2 (refusals), AC-3 (fingerprint line), AC-5 (redaction), AC-9 (key age)."""
+
+import hashlib
+import json
+import logging
+from datetime import date
+from urllib.parse import quote
+
+import pytest
+
+from trading_core.logs import configure_logging
+from trading_core.secrets import (
+    SecretUnavailable,
+    fingerprint,
+    key_rotation_age,
+    load_required,
+    read_secret,
+    redact,
+)
+
+VALUE = "a3f9c1d2e4b5a6978877665544332211"
+
+
+def _lines(capsys):
+    return [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+
+
+def test_reads_the_value_trimmed_of_its_trailing_newline(tmp_path):
+    (tmp_path / "s").write_text(VALUE + "\n")
+
+    assert read_secret("s", tmp_path).get_secret_value() == VALUE
+
+
+def test_the_returned_secret_masks_itself_when_printed(tmp_path):
+    (tmp_path / "s").write_text(VALUE)
+
+    secret = read_secret("s", tmp_path)
+
+    assert VALUE not in repr(secret)
+    assert VALUE not in str(secret)
+
+
+@pytest.mark.parametrize(
+    ("content", "reason"),
+    [
+        (None, "missing"),
+        ("", "empty"),
+        ("  \n", "empty"),
+        ("xq7", "too_short"),
+        ("aaaaaaaa bbbbbbbb", "whitespace"),
+        ("aaaaaaaa\tbbbbbbbb", "whitespace"),
+    ],
+)
+def test_an_unusable_file_raises_with_its_reason_and_never_the_value(tmp_path, content, reason):
+    if content is not None:
+        (tmp_path / "s").write_text(content)
+
+    with pytest.raises(SecretUnavailable) as exc:
+        read_secret("s", tmp_path)
+
+    assert (exc.value.name, exc.value.reason) == ("s", reason)
+    if content and content.strip():
+        assert content.strip() not in str(exc.value)
+
+
+def test_a_directory_is_not_a_secret(tmp_path):
+    (tmp_path / "s").mkdir()
+
+    with pytest.raises(SecretUnavailable) as exc:
+        read_secret("s", tmp_path)
+
+    assert exc.value.reason == "not_a_file"
+
+
+def test_an_unreadable_file_is_refused(tmp_path):
+    (tmp_path / "s").write_bytes(b"\xff\xfe" * 10)  # not UTF-8
+
+    with pytest.raises(SecretUnavailable) as exc:
+        read_secret("s", tmp_path)
+
+    assert exc.value.reason == "unreadable"
+
+
+def test_each_load_logs_one_line_with_name_and_fingerprint(tmp_path, capsys):
+    configure_logging(process="trader", env="demo")
+    (tmp_path / "s").write_text(VALUE)
+
+    read_secret("s", tmp_path)
+
+    (line,) = _lines(capsys)
+    assert (line["msg"], line["secret"], line["fp"]) == ("secret loaded", "s", fingerprint(VALUE))
+    assert VALUE not in json.dumps(line)
+
+
+def test_fingerprint_is_the_first_8_hex_of_sha256():
+    assert fingerprint(VALUE) == hashlib.sha256(VALUE.encode()).hexdigest()[:8]
+
+
+def test_load_required_reads_every_name_and_stops_at_the_first_broken_one(tmp_path):
+    (tmp_path / "a").write_text(VALUE)
+
+    assert set(load_required(["a"], tmp_path)) == {"a"}
+    with pytest.raises(SecretUnavailable) as exc:
+        load_required(["a", "b"], tmp_path)
+    assert exc.value.name == "b"
+
+
+def test_redact_replaces_raw_and_url_quoted_forms(tmp_path):
+    special = "p:w/d@#xxxxxxxxxxxxxxx"
+    (tmp_path / "pw").write_text(special)
+    read_secret("pw", tmp_path)
+
+    url = f"postgresql://u:{quote(special, safe='')}@h/d"
+
+    assert redact(f"raw {special}") == "raw [REDACTED:pw]"
+    assert redact(url) == "postgresql://u:[REDACTED:pw]@h/d"
+
+
+def test_nothing_is_redacted_before_a_secret_is_loaded():
+    assert redact(f"value {VALUE}") == f"value {VALUE}"
+
+
+def test_log_lines_redact_message_fields_and_exception_text(tmp_path, capsys):
+    configure_logging(process="trader", env="demo")
+    (tmp_path / "kraken_api_secret").write_text(VALUE)
+    read_secret("kraken_api_secret", tmp_path)
+    capsys.readouterr()
+    logger = logging.getLogger("t")
+
+    logger.info("msg %s", VALUE)
+    logger.info("field", extra={"fields": {"oops": VALUE}})
+    try:
+        raise RuntimeError(f"auth failed for {VALUE}")
+    except RuntimeError:
+        logger.exception("exc")
+
+    out = capsys.readouterr().out
+    assert VALUE not in out
+    assert out.count("[REDACTED:kraken_api_secret]") == 3
+
+
+def test_key_rotation_age_counts_days_and_refuses_the_future():
+    assert key_rotation_age(date(2026, 7, 1), date(2026, 10, 1)) == 92
+    assert key_rotation_age(date(2026, 10, 1), date(2026, 10, 1)) == 0
+    with pytest.raises(ValueError, match="future"):
+        key_rotation_age(date(2026, 10, 2), date(2026, 10, 1))

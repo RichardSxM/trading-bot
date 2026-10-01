@@ -1,19 +1,24 @@
 """Non secret configuration shared by every process, loaded from environment variables.
 
-Secrets (Kraken keys, real database credentials) are feature 4 and do not live here.
+Secrets never come from the environment: they are files read by ``trading_core.secrets``
+(spec 0003). Settings only says where those files live.
 """
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 from urllib.parse import quote
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from trading_core.secrets import DEFAULT_SECRETS_DIR
 
 TradingEnv = Literal["demo", "live"]
 
 
 class Settings(BaseSettings):
+    # No validate_by_name: it would also read SECRETS_DIR (the host folder) into secrets_dir.
     model_config = SettingsConfigDict(extra="ignore", case_sensitive=False)
 
     # Required: every process refuses to start when this is unset or unknown.
@@ -21,14 +26,19 @@ class Settings(BaseSettings):
     process_name: str = "unknown"
     log_level: str = "INFO"
 
+    # Where the mounted secret files live. Only tests point it elsewhere; the name keeps it
+    # apart from SECRETS_DIR, which is the host folder Compose substitutes and no service sees.
+    secrets_dir: Path = Field(default=DEFAULT_SECRETS_DIR, validation_alias="SECRETS_DIR_IN_CONTAINER")
+
     redis_host: str = "redis"
     redis_port: int = 6379
+    # Each service's own Redis ACL user (spec 0003); None for processes without Redis.
+    redis_username: str | None = None
 
     postgres_host: str = "postgres"
     postgres_port: int = 5432
     postgres_db: str = "trading"
     postgres_user: str = "trading"
-    postgres_password: str = ""
 
     # The commit the image was built from (Docker build arg GIT_COMMIT); recorded on every
     # strategy version, and a live run refuses ``unknown``.
@@ -46,25 +56,15 @@ class Settings(BaseSettings):
     def clock_server_list(self) -> list[str]:
         return [s.strip() for s in self.clock_servers.split(",") if s.strip()]
 
-    @property
-    def database_url(self) -> str:
+    def database_url(self, password: SecretStr, database: str | None = None) -> str:
+        """SQLAlchemy URL for ``postgres_user`` with the given password, optionally to another database.
+
+        The quoted password form is already registered for log redaction by the secret loader.
+        """
         user = quote(self.postgres_user, safe="")
-        password = quote(self.postgres_password, safe="")
-        return f"postgresql+psycopg://{user}:{password}@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
-
-
-class RoleSettings(BaseSettings):
-    """Passwords for the app roles, read only by the migrate role setup (``trading_core.db_roles``).
-
-    Kept apart from ``Settings`` so no other process needs them. Every one is required and
-    must be non empty, so role setup refuses to run with a missing password.
-    """
-
-    model_config = SettingsConfigDict(extra="ignore", case_sensitive=False)
-
-    postgres_trader_password: str = Field(min_length=1)
-    postgres_dashboard_password: str = Field(min_length=1)
-    postgres_backup_password: str = Field(min_length=1)
+        secret = quote(password.get_secret_value(), safe="")
+        dbname = database or self.postgres_db
+        return f"postgresql+psycopg://{user}:{secret}@{self.postgres_host}:{self.postgres_port}/{dbname}"
 
 
 @lru_cache(maxsize=1)

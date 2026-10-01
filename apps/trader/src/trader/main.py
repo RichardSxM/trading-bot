@@ -3,6 +3,7 @@
 import logging
 import os
 import sys
+from collections.abc import Mapping
 
 from nautilus_trader.adapters.kraken import KRAKEN, KrakenLiveDataClientFactory
 from nautilus_trader.config import (
@@ -14,6 +15,7 @@ from nautilus_trader.config import (
 )
 from nautilus_trader.live.node import TradingNode
 from nautilus_trader.model.identifiers import TraderId
+from pydantic import SecretStr
 
 from trading_core import env_guard
 from trading_core.boot import boot
@@ -21,6 +23,7 @@ from trading_core.naming import node_id
 from trading_core.node.heartbeat import HeartbeatActor, HeartbeatConfig
 from trading_core.node.kraken import futures_data_client
 from trading_core.redis_check import redis_reachable
+from trading_core.secrets import POSTGRES_PASSWORD
 from trading_core.settings import Settings
 
 log = logging.getLogger("trader")
@@ -45,12 +48,12 @@ def build_config(settings: Settings) -> TradingNodeConfig:
     )
 
 
-def guard(settings: Settings) -> None:
-    env_guard.check(build_config(settings).exec_clients, process="trader", env=settings.trading_env)
+def guard(settings: Settings, secrets: Mapping[str, SecretStr]) -> None:
+    env_guard.check_exec_clients(build_config(settings).exec_clients, process="trader", env=settings.trading_env)
 
 
 def main() -> None:
-    settings = boot("node", guard=guard)
+    settings = boot("node", guard=guard, secrets=(POSTGRES_PASSWORD,)).settings
     if not redis_reachable(settings.redis_host, settings.redis_port):
         log.critical(
             "redis unreachable, refusing to start",
