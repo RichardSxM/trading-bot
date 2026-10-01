@@ -78,7 +78,7 @@ spec [0003](../specs/0003-api-keys-secrets/index.md) · code in [packages/core/s
   - [x] Backup secrets, gitleaks, runbook (AC-12, AC-13, AC-15)
 - [ ] Verify it: `/check verify API keys & secrets`
 - [x] Test it: `/test API keys & secrets`
-- [ ] Review it (fresh model): `/check review API keys & secrets`
+- [x] Review it (fresh model): `/check review API keys & secrets`
 - [ ] Document it: `/document API keys & secrets`
 
 ### 5. Design system & dashboard shell · needs a decision · Beta
