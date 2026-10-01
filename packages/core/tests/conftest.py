@@ -13,6 +13,7 @@ _ENV_PREFIXES = (
     "POSTGRES_",
     "REDIS_",
     "KRAKEN_",
+    "GIT_COMMIT",
 )
 
 

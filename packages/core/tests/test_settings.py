@@ -1,9 +1,9 @@
-"""covers: spec 0001 configuration (TRADING_ENV required, clock and database settings)."""
+"""covers: spec 0001 configuration, spec 0002 git_commit and role passwords (AC-13)."""
 
 import pytest
 from pydantic import ValidationError
 
-from trading_core.settings import Settings
+from trading_core.settings import RoleSettings, Settings
 
 
 def test_trading_env_is_required():
@@ -70,3 +70,51 @@ def test_database_url_uses_psycopg_and_every_part():
     )
 
     assert settings.database_url == "postgresql+psycopg://u:p@h:5433/d"
+
+
+def test_database_url_quotes_user_and_password():
+    settings = Settings(trading_env="demo", postgres_user="a@b", postgres_password="p:w/d@#")
+
+    assert settings.database_url.startswith("postgresql+psycopg://a%40b:p%3Aw%2Fd%40%23@")
+
+
+def test_git_commit_defaults_to_unknown_and_reads_the_environment(monkeypatch):
+    assert Settings(trading_env="demo").git_commit == "unknown"
+
+    monkeypatch.setenv("TRADING_ENV", "demo")
+    monkeypatch.setenv("GIT_COMMIT", "abc123")
+
+    assert Settings().git_commit == "abc123"
+
+
+def _set_role_passwords(monkeypatch, **overrides):
+    values = {
+        "POSTGRES_TRADER_PASSWORD": "t",
+        "POSTGRES_DASHBOARD_PASSWORD": "d",
+        "POSTGRES_BACKUP_PASSWORD": "b",
+    } | overrides
+    for name, value in values.items():
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+
+
+def test_role_settings_read_every_password(monkeypatch):
+    _set_role_passwords(monkeypatch)
+
+    roles = RoleSettings()
+
+    assert (roles.postgres_trader_password, roles.postgres_dashboard_password, roles.postgres_backup_password) == (
+        "t",
+        "d",
+        "b",
+    )
+
+
+@pytest.mark.parametrize("value", [None, ""])
+def test_role_settings_refuse_a_missing_or_empty_password(monkeypatch, value):
+    _set_role_passwords(monkeypatch, POSTGRES_DASHBOARD_PASSWORD=value)
+
+    with pytest.raises(ValidationError, match="postgres_dashboard_password"):
+        RoleSettings()
