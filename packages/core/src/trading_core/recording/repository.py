@@ -41,6 +41,7 @@ from trading_core.recording.enums import (
 )
 from trading_core.recording.errors import (
     EnvMismatchError,
+    ForeignRunError,
     InvalidModeError,
     InvalidTransitionError,
     MissingEvidenceError,
@@ -113,16 +114,20 @@ def _content(values: Mapping[str, object]) -> dict[str, object]:
 
 
 def _key_filter(table: Table, key: Mapping[str, object], where: str | None = None) -> ColumnElement[bool]:
-    clauses = [table.c[name].is_not_distinct_from(value) for name, value in key.items()]
+    # ``=`` and ``IS NULL`` both use the btree index; ``IS NOT DISTINCT FROM`` would not.
+    clauses = [table.c[name].is_(None) if value is None else table.c[name] == value for name, value in key.items()]
     if where is None:
         return and_(*clauses)
     return and_(*clauses, text(where))
 
 
 def _stored(
-    session: Session, table: Table, key: Mapping[str, object], where: str | None = None
+    session: Session, table: Table, key: Mapping[str, object], where: str | None = None, *, lock: bool = False
 ) -> dict[str, object] | None:
-    row = session.execute(select(table).where(_key_filter(table, key, where))).mappings().one_or_none()
+    query = select(table).where(_key_filter(table, key, where))
+    if lock:
+        query = query.with_for_update()
+    row = session.execute(query).mappings().one_or_none()
     return None if row is None else {str(name): value for name, value in row.items()}
 
 
@@ -196,13 +201,15 @@ def _guarded_upsert(
 
     ``immutable`` fields never change; ``stub_only`` fields may change only while the stored
     status is ``unknown``. A breach raises ``RecordConflictError`` before anything is written.
+    The stored row stays locked until the caller commits, so a concurrent writer cannot slip
+    past the check.
     """
     table = _table(model)
     key_values = {name: values[name] for name in key}
-    stored = _stored(session, table, key_values)
+    stored = _stored(session, table, key_values, lock=True)
     if stored is not None:
         frozen = list(immutable)
-        if stored["status"] != OrderStatus.UNKNOWN:
+        if stub_only and stored["status"] != OrderStatus.UNKNOWN:
             frozen += stub_only
         if [name for name in frozen if stored[name] != values[name]]:
             raise _conflict(table, key_values, stored, values)
@@ -249,13 +256,16 @@ def upsert_instrument(session: Session, row: InstrumentRow) -> None:
 
 
 def ensure_strategy_version(
-    session: Session, name: str, kind: StrategyKind, git_commit: str, config: JsonObject
+    session: Session, name: str, kind: StrategyKind, git_commit: str | None, config: JsonObject
 ) -> UUID:
     """Return the id of the version with this commit and config, creating strategy and version if new.
 
+    ``git_commit=None`` takes the commit the image was built from (``Settings.git_commit``).
     Raises ``RecordConflictError`` when the strategy name exists with another kind, or the
     version hash already belongs to another strategy.
     """
+    if git_commit is None:
+        git_commit = get_settings().git_commit
     strategies = _table(models.Strategy)
     session.execute(
         insert(strategies).values(id=uuid.uuid7(), name=name, kind=kind).on_conflict_do_nothing(index_elements=["name"])
@@ -463,12 +473,23 @@ def record_fill(session: Session, row: FillRow) -> None:
     """Record a fill against the order with its ``client_order_id``.
 
     When no order can be found, creates a stub order (``origin = 'external'``, ``status =
-    'unknown'``) and an ``orphan_fill`` risk event in the same transaction.
+    'unknown'``) and an ``orphan_fill`` risk event in the same transaction. A fill whose side
+    or instrument differs from its order's raises ``RecordConflictError``.
     """
     _check_env(row.env)
     order_id = _find_order(session, row.env, row.run_id, row.client_order_id)
     if order_id is None:
         order_id = _stub_order(session, row)
+    else:
+        order = models.Order
+        side, instrument_id = session.execute(select(order.side, order.instrument_id).where(order.id == order_id)).one()
+        if (side, instrument_id) != (row.side, row.instrument_id):
+            raise RecordConflictError(
+                _table(order).name,
+                {"id": order_id, "client_order_id": row.client_order_id},
+                {"side": side, "instrument_id": instrument_id},
+                {"side": row.side, "instrument_id": row.instrument_id},
+            )
     _insert_or_compare(session, models.Fill, column_values(row) | {"order_id": order_id}, ["run_id", "trade_id"])
 
 
@@ -594,7 +615,8 @@ def set_control_outcome(
     """
     if outcome == ControlOutcome.RECEIVED:
         raise InvalidTransitionError("received is not a final outcome")
-    command = session.get(models.ControlCommand, command_id)
+    # Locked and reloaded, so a concurrent outcome cannot be lost in the details merge.
+    command = session.get(models.ControlCommand, command_id, with_for_update=True, populate_existing=True)
     if command is None:
         raise MissingParentError(f"control command {command_id} not found")
     _check_env(command.env)
@@ -650,6 +672,23 @@ def _bundle_order_ids(bundle: RunBundle, client_order_ids: Sequence[str]) -> dic
     return by_client_id
 
 
+def _check_bundle_rows(bundle: RunBundle) -> None:
+    """Every child row must carry the bundle's run id and env, so a sim cannot write into another run."""
+    run = bundle.run
+    children: list[RunResultRow | DecisionRow | OrderRow | OrderEventRow | FillRow | PositionRow | FundingRow] = [
+        *bundle.results,
+        *bundle.decisions,
+        *bundle.orders,
+        *bundle.order_events,
+        *bundle.fills,
+        *bundle.positions,
+        *bundle.funding,
+    ]
+    foreign = sorted({(str(row.run_id), str(row.env)) for row in children} - {(str(run.id), str(run.env))})
+    if foreign:
+        raise ForeignRunError(f"run bundle {run.id} ({run.env}) carries rows of other (run, env) pairs: {foreign}")
+
+
 def _insert_all(session: Session, model: type[Base], rows: Sequence[dict[str, object]]) -> None:
     if rows:
         session.execute(insert(_table(model)), rows)
@@ -658,11 +697,14 @@ def _insert_all(session: Session, model: type[Base], rows: Sequence[dict[str, ob
 def write_run_bundle(session: Session, bundle: RunBundle) -> UUID:
     """Write a finished backtest or replay in one transaction and commit it; returns the run id.
 
-    Raises ``InvalidModeError`` for a paper or live run. Any error rolls back the whole run.
+    Raises ``InvalidModeError`` for a paper or live run, and ``ForeignRunError`` when a row
+    carries another run id or env. Any error rolls back the whole run. The ``TRADING_ENV``
+    check is skipped on purpose (spec 0002 AC-4): a sim run may be tagged with either env.
     """
     run = bundle.run
     if run.mode not in SIM_MODES:
         raise InvalidModeError(f"run bundles are for backtest and replay runs, not {run.mode}")
+    _check_bundle_rows(bundle)
     try:
         order_ids = _bundle_order_ids(
             bundle, [e.client_order_id for e in bundle.order_events] + [f.client_order_id for f in bundle.fills]

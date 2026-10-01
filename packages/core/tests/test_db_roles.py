@@ -45,4 +45,4 @@ def test_role_setup_exits_1_with_one_json_error_when_a_password_is_missing(dashb
     entry = json.loads(lines[0])
     assert (entry["level"], entry["code"], entry["process"]) == ("ERROR", "role_passwords_missing", "migrate")
     assert "postgres_dashboard_password" in lines[0]
-    assert "t" not in {str(error.get("input")) for error in entry["errors"]}
+    assert all("input" not in error for error in entry["errors"])

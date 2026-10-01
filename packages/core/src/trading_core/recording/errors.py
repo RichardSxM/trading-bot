@@ -45,6 +45,10 @@ class InvalidModeError(RecordingError):
     """A run bundle with a mode other than ``backtest`` or ``replay``."""
 
 
+class ForeignRunError(RecordingError):
+    """A run bundle row whose ``run_id`` or ``env`` is not the bundle's own run."""
+
+
 class MissingEvidenceError(RecordingError):
     """A promotion with no evidence run, or one citing a run of another strategy version."""
 

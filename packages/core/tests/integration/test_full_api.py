@@ -29,6 +29,7 @@ from trading_core.recording.enums import (
     Verdict,
 )
 from trading_core.recording.errors import (
+    ForeignRunError,
     InvalidModeError,
     InvalidTransitionError,
     MissingEvidenceError,
@@ -348,6 +349,22 @@ def test_a_sim_bundle_of_the_other_env_lands_from_a_demo_process(engine, session
         assert stored is not None
         assert stored.env == "live"
         assert _count(check, models.Fill, run_id=run.id) == 1
+
+
+@pytest.mark.parametrize("field", ["run_id", "env"])
+def test_a_bundle_row_of_another_run_or_env_writes_nothing(engine, session: Session, world: World, field):
+    run = _sim_run(world)
+    on_run = replace(world, run_id=run.id)
+    order = on_run.order(decision_id=None, origin=OrderOrigin.RECONCILIATION)
+    stray = {"run_id": world.run_id} if field == "run_id" else {"env": Env.LIVE}
+    bundle = RunBundle(run=run, orders=[order], fills=[on_run.fill(order.client_order_id, **stray)])
+
+    with pytest.raises(ForeignRunError):
+        repository.write_run_bundle(session, bundle)
+
+    with Session(engine) as check:
+        assert check.get(models.StrategyRun, run.id) is None
+        assert _count(check, models.Fill, run_id=world.run_id) == 0
 
 
 @pytest.mark.parametrize("mode", [RunMode.PAPER, RunMode.LIVE])

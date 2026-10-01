@@ -28,6 +28,7 @@ from trading_core.recording.errors import (
     MissingParentError,
     RecordConflictError,
 )
+from trading_core.settings import get_settings
 
 from .conftest import INSTRUMENT, World, instrument_row
 
@@ -320,3 +321,25 @@ def test_finish_run_moves_running_to_a_terminal_status_once(session: Session, wo
     assert run.status == RunStatus.COMPLETED
     with pytest.raises(InvalidTransitionError):
         repository.finish_run(session, world.run_id, RunStatus.FAILED, world.tick())
+
+
+def test_a_fill_on_the_other_side_or_instrument_of_its_order_is_refused(session: Session, world: World):
+    order = world.order(decision_id=None, origin=OrderOrigin.RECONCILIATION)
+    repository.upsert_order(session, order)
+
+    for mismatch in ({"side": OrderSide.SELL}, {"instrument_id": "PF_ETHUSD.KRAKEN"}):
+        with pytest.raises(RecordConflictError):
+            repository.record_fill(session, world.fill(order.client_order_id, **mismatch))
+
+    assert _count(session, models.Fill, run_id=world.run_id) == 0
+
+
+def test_ensure_strategy_version_takes_the_image_commit_by_default(session: Session, monkeypatch):
+    monkeypatch.setenv("GIT_COMMIT", "feedface")
+    get_settings.cache_clear()
+
+    version_id = repository.ensure_strategy_version(session, "baked", StrategyKind.SCALPING, None, {"window": 5})
+
+    version = session.get(models.StrategyVersion, version_id)
+    assert version is not None
+    assert version.git_commit == "feedface"

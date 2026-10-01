@@ -110,3 +110,43 @@ def test_downsample_keeps_the_last_raw_row_per_series_hour(engine: Engine, sessi
         .select_from(models.PositionSnapshot)
         .where(models.PositionSnapshot.position_id == position_id)
     ).scalar_one() == len(last_in_hour) + len(recent)
+
+
+def test_a_late_raw_row_in_a_thinned_hour_leaves_one_row(engine: Engine, session: Session, world: World):
+    position = world.position()
+    repository.upsert_position(session, position)
+    session.flush()
+    position_id = session.execute(
+        select(models.Position.id).where(models.Position.position_ref == position.position_ref)
+    ).scalar_one()
+    hour = (datetime.now(UTC) - timedelta(days=100)).replace(minute=0, second=0, microsecond=0)
+    kept, late = hour + timedelta(minutes=10), hour + timedelta(minutes=30)
+    session.execute(
+        insert(models.PositionSnapshot),
+        [
+            {
+                "id": uuid7(),
+                "env": Env.DEMO,
+                "position_id": position_id,
+                "quantity": Decimal("0.001"),
+                "mark_px": Decimal(60000),
+                "unrealized_pnl": Decimal(0),
+                "currency": "USD",
+                "granularity": granularity,
+                "captured_at": at,
+                "captured_ns": _ns(at),
+            }
+            for at, granularity in ((kept, Granularity.HOURLY), (late, Granularity.RAW))
+        ],
+    )
+    session.commit()
+
+    with engine.begin() as conn:
+        conn.execute(text("SELECT downsample_snapshots()"))
+
+    rows = session.execute(
+        select(models.PositionSnapshot.captured_at, models.PositionSnapshot.granularity).where(
+            models.PositionSnapshot.position_id == position_id
+        )
+    ).all()
+    assert [tuple(row) for row in rows] == [(late, Granularity.HOURLY)]

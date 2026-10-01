@@ -17,6 +17,7 @@ target_metadata = Base.metadata
 
 def run_migrations_offline() -> None:
     settings = get_settings()
+    configure_logging(process=settings.process_name, env=settings.trading_env, level=settings.log_level)
     context.configure(url=settings.database_url, target_metadata=target_metadata, literal_binds=True)
     with context.begin_transaction():
         context.run_migrations()

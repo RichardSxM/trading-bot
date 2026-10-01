@@ -46,13 +46,14 @@ TABLES: Final = (
 # The only tables trader_app may UPDATE; fills and funding_payments only to set a NULL position_id.
 TRADER_UPDATE_TABLES: Final = ("orders", "positions", "strategy_runs", "control_commands", "fills", "funding_payments")
 
-# Keeps the newest raw row per series per UTC hour for rows older than 90 days, marks it
-# hourly, deletes the rest. Runs as the owner (SECURITY DEFINER), so backup_app needs no DELETE.
+# Keeps the newest row per series per UTC hour for rows older than 90 days, marks it
+# hourly, deletes the rest. Rows already hourly are ranked too, so a raw row that lands late
+# in a thinned hour still leaves one row. Runs as the owner (SECURITY DEFINER), so backup_app needs no DELETE.
 DOWNSAMPLE_FUNCTION: Final = """
 CREATE FUNCTION downsample_snapshots() RETURNS integer
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, public
+SET search_path = pg_catalog, public, pg_temp
 AS $$
 DECLARE
     cutoff timestamptz := now() - interval '90 days';
@@ -65,7 +66,7 @@ BEGIN
             ORDER BY captured_ns DESC
         ) AS rank_in_hour
         FROM position_snapshots
-        WHERE granularity = 'raw' AND captured_at < cutoff
+        WHERE captured_at < cutoff
     ), removed AS (
         DELETE FROM position_snapshots AS s
         USING ranked AS r
@@ -83,7 +84,7 @@ BEGIN
             ORDER BY captured_ns DESC
         ) AS rank_in_hour
         FROM account_snapshots
-        WHERE granularity = 'raw' AND captured_at < cutoff
+        WHERE captured_at < cutoff
     ), removed AS (
         DELETE FROM account_snapshots AS s
         USING ranked AS r
