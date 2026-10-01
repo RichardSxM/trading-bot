@@ -35,6 +35,7 @@ docker compose run --rm -T migrate pytest -q -m integration         # integratio
 
 ## Conventions
 
+- A new secret gets a name constant in `secrets.py`, a file in `scripts/dev-secrets.sh`, and a `secrets:` grant in `compose.yaml` for only the services that need it; load it with `load_required`, never from settings or env.
 - Only `node/` may import NautilusTrader; everything else in core stays importable on the Intel Mac host.
 - New tables go through `db.py`'s metadata so constraint names follow the naming convention.
 - Every schema change ships as an Alembic migration.

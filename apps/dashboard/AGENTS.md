@@ -15,12 +15,13 @@ The private web dashboard, reachable only over Tailscale. History comes from Pos
 ```bash
 docker compose build dashboard
 docker compose run --rm --no-deps -T dashboard pytest -q
+docker compose run --rm -T dashboard pytest -q -m redis   # Redis ACL tests against the Compose Redis
 ```
 
 ## Conventions
 
 - Never import NautilusTrader, directly or through `trading_core.node`.
-- Read only, except the `control` Redis stream, its single write path to the trader.
+- Read only, except the `control` Redis stream, its single write path to the trader. Redis enforces this: the dashboard logs in as the `dashboard` ACL user, which may write only to `*:control`.
 - Never receives Kraken keys. Its port binds to `127.0.0.1` only.
 - API docs routes stay off (`docs_url=None`, `openapi_url=None`).
 
