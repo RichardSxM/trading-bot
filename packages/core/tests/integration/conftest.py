@@ -102,23 +102,33 @@ def migrate(engine: Engine, revision: str = "head", *, down: bool = False) -> No
             command.upgrade(config, revision)
 
 
-@pytest.fixture(scope="session")
-def database() -> Iterator[str]:
-    """Name of a fresh database with roles set up and every migration applied."""
+def create_database() -> str:
+    """Create ``trading_test_<hex>`` with the app roles set up, and return its name."""
     name = f"trading_test_{secrets.token_hex(4)}"
     with _admin() as admin:
         admin.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
+    with psycopg.connect(owner_settings(name).database_url.replace("+psycopg", "")) as conn:
+        setup_roles(conn, name, role_passwords(role_settings()))
+    return name
+
+
+def drop_database(name: str) -> None:
+    """Drop a test database, closing any connection still open on it."""
+    with _admin() as admin:
+        admin.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(name)))
+
+
+@pytest.fixture(scope="session")
+def database() -> Iterator[str]:
+    """Name of a fresh database with roles set up and every migration applied."""
+    name = create_database()
     try:
-        settings = owner_settings(name)
-        with psycopg.connect(settings.database_url.replace("+psycopg", "")) as conn:
-            setup_roles(conn, name, role_passwords(role_settings()))
-        engine = create_engine(settings.database_url, poolclass=pool.NullPool)
+        engine = create_engine(owner_settings(name).database_url, poolclass=pool.NullPool)
         migrate(engine)
         engine.dispose()
         yield name
     finally:
-        with _admin() as admin:
-            admin.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(name)))
+        drop_database(name)
 
 
 @pytest.fixture(scope="session")
@@ -178,7 +188,7 @@ class World:
             "env": Env.DEMO,
             "run_id": self.run_id,
             "origin": OrderOrigin.STRATEGY,
-            "client_order_id": f"O-{uuid7().hex[:12]}",
+            "client_order_id": f"O-{uuid7().hex[-12:]}",
             "instrument_id": INSTRUMENT,
             "side": OrderSide.BUY,
             "order_type": OrderType.LIMIT,
@@ -196,7 +206,7 @@ class World:
             "run_id": self.run_id,
             "client_order_id": client_order_id,
             "instrument_id": INSTRUMENT,
-            "trade_id": f"T-{uuid7().hex[:12]}",
+            "trade_id": f"T-{uuid7().hex[-12:]}",
             "side": OrderSide.BUY,
             "quantity": Decimal("0.001"),
             "price": Decimal("60000.5"),
@@ -212,7 +222,7 @@ class World:
             "env": Env.DEMO,
             "run_id": self.run_id,
             "instrument_id": INSTRUMENT,
-            "position_ref": f"P-{uuid7().hex[:12]}",
+            "position_ref": f"P-{uuid7().hex[-12:]}",
             "side": PositionSide.LONG,
             "quantity": Decimal("0.001"),
             "peak_qty": Decimal("0.001"),
@@ -255,7 +265,7 @@ def world(session: Session) -> World:
         env=Env.DEMO,
         mode=RunMode.PAPER,
         version_id=version_id,
-        trader_id=f"TRADER-{uuid7().hex[:8]}",
+        trader_id=f"TRADER-{uuid7().hex[-8:]}",
         run_config={},
         started_ns=1_800_000_000_000_000_000,
     )

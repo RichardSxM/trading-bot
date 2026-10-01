@@ -59,7 +59,7 @@ spec [0002](../specs/0002-data-model/index.md)
   - [x] Schema and roles: recording package, settings, role setup, models, migration `0002` (AC-1, AC-2, AC-4, AC-9, AC-11, AC-13)
   - [x] Traceable write thread: core repository from instrument to fill, stub orders, conflicts, integration test setup (AC-3 to AC-8)
   - [ ] Full write API: events, snapshots, funding, risk, control, promotions and live gate, run bundles, journal query (AC-5, AC-10, AC-14, AC-15)
-  - [ ] Guards and retention: role permission, no float, downsample, and migration round trip tests (AC-1, AC-9, AC-11, AC-12)
+  - [x] Guards and retention: role permission, no float, downsample, and migration round trip tests (AC-1, AC-9, AC-11, AC-12)
 - [ ] Verify it: `/check verify data model`
 - [ ] Test it: `/test data model`
 - [ ] Review it (fresh model): `/check review data model`
