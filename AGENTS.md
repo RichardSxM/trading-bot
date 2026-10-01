@@ -20,6 +20,8 @@ docker compose up -d                      # run the stack (TRADING_ENV=demo on t
 docker compose run --rm migrate           # alembic upgrade head
 docker compose run --rm --no-deps -T <app> pytest -q                       # app tests
 docker compose run --rm --no-deps -T -w /app/packages/core trader pytest -q  # core tests
+pre-commit run --all-files                # ruff check + ruff format + mypy (Docker must be running)
+scripts/typecheck.sh                      # mypy strict; on the Mac it runs in the `tools` Compose service
 ```
 
 ## Specs
@@ -29,7 +31,7 @@ Stored in `docs/specs/`. Format: `docs/specs/NNNN-title/index.md` (plus `rationa
 ## Rules
 
 - Clean Architecture: pure domain and risk logic lives in `packages/core` with no I/O, framework, or ORM imports. NautilusTrader, Postgres, Redis, and FastAPI are adapters at the edges; Nautilus Strategy and Actor classes stay thin and call pure core logic. Dependencies point inward only. Inside each package, group code by feature (`risk/`, `execution/`, `recording/`).
-- Strict types: mypy strict on all our code, no untyped defs, no bare `Any`. A Nautilus stub gap gets a narrow `# type: ignore[code]` with a reason.
+- Strict types: mypy strict on all our code, no untyped defs, no bare `Any`. Tests are type checked too but need no annotations. A Nautilus stub gap gets a narrow `# type: ignore[code]` with a reason.
 - Errors: typed exceptions from core, never swallow one. Anything touching orders fails closed (refuse the action, log, alert).
 - Every public function and class in `packages/core` has a docstring.
 - Config only through `trading_core.settings`, validated at startup; a process refuses to start on bad config.
@@ -41,7 +43,7 @@ Stored in `docs/specs/`. Format: `docs/specs/NNNN-title/index.md` (plus `rationa
 
 ## Tooling
 
-Chosen here, installed by `/develop tooling`: Ruff (lint + format), mypy strict (full run in the Linux container), pre-commit running ruff check, ruff format, and mypy on every commit, GitHub Actions on push and PR (lint, typecheck, pytest on Linux). Testing gate: pytest unit tests for core logic (no infrastructure mocks) plus integration tests against real Postgres and Redis in Compose.
+Ruff (lint + format; its version is pinned in both `pyproject.toml` and `.pre-commit-config.yaml`, bump them together), mypy strict (needs NautilusTrader, so Linux only: the `tools` container locally, directly in CI), pre-commit running ruff check, ruff format, and mypy on every commit, GitHub Actions on push and PR (lint, typecheck, pytest on Linux). Testing gate: pytest unit tests for core logic (no infrastructure mocks) plus integration tests against real Postgres and Redis in Compose.
 
 ## Git
 
