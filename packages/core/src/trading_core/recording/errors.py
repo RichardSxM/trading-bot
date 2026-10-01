@@ -55,3 +55,7 @@ class PromotionRequiredError(RecordingError):
 
 class UnknownCommitError(RecordingError):
     """A live run for a version recorded with ``git_commit = 'unknown'``."""
+
+
+class UnsupportedInstrumentError(RecordingError):
+    """A journal range holds a fill on an inverse instrument; only linear contracts are supported."""

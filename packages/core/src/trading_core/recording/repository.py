@@ -23,7 +23,10 @@ from sqlalchemy.orm import Session
 from trading_core.db import Base
 from trading_core.recording import models
 from trading_core.recording.enums import (
+    SIM_MODES,
+    ControlOutcome,
     Env,
+    FundingSource,
     OrderOrigin,
     OrderStatus,
     OrderType,
@@ -38,21 +41,31 @@ from trading_core.recording.enums import (
 )
 from trading_core.recording.errors import (
     EnvMismatchError,
+    InvalidModeError,
     InvalidTransitionError,
+    MissingEvidenceError,
     MissingParentError,
     PromotionRequiredError,
     RecordConflictError,
     UnknownCommitError,
 )
 from trading_core.recording.rows import (
+    AccountSnapshotRow,
+    ControlCommandRow,
     DecisionRow,
     FillRow,
+    FundingRow,
     InstrumentRow,
     JsonObject,
     JsonValue,
+    OrderEventRow,
     OrderRow,
     PositionRow,
+    PositionSnapshotRow,
+    PromotionRow,
     RiskEventRow,
+    RunBundle,
+    RunResultRow,
     RunRow,
     canonical_json,
     column_values,
@@ -69,6 +82,12 @@ _ORDER_IMMUTABLE: Final = ("side", "instrument_id", "client_order_id")
 _ORDER_STUB_ONLY: Final = ("origin", "decision_id", "order_type")
 _POSITION_IMMUTABLE: Final = ("instrument_id", "position_ref", "opened_ns")
 _LIVE_GATE: Final = (Stage.PAPER, Stage.LIVE)
+# The trader's handling state of a control command; a redelivered command compares without it.
+_CONTROL_HANDLING: Final = frozenset({"received_at", "outcome", "outcome_at", "details"})
+_FUNDING_KEYS: Final = {
+    FundingSource.KRAKEN_LOG: (("env", "external_id"), "source = 'kraken_log'"),
+    FundingSource.COMPUTED: (("run_id", "instrument_id", "paid_ns"), "source = 'computed'"),
+}
 
 
 # Shared helpers ---------------------------------------------------------------------------
@@ -107,11 +126,15 @@ def _stored(
     return None if row is None else {str(name): value for name, value in row.items()}
 
 
-def _differences(stored: Mapping[str, object], incoming: Mapping[str, object]) -> list[str]:
+def _differences(
+    stored: Mapping[str, object], incoming: Mapping[str, object], ignore: frozenset[str] = frozenset()
+) -> list[str]:
     stored_content, incoming_content = _content(stored), _content(incoming)
     differing = []
     for name, value in incoming_content.items():
         kept = stored_content.get(name)
+        if name in ignore:
+            continue
         if name == _FILL_ONCE and (kept is None or value is None):
             continue
         if kept != value:
@@ -131,12 +154,14 @@ def _insert_or_compare(
     values: Mapping[str, object],
     key: Sequence[str],
     where: str | None = None,
+    ignore: frozenset[str] = frozenset(),
 ) -> bool:
     """INSERT … ON CONFLICT (key) DO NOTHING; on a conflict compare with the stored row.
 
     Returns True when a row was inserted. Equal content is a no-op (a stored NULL
     ``position_id`` is then set from the incoming value); different content raises
-    ``RecordConflictError``. ``where`` names the partial unique index to arbitrate on.
+    ``RecordConflictError``. ``where`` names the partial unique index to arbitrate on;
+    ``ignore`` lists mutable columns left out of the comparison.
     """
     table = _table(model)
     stmt = insert(table).values(dict(values))
@@ -150,7 +175,7 @@ def _insert_or_compare(
     key_values = {name: values[name] for name in key}
     stored = _stored(session, table, key_values, where)
     assert stored is not None  # the insert hit this key, so the row exists
-    if _differences(stored, values):
+    if _differences(stored, values, ignore):
         raise _conflict(table, key_values, stored, values)
     if _FILL_ONCE in values and stored.get(_FILL_ONCE) is None and values[_FILL_ONCE] is not None:
         session.execute(
@@ -459,7 +484,53 @@ def upsert_position(session: Session, row: PositionRow) -> None:
     )
 
 
-# Risk events and conflicts ----------------------------------------------------------------
+def record_order_event(session: Session, row: OrderEventRow) -> None:
+    """Record an order event against the order with its ``client_order_id`` (found like a fill's).
+
+    Raises ``MissingParentError`` when the order cannot be found.
+    """
+    _check_env(row.env)
+    order_id = _find_order(session, row.env, row.run_id, row.client_order_id)
+    if order_id is None:
+        raise MissingParentError(f"order {row.client_order_id} not found for run {row.run_id}")
+    _insert_or_compare(
+        session, models.OrderEvent, column_values(row) | {"order_id": order_id}, ["order_id", "event_id"]
+    )
+
+
+def record_position_snapshot(session: Session, row: PositionSnapshotRow) -> None:
+    """Record a position mark to market; raises ``MissingParentError`` for an unknown position."""
+    _check_env(row.env)
+    if session.get(models.Position, row.position_id) is None:
+        raise MissingParentError(f"position {row.position_id} not found")
+    _insert_or_compare(session, models.PositionSnapshot, column_values(row), ["position_id", "captured_ns"])
+
+
+def record_account_snapshot(session: Session, row: AccountSnapshotRow) -> None:
+    """Record the balances of one account currency."""
+    _check_env(row.env)
+    _insert_or_compare(
+        session,
+        models.AccountSnapshot,
+        column_values(row),
+        ["env", "run_id", "account_ref", "currency", "captured_ns"],
+    )
+
+
+def record_funding(session: Session, row: FundingRow) -> None:
+    """Record a funding payment, keyed by Kraken's log id or, when computed, by run, instrument, and time."""
+    _check_env(row.env)
+    key, where = _FUNDING_KEYS[row.source]
+    _insert_or_compare(session, models.FundingPayment, column_values(row), key, where)
+
+
+def record_run_result(session: Session, row: RunResultRow) -> None:
+    """Record the scored metrics of a run over one sample."""
+    _check_env(row.env)
+    _insert_or_compare(session, models.RunResult, column_values(row), ["run_id", "sample"])
+
+
+# Risk events, control commands, and conflicts ---------------------------------------------
 
 
 def record_risk_event(session: Session, row: RiskEventRow) -> None:
@@ -497,3 +568,121 @@ def report_conflict(session: Session, error: RecordConflictError) -> None:
         .on_conflict_do_nothing(index_elements=["env", "event_key"])
     )
     session.commit()
+
+
+def record_control_command(session: Session, row: ControlCommandRow) -> None:
+    """Record a control command as the trader received it, keyed by the message id.
+
+    Receiving the same command again is a no-op, whatever its handling state; a different
+    ``cmd``, ``env``, or time for the same id raises ``RecordConflictError``.
+    """
+    _check_env(row.env)
+    _insert_or_compare(session, models.ControlCommand, column_values(row), ["id"], ignore=_CONTROL_HANDLING)
+
+
+def set_control_outcome(
+    session: Session,
+    command_id: UUID,
+    outcome: ControlOutcome,
+    outcome_ns: int,
+    details: JsonObject | None = None,
+) -> None:
+    """Move a ``received`` command to its final outcome, merging ``details`` into the stored ones.
+
+    Setting the same final outcome again is a no-op; any other change raises
+    ``InvalidTransitionError``.
+    """
+    if outcome == ControlOutcome.RECEIVED:
+        raise InvalidTransitionError("received is not a final outcome")
+    command = session.get(models.ControlCommand, command_id)
+    if command is None:
+        raise MissingParentError(f"control command {command_id} not found")
+    _check_env(command.env)
+    if command.outcome == outcome:
+        return
+    if command.outcome != ControlOutcome.RECEIVED:
+        raise InvalidTransitionError(f"control command {command_id} is already {command.outcome}, not {outcome}")
+    session.execute(
+        update(models.ControlCommand)
+        .where(models.ControlCommand.id == command_id)
+        .values(
+            outcome=outcome,
+            outcome_at=ns_to_utc(outcome_ns),
+            details=command.details | normalize_json(details or {}),
+            updated_at=func.now(),
+        )
+    )
+
+
+# Promotions and run bundles ---------------------------------------------------------------
+
+
+def record_promotion(session: Session, row: PromotionRow, evidence_run_ids: Sequence[UUID]) -> UUID:
+    """Record a promotion of a version with the runs it cites; returns the promotion id.
+
+    Raises ``MissingEvidenceError`` when no run is cited, or a cited run is missing or
+    belongs to another strategy version.
+    """
+    if not evidence_run_ids:
+        raise MissingEvidenceError(f"promotion {row.id} cites no evidence run")
+    runs = models.StrategyRun
+    found = session.execute(select(runs.id, runs.strategy_version_id).where(runs.id.in_(evidence_run_ids)))
+    versions = {run_id: version_id for run_id, version_id in found}
+    wrong = [run_id for run_id in evidence_run_ids if versions.get(run_id) != row.strategy_version_id]
+    if wrong:
+        raise MissingEvidenceError(
+            f"evidence runs {wrong} are missing or of another version than {row.strategy_version_id}"
+        )
+    _insert_or_compare(session, models.Promotion, column_values(row), ["id"])
+    session.execute(
+        insert(_table(models.PromotionEvidence))
+        .values([{"promotion_id": row.id, "run_id": run_id} for run_id in evidence_run_ids])
+        .on_conflict_do_nothing()
+    )
+    return row.id
+
+
+def _bundle_order_ids(bundle: RunBundle, client_order_ids: Sequence[str]) -> dict[str, UUID]:
+    by_client_id = {order.client_order_id: order.id for order in bundle.orders}
+    missing = sorted(set(client_order_ids) - set(by_client_id))
+    if missing:
+        raise MissingParentError(f"run bundle has fills or events for orders it does not carry: {missing}")
+    return by_client_id
+
+
+def _insert_all(session: Session, model: type[Base], rows: Sequence[dict[str, object]]) -> None:
+    if rows:
+        session.execute(insert(_table(model)), rows)
+
+
+def write_run_bundle(session: Session, bundle: RunBundle) -> UUID:
+    """Write a finished backtest or replay in one transaction and commit it; returns the run id.
+
+    Raises ``InvalidModeError`` for a paper or live run. Any error rolls back the whole run.
+    """
+    run = bundle.run
+    if run.mode not in SIM_MODES:
+        raise InvalidModeError(f"run bundles are for backtest and replay runs, not {run.mode}")
+    try:
+        order_ids = _bundle_order_ids(
+            bundle, [e.client_order_id for e in bundle.order_events] + [f.client_order_id for f in bundle.fills]
+        )
+        _insert_all(session, models.StrategyRun, [column_values(run)])
+        _insert_all(session, models.RunResult, [column_values(r) for r in bundle.results])
+        _insert_all(session, models.Decision, [column_values(d) for d in bundle.decisions])
+        _insert_all(session, models.Order, [column_values(o) for o in bundle.orders])
+        _insert_all(
+            session,
+            models.OrderEvent,
+            [column_values(e) | {"order_id": order_ids[e.client_order_id]} for e in bundle.order_events],
+        )
+        _insert_all(session, models.Position, [column_values(p) for p in bundle.positions])
+        _insert_all(
+            session, models.Fill, [column_values(f) | {"order_id": order_ids[f.client_order_id]} for f in bundle.fills]
+        )
+        _insert_all(session, models.FundingPayment, [column_values(f) for f in bundle.funding])
+        session.commit()
+    except BaseException:
+        session.rollback()
+        raise
+    return run.id
