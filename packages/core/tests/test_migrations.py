@@ -1,4 +1,4 @@
-"""covers: spec 0001 migrate service (Alembic baseline) and the shared naming convention."""
+"""covers: spec 0001 migrate service (Alembic baseline), spec 0002 AC-1 (one head), and the naming convention."""
 
 from pathlib import Path
 
@@ -12,10 +12,11 @@ from trading_core.db import Base
 ALEMBIC_INI = Path(__file__).resolve().parents[1] / "alembic.ini"
 
 
-def test_alembic_has_one_head_the_baseline_with_nothing_before_it():
+def test_alembic_has_one_head_the_data_model_on_top_of_the_baseline():
     scripts = ScriptDirectory.from_config(Config(str(ALEMBIC_INI)))
 
-    assert scripts.get_heads() == ["0001_baseline"]
+    assert scripts.get_heads() == ["0002_data_model"]
+    assert scripts.get_revision("0002_data_model").down_revision == "0001_baseline"
     assert scripts.get_revision("0001_baseline").down_revision is None
 
 
@@ -33,5 +34,19 @@ def test_constraint_names_follow_the_naming_convention():
         assert "CONSTRAINT pk_probe PRIMARY KEY" in ddl
         assert "CONSTRAINT uq_probe_code UNIQUE" in ddl
         assert {index.name for index in table.indexes} == {"ix_probe_code"}
+    finally:
+        Base.metadata.remove(table)
+
+
+def test_multi_column_names_use_every_column():
+    table = Table(
+        "probe",
+        Base.metadata,
+        Column("a", Integer, primary_key=True),
+        Column("b", String),
+        UniqueConstraint("a", "b"),
+    )
+    try:
+        assert "CONSTRAINT uq_probe_a_b UNIQUE" in str(CreateTable(table))
     finally:
         Base.metadata.remove(table)

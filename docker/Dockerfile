@@ -2,6 +2,7 @@
 # One image recipe for every Python service. Build args pick the workspace package:
 #   PACKAGE  uv workspace package to install (trader, recorder, dashboard, trading-core)
 #   APP_DIR  its folder, used as the working directory (tests and alembic.ini live there)
+#   GIT_COMMIT  the commit being built (`GIT_COMMIT=$(git rev-parse HEAD) docker compose build`)
 
 ARG UV_VERSION=0.12.21
 FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
@@ -40,6 +41,11 @@ COPY --chown=app:app packages packages
 COPY --chown=app:app apps apps
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --package "$PACKAGE"
+
+# The commit this image was built from, recorded on every strategy version (spec 0002).
+# Declared after the installs so a new commit does not reinstall anything.
+ARG GIT_COMMIT=unknown
+ENV GIT_COMMIT=${GIT_COMMIT}
 
 USER app
 WORKDIR /app/${APP_DIR}

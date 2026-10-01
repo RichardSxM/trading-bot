@@ -17,6 +17,12 @@ dev = ["pytest>=8"]
 # Only the processes that run a Nautilus node (trader, recorder) install this.
 node = ["nautilus_trader==1.231.0"]
 
+[tool.pytest.ini_options]
+# Integration tests need the Compose Postgres; run them in the migrate service with
+# `pytest -q -m integration` (a later -m overrides this one).
+addopts = "-m 'not integration'"
+markers = ["integration: needs the Compose Postgres (run in the migrate service)"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

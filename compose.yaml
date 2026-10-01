@@ -31,6 +31,18 @@ x-postgres-env: &postgres-env
   POSTGRES_USER: ${POSTGRES_USER:-trading}
   POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
 
+# Passwords of the app roles (spec 0002). Only migrate gets all three, for role setup;
+# trader and dashboard each log in as their own role with just their own password.
+x-role-passwords: &role-passwords
+  POSTGRES_TRADER_PASSWORD: ${POSTGRES_TRADER_PASSWORD:?set POSTGRES_TRADER_PASSWORD in .env}
+  POSTGRES_DASHBOARD_PASSWORD: ${POSTGRES_DASHBOARD_PASSWORD:?set POSTGRES_DASHBOARD_PASSWORD in .env}
+  POSTGRES_BACKUP_PASSWORD: ${POSTGRES_BACKUP_PASSWORD:?set POSTGRES_BACKUP_PASSWORD in .env}
+
+x-app-db-env: &app-db-env
+  POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+  POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+  POSTGRES_DB: ${POSTGRES_DB:-trading}
+
 x-redis-env: &redis-env
   REDIS_HOST: ${REDIS_HOST:-redis}
   REDIS_PORT: ${REDIS_PORT:-6379}
@@ -86,11 +98,13 @@ services:
       args:
         PACKAGE: trading-core
         APP_DIR: packages/core
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
     image: kfs/core:${IMAGE_TARGET:-runtime}
     restart: "no"
-    command: ["alembic", "upgrade", "head"]
+    # Role setup first (idempotent), then the schema, both as the owner role.
+    command: ["sh", "-c", "python -m trading_core.db_roles && alembic upgrade head"]
     environment:
-      <<: [*base-env, *postgres-env]
+      <<: [*base-env, *postgres-env, *role-passwords]
       PROCESS_NAME: migrate
     depends_on:
       postgres:
@@ -106,13 +120,16 @@ services:
       args:
         PACKAGE: trader
         APP_DIR: apps/trader
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
     image: kfs/trader:${IMAGE_TARGET:-runtime}
     command: ["python", "-m", "trader.main"]
     # Kraken keys (feature 4) are listed here only, for live only; no other service gets them.
     # An explicit TRADER_ID goes in a compose override: an empty value would be refused.
     environment:
-      <<: [*base-env, *redis-env]
+      <<: [*base-env, *redis-env, *app-db-env]
       PROCESS_NAME: trader
+      POSTGRES_USER: trader_app
+      POSTGRES_PASSWORD: ${POSTGRES_TRADER_PASSWORD:?set POSTGRES_TRADER_PASSWORD in .env}
     volumes:
       - catalog:/data/catalog:ro
     depends_on:
@@ -137,6 +154,7 @@ services:
       args:
         PACKAGE: recorder
         APP_DIR: apps/recorder
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
     image: kfs/recorder:${IMAGE_TARGET:-runtime}
     command: ["python", "-m", "recorder.main"]
     # No Redis, no Postgres, never Kraken keys (the env guard refuses them in any env).
@@ -159,11 +177,14 @@ services:
       args:
         PACKAGE: dashboard
         APP_DIR: apps/dashboard
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
     image: kfs/dashboard:${IMAGE_TARGET:-runtime}
     command: ["python", "-m", "dashboard.main"]
     environment:
-      <<: [*base-env, *redis-env, *postgres-env]
+      <<: [*base-env, *redis-env, *app-db-env]
       PROCESS_NAME: dashboard
+      POSTGRES_USER: dashboard_app
+      POSTGRES_PASSWORD: ${POSTGRES_DASHBOARD_PASSWORD:?set POSTGRES_DASHBOARD_PASSWORD in .env}
     ports:
       - "127.0.0.1:${DASHBOARD_HOST_PORT:-8000}:8000"
     volumes:
