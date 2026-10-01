@@ -70,12 +70,13 @@ Keep Kraken API keys safe: least privilege keys (trade only, never withdraw), se
 **Done when:** the bot loads keys from a secret store, live keys cannot withdraw funds, and a leaked log or repo contains no secret.
 spec [0003](../specs/0003-api-keys-secrets/index.md) · code in [packages/core/src/trading_core/secrets.py](../../packages/core/src/trading_core/secrets.py), [compose.yaml](../../compose.yaml), [compose.live.yaml](../../compose.live.yaml), [scripts/](../../scripts/), [docker/](../../docker/)
 - [x] Design it (spec): `/architect API keys & secrets`
-- [x] Build it: `/develop API keys & secrets`
+- [ ] Build it: `/develop API keys & secrets`
   - [x] Secret file thread: loader, redaction, boot order, split env guard, dev script, one secret end to end (AC-1 to AC-5, AC-14)
   - [x] All Postgres secrets from files, owner password cutover (AC-1, AC-11)
   - [x] Redis ACL users for trader and dashboard (AC-10)
   - [x] Kraken live path: exec client factory, live override, key age, key check, canary leak test (AC-4, AC-6 to AC-9)
   - [x] Backup secrets, gitleaks, runbook (AC-12, AC-13, AC-15)
+  - [ ] Key check module: move the watcher to `trading_core/node/key_check.py` (AC-8, review follow up)
 - [ ] Verify it: `/check verify API keys & secrets`
 - [x] Test it: `/test API keys & secrets`
 - [x] Review it (fresh model): `/check review API keys & secrets`
