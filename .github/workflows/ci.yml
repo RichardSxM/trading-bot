@@ -54,3 +54,8 @@ jobs:
             (cd "$pkg" && uv run --frozen pytest -q)
             echo "::endgroup::"
           done
+
+      # Deselected by default (apps/trader/pyproject.toml); needs no Redis or network.
+      - name: canary leak test (no secret in any output, spec 0003 AC-6)
+        working-directory: apps/trader
+        run: uv run --frozen pytest -q -m canary
