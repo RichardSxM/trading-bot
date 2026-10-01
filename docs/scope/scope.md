@@ -11,7 +11,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 
 | # | Feature | Phase | Status |
 |---|---------|-------|--------|
-| 1 | Stack & architecture | Foundation | planned |
+| 1 | Stack & architecture | Foundation | done |
 | 2 | Coding standards & tooling | Foundation | planned |
 | 3 | Data model | Foundation | planned |
 | 4 | API keys & secrets | Foundation | planned |
@@ -33,10 +33,16 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 
 ## Foundations
 
-### 1. Stack & architecture · needs a decision
+### 1. Stack & architecture · done
 Decide language, runtime, process layout, and a host region close to Kraken's servers (latency matters for scalping), then scaffold a runnable project.
 **Done when:** the stack is recorded in a spec and the empty scaffold boots locally and passes build.
-- [ ] Decide the stack (spec): `/architect stack & architecture`
+spec [0001](../specs/0001-stack-architecture/index.md) · code in [packages/core/](../../packages/core/), [apps/](../../apps/), [compose.yaml](../../compose.yaml), [docker/](../../docker/)
+- [x] Decide the stack (spec): `/architect stack & architecture`
+- [x] Scaffold from the decision: `/develop stack & architecture`
+- [x] Verify it: `/check verify stack & architecture`
+- [x] Test it: `/test stack & architecture`
+- [x] Review it (fresh model): `/check review stack & architecture`
+- [x] Document it: `/document stack & architecture`
 
 ### 2. Coding standards & tooling
 Capture conventions and tooling from the real scaffolded project, then install lint, format, type checks, pre commit, and CI.

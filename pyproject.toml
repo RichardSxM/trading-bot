@@ -1,0 +1,22 @@
+[project]
+name = "kraken-futures-scalper"
+version = "0.1.0"
+description = "Workspace root for the Kraken Futures scalper (trader, recorder, dashboard)."
+requires-python = ">=3.14,<3.15"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8"]
+research = ["duckdb>=1.1", "jupyterlab>=4"]
+
+[tool.uv]
+package = false
+# The lock resolves against the Linux wheels the containers use, even when
+# `uv lock` runs on the Intel Mac (NautilusTrader has no Intel Mac wheel).
+environments = ["sys_platform == 'linux'"]
+
+[tool.uv.workspace]
+members = ["packages/*", "apps/*"]
+
+[tool.uv.sources]
+trading-core = { workspace = true }

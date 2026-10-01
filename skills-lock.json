@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "skills": {
+    "alembic": {
+      "source": "terminalskills/skills",
+      "sourceType": "github",
+      "skillPath": "skills/alembic/SKILL.md",
+      "computedHash": "01ba48472e12fdf50a82d244df0c509f4ea06caeb8fa6e2fe2a15c150adaec91"
+    },
+    "docker-compose-skill": {
+      "source": "scientiacapital/skills",
+      "sourceType": "github",
+      "skillPath": "active/docker-compose-skill/SKILL.md",
+      "computedHash": "5018e45622dcb04e5ebd69c396b8003aa0e71c728487908380c090eaaeb07eba"
+    },
+    "fastapi": {
+      "source": "terminalskills/skills",
+      "sourceType": "github",
+      "skillPath": "skills/fastapi/SKILL.md",
+      "computedHash": "11617cac264628622ba75d5cd05a122f0f79a1b6e9e5fb9cd09d1823d81b434f"
+    },
+    "htmx": {
+      "source": "damusix/skills",
+      "sourceType": "github",
+      "skillPath": "htmx/SKILL.md",
+      "computedHash": "59ebb58992b65a6fafefaeb9d7b7c814d22fe2ade6baedeb27a9bb99e291155e"
+    },
+    "nautilus-trader": {
+      "source": "algoderiv/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/nautilus-trader/SKILL.md",
+      "computedHash": "f21ba0603e8f157797119a2b8204f8ca061c2c765ee2d9b5b99cd55b26aba0e2"
+    },
+    "postgres-writing-guidelines": {
+      "source": "damusix/skills",
+      "sourceType": "github",
+      "skillPath": "postgres-writing-guidelines/SKILL.md",
+      "computedHash": "970b156dab131e443f1aed92186fbc814608cc25b777c82cec3182880bee9197"
+    },
+    "redis": {
+      "source": "terminalskills/skills",
+      "sourceType": "github",
+      "skillPath": "skills/redis/SKILL.md",
+      "computedHash": "b0765c94e8f6e2ab4e5d283ad4231efec7f6b859797c898dbfb396a8f2658e5c"
+    },
+    "sqlalchemy": {
+      "source": "terminalskills/skills",
+      "sourceType": "github",
+      "skillPath": "skills/sqlalchemy/SKILL.md",
+      "computedHash": "1e5ec9ddb90f57c8c3ca90290d6beef26bb488c96f289085441a03d91305a0e9"
+    },
+    "tailscale": {
+      "source": "terminalskills/skills",
+      "sourceType": "github",
+      "skillPath": "skills/tailscale/SKILL.md",
+      "computedHash": "cd108b05c0fe642a2e08692f28a09e38f76c96d0c41ded180139dd3da3804caa"
+    },
+    "uv": {
+      "source": "terminalskills/skills",
+      "sourceType": "github",
+      "skillPath": "skills/uv/SKILL.md",
+      "computedHash": "c941c243bf0565f1d7853986871e2475d22248b56e3306314cfa6c78dbe2cf6c"
+    }
+  }
+}
