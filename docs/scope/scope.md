@@ -77,7 +77,7 @@ spec [0003](../specs/0003-api-keys-secrets/index.md) · code in [packages/core/s
   - [x] Kraken live path: exec client factory, live override, key age, key check, canary leak test (AC-4, AC-6 to AC-9)
   - [x] Backup secrets, gitleaks, runbook (AC-12, AC-13, AC-15)
 - [ ] Verify it: `/check verify API keys & secrets`
-- [ ] Test it: `/test API keys & secrets`
+- [x] Test it: `/test API keys & secrets`
 - [ ] Review it (fresh model): `/check review API keys & secrets`
 - [ ] Document it: `/document API keys & secrets`
 

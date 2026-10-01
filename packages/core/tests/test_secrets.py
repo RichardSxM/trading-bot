@@ -1,9 +1,10 @@
-"""covers: spec 0003 AC-2 (refusals), AC-3 (fingerprint line), AC-5 (redaction), AC-9 (key age)."""
+"""covers: spec 0003 AC-2 (refusals), AC-3 (fingerprint line), AC-5 (redaction), AC-8 (key check), AC-9 (key age)."""
 
 import asyncio
 import hashlib
 import json
 import logging
+import os
 from datetime import date
 from urllib.parse import quote
 
@@ -205,3 +206,61 @@ def test_watcher_confirms_once_the_account_appears_and_never_stops_the_node(caps
 
     assert (state, stops) == ("confirmed", [])
     assert "kraken account confirmed" in [line["msg"] for line in _lines(capsys)]
+
+
+def _random(length=32):
+    return os.urandom(length).hex()[:length]
+
+
+@pytest.mark.parametrize(("length", "loads"), [(16, True), (15, False)])
+def test_sixteen_characters_is_the_shortest_value_accepted(tmp_path, length, loads):
+    (tmp_path / "s").write_text(_random(length))
+
+    if loads:
+        assert len(read_secret("s", tmp_path).get_secret_value()) == 16
+    else:
+        with pytest.raises(SecretUnavailable) as exc:
+            read_secret("s", tmp_path)
+        assert exc.value.reason == "too_short"
+
+
+def test_surrounding_whitespace_is_trimmed_and_the_fingerprint_is_of_the_trimmed_value(tmp_path, capsys):
+    # covers: AC-3, the fp you compare with the password manager entry on rotation.
+    configure_logging(process="trader", env="demo")
+    value = _random()
+    (tmp_path / "s").write_text(f"  {value} \n")
+
+    secret = read_secret("s", tmp_path)
+
+    (line,) = _lines(capsys)
+    assert secret.get_secret_value() == value
+    assert line["fp"] == fingerprint(value)
+
+
+def test_a_value_with_quotes_and_backslashes_is_redacted_in_its_json_escaped_form(tmp_path, capsys):
+    # covers: AC-5. A field is JSON encoded before redaction, so '"' and '\' arrive escaped.
+    configure_logging(process="trader", env="demo")
+    value = f'{_random(8)}"q\\b{_random(8)}'
+    (tmp_path / "pw").write_text(value)
+    read_secret("pw", tmp_path)
+    capsys.readouterr()
+    logger = logging.getLogger("t")
+
+    logger.info("field", extra={"fields": {"oops": value}})
+    logger.info("msg %s", value)
+
+    out = capsys.readouterr().out
+    assert value not in out
+    assert json.dumps(value)[1:-1] not in out
+    assert out.count("[REDACTED:pw]") == 2
+
+
+def test_a_value_that_contains_another_is_redacted_whole(tmp_path):
+    # covers: AC-5. Longest form first, so no fragment of the longer value survives.
+    short = _random(16)
+    long = f"{short}{_random(16)}"
+    (tmp_path / "short").write_text(short)
+    (tmp_path / "long").write_text(long)
+    load_required(["short", "long"], tmp_path)
+
+    assert redact(f"a {long} b {short}") == "a [REDACTED:long] b [REDACTED:short]"

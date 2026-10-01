@@ -63,3 +63,24 @@ def test_a_fresh_key_logs_no_warning(world, capsys):
     _start(KeyAgeActor(KeyAgeConfig(rotated_on=date(2026, 9, 1))), world)
 
     assert not [line for line in _lines(capsys) if line.get("code") == "kraken_key_rotation_due"]
+
+
+@pytest.mark.parametrize(("rotated_on", "ages"), [(date(2026, 7, 3), []), (date(2026, 7, 2), [91])])
+def test_a_key_warns_only_once_it_is_older_than_90_days(world, capsys, rotated_on, ages):
+    configure_logging(process="trader", env="live")
+
+    _start(KeyAgeActor(KeyAgeConfig(rotated_on=rotated_on)), world)
+
+    warnings = [line for line in _lines(capsys) if line.get("code") == "kraken_key_rotation_due"]
+    assert [w["age_days"] for w in warnings] == ages
+
+
+def test_a_stopped_actor_logs_nothing_more_after_midnight(world, capsys):
+    configure_logging(process="trader", env="live")
+    actor = _start(KeyAgeActor(KeyAgeConfig(rotated_on=date(2026, 7, 1))), world)
+    capsys.readouterr()
+
+    actor.stop()
+    _advance(world[0], 12 * 3600 + 1)
+
+    assert not [line for line in _lines(capsys) if line.get("code") == "kraken_key_rotation_due"]
