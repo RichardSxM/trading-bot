@@ -15,12 +15,13 @@
 
 ```bash
 uv lock                                   # host: lock deps (resolves Linux wheels)
+scripts/dev-secrets.sh                    # laptop, first run: random dev secret files in ./secrets (never committed)
 docker compose build                      # rebuild after any code change (tests are baked in)
 docker compose up -d                      # run the stack (TRADING_ENV=demo on the laptop)
 docker compose run --rm migrate           # alembic upgrade head
 docker compose run --rm --no-deps -T <app> pytest -q                       # app tests
 docker compose run --rm --no-deps -T -w /app/packages/core trader pytest -q  # core tests
-pre-commit run --all-files                # ruff check + ruff format + mypy (Docker must be running)
+pre-commit run --all-files                # gitleaks + ruff check + ruff format + mypy (Docker must be running)
 scripts/typecheck.sh                      # mypy strict; on the Mac it runs in the `tools` Compose service
 ```
 
@@ -35,6 +36,7 @@ Stored in `docs/specs/`. Format: `docs/specs/NNNN-title/index.md` (plus `rationa
 - Errors: typed exceptions from core, never swallow one. Anything touching orders fails closed (refuse the action, log, alert).
 - Every public function and class in `packages/core` has a docstring.
 - Config only through `trading_core.settings`, validated at startup; a process refuses to start on bad config.
+- Secrets only as files under `/run/secrets`, loaded through `trading_core.secrets` (fails closed, redacted from logs); never in env vars, logs, or the repo. Kraken keys exist only on the VPS (spec 0003).
 - No floats for money: prices, sizes, fees, and P&L use Nautilus `Price`/`Quantity`/`Money` or `Decimal`.
 - UTC everywhere: timezone aware UTC datetimes or Nautilus nanosecond ints, never naive datetimes.
 - Demo is the default: nothing places a live order unless `TRADING_ENV=live` is set explicitly; tests never touch live.
@@ -43,7 +45,7 @@ Stored in `docs/specs/`. Format: `docs/specs/NNNN-title/index.md` (plus `rationa
 
 ## Tooling
 
-Ruff (lint + format; its version is pinned in both `pyproject.toml` and `.pre-commit-config.yaml`, bump them together), mypy strict (needs NautilusTrader, so Linux only: the `tools` container locally, directly in CI), pre-commit running ruff check, ruff format, and mypy on every commit, GitHub Actions on push and PR (lint, typecheck, pytest on Linux). Testing gate: pytest unit tests for core logic (no infrastructure mocks) plus integration tests against real Postgres and Redis in Compose.
+Ruff (lint + format; its version is pinned in both `pyproject.toml` and `.pre-commit-config.yaml`, bump them together), mypy strict (needs NautilusTrader, so Linux only: the `tools` container locally, directly in CI), pre-commit running gitleaks, ruff check, ruff format, and mypy on every commit, GitHub Actions on push and PR (gitleaks, lint, typecheck, pytest, and the trader's canary leak test on Linux). Testing gate: pytest unit tests for core logic (no infrastructure mocks) plus integration tests against real Postgres and Redis in Compose.
 
 ## Git
 

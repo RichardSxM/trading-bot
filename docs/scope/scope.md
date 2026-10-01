@@ -80,7 +80,7 @@ spec [0003](../specs/0003-api-keys-secrets/index.md) · code in [packages/core/s
 - [ ] Verify it: `/check verify API keys & secrets`
 - [x] Test it: `/test API keys & secrets`
 - [x] Review it (fresh model): `/check review API keys & secrets`
-- [ ] Document it: `/document API keys & secrets`
+- [x] Document it: `/document API keys & secrets`
 
 ### 5. Design system & dashboard shell · needs a decision · Beta
 A small, clear visual language for a private dashboard: numbers, tables, charts, status colors, and an always visible stop button.

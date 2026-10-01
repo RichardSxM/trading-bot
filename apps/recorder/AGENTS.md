@@ -18,7 +18,7 @@ docker compose run --rm --no-deps -T recorder pytest -q
 
 ## Conventions
 
-- Never an execution client, and never Kraken API keys in any environment (the env guard enforces this).
+- Never an execution client, and never Kraken API keys in any environment (the env guard enforces this). It mounts no secret files at all.
 - Readers never touch the open hour of the catalog; a crash loses at most that hour.
 
 _Drafted by /audit from the repo, worth a quick human pass. Edit freely: once a line stops matching this draft, later runs treat it as curated and will flag rather than overwrite it._

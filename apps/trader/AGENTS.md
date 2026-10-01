@@ -15,13 +15,16 @@ The Nautilus node that holds positions: strategies, risk, and execution. The sca
 ```bash
 docker compose build trader
 docker compose run --rm --no-deps -T trader pytest -q
+docker compose run --rm --no-deps -T trader pytest -q -m canary   # leak test, needs IMAGE_TARGET=dev, about 70s
+docker compose run --rm -T trader pytest -q -m redis              # Redis ACL tests against the Compose Redis
 ```
 
 ## Conventions
 
 - The env guard runs before every node `build()`; execution clients must be on its allowlist.
 - Redis cache keys stay stable across restarts (`trader-TRADER-<ENV>:...`), so the trader reloads state and then reconciles with Kraken. Never turn on `flush_on_start` or instance ids.
-- The trader refuses to start when Redis is unreachable.
+- The trader refuses to start when Redis is unreachable. It logs in to Redis as its own ACL user `trader`.
+- Live runs only on the VPS with `compose.live.yaml`, which adds the Kraken key files and `KRAKEN_KEY_ROTATED_ON`. A live start runs the key check task (`trading_core.node.key_check`) and exits 1 when Kraken never confirms the account. The env guard refuses live until feature 19.
 - Strategies stay thin; risk and sizing logic lives in `packages/core`.
 
 _Drafted by /audit from the repo, worth a quick human pass. Edit freely: once a line stops matching this draft, later runs treat it as curated and will flag rather than overwrite it._
