@@ -70,6 +70,15 @@ def test_every_secret_was_loaded(run):
         assert f'"secret": "{name}"'.encode() in result.stdout
 
 
+def test_the_values_logged_on_purpose_came_out_redacted(run):
+    _, result = run
+
+    for name in NAMES:
+        # Message, field, and exception text: three lines per secret, plus the URL line.
+        assert result.stdout.count(f"[REDACTED:{name}]".encode()) >= 3, f"{name} probe missing"
+    assert b":[REDACTED:postgres_password]@" in result.stdout
+
+
 def test_no_canary_value_appears_in_any_output(run):
     canaries, result = run
     output = result.stdout + result.stderr
