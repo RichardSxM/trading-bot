@@ -2,7 +2,7 @@
 
 ``KeyAgeActor`` warns at start and once per UTC day once the key is past its rotation age.
 The rule is a pure function in ``trading_core.secrets``; the actor only wires it to the
-Nautilus clock. (The startup key check is not an actor: see ``secrets.watch_key_check``.)
+Nautilus clock. (The startup key check is not an actor: see ``node.key_check.watch_key_check``.)
 """
 
 import logging

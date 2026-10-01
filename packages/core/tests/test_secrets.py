@@ -1,6 +1,5 @@
-"""covers: spec 0003 AC-2 (refusals), AC-3 (fingerprint line), AC-5 (redaction), AC-8 (key check), AC-9 (key age)."""
+"""covers: spec 0003 AC-2 (refusals), AC-3 (fingerprint line), AC-5 (redaction), AC-9 (key age)."""
 
-import asyncio
 import hashlib
 import json
 import logging
@@ -14,12 +13,10 @@ from trading_core.logs import configure_logging
 from trading_core.secrets import (
     SecretUnavailable,
     fingerprint,
-    key_check_state,
     key_rotation_age,
     load_required,
     read_secret,
     redact,
-    watch_key_check,
 )
 
 VALUE = "a3f9c1d2e4b5a6978877665544332211"
@@ -148,64 +145,6 @@ def test_key_rotation_age_counts_days_and_refuses_the_future():
     assert key_rotation_age(date(2026, 10, 1), date(2026, 10, 1)) == 0
     with pytest.raises(ValueError, match="future"):
         key_rotation_age(date(2026, 10, 2), date(2026, 10, 1))
-
-
-@pytest.mark.parametrize(
-    ("confirmed", "elapsed", "expected"),
-    [(True, 0, "confirmed"), (True, 99, "confirmed"), (False, 1, "waiting"), (False, 2, "failed")],
-)
-def test_key_check_state(confirmed, elapsed, expected):
-    assert key_check_state(confirmed, elapsed, 2.0) == expected
-
-
-class _FakeTime:
-    """A monotonic clock the watcher's sleeps move forward, so no real time passes."""
-
-    def __init__(self):
-        self.t = 100.0
-
-    def __call__(self):
-        return self.t
-
-
-def _watch(confirmed_after, timeout_s=3.0):
-    clock = _FakeTime()
-    stops = []
-    polls = []
-
-    def is_confirmed():
-        polls.append(clock.t)
-        return confirmed_after is not None and clock.t - 100.0 >= confirmed_after
-
-    async def run():
-        task = asyncio.create_task(
-            watch_key_check(is_confirmed, lambda: stops.append(True), timeout_s, poll_s=0, now=clock)
-        )
-        while not task.done():
-            clock.t += 1.0
-            await asyncio.sleep(0)
-        return task.result()
-
-    return asyncio.run(run()), stops, polls
-
-
-def test_watcher_fails_closed_after_the_timeout_and_stops_the_node(capsys):
-    configure_logging(process="trader", env="live")
-
-    state, stops, _ = _watch(confirmed_after=None)
-
-    assert (state, stops) == ("failed", [True])
-    (line,) = [line for line in _lines(capsys) if line.get("code") == "kraken_auth_failed"]
-    assert line["level"] == "CRITICAL"
-
-
-def test_watcher_confirms_once_the_account_appears_and_never_stops_the_node(capsys):
-    configure_logging(process="trader", env="live")
-
-    state, stops, _ = _watch(confirmed_after=2.0)
-
-    assert (state, stops) == ("confirmed", [])
-    assert "kraken account confirmed" in [line["msg"] for line in _lines(capsys)]
 
 
 def _random(length=32):

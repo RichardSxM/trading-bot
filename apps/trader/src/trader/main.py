@@ -34,6 +34,7 @@ from trading_core.env_guard import ALLOWED_EXEC_CLIENTS, ExecClientAllowlist
 from trading_core.naming import node_id
 from trading_core.node.heartbeat import HeartbeatActor, HeartbeatConfig
 from trading_core.node.key_actors import KeyAgeActor, KeyAgeConfig
+from trading_core.node.key_check import watch_key_check
 from trading_core.node.kraken import futures_data_client, futures_exec_client
 from trading_core.redis_check import redis_reachable
 from trading_core.secrets import (
@@ -41,7 +42,6 @@ from trading_core.secrets import (
     KRAKEN_API_SECRET,
     POSTGRES_PASSWORD,
     REDIS_PASSWORD,
-    watch_key_check,
 )
 from trading_core.settings import Settings
 

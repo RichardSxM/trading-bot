@@ -15,7 +15,8 @@ The shared library every process imports: settings, JSON logging, the startup cl
 | File | Owns |
 |---|---|
 | `src/trading_core/settings.py` | Non secret config from env vars, validated at startup; `secrets_dir` says where secret files live |
-| `src/trading_core/secrets.py` | Secrets from mounted files only (spec 0003): `read_secret`/`load_required` (fail closed, fingerprint log, redaction registry), `redact`, the key age and startup key check rules |
+| `src/trading_core/secrets.py` | Secrets from mounted files only (spec 0003): `read_secret`/`load_required` (fail closed, fingerprint log, redaction registry), `redact`, the key age rule |
+| `src/trading_core/node/key_check.py` | The live startup key check (spec 0003 AC-8): `key_check_state` and `watch_key_check`, run as a task on the trader's event loop; no Nautilus import |
 | `src/trading_core/env_guard.py` | `check_environ` refuses any Kraken key variable in every process; `check_exec_clients` checks the execution client allowlist |
 | `src/trading_core/boot.py` | Common process startup: settings, logs, env guard, secrets, config guard, clock check; returns `Boot(settings, secrets)` |
 | `src/trading_core/db.py` | Shared metadata, constraint naming convention, and column type map (Decimal to numeric, datetime to timestamptz) |
