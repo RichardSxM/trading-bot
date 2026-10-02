@@ -13,7 +13,6 @@
     </a>
     <nav class="nav" aria-label="Pages">{{ nav_links(nav, path) }}</nav>
     <div class="sidebar__foot">
-      {% if session_end %}<p class="session-cue">session ends {{ session_end }}</p>{% endif %}
       <form method="post" action="/logout">
         <input type="hidden" name="csrf" value="{{ csrf }}">
         <button type="submit" class="nav__item nav__item--quiet">{{ icon("log-out") }}<span>Log out</span></button>
@@ -32,6 +31,7 @@
         <span class="topbar__age" sse-swap="topbar-age">{{ live["topbar-age"] }}</span>
         <span class="topbar__command" id="topbar-command" sse-swap="topbar-command">{{ live["topbar-command"] }}</span>
         <span class="status-strip__lost">link lost</span>
+        {% if session_end %}<span class="session-cue">session ends {{ session_end }}</span>{% endif %}
       </div>
       <div class="topbar__end">
         {% with csrf=csrf, error=stop_error %}{% include "partials/stop_area.html" %}{% endwith %}
@@ -42,7 +42,6 @@
     <main class="page" id="main">
       {% block page %}{% endblock %}
       <footer class="page__session">
-        {% if session_end %}<span class="session-cue">session ends {{ session_end }}</span>{% endif %}
         <form method="post" action="/logout">
           <input type="hidden" name="csrf" value="{{ csrf }}">
           {{ button("Log out", kind="quiet", type="submit") }}

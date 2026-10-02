@@ -310,7 +310,7 @@ time[title] { text-decoration: underline dotted var(--edge); text-underline-offs
 .nav__item:hover { background: var(--surface); color: var(--text); }
 .nav__item.is-current { background: var(--raised); color: var(--text); }
 .nav__item.is-current .icon { color: var(--text); }
-.session-cue { color: var(--warn); font-size: var(--type-caption-size); }
+.session-cue { color: var(--warn); font-size: var(--type-caption-size); white-space: nowrap; }
 
 .topbar {
   position: sticky; top: 0; z-index: 10;
@@ -404,7 +404,6 @@ time[title] { text-decoration: underline dotted var(--edge); text-underline-offs
     padding: var(--space-16) var(--space-12);
   }
   .sidebar__foot { display: grid; gap: var(--space-8); }
-  .sidebar__foot .session-cue { padding: 0 var(--space-8); }
   .workspace {
     margin: var(--space-8) var(--space-8) var(--space-8) 0;
     min-height: calc(100dvh - 16px);
@@ -416,7 +415,6 @@ time[title] { text-decoration: underline dotted var(--edge); text-underline-offs
     grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "start status end";
     gap: var(--space-24); min-height: 60px; padding: var(--space-8) var(--space-8) var(--space-8) var(--space-24);
   }
-  .status-strip { flex-wrap: nowrap; overflow: hidden; }
   .topbar__end { padding-left: var(--space-16); border-left: 1px solid var(--rule); }
   .region { padding: var(--space-24); }
   .table-wrap { margin: 0 calc(-1 * var(--space-24)); }

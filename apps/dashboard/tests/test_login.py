@@ -221,7 +221,9 @@ def test_the_session_end_cue_shows_within_the_last_hour(redis, clock):
         assert "session ends" not in client.get("/").text
         clock.now += 23.5 * 3600
         text = client.get("/").text
-    assert re.search(r"session ends \d\d:\d\dZ", text)
+    topbar = text[text.index('<header class="topbar">') : text.index("</header>")]
+    assert re.search(r"session ends \d\d:\d\dZ", topbar)
+    assert text.count("session ends") == 1
 
 
 def test_a_tampered_cookie_is_no_session(logged_in):
