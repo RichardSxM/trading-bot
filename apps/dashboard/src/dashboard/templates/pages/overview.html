@@ -1,4 +1,5 @@
 {% extends "shell.html" %}
+{% from "components/states.html" import empty_state %}
 {% block page %}
-<p class="empty-state">Live position and P&amp;L appear here once the trader runs a strategy.</p>
+{{ empty_state("Live position and P&L appear here once the trader runs a strategy.") }}
 {% endblock %}

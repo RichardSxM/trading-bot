@@ -1,6 +1,6 @@
-"""The shell pages and the live value stream (spec 0004 AC-7, AC-9, AC-12).
+"""The shell pages, the styleguide, and the live value stream (spec 0004 AC-7, AC-9, AC-12, AC-16).
 
-Overview is the only page so far; the other nav pages arrive with the complete shell milestone.
+Overview and the styleguide so far; the other nav pages arrive with the complete shell milestone.
 """
 
 import asyncio
@@ -17,12 +17,18 @@ from dashboard.auth.session import Session
 from dashboard.live.poller import Event, Poller
 from dashboard.web.context import AppContext, app_context
 from dashboard.web.session import SessionDep, session_end_cue
+from dashboard.web.styleguide import styleguide_context
 
 router = APIRouter()
 
 PING_EVERY_S: Final = 2.0
 # Path → (template, title) for every page inside the shell.
-PAGES: Final[dict[str, tuple[str, str]]] = {"/": ("pages/overview.html", "Overview")}
+PAGES: Final[dict[str, tuple[str, str]]] = {
+    "/": ("pages/overview.html", "Overview"),
+    "/styleguide": ("pages/styleguide.html", "Styleguide"),
+}
+# Template → the extra context it renders (sample data for the styleguide).
+PAGE_DATA: Final[dict[str, Callable[[], Mapping[str, object]]]] = {"pages/styleguide.html": styleguide_context}
 
 
 async def render_page(
@@ -51,6 +57,7 @@ async def render_page(
             "stop_error": stop_error,
             # Rendered by our own autoescaping templates.
             "live": {name: Markup(html) for name, html in partials.items()},
+            **(PAGE_DATA[template]() if template in PAGE_DATA else {}),
         },
         status_code=status_code,
     )
@@ -68,6 +75,12 @@ async def render_referring_page(
 async def overview(request: Request, session: SessionDep) -> Response:
     context = app_context(request)
     return await render_page(request, context, session, *PAGES["/"])
+
+
+@router.get("/styleguide")
+async def styleguide(request: Request, session: SessionDep) -> Response:
+    context = app_context(request)
+    return await render_page(request, context, session, *PAGES["/styleguide"])
 
 
 def sse_message(event: str, data: str) -> str:

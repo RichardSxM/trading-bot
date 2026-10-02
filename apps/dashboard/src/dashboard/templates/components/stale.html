@@ -1,0 +1,4 @@
+{# A live value with its age (DESIGN.md: Stale wrapper). level: ok, warn, bad, lost. #}
+{% macro stale(age, level="ok") -%}
+<span class="stale stale--{{ level }}">{{ caller() }}<span class="stale__age">{% if level == "lost" %}link lost{% else %}{{ age }} old{% endif %}</span></span>
+{%- endmacro %}

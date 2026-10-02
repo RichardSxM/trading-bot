@@ -22,6 +22,7 @@ from dashboard.auth.totp import TotpGuard
 from dashboard.live.poller import Poller, supervise
 from dashboard.live.state import AgeView, CommandView
 from dashboard.settings import DashboardSettings, normalize_seed
+from dashboard.ui.format import num, pnl, ts
 from dashboard.web import auth_routes, control_routes, page_routes
 from dashboard.web.context import AppContext, LiveRedis
 from dashboard.web.middleware import ShellMiddleware
@@ -82,6 +83,7 @@ def create_app(
     """Build the dashboard app. Tests pass fake settings, secrets, a fake Redis, and fake clocks."""
     client: LiveRedis = redis if redis is not None else redis_client(settings, secrets[REDIS_PASSWORD])
     templates = Jinja2Templates(directory=PACKAGE_DIR / "templates")
+    templates.env.filters.update(num=num, pnl=pnl, ts=ts)
     age_template = templates.get_template("partials/topbar_age.html")
     command_template = templates.get_template("partials/topbar_command.html")
     heartbeat_key = snapshot_key(settings.trading_env, "heartbeat")

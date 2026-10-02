@@ -1,0 +1,5 @@
+{# Buttons (DESIGN.md: Button). kind: default, primary, quiet, danger, stop. #}
+{% macro button(label, kind="default", type="button", disabled=False, busy=False) -%}
+<button type="{{ type }}" class="button{% if kind != 'default' %} button--{{ kind }}{% endif %}{% if busy %} button--busy{% endif %}"
+  {%- if disabled %} disabled{% endif %}{% if busy %} aria-busy="true"{% endif %}>{{ label }}</button>
+{%- endmacro %}

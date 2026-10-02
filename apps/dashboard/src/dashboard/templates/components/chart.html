@@ -1,0 +1,9 @@
+{# A Lightweight Charts container themed from the tokens by js/chart.js (DESIGN.md: Chart).
+   ``series`` is a list of candles {time, open, high, low, close}, prices as strings.
+   The library's logo needs an inline style the CSP forbids, so the credit is a text link. #}
+{% macro chart(label, series) -%}
+<figure class="chart">
+  <div class="chart__canvas" data-chart data-series='{{ series | tojson }}' role="img" aria-label="{{ label }}"></div>
+  <figcaption class="chart__credit">{{ label }} · <a href="https://www.tradingview.com/" rel="noopener noreferrer" target="_blank">Charting by TradingView</a></figcaption>
+</figure>
+{%- endmacro %}

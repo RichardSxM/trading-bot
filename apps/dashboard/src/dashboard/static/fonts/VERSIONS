@@ -1,0 +1,7 @@
+# Self hosted fonts (spec 0004): served from /static, never a CDN. Latin subsets from Fontsource.
+# Pin exactly; update by downloading the new files and their sha256 here in the same commit.
+@fontsource/ibm-plex-sans  5.3.0  ibm-plex-sans-latin-400-normal.woff2  https://cdn.jsdelivr.net/npm/@fontsource/ibm-plex-sans@5.3.0/files/ibm-plex-sans-latin-400-normal.woff2  sha256 3b646991d30055a93a4ecc499713d4347953a74a947ecab435ab72070cbdab0e  licence OFL-1.1 (OFL.txt)
+@fontsource/ibm-plex-sans  5.3.0  ibm-plex-sans-latin-500-normal.woff2  https://cdn.jsdelivr.net/npm/@fontsource/ibm-plex-sans@5.3.0/files/ibm-plex-sans-latin-500-normal.woff2  sha256 0717336fb31fcdcde4b8deb3675bb4a0f7f6d484864afcd6751ac29975962203  licence OFL-1.1 (OFL.txt)
+@fontsource/ibm-plex-sans  5.3.0  ibm-plex-sans-latin-600-normal.woff2  https://cdn.jsdelivr.net/npm/@fontsource/ibm-plex-sans@5.3.0/files/ibm-plex-sans-latin-600-normal.woff2  sha256 8960851d691c054ed38e259bdcf1a6190d157b4203ed5bb32c632a863fb8ec2f  licence OFL-1.1 (OFL.txt)
+@fontsource/ibm-plex-mono  5.3.0  ibm-plex-mono-latin-400-normal.woff2  https://cdn.jsdelivr.net/npm/@fontsource/ibm-plex-mono@5.3.0/files/ibm-plex-mono-latin-400-normal.woff2  sha256 08949f728dc52d528e69b1667d15c89a5686a4ee9a296ff90983985f99c380f7  licence OFL-1.1 (OFL.txt)
+@fontsource/ibm-plex-mono  5.3.0  ibm-plex-mono-latin-500-normal.woff2  https://cdn.jsdelivr.net/npm/@fontsource/ibm-plex-mono@5.3.0/files/ibm-plex-mono-latin-500-normal.woff2  sha256 01d285447409c8a588692162439a038b8cbd7871309ee20267b0d2d91c6e8e22  licence OFL-1.1 (OFL.txt)

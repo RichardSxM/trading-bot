@@ -1,10 +1,14 @@
-/* Design tokens (spec 0004 starting values). Milestone 3 replaces this with the full set from
-   root DESIGN.md, and a unit test keeps the two identical. */
+/* Design tokens: exactly the values in root DESIGN.md's frontmatter (spec 0004 AC-15).
+   tests/test_design_tokens.py fails on any difference. Edit DESIGN.md first, then this file.
+   Names: colors.X → --X, spacing.N → --space-N, rounded.N → --radius-N, motion.X → --motion-X,
+   typography.R.{fontFamily,fontSize,fontWeight,lineHeight,letterSpacing,fontFeature}
+   → --type-R-{family,size,weight,line,tracking,feature}. */
 :root {
   --bg: #0b0d10;
   --surface: #12151a;
   --raised: #181c22;
   --rule: #232831;
+  --edge: #646d7a;
   --text: #e6e8eb;
   --muted: #9aa3ae;
   --faint: #838c98;
@@ -15,21 +19,60 @@
   --live: #d62f2f;
   --demo: #e8a33d;
   --stop: #c93338;
-  --font-sans: "IBM Plex Sans", system-ui, sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
-  --size-12: 12px;
-  --size-13: 13px;
-  --size-14: 14px;
-  --size-16: 16px;
-  --size-20: 20px;
-  --size-24: 24px;
+  --on-alarm: #ffffff;
+
+  --type-display-family: "IBM Plex Sans", system-ui, sans-serif;
+  --type-display-size: 32px;
+  --type-display-weight: 600;
+  --type-display-line: 1.2;
+  --type-display-tracking: -0.02em;
+  --type-headline-family: "IBM Plex Sans", system-ui, sans-serif;
+  --type-headline-size: 24px;
+  --type-headline-weight: 600;
+  --type-headline-line: 1.25;
+  --type-headline-tracking: -0.01em;
+  --type-title-family: "IBM Plex Sans", system-ui, sans-serif;
+  --type-title-size: 20px;
+  --type-title-weight: 600;
+  --type-title-line: 1.3;
+  --type-body-lg-family: "IBM Plex Sans", system-ui, sans-serif;
+  --type-body-lg-size: 16px;
+  --type-body-lg-weight: 400;
+  --type-body-lg-line: 1.5;
+  --type-body-family: "IBM Plex Sans", system-ui, sans-serif;
+  --type-body-size: 14px;
+  --type-body-weight: 400;
+  --type-body-line: 1.45;
+  --type-label-family: "IBM Plex Sans", system-ui, sans-serif;
+  --type-label-size: 13px;
+  --type-label-weight: 500;
+  --type-label-line: 1.4;
+  --type-caption-family: "IBM Plex Sans", system-ui, sans-serif;
+  --type-caption-size: 12px;
+  --type-caption-weight: 500;
+  --type-caption-line: 1.4;
+  --type-caption-tracking: 0.06em;
+  --type-number-family: "IBM Plex Mono", ui-monospace, monospace;
+  --type-number-size: 14px;
+  --type-number-weight: 400;
+  --type-number-line: 1.45;
+  --type-number-feature: "tnum";
+  --type-number-lg-family: "IBM Plex Mono", ui-monospace, monospace;
+  --type-number-lg-size: 20px;
+  --type-number-lg-weight: 500;
+  --type-number-lg-line: 1.3;
+  --type-number-lg-feature: "tnum";
+
+  --radius-2: 2px;
+  --radius-4: 4px;
+
   --space-4: 4px;
   --space-8: 8px;
   --space-12: 12px;
   --space-16: 16px;
   --space-24: 24px;
   --space-32: 32px;
-  --radius-2: 2px;
-  --radius-4: 4px;
-  --motion: 120ms ease-out;
+  --space-48: 48px;
+
+  --motion-state: 120ms ease-out;
 }

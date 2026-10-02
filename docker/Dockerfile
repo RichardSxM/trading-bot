@@ -39,6 +39,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 COPY --chown=app:app packages packages
 COPY --chown=app:app apps apps
+# The design system's source of truth; the dashboard's token test compares it with tokens.css (spec 0004).
+COPY --chown=app:app DESIGN.md DESIGN.md
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --package "$PACKAGE"
 

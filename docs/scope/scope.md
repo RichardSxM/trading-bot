@@ -91,7 +91,7 @@ code in [apps/dashboard/src/dashboard/](../../apps/dashboard/src/dashboard/), [a
 - [ ] Build it: `/develop design system & dashboard shell`
   - [x] Thin thread: credentials and login, bare shell, trader heartbeat to live data age over SSE (AC-1 to AC-5, AC-7 to AC-9, AC-18, AC-19)
   - [x] Stop path: control command, ACL change, command state from results, Redis down handling (AC-11 to AC-14)
-  - [ ] Design system: `PRODUCT.md`, root `DESIGN.md`, tokens, fonts, components, filters, `/styleguide`, Impeccable critique and polish (AC-15 to AC-17)
+  - [x] Design system: `PRODUCT.md`, root `DESIGN.md`, tokens, fonts, components, filters, `/styleguide`, Impeccable critique and polish (AC-15 to AC-17)
   - [ ] Complete shell: nav and empty states, responsive layout, LIVE treatment, link status, vendored assets (AC-6, AC-7, AC-10, AC-18)
 - [ ] Verify it: `/check verify design system & dashboard shell`
 - [ ] Test it: `/test design system & dashboard shell`

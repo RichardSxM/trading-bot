@@ -1,18 +1,22 @@
 {% extends "base.html" %}
+{% from "components/badge.html" import env_badge %}
+{% from "components/button.html" import button %}
 {% block body %}
 <header class="topbar">
-  <span class="badge badge--{{ env }}" role="status">{{ env | upper }}</span>
+  {{ env_badge(env) }}
   <div class="topbar__live" hx-ext="sse" sse-connect="/events">
     <span class="topbar__age" sse-swap="topbar-age">{{ live["topbar-age"] }}</span>
     <span class="topbar__command" id="topbar-command" sse-swap="topbar-command">{{ live["topbar-command"] }}</span>
   </div>
-  {% with csrf=csrf, error=stop_error %}{% include "partials/stop_area.html" %}{% endwith %}
+  <div class="topbar__end">
+    {% if session_end %}<span class="topbar__session">session ends {{ session_end }}</span>{% endif %}
+    <form class="topbar__logout" method="post" action="/logout">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      {{ button("Log out", kind="quiet", type="submit") }}
+    </form>
+    {% with csrf=csrf, error=stop_error %}{% include "partials/stop_area.html" %}{% endwith %}
+  </div>
   <template id="stop-failed"><span class="stop-area__error" role="alert">Stop NOT sent: no connection to the dashboard</span></template>
-  {% if session_end %}<span class="topbar__session">session ends {{ session_end }}</span>{% endif %}
-  <form class="topbar__logout" method="post" action="/logout">
-    <input type="hidden" name="csrf" value="{{ csrf }}">
-    <button type="submit" class="button">Log out</button>
-  </form>
 </header>
 <main class="page" id="main">
   <h1 class="page__title">{{ title }}</h1>

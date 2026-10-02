@@ -1,0 +1,12 @@
+{# Empty, loading, and error states (DESIGN.md). #}
+{% macro empty_state(text) -%}
+<p class="empty-state">{{ text }}</p>
+{%- endmacro %}
+
+{% macro loading(label="Loading") -%}
+<div class="loading" role="status"><span class="visually-hidden">{{ label }}</span><span class="loading__bar"></span><span class="loading__bar"></span><span class="loading__bar"></span></div>
+{%- endmacro %}
+
+{% macro error_state(title, text) -%}
+<p class="error-state" role="alert"><strong class="error-state__title">{{ title }}</strong>{{ text }}</p>
+{%- endmacro %}

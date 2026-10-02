@@ -76,12 +76,18 @@ def test_static_files_are_cached_for_a_day(client):
 
 def test_no_page_has_inline_script_inline_style_hx_on_or_another_origin(logged_in, redis, clock):
     with TestClient(make_app(redis, clock)) as anonymous:
-        pages = {"/": logged_in.get("/").text, "/login": anonymous.get("/login?stop_lost=1").text}
+        pages = {
+            "/": logged_in.get("/").text,
+            "/styleguide": logged_in.get("/styleguide").text,
+            "/login": anonymous.get("/login?stop_lost=1").text,
+        }
     for path, page in pages.items():
         assert not re.search(r"<script(?![^>]*\bsrc=)", page), path
         assert "<style" not in page, path
         assert " style=" not in page, path
         assert "hx-on" not in page, path
-        for url in re.findall(r'(?:src|href|action|sse-connect)="([^"]+)"', page):
+        # A link the user follows loads nothing; every other URL (scripts, styles, forms, SSE) is ours.
+        loads = re.sub(r"<a\b[^>]*>", "", page)
+        for url in re.findall(r'(?:src|href|action|sse-connect)="([^"]+)"', loads):
             assert url.startswith("/"), (path, url)
             assert not url.startswith("//"), (path, url)
