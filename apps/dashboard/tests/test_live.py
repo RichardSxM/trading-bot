@@ -1,14 +1,31 @@
-"""covers: spec 0004 AC-9 and the live poller (bounded queues, change only publishing, crash restart)."""
+"""covers: spec 0004 AC-9, AC-12, and the live poller (bounded queues, change only publishing, crash restart)."""
 
 import asyncio
 import logging
+import uuid
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from redis.exceptions import ConnectionError as RedisConnectionError
 
-from dashboard.live.poller import AGE_EVENT, QUEUE_SIZE, Poller, supervise
-from dashboard.live.state import BAD_SNAPSHOT, LINK_LOST, NO_HEARTBEAT, AgeView, age_state, heartbeat_view
+from dashboard.live.poller import AGE_EVENT, COMMAND_EVENT, QUEUE_SIZE, Poller, supervise
+from dashboard.live.state import (
+    BAD_SNAPSHOT,
+    COMMAND_LINK_LOST,
+    LINK_LOST,
+    NO_COMMAND,
+    NO_HEARTBEAT,
+    UNKNOWN_RESULT,
+    AgeView,
+    CommandView,
+    Entry,
+    age_state,
+    command_state,
+    find_result,
+    heartbeat_view,
+)
 from dashboard.web.page_routes import event_stream, sse_message
+from trading_core.control.messages import format_utc, stop_command, to_fields
 from trading_core.snapshot.envelope import encode
 
 S = 1_000_000_000
@@ -50,9 +67,44 @@ class Source:
         return self.value
 
 
-def _poller(source, now=None):
+class Streams:
+    """The command and result streams as newest first XREVRANGE replies; counts result reads."""
+
+    def __init__(self):
+        self.commands = []
+        self.results = []
+        self.result_reads = 0
+        self.error = None
+
+    async def read_command(self):
+        if self.error is not None:
+            raise self.error
+        return self.commands[:1]
+
+    async def read_results(self):
+        self.result_reads += 1
+        return self.results[:200]
+
+
+def _render(view):
+    return f"{view.level}:{view.text}"
+
+
+def _poller(source, now=None, streams=None):
     clock = [now if now is not None else NOW]
-    poller = Poller(source, lambda view: f"{view.level}:{view.text}", 0.001, 3, 10, clock_ns=lambda: clock[0])
+    streams = streams if streams is not None else Streams()
+    poller = Poller(
+        source,
+        _render,
+        0.001,
+        3,
+        10,
+        read_command=streams.read_command,
+        read_results=streams.read_results,
+        render_command=_render,
+        hide_after_s=900,
+        clock_ns=lambda: clock[0],
+    )
     return poller, clock
 
 
@@ -68,8 +120,8 @@ def test_tick_publishes_only_when_the_html_changes():
         return [queue.get_nowait() for _ in range(queue.qsize())], poller.cached
 
     events, cached = asyncio.run(run())
-    assert events == [(AGE_EVENT, "ok:0s"), (AGE_EVENT, "ok:1s")]
-    assert cached == {AGE_EVENT: "ok:1s"}
+    assert events == [(AGE_EVENT, "ok:0s"), (COMMAND_EVENT, "none:none"), (AGE_EVENT, "ok:1s")]
+    assert cached == {AGE_EVENT: "ok:1s", COMMAND_EVENT: "none:none"}
 
 
 def test_a_slow_subscriber_loses_the_oldest_updates_not_the_newest():
@@ -83,7 +135,7 @@ def test_a_slow_subscriber_loses_the_oldest_updates_not_the_newest():
 
     texts = asyncio.run(run())
     assert len(texts) == QUEUE_SIZE
-    assert texts[0].endswith(f":{3}s")  # the first three updates were dropped
+    assert texts[0].endswith(f":{3}s")  # the first four updates (three ages, one command) were dropped
     assert texts[-1].endswith(f":{QUEUE_SIZE + 2}s")
 
 
@@ -97,8 +149,8 @@ def test_a_redis_error_renders_link_lost_and_the_next_tick_recovers():
         return first, await poller.render_now()
 
     first, second = asyncio.run(run())
-    assert first == {AGE_EVENT: f"{LINK_LOST.level}:{LINK_LOST.text}"}
-    assert second == {AGE_EVENT: "ok:0s"}
+    assert first == {AGE_EVENT: _render(LINK_LOST), COMMAND_EVENT: _render(COMMAND_LINK_LOST)}
+    assert second == {AGE_EVENT: "ok:0s", COMMAND_EVENT: "none:none"}
 
 
 def test_clock_skew_logs_one_warning_per_minute(caplog):
@@ -178,3 +230,156 @@ def test_event_stream_sends_the_current_partials_then_changes_and_pings_and_ends
         sse_message("ping", ""),
     ]
     assert poller._subscribers == set()  # unsubscribed when the stream ended
+
+
+# Command state (AC-12)
+
+T0 = datetime(2026, 10, 2, 14, 0, 0, tzinfo=UTC)
+COMMAND = stop_command(T0, 300)
+COMMAND_FIELDS = to_fields(COMMAND)
+
+
+def _result(outcome, at=T0 + timedelta(seconds=2), command_id=None):
+    return {
+        "id": command_id or str(COMMAND.id),
+        "outcome": outcome,
+        "outcome_at": format_utc(at),
+        "schema_version": "1",
+    }
+
+
+@pytest.mark.parametrize(
+    ("outcome", "text", "level", "final"),
+    [
+        ("received", "stop sent · received by trader", "pending", False),
+        ("executed", "stop sent · confirmed", "ok", True),
+        ("duplicate", "stop sent · duplicate", "none", True),
+        ("failed", "stop sent · failed", "bad", True),
+        ("expired", "stop sent · expired", "bad", True),
+    ],
+)
+def test_each_outcome_has_its_label(outcome, text, level, final):
+    view = command_state(COMMAND_FIELDS, _result(outcome), T0 + timedelta(seconds=3), 900)
+    assert view == CommandView(text, level, final=final)
+
+
+def test_no_command_and_no_result_yet():
+    assert command_state(None, None, T0, 900) is NO_COMMAND
+    assert command_state(COMMAND_FIELDS, None, T0 + timedelta(seconds=300), 900) == CommandView(
+        "stop sent · awaiting trader", "pending"
+    )
+
+
+def test_no_result_after_expiry_is_not_handled_and_a_late_result_still_counts():
+    after = T0 + timedelta(seconds=301)
+    view = command_state(COMMAND_FIELDS, None, after, 900)
+    assert view == CommandView("stop sent · not handled, expired", "bad")
+    assert not view.final  # the poller keeps reading results
+    late = command_state(COMMAND_FIELDS, _result("executed", at=after), after, 900)
+    assert late.text == "stop sent · confirmed"
+
+
+def test_a_final_state_hides_fifteen_minutes_after_it_was_reached():
+    at = T0 + timedelta(seconds=2)
+    shown = command_state(COMMAND_FIELDS, _result("executed", at=at), at + timedelta(seconds=900), 900)
+    hidden = command_state(COMMAND_FIELDS, _result("executed", at=at), at + timedelta(seconds=901), 900)
+    assert shown.text == "stop sent · confirmed"
+    assert (hidden.text, hidden.level, hidden.final) == ("none", "none", True)
+    expired = command_state(COMMAND_FIELDS, None, COMMAND.expires_at + timedelta(seconds=901), 900)
+    assert (expired.text, expired.level) == ("none", "none")
+
+
+def test_received_is_never_hidden():
+    view = command_state(COMMAND_FIELDS, _result("received"), T0 + timedelta(hours=2), 900)
+    assert view.text == "stop sent · received by trader"
+
+
+@pytest.mark.parametrize(
+    ("command", "result"),
+    [
+        ({"id": "nope"}, None),
+        (COMMAND_FIELDS, _result("exploded")),
+        (COMMAND_FIELDS, {**_result("executed"), "schema_version": "9"}),
+    ],
+)
+def test_an_entry_that_does_not_parse_is_unknown_result(command, result):
+    assert command_state(command, result, T0, 900) is UNKNOWN_RESULT
+    assert UNKNOWN_RESULT.level == "warn"
+
+
+def test_find_result_takes_the_newest_match():
+    other = str(uuid.uuid4())
+    entries: list[Entry] = [
+        (b"4-0", {b"id": other.encode(), b"outcome": b"failed"}),
+        (b"3-0", {b"id": str(COMMAND.id).encode(), b"outcome": b"executed"}),
+        (b"2-0", {b"id": str(COMMAND.id).encode(), b"outcome": b"received"}),
+    ]
+    assert find_result(entries, str(COMMAND.id)) == entries[1][1]
+    assert find_result(entries, str(uuid.uuid4())) is None
+
+
+def _clock_for(moment):
+    return int(moment.timestamp()) * S
+
+
+def test_the_poller_reads_results_only_until_the_outcome_is_final():
+    async def run():
+        streams = Streams()
+        streams.commands = [(b"1-0", COMMAND_FIELDS)]
+        poller, _ = _poller(Source(encode(NOW, {})), now=_clock_for(T0 + timedelta(seconds=5)), streams=streams)
+        first = await poller.command_view()
+        streams.results = [(b"2-0", _result("received"))]
+        second = await poller.command_view()
+        streams.results = [(b"3-0", _result("executed")), *streams.results]
+        third = await poller.command_view()
+        reads_at_final = streams.result_reads
+        fourth = await poller.command_view()
+        return first.text, second.text, third.text, fourth.text, reads_at_final, streams.result_reads
+
+    first, second, third, fourth, reads_at_final, reads = asyncio.run(run())
+    assert (first, second, third, fourth) == (
+        "stop sent · awaiting trader",
+        "stop sent · received by trader",
+        "stop sent · confirmed",
+        "stop sent · confirmed",
+    )
+    assert reads == reads_at_final == 3
+
+
+def test_a_command_read_error_renders_both_partials_link_lost():
+    async def run():
+        streams = Streams()
+        streams.error = RedisConnectionError("down")
+        poller, _ = _poller(Source(encode(NOW, {})), streams=streams)
+        return await poller.render_now()
+
+    assert asyncio.run(run()) == {AGE_EVENT: _render(LINK_LOST), COMMAND_EVENT: _render(COMMAND_LINK_LOST)}
+
+
+def test_an_invalid_entry_logs_one_warning_not_one_per_tick(caplog):
+    async def run():
+        streams = Streams()
+        streams.commands = [(b"1-0", COMMAND_FIELDS)]
+        streams.results = [(b"2-0", _result("exploded"))]
+        poller, _ = _poller(Source(encode(NOW, {})), now=_clock_for(T0), streams=streams)
+        views = [await poller.command_view() for _ in range(3)]
+        streams.results = [(b"3-0", {**_result("executed"), "schema_version": "9"}), *streams.results]
+        views.append(await poller.command_view())
+        return views
+
+    with caplog.at_level(logging.WARNING):
+        views = asyncio.run(run())
+    assert all(view is UNKNOWN_RESULT for view in views)
+    assert [r.fields["code"] for r in caplog.records] == ["control_result_invalid"] * 2
+
+
+def test_note_sent_publishes_awaiting_trader_at_once():
+    async def run():
+        poller, _ = _poller(Source(encode(NOW, {})), now=_clock_for(T0))
+        queue = poller.subscribe()
+        poller.note_sent(COMMAND)
+        return queue.get_nowait(), poller.cached
+
+    event, cached = asyncio.run(run())
+    assert event == (COMMAND_EVENT, "pending:stop sent · awaiting trader")
+    assert cached[COMMAND_EVENT] == "pending:stop sent · awaiting trader"

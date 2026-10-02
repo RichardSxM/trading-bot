@@ -1,4 +1,5 @@
-"""covers: spec 0003 AC-10, the `dashboard` Redis user reads snapshots and appends to control, nothing else.
+"""covers: spec 0003 AC-10 and spec 0004 AC-14, the `dashboard` Redis user reads snapshots, reads and appends
+to control, reads control results, and nothing else.
 
 Needs the Compose Redis and the dashboard's mounted password:
 ``docker compose run --rm -T dashboard pytest -q -m redis``.
@@ -79,9 +80,28 @@ def test_dashboard_appends_to_the_control_stream(dashboard):
 @pytest.mark.parametrize(
     "command",
     [
+        ("XRANGE", "acltest:control", "-", "+"),
+        ("XREVRANGE", "acltest:control", "+", "-", "COUNT", "1"),
+        ("XREAD", "COUNT", "1", "STREAMS", "acltest:control", "0"),
+        ("XRANGE", "acltest:control:results", "-", "+"),
+        ("XREVRANGE", "acltest:control:results", "+", "-", "COUNT", "200"),
+        ("XREAD", "COUNT", "1", "STREAMS", "acltest:control:results", "0"),
+    ],
+)
+def test_dashboard_reads_the_control_and_result_streams(dashboard, command):
+    reply = dashboard(*command)
+    assert not isinstance(reply, Error), reply
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
         ("SET", "acltest:snapshot:probe", "1"),
         ("DEL", "acltest:snapshot:probe"),
         ("SET", "acltest:control", "1"),
+        ("DEL", "acltest:control"),
+        ("XADD", "acltest:control:results", "*", "probe", "1"),
+        ("XTRIM", "acltest:control", "MAXLEN", "0"),
         ("GET", "trader-ACLTEST:probe"),
         ("XADD", "acltest:other", "*", "probe", "1"),
         ("FLUSHDB",),

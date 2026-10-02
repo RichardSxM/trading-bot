@@ -28,6 +28,22 @@ body { margin: 0; font: var(--size-14)/1.45 var(--font-sans); background: var(--
 .age--bad .num, .age--bad { color: var(--loss); }
 .age--lost { color: var(--muted); opacity: 0.6; }
 
+.topbar__live { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-12); }
+.command { font-size: var(--size-13); transition: color var(--motion); }
+.command__label { color: var(--faint); }
+.command--none { color: var(--muted); }
+.command--pending { color: var(--info); }
+.command--ok { color: var(--text); }
+.command--warn { color: var(--warn); }
+.command--bad { color: var(--loss); }
+.command--lost { color: var(--muted); opacity: 0.6; }
+
+.stop-area { display: flex; align-items: center; gap: var(--space-8); }
+.button--stop { min-width: 44px; background: var(--stop); border-color: var(--stop); color: #fff; font-weight: 600; }
+.button--stop:hover { border-color: #fff; }
+.stop-area.htmx-request .button--stop { opacity: 0.7; }
+.stop-area__error { color: var(--loss); font-size: var(--size-13); font-weight: 600; }
+
 .page { padding: var(--space-24) var(--space-16); max-width: 1200px; }
 .page__title { margin: 0 0 var(--space-16); font-size: var(--size-20); font-weight: 600; }
 .empty-state { color: var(--muted); padding: var(--space-24); border: 1px dashed var(--rule); border-radius: var(--radius-4); }

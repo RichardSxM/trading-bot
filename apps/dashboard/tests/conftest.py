@@ -1,3 +1,4 @@
+import asyncio
 import os
 import time
 
@@ -37,16 +38,46 @@ def clean_env(monkeypatch):
 
 
 class FakeRedis:
-    """Holds keys in a dict; ``fail`` makes every call raise like a dead Redis."""
+    """Holds keys and streams in dicts; ``fail`` makes every call raise like a dead Redis.
+
+    ``hang`` makes ``xadd`` wait that many seconds first, like a Redis that does not answer.
+    """
 
     def __init__(self):
         self.values = {}
+        self.streams = {}
         self.fail = None
+        self.hang = 0.0
+        self._seq = 0
 
     async def get(self, name):
         if self.fail is not None:
             raise self.fail
         return self.values.get(name)
+
+    def append(self, name, fields):
+        """Append to a stream directly (as the trader would), returning the entry id."""
+        self._seq += 1
+        entry_id = f"{self._seq}-0".encode()
+        encoded = {k.encode(): v.encode() for k, v in fields.items()}
+        self.streams.setdefault(name, []).append((entry_id, encoded))
+        return entry_id
+
+    async def xadd(self, name, fields, id="*", maxlen=None, approximate=True):
+        if self.hang:
+            await asyncio.sleep(self.hang)
+        if self.fail is not None:
+            raise self.fail
+        entry_id = self.append(name, fields)
+        if maxlen is not None:
+            self.streams[name] = self.streams[name][-maxlen:]
+        return entry_id
+
+    async def xrevrange(self, name, max="+", min="-", count=None):
+        if self.fail is not None:
+            raise self.fail
+        entries = list(reversed(self.streams.get(name, [])))
+        return entries if count is None else entries[:count]
 
     async def aclose(self):
         pass

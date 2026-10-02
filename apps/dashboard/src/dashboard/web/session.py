@@ -13,6 +13,7 @@ from dashboard.auth.session import COOKIE_NAME, Session
 from dashboard.web.context import AppContext, app_context
 
 EVENTS_PATH: Final = "/events"
+STOP_PATH: Final = "/control/stop"
 CSRF_HEADER: Final = "x-csrf-token"
 CSRF_FIELD: Final = "csrf"
 # Show the "session ends" cue in the top bar this long before the session expires.
@@ -69,10 +70,21 @@ async def require_csrf(request: Request, session: SessionDep) -> Session:
 CsrfDep = Annotated[Session, Depends(require_csrf)]
 
 
+def is_htmx(request: Request) -> bool:
+    """Whether HTMX sent ``request`` (it then swaps a partial instead of loading a page)."""
+    return request.headers.get("hx-request") == "true"
+
+
 def login_redirect_target(request: Request) -> str:
-    """``/login?next=<path>``: the page itself for a GET, the referring page for a POST."""
+    """``/login?next=<path>``: the page itself for a GET, the referring page for a POST.
+
+    A stop tap without a session adds ``stop_lost=1``, so the login page says the stop was NOT sent.
+    """
     path = request.url.path if request.method == "GET" else referer_path(request.headers.get("referer"))
-    return "/login?" + urlencode({"next": safe_next(path)})
+    query = {"next": safe_next(path)}
+    if request.url.path == STOP_PATH:
+        query["stop_lost"] = "1"
+    return "/login?" + urlencode(query)
 
 
 async def handle_login_required(request: Request, exc: Exception) -> Response:
@@ -80,7 +92,7 @@ async def handle_login_required(request: Request, exc: Exception) -> Response:
     if request.url.path == EVENTS_PATH:
         return Response(status_code=204)
     target = login_redirect_target(request)
-    if request.headers.get("hx-request") == "true":
+    if is_htmx(request):
         return Response(status_code=401, headers={"HX-Redirect": target})
     return RedirectResponse(target, status_code=303)
 

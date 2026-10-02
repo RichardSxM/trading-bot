@@ -86,11 +86,11 @@ spec [0003](../specs/0003-api-keys-secrets/index.md) · code in [packages/core/s
 A small, clear visual language for a private dashboard: numbers, tables, charts, status colors, and an always visible stop button.
 **Done when:** `design.md` covers type, color, spacing, and base components, and the shell renders behind a login only you can pass.
 spec [0004](../specs/0004-design-system-dashboard-shell/index.md)
-code in [apps/dashboard/src/dashboard/](../../apps/dashboard/src/dashboard/), [apps/trader/src/trader/snapshot_writer.py](../../apps/trader/src/trader/snapshot_writer.py), [packages/core/src/trading_core/snapshot/](../../packages/core/src/trading_core/snapshot/)
+code in [apps/dashboard/src/dashboard/](../../apps/dashboard/src/dashboard/), [apps/trader/src/trader/snapshot_writer.py](../../apps/trader/src/trader/snapshot_writer.py), [packages/core/src/trading_core/snapshot/](../../packages/core/src/trading_core/snapshot/), [packages/core/src/trading_core/control/](../../packages/core/src/trading_core/control/), [docker/redis/start.sh](../../docker/redis/start.sh)
 - [x] Design it (spec): `/architect design system & dashboard shell`
 - [ ] Build it: `/develop design system & dashboard shell`
   - [x] Thin thread: credentials and login, bare shell, trader heartbeat to live data age over SSE (AC-1 to AC-5, AC-7 to AC-9, AC-18, AC-19)
-  - [ ] Stop path: control command, ACL change, command state from results, Redis down handling (AC-11 to AC-14)
+  - [x] Stop path: control command, ACL change, command state from results, Redis down handling (AC-11 to AC-14)
   - [ ] Design system: `PRODUCT.md`, root `DESIGN.md`, tokens, fonts, components, filters, `/styleguide`, Impeccable critique and polish (AC-15 to AC-17)
   - [ ] Complete shell: nav and empty states, responsive layout, LIVE treatment, link status, vendored assets (AC-6, AC-7, AC-10, AC-18)
 - [ ] Verify it: `/check verify design system & dashboard shell`
