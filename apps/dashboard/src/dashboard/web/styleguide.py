@@ -21,7 +21,7 @@ SWATCH_TEXT: Final = {
     "on-alarm": "stop",
     "demo": "bg",
 }
-# (heading, is_number) for the sample fills table.
+# (heading, is_number) for the fills table: the Trades page heads and the styleguide sample.
 FILL_COLUMNS: Final = [
     ("Time", False),
     ("Market", False),
@@ -33,6 +33,15 @@ FILL_COLUMNS: Final = [
 TYPE_ROLES: Final = ("display", "headline", "title", "body-lg", "body", "label", "caption", "number", "number-lg")
 SAMPLE_TIME: Final = datetime(2026, 10, 2, 14, 3, 7, 512_000, tzinfo=UTC)
 WINTER_TIME: Final = datetime(2026, 1, 15, 9, 30, 0, tzinfo=UTC)
+# Sample heartbeat ages for the tape, one a second; -1 is a second without a live link.
+PULSE_SAMPLE: Final = (
+    [1, 0, 1, 1, 2, 1, 0, 1, 1, 1] * 5
+    + [2, 3, 4, 5, 6, 4, 2, 1, 1, 0]
+    + [1, 1, 0, 1, 1, 1, 2, 1, 1, 1] * 2
+    + [-1] * 8
+    + [12, 13, 7, 2, 1, 1, 0, 1, 1, 1, 0, 1]
+    + [1, 0, 1, 1, 1, 0, 1, 1, 1, 1] * 2
+)
 # One deterministic walk for the chart: close to close moves in USD.
 _MOVES: Final = (12, -8, 25, -30, 5, 18, -12, 7, -20, 15, 22, -5, -16, 9, 31, -11)
 
@@ -100,4 +109,7 @@ def styleguide_context() -> dict[str, object]:
         "fill_columns": FILL_COLUMNS,
         "fills": fills(),
         "candles": candles(),
+        "pulse_sample": PULSE_SAMPLE,
+        "stale_s": (3, 10),
+        "sample_nav": (("/styleguide", "Overview", "activity"), ("#trades", "Trades", "arrow-left-right")),
     }

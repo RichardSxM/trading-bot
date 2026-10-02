@@ -1,0 +1,513 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-02T15:19:11Z",
+  "title": "Design System: Kraken Futures Scalper",
+  "extensions": {
+    "colorMeta": {
+      "bg": {
+        "role": "neutral",
+        "displayName": "Night",
+        "canonical": "#08090B",
+        "oklch": "oklch(13.9% 0.005 262.8)",
+        "tonalRamp": [
+          "#0a0b0d",
+          "#242527",
+          "#414245",
+          "#606164",
+          "#818285",
+          "#a3a5a8",
+          "#c7c9cc",
+          "#edeef2"
+        ]
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "Desk",
+        "canonical": "#0E1013",
+        "oklch": "oklch(17.2% 0.007 258.4)",
+        "tonalRamp": [
+          "#090b0e",
+          "#232529",
+          "#404246",
+          "#5f6165",
+          "#808287",
+          "#a2a5a9",
+          "#c6c9ce",
+          "#eceff3"
+        ]
+      },
+      "raised": {
+        "role": "neutral",
+        "displayName": "Lamp",
+        "canonical": "#15181D",
+        "oklch": "oklch(20.8% 0.011 260.7)",
+        "tonalRamp": [
+          "#090b10",
+          "#22252b",
+          "#3f4248",
+          "#5e6168",
+          "#7f8389",
+          "#a1a5ac",
+          "#c5c9d0",
+          "#eaeff6"
+        ]
+      },
+      "rule": {
+        "role": "neutral",
+        "displayName": "Hairline",
+        "canonical": "#1D2128",
+        "oklch": "oklch(24.7% 0.015 261.7)",
+        "tonalRamp": [
+          "#080b11",
+          "#21252c",
+          "#3e424a",
+          "#5d616a",
+          "#7d838b",
+          "#a0a5ae",
+          "#c4c9d3",
+          "#e9eff9"
+        ]
+      },
+      "edge": {
+        "role": "neutral",
+        "displayName": "Edge",
+        "canonical": "#5F6876",
+        "oklch": "oklch(51.5% 0.025 259.2)",
+        "tonalRamp": [
+          "#050b16",
+          "#1e2531",
+          "#3a424f",
+          "#596270",
+          "#7a8392",
+          "#9ca6b5",
+          "#c0cada",
+          "#e5efff"
+        ]
+      },
+      "text": {
+        "role": "neutral",
+        "displayName": "Paper",
+        "canonical": "#EDEEF0",
+        "oklch": "oklch(94.9% 0.003 264.5)",
+        "tonalRamp": [
+          "#0a0b0c",
+          "#242526",
+          "#414243",
+          "#606163",
+          "#818284",
+          "#a4a5a7",
+          "#c8c9cb",
+          "#edeef0"
+        ]
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "Pencil",
+        "canonical": "#9AA2AE",
+        "oklch": "oklch(71.0% 0.020 258.4)",
+        "tonalRamp": [
+          "#060b13",
+          "#1f252f",
+          "#3c424d",
+          "#5a626d",
+          "#7b838e",
+          "#9ea6b2",
+          "#c1cad6",
+          "#e7effc"
+        ]
+      },
+      "faint": {
+        "role": "neutral",
+        "displayName": "Margin",
+        "canonical": "#7E8694",
+        "oklch": "oklch(61.8% 0.023 261.7)",
+        "tonalRamp": [
+          "#060b15",
+          "#1f2531",
+          "#3b424f",
+          "#5a626f",
+          "#7b8391",
+          "#9da5b4",
+          "#c1cad9",
+          "#e6efff"
+        ]
+      },
+      "profit": {
+        "role": "secondary",
+        "displayName": "Ledger Green",
+        "canonical": "#2EBD85",
+        "oklch": "oklch(71.1% 0.144 161.6)",
+        "tonalRamp": [
+          "#001800",
+          "#003709",
+          "#005727",
+          "#007946",
+          "#009c66",
+          "#33c088",
+          "#62e6ab",
+          "#8bffd0"
+        ]
+      },
+      "loss": {
+        "role": "secondary",
+        "displayName": "Ledger Red",
+        "canonical": "#F0524F",
+        "oklch": "oklch(65.4% 0.195 25.2)",
+        "tonalRamp": [
+          "#360000",
+          "#5c0000",
+          "#82000c",
+          "#a92e2e",
+          "#d1534f",
+          "#f97870",
+          "#ff9c93",
+          "#ffc2b7"
+        ]
+      },
+      "warn": {
+        "role": "secondary",
+        "displayName": "Amber Watch",
+        "canonical": "#E8A33D",
+        "oklch": "oklch(76.5% 0.140 72.9)",
+        "tonalRamp": [
+          "#290000",
+          "#4a0c00",
+          "#6c2f00",
+          "#8f5000",
+          "#b47200",
+          "#d9952b",
+          "#ffba57",
+          "#ffdf7e"
+        ]
+      },
+      "info": {
+        "role": "primary",
+        "displayName": "Signal Indigo",
+        "canonical": "#7B86F2",
+        "oklch": "oklch(66.1% 0.159 276.7)",
+        "tonalRamp": [
+          "#0f004c",
+          "#1c036f",
+          "#322f94",
+          "#4d52b9",
+          "#6c75e0",
+          "#8d99ff",
+          "#afbeff",
+          "#d3e4ff"
+        ]
+      },
+      "live": {
+        "role": "tertiary",
+        "displayName": "Live Red",
+        "canonical": "#D62F2F",
+        "oklch": "oklch(57.3% 0.203 26.5)",
+        "tonalRamp": [
+          "#360000",
+          "#5c0000",
+          "#830007",
+          "#a92e2b",
+          "#d1544c",
+          "#f9786e",
+          "#ff9d90",
+          "#ffc2b5"
+        ]
+      },
+      "demo": {
+        "role": "tertiary",
+        "displayName": "Demo Amber",
+        "canonical": "#E8A33D",
+        "oklch": "oklch(76.5% 0.140 72.9)",
+        "tonalRamp": [
+          "#290000",
+          "#4a0c00",
+          "#6c2f00",
+          "#8f5000",
+          "#b47200",
+          "#d9952b",
+          "#ffba57",
+          "#ffdf7e"
+        ]
+      },
+      "stop": {
+        "role": "tertiary",
+        "displayName": "Stop Crimson",
+        "canonical": "#C93338",
+        "oklch": "oklch(55.5% 0.186 24.1)",
+        "tonalRamp": [
+          "#360000",
+          "#5c0000",
+          "#82000f",
+          "#a92e31",
+          "#d15351",
+          "#f97772",
+          "#ff9c95",
+          "#ffc2b9"
+        ]
+      },
+      "on-alarm": {
+        "role": "neutral",
+        "displayName": "On alarm",
+        "canonical": "#FFFFFF",
+        "oklch": "oklch(100.0% 0.000 89.9)",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "Reserved; not used in the built screens."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "The login heading only."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Reserved for page level headings; its size also sets the authenticator code input."
+      },
+      "body-lg": {
+        "displayName": "Body large",
+        "purpose": "Login inputs, so a phone never zooms."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Default text; the top bar page title is Body at 600."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Status strip, nav items, buttons, form labels, table cells; region titles at 600."
+      },
+      "caption": {
+        "displayName": "Caption",
+        "purpose": "Table heads, stat labels, region meta, ages, tape legend; badges at 600 uppercase."
+      },
+      "number": {
+        "displayName": "Number",
+        "purpose": "Every figure in a line or a table, tabular."
+      },
+      "number-lg": {
+        "displayName": "Number large",
+        "purpose": "The value in a stat, tabular."
+      }
+    },
+    "shadows": [],
+    "motion": [
+      {
+        "name": "state",
+        "value": "120ms ease-out",
+        "purpose": "Every state change: color, background, border, opacity."
+      },
+      {
+        "name": "beat",
+        "value": "700ms cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "The link dot's one shot ring, once per SSE event received."
+      },
+      {
+        "name": "busy",
+        "value": "900ms ease-in-out infinite alternate",
+        "purpose": "The sweeping 2 px rule under a busy button, including the stop in flight."
+      },
+      {
+        "name": "loading",
+        "value": "1200ms ease-in-out infinite alternate",
+        "purpose": "Skeleton bars fading between full and 40 percent opacity."
+      },
+      {
+        "name": "reduced",
+        "value": "none",
+        "purpose": "Under prefers-reduced-motion every transition and animation is off."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "phone",
+        "value": "0px",
+        "purpose": "Bottom four tab bar, wrapped status strip, session footer, 16 px region padding."
+      },
+      {
+        "name": "laptop",
+        "value": "900px",
+        "purpose": "232 px sidebar beside the inset pane (8 px inset, 1 px rule, 4 px radius), 24 px region padding."
+      },
+      {
+        "name": "wide",
+        "value": "1100px",
+        "purpose": "Board splits into a wide column and a 320 to 400 px side column."
+      }
+    ],
+    "layout": {
+      "sidebarWidth": "232px",
+      "paneInset": "8px",
+      "paneBorder": "1px solid var(--rule)",
+      "paneRadius": "4px",
+      "topbarMinHeight": "60px",
+      "seam": "1px grid gap over var(--rule)",
+      "tabBarHeight": "60px",
+      "liveTopBorder": "2px solid var(--live)"
+    },
+    "focus": {
+      "outline": "2px solid var(--info)",
+      "offset": "2px",
+      "radius": "2px"
+    },
+    "icons": {
+      "set": "Lucide 1.50.0 (lucide-static, ISC)",
+      "grid": "24px",
+      "stroke": 1.5,
+      "sizes": {
+        "default": "16px",
+        "tab": "20px",
+        "stop": "18px"
+      }
+    }
+  },
+  "components": [
+    {
+      "name": "Default Button",
+      "kind": "button",
+      "refersTo": "button",
+      "description": "Lamp fill, Paper text; hover brings in an Edge border.",
+      "html": "<button class=\"ds-btn\">Refresh</button>",
+      "css": ".ds-btn{display:inline-flex;align-items:center;justify-content:center;gap:var(--space-8);min-width:44px;min-height:44px;padding:0 var(--space-16);border:1px solid var(--rule);border-radius:var(--radius-4);font-family:var(--type-label-family);font-size:var(--type-label-size);font-weight:var(--type-label-weight);line-height:1;cursor:pointer;transition:border-color var(--motion-state),background-color var(--motion-state),color var(--motion-state);background:var(--raised);color:var(--text);} .ds-btn:hover{border-color:var(--edge);} .ds-btn:active{background:var(--surface);} .ds-btn:focus-visible{outline:2px solid var(--info);outline-offset:2px;}"
+    },
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Paper fill with Night text; one per screen (Log in).",
+      "html": "<button class=\"ds-btn-primary\">Log in</button>",
+      "css": ".ds-btn-primary{display:inline-flex;align-items:center;justify-content:center;gap:var(--space-8);min-width:44px;min-height:44px;padding:0 var(--space-16);border:1px solid var(--rule);border-radius:var(--radius-4);font-family:var(--type-label-family);font-size:var(--type-label-size);font-weight:var(--type-label-weight);line-height:1;cursor:pointer;transition:border-color var(--motion-state),background-color var(--motion-state),color var(--motion-state);background:var(--text);border-color:var(--text);color:var(--bg);font-weight:600;} .ds-btn-primary:hover{background:var(--on-alarm);border-color:var(--on-alarm);} .ds-btn-primary:focus-visible{outline:2px solid var(--info);outline-offset:2px;}"
+    },
+    {
+      "name": "Quiet Button",
+      "kind": "button",
+      "refersTo": "button-quiet",
+      "description": "No fill, no border, Pencil text; for secondary actions such as Log out.",
+      "html": "<button class=\"ds-btn-quiet\">Log out</button>",
+      "css": ".ds-btn-quiet{display:inline-flex;align-items:center;justify-content:center;gap:var(--space-8);min-width:44px;min-height:44px;padding:0 var(--space-16);border:1px solid var(--rule);border-radius:var(--radius-4);font-family:var(--type-label-family);font-size:var(--type-label-size);font-weight:var(--type-label-weight);line-height:1;cursor:pointer;transition:border-color var(--motion-state),background-color var(--motion-state),color var(--motion-state);background:transparent;border-color:transparent;color:var(--muted);} .ds-btn-quiet:hover{background:var(--raised);color:var(--text);} .ds-btn-quiet:focus-visible{outline:2px solid var(--info);outline-offset:2px;}"
+    },
+    {
+      "name": "Stop Button",
+      "kind": "button",
+      "refersTo": "button-stop",
+      "description": "Crimson, always at the right edge of the top bar behind a 1 px rule.",
+      "html": "<button class=\"ds-btn-stop\"><svg class=\"ds-icon\" width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m15 9-6 6\"/><path d=\"M2.586 16.726A2 2 0 0 1 2 15.312V8.688a2 2 0 0 1 .586-1.414l4.688-4.688A2 2 0 0 1 8.688 2h6.624a2 2 0 0 1 1.414.586l4.688 4.688A2 2 0 0 1 22 8.688v6.624a2 2 0 0 1-.586 1.414l-4.688 4.688a2 2 0 0 1-1.414.586H8.688a2 2 0 0 1-1.414-.586z\"/><path d=\"m9 9 6 6\"/></svg><span>Stop</span></button>",
+      "css": ".ds-btn-stop{display:inline-flex;align-items:center;justify-content:center;gap:var(--space-8);min-width:44px;min-height:44px;padding:0 var(--space-16);border:1px solid var(--rule);border-radius:var(--radius-4);font-family:var(--type-label-family);font-size:var(--type-label-size);font-weight:var(--type-label-weight);line-height:1;cursor:pointer;transition:border-color var(--motion-state),background-color var(--motion-state),color var(--motion-state);padding:0 var(--space-16) 0 var(--space-12);background:var(--stop);border-color:var(--stop);color:var(--on-alarm);font-weight:600;letter-spacing:0.01em;} .ds-btn-stop:hover{border-color:var(--on-alarm);} .ds-btn-stop:active{background:var(--live);} .ds-btn-stop:focus-visible{outline:2px solid var(--info);outline-offset:2px;}"
+    },
+    {
+      "name": "Env Badge",
+      "kind": "chip",
+      "refersTo": "badge-demo",
+      "description": "Uppercase 12 px 600 on a solid tone; DEMO amber, LIVE red.",
+      "html": "<span class=\"ds-badge ds-badge--demo\">DEMO</span> <span class=\"ds-badge ds-badge--live\">LIVE</span> <span class=\"ds-badge ds-badge--ok\">OK</span>",
+      "css": ".ds-badge{display:inline-flex;align-items:center;height:20px;padding:0 var(--space-8);border:1px solid transparent;border-radius:var(--radius-2);font-family:var(--type-caption-family);font-size:var(--type-caption-size);font-weight:600;line-height:1;letter-spacing:var(--type-caption-tracking);text-transform:uppercase;} .ds-badge--demo{background:var(--demo);color:var(--bg);} .ds-badge--live{background:var(--live);color:var(--on-alarm);} .ds-badge--ok{border-color:var(--profit);color:var(--profit);}"
+    },
+    {
+      "name": "Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Night well, Edge border, Indigo border and outline on focus.",
+      "html": "<label class=\"ds-field\"><span class=\"ds-field__label\">Password</span><input class=\"ds-input\" type=\"password\"></label>",
+      "css": ".ds-field{display:grid;gap:var(--space-8);} .ds-field__label{color:var(--muted);font-size:var(--type-label-size);font-weight:var(--type-label-weight);} .ds-input{min-height:44px;padding:0 var(--space-12);border:1px solid var(--edge);border-radius:var(--radius-4);background:var(--bg);color:var(--text);font-family:var(--type-body-lg-family);font-size:var(--type-body-lg-size);transition:border-color var(--motion-state);} .ds-input:hover{border-color:var(--muted);} .ds-input:focus-visible{border-color:var(--info);outline:2px solid var(--info);outline-offset:1px;}"
+    },
+    {
+      "name": "Sidebar Nav",
+      "kind": "nav",
+      "refersTo": "nav-item",
+      "description": "232 px column on Night; current item on Lamp in Paper, the rest Pencil.",
+      "html": "<nav class=\"ds-nav\"><a class=\"ds-nav__item is-current\" href=\"#\" aria-current=\"page\"><svg class=\"ds-icon\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2\"/></svg><span>Overview</span></a><a class=\"ds-nav__item\" href=\"#\"><svg class=\"ds-icon\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M8 3 4 7l4 4\"/><path d=\"M4 7h16\"/><path d=\"m16 21 4-4-4-4\"/><path d=\"M20 17H4\"/></svg><span>Trades</span></a></nav>",
+      "css": ".ds-nav{display:grid;gap:2px;width:232px;padding:var(--space-12);background:var(--bg);} .ds-nav__item{display:flex;align-items:center;gap:var(--space-12);min-height:36px;padding:0 var(--space-8);border-radius:var(--radius-4);color:var(--muted);font-family:var(--type-label-family);font-size:var(--type-label-size);font-weight:var(--type-label-weight);text-decoration:none;transition:background-color var(--motion-state),color var(--motion-state);} .ds-nav__item:hover{background:var(--surface);color:var(--text);} .ds-nav__item.is-current{background:var(--raised);color:var(--text);} .ds-nav__item:focus-visible{outline:2px solid var(--info);outline-offset:2px;}"
+    },
+    {
+      "name": "Status Strip",
+      "kind": "custom",
+      "refersTo": "topbar",
+      "description": "Link, trader age, last command, divided by 1 px rules; the link dot beats once per event.",
+      "html": "<div class=\"ds-strip\"><span class=\"ds-link\"><span class=\"ds-link__dot\"></span><span class=\"ds-label\">link</span> live</span><span><span class=\"ds-label\">trader</span> <span class=\"ds-num\">1s</span></span><span><span class=\"ds-label\">command</span> none</span></div>",
+      "css": ".ds-strip{display:flex;align-items:center;padding:var(--space-8) var(--space-24);background:var(--surface);border-bottom:1px solid var(--rule);color:var(--text);font-family:var(--type-label-family);font-size:var(--type-label-size);} .ds-strip>*{padding:0 var(--space-12);border-left:1px solid var(--rule);white-space:nowrap;} .ds-strip>:first-child{padding-left:0;border-left:0;} .ds-label{color:var(--faint);margin-right:var(--space-4);} .ds-num{font-family:var(--type-number-family);font-variant-numeric:tabular-nums;} .ds-link{display:inline-flex;align-items:center;gap:var(--space-8);} .ds-link__dot{position:relative;width:8px;height:8px;border-radius:50%;background:var(--profit);color:var(--profit);} .ds-link__dot::after{content:'';position:absolute;inset:-1px;border-radius:50%;border:1px solid currentColor;animation:ds-beat 700ms cubic-bezier(0.16,1,0.3,1) infinite 1.3s;} @keyframes ds-beat{from{opacity:0.9;transform:scale(1);}to{opacity:0;transform:scale(2.75);}} @media (prefers-reduced-motion:reduce){.ds-link__dot::after{animation:none;opacity:0;}}"
+    },
+    {
+      "name": "Seamed Regions",
+      "kind": "card",
+      "refersTo": "region",
+      "description": "Regions on Desk separated by 1 px seams over Hairline, never cards; empty state is a bare faint icon and one Pencil sentence.",
+      "html": "<div class=\"ds-board\"><section class=\"ds-region\"><h2 class=\"ds-region__title\">Activity <span class=\"ds-region__meta\">newest first</span></h2><div class=\"ds-empty\"><svg class=\"ds-icon\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M16.247 7.761a6 6 0 0 1 0 8.478\"/><path d=\"M19.075 4.933a10 10 0 0 1 0 14.134\"/><path d=\"M4.925 19.067a10 10 0 0 1 0-14.134\"/><path d=\"M7.753 16.239a6 6 0 0 1 0-8.478\"/><circle cx=\"12\" cy=\"12\" r=\"2\"/></svg><p>Fills, commands, and alerts appear here as they happen.</p></div></section><section class=\"ds-region\"><h2 class=\"ds-region__title\">Position and P&amp;L</h2><p class=\"ds-pnl\">&#9650; +1,234.50</p></section></div>",
+      "css": ".ds-board{display:grid;grid-template-columns:2fr 1fr;gap:1px;background:var(--rule);border:1px solid var(--rule);border-radius:var(--radius-4);overflow:clip;} .ds-region{padding:var(--space-24);background:var(--surface);} .ds-region__title{margin:0 0 var(--space-16);font-family:var(--type-label-family);font-size:var(--type-label-size);font-weight:600;color:var(--text);} .ds-region__meta{margin-left:var(--space-12);color:var(--faint);font-size:var(--type-caption-size);font-weight:400;} .ds-empty{display:flex;align-items:flex-start;gap:var(--space-12);color:var(--faint);} .ds-empty p{margin:0;color:var(--muted);font-size:var(--type-body-size);} .ds-pnl{margin:0;color:var(--profit);font-family:var(--type-number-lg-family);font-size:var(--type-number-lg-size);font-weight:var(--type-number-lg-weight);font-variant-numeric:tabular-nums;}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Graphite Console",
+    "overview": "**Creative North Star: \"The Graphite Console\"**\n\nThe category standard for a trading console, played straight and finished to the craft of Linear and Hyperliquid. The shell recedes: a sidebar on the darkest graphite, a content pane one step lighter set into it, controls one step lighter again. The only things that move are the things that are live. This is an instrument panel for one person supervising a bot, read on a laptop at a desk and on a phone in a hand, and at both sizes the same facts come first: what just happened, whether the picture is fresh, whether this is DEMO or LIVE, and where the stop is.\n\nCalm is the default and the point. Neutral graphite carries structure; color is reserved for state (profit, loss, stale, live, stop), so when color appears it is information. Regions are cut apart by 1 px seams, never boxed as cards. Density is welcome: figures sit in tight, aligned columns because the trader reads them as columns. The world refuses the KPI tile grid, neon glow, and glass.\n\nThe signature is the heartbeat: a tape of the trader's data age, one tick a second, and a link dot that beats once for every event the dashboard receives. If the tape is steady and the dot is beating, the picture is live.",
+    "keyCharacteristics": [
+      "Dark only, three graphite steps: sidebar on Night, pane on Desk, controls on Lamp.",
+      "Regions meet at 1 px seams over the Hairline color; no cards, no shadows.",
+      "IBM Plex Sans at 13 to 14 px for words, IBM Plex Mono with tabular figures for every figure.",
+      "One icon set (Lucide) at one stroke (1.5).",
+      "Color only for state; the stop is crimson and always at the top right of the pane.",
+      "Every live value carries its age or a `link lost` marker."
+    ],
+    "rules": [
+      {
+        "name": "The Meaning Rule",
+        "body": "Every color other than the neutrals means a state. If an element is colored and you cannot name the state it reports, it should be gray.",
+        "section": "colors"
+      },
+      {
+        "name": "The Pair Rule",
+        "body": "Every text and background combination in use is listed in `contrast_pairs` and passes WCAG AA; a new combination is added there first, and the token test enforces it.",
+        "section": "colors"
+      },
+      {
+        "name": "The Paper Primary Rule",
+        "body": "The one primary action on a screen is Paper with Night text. Indigo marks attention (focus, links, work in flight), never a filled action.",
+        "section": "colors"
+      },
+      {
+        "name": "The Mono for Measurement Rule",
+        "body": "Mono is for numbers, ids, codes, and the tape's time axis. A word set in mono is a costume.",
+        "section": "typography"
+      },
+      {
+        "name": "The Sentence Case Rule",
+        "body": "Titles, labels, and table heads are sentence case. Only badges are uppercase.",
+        "section": "typography"
+      },
+      {
+        "name": "The Seam Rule",
+        "body": "Regions are separated by 1 px seams (a grid gap over Hairline, or a 1 px rule), never by cards, outlines around each region, or extra background tones.",
+        "section": "layout"
+      },
+      {
+        "name": "The Flat Desk Rule",
+        "body": "If something needs to stand out, give it a different surface tone or a rule, never a shadow, a glow, or a blur.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do run every number through `num`, `pnl`, or `ts`, and pass `Decimal` values only.",
+      "Do show every Redis value inside a `stale` wrapper or next to its age.",
+      "Do keep the stop button at the right edge of the top bar of every page, alone behind a 1 px rule, at least 44 × 44 px.",
+      "Do add a new color combination to `contrast_pairs` before using it.",
+      "Do separate regions with 1 px seams over Hairline, on the board grid.",
+      "Do keep motion to 120 ms ease out state changes, one beat per real event, and the busy and loading indicators; nothing moves under `prefers-reduced-motion`."
+    ],
+    "donts": [
+      "Don't use shadows, glows, gradients, blurs, or cards; use the three graphite steps and 1 px rules.",
+      "Don't color anything that is not reporting a state, and don't fill a button with Signal Indigo.",
+      "Don't use a `float` for money, or show a local time outside a tooltip.",
+      "Don't write inline `style` or `script`, or `hx-on` attributes; the CSP blocks them.",
+      "Don't load anything from another origin: fonts, icons, and libraries are self hosted.",
+      "Don't build a grid of KPI tiles; figures sit in regions and tables.",
+      "Don't set a colored side border thicker than 1 px on notices or rows."
+    ]
+  }
+}

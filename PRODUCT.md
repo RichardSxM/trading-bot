@@ -32,6 +32,10 @@ Not a trading terminal. Orders are never placed here: the bot trades, and the tr
 - Read only, except the stop command sent to the trader.
 - Dark only for now.
 
+## Brand Commitments
+
+- The look is the category standard played straight, at the craft level of Linear and Hyperliquid: sleek, dark, quiet, precise. Chosen over three rolls of conceptual directions (2026-10-02).
+
 ## Evidence on Hand
 
 None yet: no real trades exist. Never fabricate P&L, fills, or strategy scores. Sample data, such as on `/styleguide`, is labelled as a sample.

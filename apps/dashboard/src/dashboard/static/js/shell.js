@@ -1,5 +1,6 @@
-// Shell behaviour (spec 0004). Hardens htmx and gives the stop button its error states
-// (AC-13). Link status, the silence watchdog, and link lost dimming arrive with milestone 4.
+// Shell behaviour (spec 0004). Hardens htmx, gives the stop button its error states (AC-13),
+// and maps the SSE link to the link status: live, reconnecting after 5 s of silence, lost after
+// 15 s, with the age and command dimmed and labelled while it is not live (AC-10).
 "use strict";
 (function () {
   if (!window.htmx) return;
@@ -24,7 +25,68 @@
     if (old) old.remove();
     form.classList.add("stop-area--failed");
     form.insertBefore(failed.content.cloneNode(true), form.querySelector("button"));
-    var button = form.querySelector("button");
-    if (button) button.textContent = "Retry stop";
+    var label = form.querySelector(".button__label");
+    if (label) label.textContent = "Retry stop";
   });
+
+  // ---- Link status ----
+  var RECONNECTING_AFTER_MS = 5000;
+  var LOST_AFTER_MS = 15000;
+  var EVENTS = ["ping", "topbar-age", "topbar-command"];
+  var link = document.getElementById("link-status");
+  if (!link) return;
+  var text = link.querySelector(".link__text");
+  var lastEvent = 0;
+  var probing = false;
+
+  function show(state) {
+    if (link.dataset.state === state) return;
+    link.dataset.state = state;
+    link.className = "link link--" + state;
+    text.textContent = state === "connecting" ? "connecting" : state;
+    document.body.dataset.link = state;
+  }
+
+  function beat() {
+    lastEvent = Date.now();
+    show("live");
+    link.classList.remove("is-beat");
+    void link.offsetWidth; // restart the one shot animation
+    link.classList.add("is-beat");
+  }
+
+  // The stream closed for good: a 204 means the session is gone, so reload to reach the login.
+  // Anything else (the dashboard is down) keeps this page and its stop button on screen.
+  function probe() {
+    if (probing) return;
+    probing = true;
+    var controller = new AbortController();
+    fetch("/events", { signal: controller.signal, cache: "no-store" })
+      .then(function (response) {
+        if (response.status === 204) window.location.reload();
+      })
+      .catch(function () {})
+      .finally(function () {
+        controller.abort();
+        probing = false;
+      });
+  }
+
+  document.body.addEventListener("htmx:sseOpen", function (event) {
+    var source = event.detail.source;
+    EVENTS.forEach(function (name) { source.addEventListener(name, beat); });
+    beat();
+  });
+  document.body.addEventListener("htmx:sseError", function (event) {
+    var source = event.detail.source;
+    if (source && source.readyState === EventSource.CLOSED) probe();
+  });
+
+  show("connecting");
+  lastEvent = Date.now();
+  window.setInterval(function () {
+    var silent = Date.now() - lastEvent;
+    if (silent > LOST_AFTER_MS) show("lost");
+    else if (silent > RECONNECTING_AFTER_MS) show("reconnecting");
+  }, 1000);
 })();

@@ -1,0 +1,22 @@
+{# The heartbeat tape (DESIGN.md: Pulse): one tick per second of the trader's real data age,
+   drawn by js/pulse.js from the top bar's live age; a gap where the link is down. ``stale_s`` is
+   (amber, red) in seconds. ``sample`` draws a fixed sample sequence instead (styleguide only). #}
+{% macro pulse(heading_id, stale_s, sample=None) -%}
+<div class="pulse">
+  <header class="pulse__head">
+    <h2 class="region__title" id="{{ heading_id }}">Trader heartbeat</h2>
+    <span class="region__meta">last 2 minutes, one tick a second</span>
+    <ul class="pulse__legend" aria-label="Legend">
+      <li class="pulse__key pulse__key--ok">fresh</li>
+      <li class="pulse__key pulse__key--warn">over {{ stale_s[0] | round | int }}s</li>
+      <li class="pulse__key pulse__key--bad">over {{ stale_s[1] | round | int }}s</li>
+      <li class="pulse__key pulse__key--gap">no link</li>
+    </ul>
+  </header>
+  <canvas class="pulse__tape" data-pulse data-amber="{{ stale_s[0] }}" data-red="{{ stale_s[1] }}"
+    {%- if sample %} data-sample-ticks="{{ sample | join(',') }}"{% endif %} role="img"
+    aria-label="Trader data age for the last two minutes{% if sample %}, sample{% endif %}"></canvas>
+  <div class="pulse__axis" aria-hidden="true"><span>2m ago</span><span>1m</span><span>now</span></div>
+  <noscript><p class="pulse__note">The tape needs JavaScript. The top bar still shows the trader's age.</p></noscript>
+</div>
+{%- endmacro %}

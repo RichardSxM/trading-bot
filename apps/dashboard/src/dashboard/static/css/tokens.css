@@ -4,18 +4,18 @@
    typography.R.{fontFamily,fontSize,fontWeight,lineHeight,letterSpacing,fontFeature}
    → --type-R-{family,size,weight,line,tracking,feature}. */
 :root {
-  --bg: #0b0d10;
-  --surface: #12151a;
-  --raised: #181c22;
-  --rule: #232831;
-  --edge: #646d7a;
-  --text: #e6e8eb;
-  --muted: #9aa3ae;
-  --faint: #838c98;
-  --profit: #2fbf71;
+  --bg: #08090b;
+  --surface: #0e1013;
+  --raised: #15181d;
+  --rule: #1d2128;
+  --edge: #5f6876;
+  --text: #edeef0;
+  --muted: #9aa2ae;
+  --faint: #7e8694;
+  --profit: #2ebd85;
   --loss: #f0524f;
   --warn: #e8a33d;
-  --info: #6ca6ff;
+  --info: #7b86f2;
   --live: #d62f2f;
   --demo: #e8a33d;
   --stop: #c93338;

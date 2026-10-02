@@ -1,6 +1,7 @@
 {# Empty, loading, and error states (DESIGN.md). #}
-{% macro empty_state(text) -%}
-<p class="empty-state">{{ text }}</p>
+{% from "components/icon.html" import icon %}
+{% macro empty_state(text, glyph="square-terminal") -%}
+<div class="empty-state"><span class="empty-state__icon">{{ icon(glyph) }}</span><p class="empty-state__text">{{ text }}</p></div>
 {%- endmacro %}
 
 {% macro loading(label="Loading") -%}
@@ -8,5 +9,5 @@
 {%- endmacro %}
 
 {% macro error_state(title, text) -%}
-<p class="error-state" role="alert"><strong class="error-state__title">{{ title }}</strong>{{ text }}</p>
+<div class="error-state" role="alert"><span class="error-state__icon">{{ icon("octagon-x") }}</span><p class="error-state__text"><strong class="error-state__title">{{ title }}</strong>{{ text }}</p></div>
 {%- endmacro %}

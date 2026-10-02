@@ -38,6 +38,30 @@ def test_the_overview_page_shows_the_shell_and_its_empty_state(logged_in):
 
 
 @pytest.mark.parametrize(
+    ("path", "title", "empty"),
+    [
+        ("/", "Overview", "Live position and P&amp;L appear here once the trader runs a strategy."),
+        ("/trades", "Trades", "Fills and closed trades appear here."),
+        ("/strategies", "Strategies", "Backtests and strategy scores appear here."),
+        ("/system", "System", "Command history and service health appear here."),
+    ],
+)
+def test_every_nav_page_shows_the_shell_its_empty_state_and_marks_itself_current(
+    logged_in, redis, clock, path, title, empty
+):
+    with TestClient(make_app(redis, clock), follow_redirects=False) as anonymous:
+        assert anonymous.get(path).status_code == 303
+    page = logged_in.get(path).text
+    assert f"<title>DEMO · {title}</title>" in page
+    assert empty in page
+    assert 'id="stop-area"' in page
+    links = re.findall(r'<a class="nav__item[^"]*" href="([^"]+)"', page)
+    assert links == ["/", "/trades", "/strategies", "/system"]
+    assert re.search(rf'<a class="nav__item is-current" href="{re.escape(path)}" aria-current="page">', page)
+    assert page.count('aria-current="page"') == 1
+
+
+@pytest.mark.parametrize(
     ("age_s", "level", "text"),
     [(0, "ok", "0s"), (3, "ok", "3s"), (3.5, "warn", "3s"), (10, "warn", "10s"), (10.5, "bad", "10s")],
 )
@@ -79,6 +103,9 @@ def test_no_page_has_inline_script_inline_style_hx_on_or_another_origin(logged_i
         pages = {
             "/": logged_in.get("/").text,
             "/styleguide": logged_in.get("/styleguide").text,
+            "/trades": logged_in.get("/trades").text,
+            "/strategies": logged_in.get("/strategies").text,
+            "/system": logged_in.get("/system").text,
             "/login": anonymous.get("/login?stop_lost=1").text,
         }
     for path, page in pages.items():

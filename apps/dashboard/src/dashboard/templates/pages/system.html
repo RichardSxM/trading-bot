@@ -1,0 +1,10 @@
+{% extends "shell.html" %}
+{% from "components/states.html" import empty_state %}
+{% block page %}
+<div class="board">
+  <section class="region region--wide" aria-labelledby="system-h">
+    <header class="region__head"><h2 class="region__title" id="system-h">Commands and services</h2></header>
+    {{ empty_state("Command history and service health appear here.", glyph="server-cog") }}
+  </section>
+</div>
+{% endblock %}
