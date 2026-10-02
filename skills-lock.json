@@ -25,6 +25,18 @@
       "skillPath": "htmx/SKILL.md",
       "computedHash": "59ebb58992b65a6fafefaeb9d7b7c814d22fe2ade6baedeb27a9bb99e291155e"
     },
+    "impeccable": {
+      "source": "pbakaus/impeccable",
+      "sourceType": "github",
+      "skillPath": ".agents/skills/impeccable/SKILL.md",
+      "computedHash": "78400b6d30de037a36badcb5c8d326456bc30510664d13fda456700bb32938b7"
+    },
+    "lightweight-charts": {
+      "source": "tradingview/lightweight-charts",
+      "sourceType": "github",
+      "skillPath": ".github/skills/lightweight-charts/SKILL.md",
+      "computedHash": "4ce0d91803fcb28d70a4bd4d7335057b4eb13a6ff85e26c88cf5aa91b7acac8a"
+    },
     "nautilus-trader": {
       "source": "algoderiv/agent-skills",
       "sourceType": "github",
