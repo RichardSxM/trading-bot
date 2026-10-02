@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -96,7 +97,7 @@ def _render_rows(rows):
     return "lost" if rows is None else "|".join(f"{row.cmd}:{row.text}" for row in rows)
 
 
-def _poller(source, now=None, streams=None):
+def _poller(source, now=None, streams=None, read_timeout_s=1.0):
     clock = [now if now is not None else NOW]
     streams = streams if streams is not None else Streams()
     poller = Poller(
@@ -110,6 +111,7 @@ def _poller(source, now=None, streams=None):
         render_command=_render,
         render_activity=_render_rows,
         hide_after_s=900,
+        read_timeout_s=read_timeout_s,
         clock_ns=lambda: clock[0],
     )
     return poller, clock
@@ -158,6 +160,25 @@ def test_a_redis_error_renders_link_lost_and_the_next_tick_recovers():
     first, second = asyncio.run(run())
     assert first == {AGE_EVENT: _render(LINK_LOST), COMMAND_EVENT: _render(COMMAND_LINK_LOST), ACTIVITY_EVENT: "lost"}
     assert second == {AGE_EVENT: "ok:0s", COMMAND_EVENT: "none:none", ACTIVITY_EVENT: ""}
+
+
+def test_a_redis_that_does_not_answer_renders_link_lost_within_the_read_deadline():
+    async def never():  # like redis-py retrying a hung Redis far past the deadline
+        await asyncio.Event().wait()
+
+    async def run():
+        poller, _ = _poller(never, read_timeout_s=0.05)
+        start = time.monotonic()
+        partials = await poller.render_now()
+        return partials, time.monotonic() - start
+
+    partials, elapsed = asyncio.run(run())
+    assert partials == {
+        AGE_EVENT: _render(LINK_LOST),
+        COMMAND_EVENT: _render(COMMAND_LINK_LOST),
+        ACTIVITY_EVENT: "lost",
+    }
+    assert elapsed < 0.5
 
 
 def test_clock_skew_logs_one_warning_per_minute(caplog):

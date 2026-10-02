@@ -46,10 +46,15 @@ def render_stop_area(context: AppContext, session: Session, error: str | None, s
 async def stop_failed(
     request: Request, context: AppContext, session: Session, error: str, status_code: int
 ) -> Response:
-    """``Stop NOT sent``: the stop area for HTMX, the referring page with that state for a plain form."""
+    """``Stop NOT sent``: the stop area for HTMX, the referring page with that state for a plain form.
+
+    After a failed send the page shows ``link lost`` without reading Redis again, so it answers
+    within the send's own deadline (AC-13).
+    """
     if is_htmx(request):
         return render_stop_area(context, session, error, status_code)
-    return await render_referring_page(request, context, session, stop_error=error, status_code=status_code)
+    live = context.poller.link_lost() if error == NOT_SENT else None
+    return await render_referring_page(request, context, session, stop_error=error, status_code=status_code, live=live)
 
 
 @router.post(STOP_PATH)

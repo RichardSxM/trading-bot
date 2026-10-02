@@ -123,6 +123,19 @@ def test_a_redis_that_does_not_answer_within_a_second_is_down(logged_in, redis):
     assert "Stop NOT sent" in response.text
 
 
+def test_without_javascript_the_not_sent_page_does_not_read_redis_again(logged_in, redis):
+    csrf = _csrf(logged_in)
+    redis.fail = RedisConnectionError("down")
+    redis.reads = 0
+
+    response = logged_in.post("/control/stop", data={"csrf": csrf}, headers=REFERER)
+
+    assert response.status_code == 503
+    assert "Stop NOT sent" in response.text
+    assert 'class="topbar"' in response.text
+    assert redis.reads == 0
+
+
 def test_a_stop_without_a_session_goes_to_login_saying_it_was_not_sent(client, redis):
     htmx = client.post("/control/stop", headers={**HTMX, **REFERER})
     plain = client.post("/control/stop", headers=REFERER)

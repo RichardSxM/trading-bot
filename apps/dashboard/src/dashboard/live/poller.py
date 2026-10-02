@@ -60,10 +60,12 @@ class Poller:
         render_command: Callable[[CommandView], str],
         render_activity: Callable[[Sequence[ActivityRow] | None], str],
         hide_after_s: float,
+        read_timeout_s: float,
         clock_ns: Callable[[], int] = time.time_ns,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self._read_heartbeat = read_heartbeat
+        self._read_timeout_s = read_timeout_s
         self._render_age = render_age
         self._read_command = read_command
         self._read_results = read_results
@@ -100,19 +102,18 @@ class Poller:
         self._subscribers.discard(queue)
 
     async def render_now(self) -> dict[str, str]:
-        """Read Redis and render every partial without publishing (for a full page render)."""
+        """Read Redis and render every partial without publishing (for a full page render).
+
+        All reads share one ``read_timeout_s`` deadline, so a down or hung Redis renders ``link lost``
+        within it instead of waiting out redis-py's retries on every read (AC-13).
+        """
         try:
-            raw = await self._read_heartbeat()
-            command, rows = await self._commands()
+            raw, (command, rows) = await asyncio.wait_for(self._read_all(), timeout=self._read_timeout_s)
         except REDIS_ERRORS as exc:
             log.warning(
                 "redis read failed", extra={"fields": {"code": "redis_read_failed", "error": type(exc).__name__}}
             )
-            return {
-                AGE_EVENT: self._render_age(LINK_LOST),
-                COMMAND_EVENT: self._render_command(COMMAND_LINK_LOST),
-                ACTIVITY_EVENT: self._render_activity(None),
-            }
+            return self.link_lost()
         age = heartbeat_view(raw, self._clock_ns(), self._amber_s, self._red_s)
         if age.skewed:
             self._warn_skew()
@@ -121,6 +122,17 @@ class Poller:
             COMMAND_EVENT: self._render_command(command),
             ACTIVITY_EVENT: self._render_activity(rows),
         }
+
+    def link_lost(self) -> dict[str, str]:
+        """Every partial in its ``link lost`` state, without reading Redis."""
+        return {
+            AGE_EVENT: self._render_age(LINK_LOST),
+            COMMAND_EVENT: self._render_command(COMMAND_LINK_LOST),
+            ACTIVITY_EVENT: self._render_activity(None),
+        }
+
+    async def _read_all(self) -> tuple[str | bytes | None, tuple[CommandView, list[ActivityRow]]]:
+        return await self._read_heartbeat(), await self._commands()
 
     async def command_view(self) -> CommandView:
         """The latest command and its outcome; reads results only until one is final (AC-12)."""

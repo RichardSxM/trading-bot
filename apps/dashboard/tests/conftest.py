@@ -41,6 +41,7 @@ class FakeRedis:
     """Holds keys and streams in dicts; ``fail`` makes every call raise like a dead Redis.
 
     ``hang`` makes ``xadd`` wait that many seconds first, like a Redis that does not answer.
+    ``reads`` counts the read calls.
     """
 
     def __init__(self):
@@ -48,9 +49,11 @@ class FakeRedis:
         self.streams = {}
         self.fail = None
         self.hang = 0.0
+        self.reads = 0
         self._seq = 0
 
     async def get(self, name):
+        self.reads += 1
         if self.fail is not None:
             raise self.fail
         return self.values.get(name)
@@ -74,6 +77,7 @@ class FakeRedis:
         return entry_id
 
     async def xrevrange(self, name, max="+", min="-", count=None):
+        self.reads += 1
         if self.fail is not None:
             raise self.fail
         entries = list(reversed(self.streams.get(name, [])))

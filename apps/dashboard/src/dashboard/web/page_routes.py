@@ -54,13 +54,15 @@ async def render_page(
     path: str | None = None,
     stop_error: str | None = None,
     status_code: int = 200,
+    live: Mapping[str, str] | None = None,
 ) -> Response:
     """A page inside the shell, its live partials read from Redis right now.
 
     ``path`` marks the current nav item (the request path when None). ``stop_error`` renders the
-    stop area in its ``Stop NOT sent`` state (a plain form post failed).
+    stop area in its ``Stop NOT sent`` state (a plain form post failed). ``live`` replaces the
+    Redis read with these partials (a failed send already proved Redis down).
     """
-    partials = await context.poller.render_now()
+    partials = live if live is not None else await context.poller.render_now()
     return context.templates.TemplateResponse(
         request,
         template,
@@ -82,7 +84,13 @@ async def render_page(
 
 
 async def render_referring_page(
-    request: Request, context: AppContext, session: Session, *, stop_error: str, status_code: int
+    request: Request,
+    context: AppContext,
+    session: Session,
+    *,
+    stop_error: str,
+    status_code: int,
+    live: Mapping[str, str] | None = None,
 ) -> Response:
     """The page the ``Referer`` names (Overview when unknown), with the stop area in its error state."""
     path = referer_path(request.headers.get("referer"))
@@ -90,7 +98,15 @@ async def render_referring_page(
         path = "/"
     template, title = PAGES[path]
     return await render_page(
-        request, context, session, template, title, path=path, stop_error=stop_error, status_code=status_code
+        request,
+        context,
+        session,
+        template,
+        title,
+        path=path,
+        stop_error=stop_error,
+        status_code=status_code,
+        live=live,
     )
 
 

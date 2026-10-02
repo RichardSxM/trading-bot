@@ -125,6 +125,7 @@ def create_app(
             render_command=render_command,
             render_activity=render_activity,
             hide_after_s=settings.dashboard_command_hide_s,
+            read_timeout_s=REDIS_TIMEOUT_S,
             clock_ns=clock_ns,
         ),
         redis=client,
