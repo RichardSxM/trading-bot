@@ -26,6 +26,7 @@ docker compose run --rm -T dashboard pytest -q -m redis   # Redis ACL tests agai
 - API docs routes stay off (`docs_url=None`, `openapi_url=None`).
 - Design system: build all UI to root `DESIGN.md`; its frontmatter tokens are mirrored exactly in `static/css/tokens.css` (`tests/test_design_tokens.py` checks parity and contrast), and every component state it lists needs a `data-sample="macro:state"` on `/styleguide`.
 - CSP is `'self'` only: no inline `<script>`, no `style=` attributes, no `hx-on`, nothing from another origin. Styles go in `static/css/`, behaviour in `static/js/`; JS may set styles through CSSOM or draw on a canvas.
+- Live values: one SSE connection per page, opened by `.workspace` in `shell.html`; every `sse-swap` target must sit inside it, and each event is a partial the poller (`live/poller.py`) renders and publishes only on change.
 - Third party browser assets are vendored under `static/vendor/` (or `static/fonts/`) with their licence and a `VERSIONS` line holding url and sha256.
 - Render money and times only through the `num`, `pnl`, and `ts` Jinja filters (`ui/format.py`): Decimals only, true minus sign, UTC with an Amsterdam tooltip.
 

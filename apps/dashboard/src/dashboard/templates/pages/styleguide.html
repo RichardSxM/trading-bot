@@ -116,6 +116,13 @@
   <div data-sample="pulse:default">{{ pulse("pulse-sample-h", stale_s, sample=pulse_sample) }}</div>
 </section>
 
+<section class="sg-section" id="activity" aria-labelledby="activity-sample-h">
+  <h2 class="sg-h" id="activity-sample-h">Activity feed</h2>
+  <div data-sample="activity:filled">{% with rows=activity_rows %}{% include "partials/overview_activity.html" %}{% endwith %}</div>
+  <div data-sample="activity:empty">{% with rows=[] %}{% include "partials/overview_activity.html" %}{% endwith %}</div>
+  <div data-sample="activity:error">{% with rows=none %}{% include "partials/overview_activity.html" %}{% endwith %}</div>
+</section>
+
 <section class="sg-section" id="stats" aria-labelledby="stats-h">
   <h2 class="sg-h" id="stats-h">Stats and freshness</h2>
   <div class="sg-stats">

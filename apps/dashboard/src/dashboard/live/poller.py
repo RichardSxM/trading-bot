@@ -1,10 +1,10 @@
 """The one Redis poller per dashboard process (spec 0004, Live poller).
 
-While at least one SSE subscriber exists it reads the trader heartbeat and the latest control
-command (plus its results until one is final) every ``DASHBOARD_POLL_MS``, renders the top
-bar partials, and publishes each to every subscriber only when its HTML changed. With no
-subscriber it idles. A Redis error renders both partials ``link lost`` and the next tick
-tries again.
+While at least one SSE subscriber exists it reads the trader heartbeat and the newest control
+commands (plus their results until each is final) every ``DASHBOARD_POLL_MS``, renders the top
+bar partials and Overview's Activity (AC-20), and publishes each to every subscriber only when
+its HTML changed. With no subscriber it idles. A Redis error renders every partial ``link lost``
+and the next tick tries again.
 """
 
 import asyncio
@@ -19,9 +19,11 @@ from redis.exceptions import RedisError
 from dashboard.live.state import (
     COMMAND_LINK_LOST,
     LINK_LOST,
+    ActivityRow,
     AgeView,
     CommandView,
     Entry,
+    activity_row,
     command_state,
     find_result,
     heartbeat_view,
@@ -32,6 +34,8 @@ log = logging.getLogger(__name__)
 
 AGE_EVENT: Final = "topbar-age"
 COMMAND_EVENT: Final = "topbar-command"
+ACTIVITY_EVENT: Final = "overview-activity"
+ACTIVITY_SIZE: Final = 20
 REDIS_ERRORS: Final = (RedisError, OSError, TimeoutError)
 QUEUE_SIZE: Final = 8
 RESTART_AFTER_S: Final = 1.0
@@ -54,6 +58,7 @@ class Poller:
         read_command: Callable[[], Awaitable[Sequence[Entry] | None]],
         read_results: Callable[[], Awaitable[Sequence[Entry] | None]],
         render_command: Callable[[CommandView], str],
+        render_activity: Callable[[Sequence[ActivityRow] | None], str],
         hide_after_s: float,
         clock_ns: Callable[[], int] = time.time_ns,
         monotonic: Callable[[], float] = time.monotonic,
@@ -63,6 +68,7 @@ class Poller:
         self._read_command = read_command
         self._read_results = read_results
         self._render_command = render_command
+        self._render_activity = render_activity
         self._hide_after_s = hide_after_s
         self._interval_s = interval_s
         self._amber_s = amber_s
@@ -73,9 +79,9 @@ class Poller:
         self._wake = asyncio.Event()
         self._cache: dict[str, str] = {}
         self._last_skew_warning: float | None = None
-        # The stream id of a command whose result is final, and that result: no need to read again.
-        self._final: tuple[str | bytes | None, Fields] | None = None
-        self._warned_invalid: tuple[object, ...] | None = None
+        # Stream id to final result for the commands in view: no need to read those results again.
+        self._finals: dict[str | bytes | None, Fields] = {}
+        self._warned_invalid: set[tuple[object, ...]] = set()
 
     @property
     def cached(self) -> dict[str, str]:
@@ -97,35 +103,59 @@ class Poller:
         """Read Redis and render every partial without publishing (for a full page render)."""
         try:
             raw = await self._read_heartbeat()
-            command = await self.command_view()
+            command, rows = await self._commands()
         except REDIS_ERRORS as exc:
             log.warning(
                 "redis read failed", extra={"fields": {"code": "redis_read_failed", "error": type(exc).__name__}}
             )
-            return {AGE_EVENT: self._render_age(LINK_LOST), COMMAND_EVENT: self._render_command(COMMAND_LINK_LOST)}
+            return {
+                AGE_EVENT: self._render_age(LINK_LOST),
+                COMMAND_EVENT: self._render_command(COMMAND_LINK_LOST),
+                ACTIVITY_EVENT: self._render_activity(None),
+            }
         age = heartbeat_view(raw, self._clock_ns(), self._amber_s, self._red_s)
         if age.skewed:
             self._warn_skew()
-        return {AGE_EVENT: self._render_age(age), COMMAND_EVENT: self._render_command(command)}
+        return {
+            AGE_EVENT: self._render_age(age),
+            COMMAND_EVENT: self._render_command(command),
+            ACTIVITY_EVENT: self._render_activity(rows),
+        }
 
     async def command_view(self) -> CommandView:
         """The latest command and its outcome; reads results only until one is final (AC-12)."""
-        latest = await self._read_command()
-        if not latest:
-            return command_state(None, None, self._now(), self._hide_after_s)
-        stream_id, raw_command = latest[0]
-        command: Fields = raw_command if raw_command is not None else {}  # a deleted entry parses as unknown
-        if self._final is not None and self._final[0] == stream_id:
-            result: Fields | None = self._final[1]
-        else:
-            command_id = field(command, "id")
-            result = None if command_id is None else find_result(await self._read_results(), command_id)
-        view = command_state(command, result, self._now(), self._hide_after_s)
-        if view.final and result is not None:
-            self._final = (stream_id, result)
-        if view.invalid:
-            self._warn_invalid((stream_id, None if result is None else tuple(result.items())))
-        return view
+        return (await self._commands())[0]
+
+    async def _commands(self) -> tuple[CommandView, list[ActivityRow]]:
+        """The top bar state and the Activity rows from one read of each stream (AC-12, AC-20).
+
+        Results are read only while some command in view has no final outcome yet.
+        """
+        now = self._now()
+        entries = [
+            (stream_id, raw if raw is not None else {})  # a deleted entry parses as unknown
+            for stream_id, raw in (await self._read_command() or ())
+        ]
+        open_ids = [field(command, "id") for stream_id, command in entries if stream_id not in self._finals]
+        results = await self._read_results() if any(open_ids) else None
+        finals: dict[str | bytes | None, Fields] = {}
+        rows: list[ActivityRow] = []
+        view = command_state(None, None, now, self._hide_after_s)
+        for index, (stream_id, command) in enumerate(entries):
+            result = self._finals.get(stream_id)
+            if result is None:
+                command_id = field(command, "id")
+                result = None if command_id is None else find_result(results, command_id)
+            row = activity_row(command, result, now)
+            if index == 0:
+                view = command_state(command, result, now, self._hide_after_s)
+            if row.final and result is not None:
+                finals[stream_id] = result
+            if row.invalid or (index == 0 and view.invalid):
+                self._warn_invalid((stream_id, None if result is None else tuple(result.items())))
+            rows.append(row)
+        self._finals = finals
+        return view, rows
 
     def note_sent(self, msg: ControlMessage) -> None:
         """Show a command the dashboard just appended at once, in the cache and to every subscriber."""
@@ -161,8 +191,10 @@ class Poller:
         return datetime.fromtimestamp(self._clock_ns() / 1_000_000_000, tz=UTC)
 
     def _warn_invalid(self, key: tuple[object, ...]) -> None:
-        if key != self._warned_invalid:
-            self._warned_invalid = key
+        if key not in self._warned_invalid:
+            if len(self._warned_invalid) >= 4 * ACTIVITY_SIZE:  # bounded; an old entry may warn again
+                self._warned_invalid.clear()
+            self._warned_invalid.add(key)
             log.warning(
                 "control entry does not parse, showing unknown result",
                 extra={"fields": {"code": "control_result_invalid"}},

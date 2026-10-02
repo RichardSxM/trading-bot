@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import logging
 import time
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Final
 
@@ -19,8 +19,8 @@ from dashboard.auth.password import PasswordChecker
 from dashboard.auth.proxy import default_gateway
 from dashboard.auth.session import SessionCodec
 from dashboard.auth.totp import TotpGuard
-from dashboard.live.poller import Poller, supervise
-from dashboard.live.state import AgeView, CommandView
+from dashboard.live.poller import ACTIVITY_SIZE, Poller, supervise
+from dashboard.live.state import ActivityRow, AgeView, CommandView
 from dashboard.settings import DashboardSettings, normalize_seed
 from dashboard.ui.format import num, pnl, ts
 from dashboard.web import auth_routes, control_routes, page_routes
@@ -86,6 +86,7 @@ def create_app(
     templates.env.filters.update(num=num, pnl=pnl, ts=ts)
     age_template = templates.get_template("partials/topbar_age.html")
     command_template = templates.get_template("partials/topbar_command.html")
+    activity_template = templates.get_template("partials/overview_activity.html")
     heartbeat_key = snapshot_key(settings.trading_env, "heartbeat")
     password_hash = secrets[DASHBOARD_PASSWORD_HASH].get_secret_value()
 
@@ -97,6 +98,9 @@ def create_app(
 
     def render_command(view: CommandView) -> str:
         return command_template.render(view=view)
+
+    def render_activity(rows: Sequence[ActivityRow] | None) -> str:
+        return activity_template.render(rows=rows)
 
     context = AppContext(
         settings=settings,
@@ -116,9 +120,10 @@ def create_app(
             interval_s=settings.dashboard_poll_ms / 1000,
             amber_s=settings.dashboard_stale_amber_s,
             red_s=settings.dashboard_stale_red_s,
-            read_command=lambda: client.xrevrange(commands, count=1),
+            read_command=lambda: client.xrevrange(commands, count=ACTIVITY_SIZE),
             read_results=lambda: client.xrevrange(results, count=RESULTS_SEARCHED),
             render_command=render_command,
+            render_activity=render_activity,
             hide_after_s=settings.dashboard_command_hide_s,
             clock_ns=clock_ns,
         ),

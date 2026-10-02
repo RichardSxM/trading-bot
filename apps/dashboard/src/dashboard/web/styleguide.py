@@ -1,12 +1,13 @@
 """Sample data for ``/styleguide`` (spec 0004 AC-16): every token and component state, never real data."""
 
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Final
 
 from markupsafe import Markup
 
+from dashboard.live.state import UNKNOWN_ENTRY, ActivityRow
 from dashboard.ui.format import num, pnl, ts
 from dashboard.ui.tokens import color_tokens, contrast_ratio, read_tokens
 
@@ -32,6 +33,13 @@ FILL_COLUMNS: Final = [
 ]
 TYPE_ROLES: Final = ("display", "headline", "title", "body-lg", "body", "label", "caption", "number", "number-lg")
 SAMPLE_TIME: Final = datetime(2026, 10, 2, 14, 3, 7, 512_000, tzinfo=UTC)
+# Sample Activity rows (labelled sample data on /styleguide only): one of each outcome color.
+ACTIVITY_SAMPLE: Final = (
+    ActivityRow("stop", SAMPLE_TIME, "awaiting trader", "pending"),
+    ActivityRow("stop", SAMPLE_TIME - timedelta(minutes=4), "confirmed", "ok", final=True),
+    ActivityRow("stop", SAMPLE_TIME - timedelta(minutes=31), "not handled, expired", "bad"),
+    UNKNOWN_ENTRY,
+)
 WINTER_TIME: Final = datetime(2026, 1, 15, 9, 30, 0, tzinfo=UTC)
 # Sample heartbeat ages for the tape, one a second; -1 is a second without a live link.
 PULSE_SAMPLE: Final = (
@@ -111,5 +119,6 @@ def styleguide_context() -> dict[str, object]:
         "candles": candles(),
         "pulse_sample": PULSE_SAMPLE,
         "stale_s": (3, 10),
+        "activity_rows": ACTIVITY_SAMPLE,
         "sample_nav": (("/styleguide", "Overview", "activity"), ("#trades", "Trades", "arrow-left-right")),
     }

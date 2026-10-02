@@ -399,6 +399,10 @@ Lucide, drawn inline on a 24 px grid with a 1.5 stroke in the text color around 
 The heartbeat tape, the signature of the console. A 56 px canvas across the full region width shows the trader's real data age once a second for the last 2 minutes (120 slots). Each tick is 1 to 3 px wide and its height is the age on a square root scale, so a steady 1 s still reads as a beat and a stale spike fills the band. Fresh ticks are Pencil, fading toward the left; ticks over the amber threshold are Amber Watch and over red are Ledger Red; the newest fresh tick is Paper. The baseline is a Hairline, dashed in Edge under every second without a live link, so a gap is never invented away. A Caption legend sits at the right of the head and a Mono time axis (`2m ago`, `1m`, `now`) runs under the tape.
 - **States:** `default`
 
+### Activity feed (`activity`)
+Overview's answer to "what just happened": the newest 20 commands, newest first, as plain rows split by Hairlines, no table head. Each row holds the UTC time (`ts`), the command in Paper at 500 weight, and its outcome at the right edge in the top bar's command colors (Signal Indigo while waiting, Paper when confirmed, Ledger Red when failed or expired, Amber Watch when unknown). A final outcome never hides here. On a phone the time drops under the command. An entry that does not parse is one Amber Watch `unknown entry` row. It dims with the top bar while the link is not live.
+- **States:** `empty`, `filled`, `error`
+
 ## Do's and Don'ts
 
 ### Do:

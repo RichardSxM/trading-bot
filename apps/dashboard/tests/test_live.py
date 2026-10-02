@@ -8,17 +8,19 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from redis.exceptions import ConnectionError as RedisConnectionError
 
-from dashboard.live.poller import AGE_EVENT, COMMAND_EVENT, QUEUE_SIZE, Poller, supervise
+from dashboard.live.poller import ACTIVITY_EVENT, AGE_EVENT, COMMAND_EVENT, QUEUE_SIZE, Poller, supervise
 from dashboard.live.state import (
     BAD_SNAPSHOT,
     COMMAND_LINK_LOST,
     LINK_LOST,
     NO_COMMAND,
     NO_HEARTBEAT,
+    UNKNOWN_ENTRY,
     UNKNOWN_RESULT,
     AgeView,
     CommandView,
     Entry,
+    activity_row,
     age_state,
     command_state,
     find_result,
@@ -79,7 +81,7 @@ class Streams:
     async def read_command(self):
         if self.error is not None:
             raise self.error
-        return self.commands[:1]
+        return self.commands[:20]
 
     async def read_results(self):
         self.result_reads += 1
@@ -88,6 +90,10 @@ class Streams:
 
 def _render(view):
     return f"{view.level}:{view.text}"
+
+
+def _render_rows(rows):
+    return "lost" if rows is None else "|".join(f"{row.cmd}:{row.text}" for row in rows)
 
 
 def _poller(source, now=None, streams=None):
@@ -102,6 +108,7 @@ def _poller(source, now=None, streams=None):
         read_command=streams.read_command,
         read_results=streams.read_results,
         render_command=_render,
+        render_activity=_render_rows,
         hide_after_s=900,
         clock_ns=lambda: clock[0],
     )
@@ -120,8 +127,8 @@ def test_tick_publishes_only_when_the_html_changes():
         return [queue.get_nowait() for _ in range(queue.qsize())], poller.cached
 
     events, cached = asyncio.run(run())
-    assert events == [(AGE_EVENT, "ok:0s"), (COMMAND_EVENT, "none:none"), (AGE_EVENT, "ok:1s")]
-    assert cached == {AGE_EVENT: "ok:1s", COMMAND_EVENT: "none:none"}
+    assert events == [(AGE_EVENT, "ok:0s"), (COMMAND_EVENT, "none:none"), (ACTIVITY_EVENT, ""), (AGE_EVENT, "ok:1s")]
+    assert cached == {AGE_EVENT: "ok:1s", COMMAND_EVENT: "none:none", ACTIVITY_EVENT: ""}
 
 
 def test_a_slow_subscriber_loses_the_oldest_updates_not_the_newest():
@@ -135,7 +142,7 @@ def test_a_slow_subscriber_loses_the_oldest_updates_not_the_newest():
 
     texts = asyncio.run(run())
     assert len(texts) == QUEUE_SIZE
-    assert texts[0].endswith(f":{3}s")  # the first four updates (three ages, one command) were dropped
+    assert texts[0].endswith(f":{3}s")  # the first five updates (three ages, the command, Activity) were dropped
     assert texts[-1].endswith(f":{QUEUE_SIZE + 2}s")
 
 
@@ -149,8 +156,8 @@ def test_a_redis_error_renders_link_lost_and_the_next_tick_recovers():
         return first, await poller.render_now()
 
     first, second = asyncio.run(run())
-    assert first == {AGE_EVENT: _render(LINK_LOST), COMMAND_EVENT: _render(COMMAND_LINK_LOST)}
-    assert second == {AGE_EVENT: "ok:0s", COMMAND_EVENT: "none:none"}
+    assert first == {AGE_EVENT: _render(LINK_LOST), COMMAND_EVENT: _render(COMMAND_LINK_LOST), ACTIVITY_EVENT: "lost"}
+    assert second == {AGE_EVENT: "ok:0s", COMMAND_EVENT: "none:none", ACTIVITY_EVENT: ""}
 
 
 def test_clock_skew_logs_one_warning_per_minute(caplog):
@@ -353,7 +360,11 @@ def test_a_command_read_error_renders_both_partials_link_lost():
         poller, _ = _poller(Source(encode(NOW, {})), streams=streams)
         return await poller.render_now()
 
-    assert asyncio.run(run()) == {AGE_EVENT: _render(LINK_LOST), COMMAND_EVENT: _render(COMMAND_LINK_LOST)}
+    assert asyncio.run(run()) == {
+        AGE_EVENT: _render(LINK_LOST),
+        COMMAND_EVENT: _render(COMMAND_LINK_LOST),
+        ACTIVITY_EVENT: "lost",
+    }
 
 
 def test_an_invalid_entry_logs_one_warning_not_one_per_tick(caplog):
@@ -383,3 +394,89 @@ def test_note_sent_publishes_awaiting_trader_at_once():
     event, cached = asyncio.run(run())
     assert event == (COMMAND_EVENT, "pending:stop sent · awaiting trader")
     assert cached[COMMAND_EVENT] == "pending:stop sent · awaiting trader"
+
+
+# Activity feed (AC-20)
+
+
+@pytest.mark.parametrize(
+    ("result", "at", "text", "level"),
+    [
+        (None, T0 + timedelta(seconds=5), "awaiting trader", "pending"),
+        (None, T0 + timedelta(seconds=301), "not handled, expired", "bad"),
+        (_result("received"), T0 + timedelta(seconds=5), "received by trader", "pending"),
+        (_result("executed"), T0 + timedelta(hours=3), "confirmed", "ok"),
+        (_result("failed"), T0 + timedelta(hours=3), "failed", "bad"),
+        (_result("duplicate"), T0 + timedelta(hours=3), "duplicate", "none"),
+        (_result("expired"), T0 + timedelta(hours=3), "expired", "bad"),
+    ],
+)
+def test_an_activity_row_uses_the_top_bar_words_and_never_hides(result, at, text, level):
+    row = activity_row(COMMAND_FIELDS, result, at)
+    assert (row.cmd, row.issued_at, row.text, row.level) == ("stop", COMMAND.issued_at, text, level)
+    # The top bar hid the same final outcome long ago.
+    if row.final:
+        assert command_state(COMMAND_FIELDS, result, at, 900).text == NO_COMMAND.text
+
+
+def test_an_entry_that_does_not_parse_is_one_unknown_entry_row():
+    assert activity_row({"id": "nope"}, None, T0) is UNKNOWN_ENTRY
+    assert UNKNOWN_ENTRY.level == "warn"
+    row = activity_row(COMMAND_FIELDS, _result("exploded"), T0)
+    assert (row.cmd, row.text, row.level, row.invalid) == ("stop", "unknown result", "warn", True)
+
+
+def _commands(count):
+    """``count`` stop commands one minute apart, as a newest first XREVRANGE reply."""
+    msgs = [stop_command(T0 + timedelta(minutes=i), 300) for i in range(count)]
+    entries = [(f"{i + 1}-0".encode(), to_fields(msg)) for i, msg in enumerate(msgs)]
+    return list(reversed(entries)), msgs
+
+
+def test_the_poller_lists_the_newest_20_commands_newest_first():
+    async def run():
+        streams = Streams()
+        streams.commands, _ = _commands(22)
+        poller, _ = _poller(Source(encode(NOW, {})), now=_clock_for(T0 + timedelta(minutes=30)), streams=streams)
+        return (await poller.render_now())[ACTIVITY_EVENT]
+
+    html = asyncio.run(run())
+    rows = html.split("|")
+    assert len(rows) == 20
+    assert rows == ["stop:not handled, expired"] * 20
+
+
+def test_activity_reads_results_until_every_command_in_view_is_final():
+    async def run():
+        streams = Streams()
+        streams.commands, msgs = _commands(2)
+        poller, _ = _poller(Source(encode(NOW, {})), now=_clock_for(T0 + timedelta(minutes=2)), streams=streams)
+        streams.results = [
+            (b"9-0", _result("executed", at=T0 + timedelta(minutes=1, seconds=2), command_id=str(msgs[1].id))),
+            (b"8-0", _result("received", at=T0 + timedelta(seconds=2), command_id=str(msgs[0].id))),
+        ]
+        first = (await poller.render_now())[ACTIVITY_EVENT]
+        streams.results.insert(0, (b"10-0", _result("failed", command_id=str(msgs[0].id))))
+        second = (await poller.render_now())[ACTIVITY_EVENT]
+        reads_at_final = streams.result_reads
+        third = (await poller.render_now())[ACTIVITY_EVENT]
+        return first, second, third, reads_at_final, streams.result_reads
+
+    first, second, third, reads_at_final, reads = asyncio.run(run())
+    assert first == "stop:confirmed|stop:received by trader"
+    assert second == third == "stop:confirmed|stop:failed"
+    assert reads == reads_at_final == 2
+
+
+def test_an_invalid_activity_entry_warns_once_not_once_per_tick(caplog):
+    async def run():
+        streams = Streams()
+        commands, _ = _commands(1)
+        streams.commands = [(b"5-0", {"id": "nope"}), *commands]
+        poller, _ = _poller(Source(encode(NOW, {})), now=_clock_for(T0), streams=streams)
+        return [(await poller.render_now())[ACTIVITY_EVENT] for _ in range(3)]
+
+    with caplog.at_level(logging.WARNING):
+        views = asyncio.run(run())
+    assert views == ["unknown entry:|stop:awaiting trader"] * 3
+    assert [r.fields["code"] for r in caplog.records] == ["control_result_invalid"]

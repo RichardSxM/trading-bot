@@ -1,11 +1,19 @@
-"""What the top bar shows for live values (spec 0004 AC-9, AC-12), as pure functions of their inputs."""
+"""What the top bar and Overview's Activity show for live values (spec 0004 AC-9, AC-12, AC-20), as pure functions."""
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Final, Literal
 
-from trading_core.control.messages import ControlFormatError, Fields, field, from_fields, result_from_fields
+from trading_core.control.messages import (
+    ControlFormatError,
+    ControlMessage,
+    ControlResult,
+    Fields,
+    field,
+    from_fields,
+    result_from_fields,
+)
 from trading_core.recording.enums import ControlOutcome
 from trading_core.snapshot.envelope import SnapshotFormatError, decode
 
@@ -101,17 +109,53 @@ def command_state(command: Fields | None, result: Fields | None, now: datetime, 
         outcome = None if result is None else result_from_fields(result)
     except ControlFormatError:
         return UNKNOWN_RESULT
-    prefix = f"{msg.cmd.value} sent · "
+    label, level, final, shown_since = _outcome(msg, outcome, now)
+    if shown_since is not None and (now - shown_since).total_seconds() > hide_after_s:
+        return CommandView(NO_COMMAND.text, NO_COMMAND.level, final=final)
+    return CommandView(f"{msg.cmd.value} sent · {label}", level, final=final)
+
+
+@dataclass(frozen=True)
+class ActivityRow:
+    """One command in Overview's Activity feed (AC-20); unlike the top bar, a final outcome stays.
+
+    ``issued_at`` is None only for an entry that does not parse. ``final`` and ``invalid`` mean
+    what they mean on ``CommandView``.
+    """
+
+    cmd: str
+    issued_at: datetime | None
+    text: str
+    level: CommandLevel
+    final: bool = False
+    invalid: bool = False
+
+
+UNKNOWN_ENTRY: Final = ActivityRow("unknown entry", None, "", "warn", invalid=True)
+
+
+def activity_row(command: Fields, result: Fields | None, now: datetime) -> ActivityRow:
+    """The Activity row for one command and its newest result, in the top bar's outcome words."""
+    try:
+        msg = from_fields(command)
+    except ControlFormatError:
+        return UNKNOWN_ENTRY
+    try:
+        outcome = None if result is None else result_from_fields(result)
+    except ControlFormatError:
+        return ActivityRow(msg.cmd.value, msg.issued_at, UNKNOWN_RESULT.text, "warn", invalid=True)
+    label, level, final, _ = _outcome(msg, outcome, now)
+    return ActivityRow(msg.cmd.value, msg.issued_at, label, level, final=final)
+
+
+def _outcome(
+    msg: ControlMessage, outcome: ControlResult | None, now: datetime
+) -> tuple[str, CommandLevel, bool, datetime | None]:
+    """Label, level, finality, and the moment the hide clock starts (None: never hidden)."""
     if outcome is None:
         if now <= msg.expires_at:
-            return CommandView(prefix + "awaiting trader", "pending")
+            return "awaiting trader", "pending", False, None
         # Not final: a late result from the trader still replaces it.
-        shown_since, view = msg.expires_at, CommandView(prefix + "not handled, expired", "bad")
-    else:
-        label, level, final = _OUTCOMES[outcome.outcome]
-        if not final:
-            return CommandView(prefix + label, level)
-        shown_since, view = outcome.outcome_at, CommandView(prefix + label, level, final=True)
-    if (now - shown_since).total_seconds() > hide_after_s:
-        return CommandView(NO_COMMAND.text, NO_COMMAND.level, final=view.final)
-    return view
+        return "not handled, expired", "bad", False, msg.expires_at
+    label, level, final = _OUTCOMES[outcome.outcome]
+    return label, level, final, outcome.outcome_at if final else None

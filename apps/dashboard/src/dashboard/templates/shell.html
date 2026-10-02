@@ -21,13 +21,13 @@
     </div>
   </aside>
 
-  <div class="workspace">
+  <div class="workspace" hx-ext="sse" sse-connect="/events">
     <header class="topbar">
       <div class="topbar__start">
         {{ env_badge(env) }}
         <h1 class="topbar__title">{{ title }}</h1>
       </div>
-      <div class="status-strip" hx-ext="sse" sse-connect="/events">
+      <div class="status-strip">
         <span class="link link--static" id="link-status" role="status"><span class="link__dot" aria-hidden="true"></span><span class="link__label">link</span> <span class="link__text">snapshot</span></span>
         <span class="topbar__age" sse-swap="topbar-age">{{ live["topbar-age"] }}</span>
         <span class="topbar__command" id="topbar-command" sse-swap="topbar-command">{{ live["topbar-command"] }}</span>

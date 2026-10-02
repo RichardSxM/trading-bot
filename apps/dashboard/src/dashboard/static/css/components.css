@@ -248,6 +248,24 @@ time[title] { text-decoration: underline dotted var(--edge); text-underline-offs
 }
 .notice--loss { color: var(--loss); }
 
+/* ---------- Activity feed (AC-20): newest first, one rule between rows ---------- */
+.activity-feed { transition: opacity var(--motion-state); }
+.activity { list-style: none; margin: calc(-1 * var(--space-8)) 0 0; padding: 0; font-size: var(--type-label-size); }
+.activity__row {
+  display: grid; grid-template-columns: auto 1fr; grid-template-areas: "cmd outcome" "time time";
+  gap: var(--space-4) var(--space-12); align-items: baseline;
+  padding: var(--space-8) 0; border-bottom: 1px solid var(--rule);
+}
+.activity__row:last-child { border-bottom: 0; }
+.activity__time { grid-area: time; color: var(--muted); font-size: var(--type-caption-size); }
+.activity__none { color: var(--faint); }
+.activity__cmd { grid-area: cmd; color: var(--text); font-weight: 500; }
+.activity__outcome { grid-area: outcome; justify-self: end; text-align: right; }
+@media (min-width: 600px) {
+  .activity__row { grid-template-columns: 11.5rem 4.5rem 1fr; grid-template-areas: "time cmd outcome"; }
+  .activity__time { font-size: inherit; }
+}
+
 /* ---------- Chart ---------- */
 .chart { display: grid; gap: var(--space-8); margin: 0; }
 .chart__canvas { height: 240px; }
@@ -317,7 +335,8 @@ time[title] { text-decoration: underline dotted var(--edge); text-underline-offs
 .status-strip__lost { display: none; color: var(--warn); font-weight: 600; }
 [data-link="reconnecting"] .status-strip__lost, [data-link="lost"] .status-strip__lost { display: inline; }
 [data-link="reconnecting"] .topbar__age, [data-link="reconnecting"] .topbar__command,
-[data-link="lost"] .topbar__age, [data-link="lost"] .topbar__command { opacity: 0.5; }
+[data-link="lost"] .topbar__age, [data-link="lost"] .topbar__command,
+[data-link="reconnecting"] .activity-feed, [data-link="lost"] .activity-feed { opacity: 0.5; }
 
 .age, .command { white-space: nowrap; transition: color var(--motion-state), opacity var(--motion-state); }
 .age__label, .command__label { color: var(--faint); margin-right: var(--space-4); }
