@@ -92,8 +92,5 @@ def boot[S: Settings = Settings](
 
 
 def _refuse_guard(exc: EnvGuardRefused) -> NoReturn:
-    log.error(
-        "env guard refused, refusing to start",
-        extra={"fields": {"code": "env_guard_refused", "reason": str(exc)}},
-    )
+    log.error(exc.log_message, extra={"fields": {"code": exc.code, "reason": str(exc)}})
     sys.exit(1)

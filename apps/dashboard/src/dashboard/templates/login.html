@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block body %}
+<main class="login" id="main">
+  <div class="login__panel">
+    <p class="login__brand"><span class="badge badge--{{ env }}">{{ env | upper }}</span> Kraken Futures Scalper</p>
+    <h1 class="login__title">Log in</h1>
+    {% if stop_lost %}<p class="notice notice--loss" role="alert">Your stop was NOT sent. Log in and tap stop again.</p>{% endif %}
+    {% if error %}<p class="notice notice--loss" role="alert">{{ error }}</p>{% endif %}
+    <form method="post" action="/login" class="login__form">
+      <input type="hidden" name="next" value="{{ next }}">
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
+      <label for="code">Authenticator code</label>
+      <input id="code" name="code" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required>
+      <button type="submit" class="button button--primary">Log in</button>
+    </form>
+  </div>
+</main>
+{% endblock %}

@@ -16,6 +16,7 @@ SECRETS = {
     "kraken_api_key": SecretStr("k" * 32),
     "kraken_api_secret": SecretStr("s" * 32),
 }
+REDIS_SECRET = SECRETS["redis_password"]
 
 
 def _settings(env: TradingEnv) -> TraderSettings:
@@ -140,6 +141,26 @@ class _FakeNode:
     def stop(self):
         self.calls.append("stop")
 
+    # What the heartbeat snapshot reads (spec 0004 AC-8).
+    class state:
+        name = "RUNNING"
+
+    class kernel:
+        class data_engine:
+            @staticmethod
+            def check_connected():
+                return True
+
+
+class _FakeRedis:
+    """Records snapshot writes instead of reaching Redis."""
+
+    def __init__(self):
+        self.writes = []
+
+    async def set(self, name, value, *, ex):
+        self.writes.append((name, value, ex))
+
 
 @pytest.fixture
 def fake_main(monkeypatch):
@@ -149,6 +170,7 @@ def fake_main(monkeypatch):
     monkeypatch.delenv("TRADER_ID", raising=False)
     monkeypatch.setattr(trader_main, "boot", lambda kind, **kw: Boot(_settings("demo"), SECRETS))
     monkeypatch.setattr(trader_main, "TradingNode", _FakeNode)
+    monkeypatch.setattr(trader_main, "snapshot_client", lambda settings, password: _FakeRedis())
     return trader_main
 
 
@@ -280,7 +302,9 @@ def test_live_run_adds_the_key_age_actor_and_exec_factory_and_a_failed_check_exi
     original = fake_main.TradingNode
     fake_main.TradingNode = NoAccountNode
     try:
-        code = fake_main.run_node(build_config(_settings("live"), SECRETS), _settings("live"), 0.1, fail_backoff_s=0)
+        code = fake_main.run_node(
+            build_config(_settings("live"), SECRETS), _settings("live"), 0.1, REDIS_SECRET, fail_backoff_s=0
+        )
     finally:
         fake_main.TradingNode = original
 
@@ -293,7 +317,7 @@ def test_live_run_adds_the_key_age_actor_and_exec_factory_and_a_failed_check_exi
 
 
 def test_demo_run_has_no_key_actors_and_exits_0(fake_main):
-    code = fake_main.run_node(build_config(_settings("demo"), SECRETS), _settings("demo"), 2.0)
+    code = fake_main.run_node(build_config(_settings("demo"), SECRETS), _settings("demo"), 2.0, REDIS_SECRET)
 
     (node,) = _FakeNode.instances
     assert code == 0
@@ -356,7 +380,9 @@ def test_an_account_reloaded_from_a_previous_run_still_fails_the_check(fake_main
     original = fake_main.TradingNode
     fake_main.TradingNode = StaleAccountNode
     try:
-        code = fake_main.run_node(build_config(_settings("live"), SECRETS), _settings("live"), 0.1, fail_backoff_s=0)
+        code = fake_main.run_node(
+            build_config(_settings("live"), SECRETS), _settings("live"), 0.1, REDIS_SECRET, fail_backoff_s=0
+        )
     finally:
         fake_main.TradingNode = original
 
@@ -376,9 +402,44 @@ def test_a_crashing_key_check_stops_the_node(fake_main):
     original = fake_main.TradingNode
     fake_main.TradingNode = BrokenCacheNode
     try:
-        code = fake_main.run_node(build_config(_settings("live"), SECRETS), _settings("live"), 5.0, fail_backoff_s=0)
+        code = fake_main.run_node(
+            build_config(_settings("live"), SECRETS), _settings("live"), 5.0, REDIS_SECRET, fail_backoff_s=0
+        )
     finally:
         fake_main.TradingNode = original
 
     assert code == 1
     assert "stop" in _FakeNode.instances[0].calls
+
+
+# spec 0004: the heartbeat snapshot for the dashboard (AC-8)
+
+
+@pytest.mark.parametrize("env", ["demo", "live"])
+def test_every_env_writes_the_heartbeat_snapshot_while_the_node_runs(fake_main, monkeypatch, env):
+    import json
+
+    redis = _FakeRedis()
+    monkeypatch.setattr(fake_main, "snapshot_client", lambda settings, password: redis)
+
+    class RunningNode(_FakeNode):
+        class cache:
+            @staticmethod
+            def account_for_venue(venue):
+                return None
+
+        def run(self):
+            self.calls.append("run")
+            self.get_event_loop().run_until_complete(asyncio.sleep(0.05))
+
+    monkeypatch.setattr(fake_main, "TradingNode", RunningNode)
+    fake_main.run_node(build_config(_settings(env), SECRETS), _settings(env), 5.0, REDIS_SECRET, fail_backoff_s=0)
+
+    key, value, ex = redis.writes[0]
+    assert (key, ex) == (f"{env}:snapshot:heartbeat", 30)
+    assert json.loads(value)["data"] == {
+        "process": "trader",
+        "git_commit": "unknown",
+        "trading_state": "RUNNING",
+        "data_connected": True,
+    }

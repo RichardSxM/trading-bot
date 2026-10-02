@@ -15,7 +15,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 2 | Coding standards & tooling | Foundation | done |
 | 3 | Data model | Foundation | in-progress |
 | 4 | API keys & secrets | Foundation | in-progress |
-| 5 | Design system & dashboard shell | Foundation | planned |
+| 5 | Design system & dashboard shell | Foundation | in-progress |
 | 6 | Core paper trading loop | Slice 1 | planned |
 | 7 | Always on cloud deployment | Slice 2 | planned |
 | 8 | Order book recorder | Slice 3 | planned |
@@ -82,10 +82,19 @@ spec [0003](../specs/0003-api-keys-secrets/index.md) · code in [packages/core/s
 - [x] Review it (fresh model): `/check review API keys & secrets`
 - [x] Document it: `/document API keys & secrets`
 
-### 5. Design system & dashboard shell · needs a decision · Beta
+### 5. Design system & dashboard shell · in-progress · Beta
 A small, clear visual language for a private dashboard: numbers, tables, charts, status colors, and an always visible stop button.
 **Done when:** `design.md` covers type, color, spacing, and base components, and the shell renders behind a login only you can pass.
-- [ ] Design it (spec): `/architect design system & dashboard shell`
+spec [0004](../specs/0004-design-system-dashboard-shell/index.md)
+code in [apps/dashboard/src/dashboard/](../../apps/dashboard/src/dashboard/), [apps/trader/src/trader/snapshot_writer.py](../../apps/trader/src/trader/snapshot_writer.py), [packages/core/src/trading_core/snapshot/](../../packages/core/src/trading_core/snapshot/)
+- [x] Design it (spec): `/architect design system & dashboard shell`
+- [ ] Build it: `/develop design system & dashboard shell`
+  - [x] Thin thread: credentials and login, bare shell, trader heartbeat to live data age over SSE (AC-1 to AC-5, AC-7 to AC-9, AC-18, AC-19)
+  - [ ] Stop path: control command, ACL change, command state from results, Redis down handling (AC-11 to AC-14)
+  - [ ] Design system: `PRODUCT.md`, root `DESIGN.md`, tokens, fonts, components, filters, `/styleguide`, Impeccable critique and polish (AC-15 to AC-17)
+  - [ ] Complete shell: nav and empty states, responsive layout, LIVE treatment, link status, vendored assets (AC-6, AC-7, AC-10, AC-18)
+- [ ] Verify it: `/check verify design system & dashboard shell`
+- [ ] Test it: `/test design system & dashboard shell`
 
 ## Slice 1: Core paper trading loop
 

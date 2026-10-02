@@ -115,6 +115,26 @@ def test_guard_refusal_exits_1_before_the_clock_check(env, clock_calls, capsys):
     assert lines[-1]["reason"] == "trader in demo may not build execution client(s) ['KRAKEN']"
 
 
+def test_a_guard_refusal_subclass_logs_its_own_code(env, clock_calls, capsys):
+    # covers: spec 0004 AC-5, the dashboard's credentials guard exits with its own code
+    class CredentialsInvalid(EnvGuardRefused):
+        code = "dashboard_credentials_invalid"
+        log_message = "dashboard credentials invalid, refusing to start"
+
+    def guard(settings, secrets):
+        raise CredentialsInvalid("dashboard_password_hash is not an argon2id hash")
+
+    with pytest.raises(SystemExit) as exit_info:
+        boot("dashboard", guard=guard)
+
+    assert exit_info.value.code == 1
+    line = _lines(capsys)[-1]
+    assert (line["msg"], line["code"]) == (
+        "dashboard credentials invalid, refusing to start",
+        "dashboard_credentials_invalid",
+    )
+
+
 def test_guard_that_passes_lets_boot_continue_to_the_clock_check(env, clock_calls):
     boot("node", guard=lambda settings, secrets: None)
 

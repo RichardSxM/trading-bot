@@ -9,7 +9,7 @@ execution clients.
 
 import os
 from collections.abc import Mapping
-from typing import Literal
+from typing import ClassVar, Literal
 
 from trading_core.settings import TradingEnv
 
@@ -36,7 +36,14 @@ KRAKEN_KEY_VARS = (
 
 
 class EnvGuardRefused(RuntimeError):
-    """The process must not start. The message names the client or variable, never a value."""
+    """The process must not start. The message names the client or variable, never a value.
+
+    A process's own config guard may raise a subclass with its own ``code`` and log message;
+    ``boot`` logs both and exits 1.
+    """
+
+    code: ClassVar[str] = "env_guard_refused"
+    log_message: ClassVar[str] = "env guard refused, refusing to start"
 
 
 def check_environ(process: str, environ: Mapping[str, str] = os.environ) -> None:

@@ -23,7 +23,7 @@ from trader.main import TraderSettings, build_config, run_node, trader_secrets
 from trading_core import env_guard
 from trading_core.env_guard import ALLOWED_EXEC_CLIENTS
 from trading_core.logs import configure_logging
-from trading_core.secrets import POSTGRES_PASSWORD, load_required
+from trading_core.secrets import POSTGRES_PASSWORD, REDIS_PASSWORD, load_required
 
 CLOSED_PORT_URLS = ("http://127.0.0.1:9", "ws://127.0.0.1:9")
 CANARY_ALLOWLIST = dict(ALLOWED_EXEC_CLIENTS) | {("trader", "live"): frozenset({"KRAKEN"})}
@@ -51,7 +51,7 @@ def main() -> int:
     config = build_config(settings, secrets, kraken_urls=CLOSED_PORT_URLS)
     config = msgspec.structs.replace(config, cache=CacheConfig(), data_clients={})
     env_guard.check_exec_clients(config.exec_clients, "trader", settings.trading_env, allowlist=CANARY_ALLOWLIST)
-    return run_node(config, settings, key_check_timeout_s=2.0, fail_backoff_s=0.0)
+    return run_node(config, settings, 2.0, secrets[REDIS_PASSWORD], fail_backoff_s=0.0)
 
 
 if __name__ == "__main__":

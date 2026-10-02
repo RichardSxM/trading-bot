@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ env | upper }} · {{ title }}</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon-{{ env }}.svg">
+  <link rel="stylesheet" href="/static/css/tokens.css">
+  <link rel="stylesheet" href="/static/css/base.css">
+  <script defer src="/static/vendor/htmx.min.js"></script>
+  <script defer src="/static/vendor/htmx-ext-sse.min.js"></script>
+  <script defer src="/static/js/shell.js"></script>
+</head>
+<body class="env-{{ env }}">
+{% block body %}{% endblock %}
+</body>
+</html>

@@ -27,7 +27,9 @@ from nautilus_trader.config import (
 from nautilus_trader.live.node import TradingNode
 from nautilus_trader.model.identifiers import TraderId, Venue
 from pydantic import Field, SecretStr, field_validator, model_validator
+from redis.asyncio import Redis
 
+from trader.snapshot_writer import log_writer_crash, write_heartbeats
 from trading_core import env_guard
 from trading_core.boot import boot
 from trading_core.env_guard import ALLOWED_EXEC_CLIENTS, ExecClientAllowlist
@@ -44,6 +46,7 @@ from trading_core.secrets import (
     REDIS_PASSWORD,
 )
 from trading_core.settings import Settings
+from trading_core.snapshot.envelope import snapshot_key
 
 log = logging.getLogger("trader")
 
@@ -143,18 +146,42 @@ def kraken_account_confirmed(cache: Cache, since_ns: int) -> bool:
     return account is not None and account.last_event.ts_init >= since_ns
 
 
+def snapshot_client(settings: Settings, password: SecretStr) -> Redis:
+    """The redis-py client for snapshot writes, as the trader's ACL user, with short timeouts."""
+    return Redis(
+        host=settings.redis_host,
+        port=settings.redis_port,
+        username=settings.redis_username,
+        password=password.get_secret_value(),
+        socket_timeout=0.2,
+        socket_connect_timeout=0.2,
+    )
+
+
+def heartbeat_state(node: TradingNode, settings: Settings) -> dict[str, object]:
+    """The heartbeat snapshot's data: the process, its commit, the trader state, and the data link."""
+    return {
+        "process": "trader",
+        "git_commit": settings.git_commit,
+        "trading_state": node.trader.state.name,
+        "data_connected": bool(node.kernel.data_engine.check_connected()),
+    }
+
+
 def run_node(
     config: TradingNodeConfig,
     settings: TraderSettings,
     key_check_timeout_s: float,
+    redis_password: SecretStr,
     fail_backoff_s: float = KEY_CHECK_FAIL_BACKOFF_S,
 ) -> int:
     """Build and run the node until it stops; return the process exit code.
 
-    In live the node also runs the key age actor and the startup key check. The check is a
-    task on the node's event loop, not an actor: when the Kraken client cannot connect,
-    Nautilus never starts the trader, so an actor would never run. A failed check stops the
-    node and makes this return 1 after ``fail_backoff_s``.
+    In every env a task on the node's event loop writes the heartbeat snapshot for the
+    dashboard (spec 0004). In live the node also runs the key age actor and the startup key
+    check. The check is a task on the node's event loop, not an actor: when the Kraken client
+    cannot connect, Nautilus never starts the trader, so an actor would never run. A failed
+    check stops the node and makes this return 1 after ``fail_backoff_s``.
     """
     node = TradingNode(config=config)
     node.trader.add_actor(
@@ -198,9 +225,25 @@ def run_node(
     if config.exec_clients:
         node.add_exec_client_factory(KRAKEN, KrakenLiveExecClientFactory)
     node.build()
+    loop = node.get_event_loop()
+    if loop is None:  # the live node always has one; without it the dashboard would see no heartbeat
+        raise RuntimeError("trading node has no event loop for the snapshot writer")
+    # Kept in a local so the task lives as long as the node runs; a crash is logged, trading goes on.
+    writer = loop.create_task(
+        write_heartbeats(
+            snapshot_client(settings, redis_password),
+            snapshot_key(settings.trading_env, "heartbeat"),
+            lambda: heartbeat_state(node, settings),
+        )
+    )
+    writer.add_done_callback(log_writer_crash)
     try:
         node.run()
     finally:
+        writer.cancel()
+        # Let the cancelled writer finish on the stopped loop, so it is not destroyed while pending.
+        if not loop.is_closed() and not loop.is_running():
+            loop.run_until_complete(asyncio.gather(writer, return_exceptions=True))
         node.dispose()
     if failed:
         time.sleep(fail_backoff_s)
@@ -218,7 +261,12 @@ def main() -> None:
         )
         sys.exit(1)
 
-    code = run_node(build_config(settings, started.secrets), settings, settings.kraken_key_check_timeout_s)
+    code = run_node(
+        build_config(settings, started.secrets),
+        settings,
+        settings.kraken_key_check_timeout_s,
+        started.secrets[REDIS_PASSWORD],
+    )
     if code:
         sys.exit(code)
 
