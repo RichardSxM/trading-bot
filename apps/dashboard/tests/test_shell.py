@@ -64,7 +64,7 @@ def test_every_html_response_carries_the_security_headers(logged_in, redis, cloc
     for response in responses:
         assert response.headers["content-security-policy"] == CSP
         assert response.headers["x-content-type-options"] == "nosniff"
-        assert response.headers["referrer-policy"] == "no-referrer"
+        assert response.headers["referrer-policy"] == "same-origin"
         assert response.headers["cache-control"] == "no-store"
         assert "strict-transport-security" not in response.headers
 

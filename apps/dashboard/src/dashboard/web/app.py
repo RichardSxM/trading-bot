@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from pathlib import Path
@@ -15,6 +16,7 @@ from redis.asyncio import Redis
 
 from dashboard.auth.lockout import Lockout
 from dashboard.auth.password import PasswordChecker
+from dashboard.auth.proxy import default_gateway
 from dashboard.auth.session import SessionCodec
 from dashboard.auth.totp import TotpGuard
 from dashboard.live.poller import Poller, supervise
@@ -36,6 +38,22 @@ from trading_core.snapshot.envelope import snapshot_key
 PACKAGE_DIR: Final = Path(__file__).resolve().parent.parent
 # The stop path must answer fast even when Redis hangs (spec 0004 AC-13).
 REDIS_TIMEOUT_S: Final = 1.0
+ROUTE_TABLE: Final = Path("/proc/net/route")
+
+log = logging.getLogger(__name__)
+
+
+def trusted_peers(route_table: Path = ROUTE_TABLE) -> frozenset[str]:
+    """The container's default gateway, where Docker's published port delivers host connections.
+
+    Empty when the route table is missing (not Linux) or has no default route.
+    """
+    try:
+        gateway = default_gateway(route_table.read_text())
+    except OSError:
+        gateway = None
+    log.info("trusted proxy", extra={"fields": {"code": "trusted_proxy", "gateway": gateway}})
+    return frozenset() if gateway is None else frozenset({gateway})
 
 
 class LiveRedis(Protocol):
@@ -97,6 +115,7 @@ def create_app(
             clock_ns=clock_ns,
         ),
         clock=clock,
+        trusted_peers=trusted_peers(),
     )
 
     @contextlib.asynccontextmanager

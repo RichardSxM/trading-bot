@@ -24,18 +24,19 @@ STOP_LOST: Final = "Your stop was NOT sent. Log in and tap stop again."
 Reason = Literal["bad_password", "bad_code", "replayed_code", "locked"]
 
 
-def lockout_key(request: Request) -> str:
+def lockout_key(request: Request, trusted_peers: frozenset[str] = frozenset()) -> str:
     """Who is trying, for the lockout only (never for access).
 
-    Behind ``tailscale serve`` the socket peer is loopback, and the Tailscale login header, else
-    the first ``X-Forwarded-For`` address, names the client; otherwise the peer address does.
+    When the socket peer is loopback or a trusted peer (the container's default gateway, where
+    Docker's published port delivers ``tailscale serve``), the Tailscale login header, else the
+    first ``X-Forwarded-For`` address, names the client; otherwise the peer address does.
     """
     peer = request.client.host if request.client else ""
     try:
         is_loopback = ipaddress.ip_address(peer).is_loopback
     except ValueError:
         is_loopback = False
-    if is_loopback:
+    if is_loopback or peer in trusted_peers:
         user = request.headers.get("tailscale-user-login", "").strip()
         if user:
             return user
@@ -84,7 +85,7 @@ async def login(
     next: Annotated[str, Form()] = "/",
 ) -> Response:
     context = app_context(request)
-    key = lockout_key(request)
+    key = lockout_key(request, context.trusted_peers)
     target = safe_next(next)
     now = context.clock()
     if context.lockout.is_locked(key, now):

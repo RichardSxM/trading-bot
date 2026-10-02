@@ -16,7 +16,10 @@ from dashboard.settings import DashboardSettings
 
 @dataclass(frozen=True)
 class AppContext:
-    """The dashboard's long lived objects; ``clock`` returns UTC seconds since the epoch."""
+    """The dashboard's long lived objects; ``clock`` returns UTC seconds since the epoch.
+
+    ``trusted_peers`` are the socket peers besides loopback whose client headers key the lockout.
+    """
 
     settings: DashboardSettings
     templates: Jinja2Templates
@@ -26,6 +29,7 @@ class AppContext:
     lockout: Lockout
     poller: Poller
     clock: Callable[[], float]
+    trusted_peers: frozenset[str] = frozenset()
 
 
 def app_context(request: Request) -> AppContext:

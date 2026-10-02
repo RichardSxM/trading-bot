@@ -16,7 +16,8 @@ SECURITY_HEADERS: Final = {
         "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; "
         "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
     ),
-    "Referrer-Policy": "no-referrer",
+    # Our own origin only, so a POST after an expired session knows its page (spec 0004 AC-1).
+    "Referrer-Policy": "same-origin",
     "Cache-Control": "no-store",
 }
 STATIC_CACHE: Final = "public, max-age=86400"

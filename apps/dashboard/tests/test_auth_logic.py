@@ -7,6 +7,7 @@ from itsdangerous import URLSafeSerializer
 from dashboard.auth.lockout import Lockout
 from dashboard.auth.next_path import referer_path, safe_next
 from dashboard.auth.password import PasswordChecker
+from dashboard.auth.proxy import default_gateway
 from dashboard.auth.session import SALT, SessionCodec
 from dashboard.auth.totp import TotpGuard
 
@@ -171,3 +172,29 @@ def test_referer_path_takes_only_the_path():
     assert referer_path("https://kfs.example.ts.net/trades") == "/trades"
     assert referer_path("https://kfs.example.ts.net/login") == "/"
     assert referer_path(None) == "/"
+
+
+# --- lockout key: the trusted gateway
+
+HEADER = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n"
+
+
+def test_default_gateway_reads_the_default_route():
+    table = HEADER + "eth0\t000012AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0\n"
+    table += "eth0\t00000000\t010012AC\t0003\t0\t0\t0\t00000000\t0\t0\t0\n"
+    assert default_gateway(table) == "172.18.0.1"
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        "",
+        "eth0\t000012AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0\n",
+        "eth0\t00000000\tnothex\t0003\n",
+        "eth0\t00000000\t1FFFFFFFF\t0003\n",
+        "eth0\t00000000\t00000000\t0003\n",
+        "eth0\t00000000\n",
+    ],
+)
+def test_default_gateway_is_none_without_a_usable_default_route(rows):
+    assert default_gateway(HEADER + rows) is None

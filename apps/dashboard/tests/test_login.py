@@ -155,8 +155,41 @@ def test_the_lockout_key_behind_tailscale_serve_is_the_tailscale_login():
     assert lockout_key(request("127.0.0.1", {"Tailscale-User-Login": "me@example.com"})) == "me@example.com"
     assert lockout_key(request("127.0.0.1", {"X-Forwarded-For": "100.64.0.7, 10.0.0.1"})) == "100.64.0.7"
     assert lockout_key(request("::1", {})) == "::1"
-    # Only the loopback peer (tailscale serve) is trusted to set them.
+    # Without a trusted peer only loopback may set them.
     assert lockout_key(request("172.18.0.1", {"Tailscale-User-Login": "me@example.com"})) == "172.18.0.1"
+
+
+def test_the_lockout_key_behind_dockers_published_port_trusts_only_the_gateway():
+    from starlette.requests import Request
+
+    from dashboard.web.auth_routes import lockout_key
+
+    def request(peer, headers):
+        raw = [(k.lower().encode(), v.encode()) for k, v in headers.items()]
+        return Request({"type": "http", "client": (peer, 1234), "headers": raw})
+
+    gateway = frozenset({"172.18.0.1"})
+    assert lockout_key(request("172.18.0.1", {"Tailscale-User-Login": "me@example.com"}), gateway) == "me@example.com"
+    assert lockout_key(request("172.18.0.1", {"X-Forwarded-For": "100.64.0.7, 10.0.0.1"}), gateway) == "100.64.0.7"
+    assert lockout_key(request("172.18.0.1", {}), gateway) == "172.18.0.1"
+    # Another container on the network is not trusted to name a client.
+    assert lockout_key(request("172.18.0.5", {"Tailscale-User-Login": "me@example.com"}), gateway) == "172.18.0.5"
+
+
+def test_trusted_peers_reads_the_default_gateway(tmp_path):
+    from dashboard.web.app import trusted_peers
+
+    table = tmp_path / "route"
+    table.write_text(ROUTE_TABLE)
+    assert trusted_peers(table) == frozenset({"172.18.0.1"})
+    assert trusted_peers(tmp_path / "missing") == frozenset()
+
+
+ROUTE_TABLE = (
+    "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n"
+    "eth0\t00000000\t010012AC\t0003\t0\t0\t0\t00000000\t0\t0\t0\n"
+    "eth0\t000012AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0\n"
+)
 
 
 # --- AC-4: session lifetime and logout
