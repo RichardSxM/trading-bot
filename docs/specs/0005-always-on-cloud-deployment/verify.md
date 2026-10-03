@@ -41,3 +41,12 @@ Run these on the real VPS unless a step says laptop. Steps 1 to 6 belong to mile
 | Median TCP connect to `futures.kraken.com:443` | | |
 | chrony offset | | |
 | Peak memory per service during the soak | | |
+
+## Notes from the build (milestone 2)
+
+- **First VPS deploy of milestone 2.** The running release is from before this feature, so it publishes no `trader_state`. A normal deploy aborts with `aborted_no_trader_state` (fail closed, by design). You can run that one deploy with `scripts/deploy.sh --now`. Every deploy after it drains normally.
+- **Step 7.** Read `REDUCING` from `control_cli state` (the `trader_state` snapshot), not from the heartbeat. The heartbeat's `trading_state` is the node's component state (`RUNNING`), as AC-7 says.
+- **Step 10.** Stopping the dashboard does not abort a deploy: the deploy runs `control_cli` in its own one off container from the new image. To see the fail closed abort, you can stop the trader, wait 30 s for `trader_state` to expire, then deploy: `aborted_no_trader_state`, exit 2. A pause that gets no `executed` within 30 s aborts as `aborted_pause_failed`.
+- **Step 11.** There is no boot failure flag in the trader yet. You can add the deliberate `raise` on a throwaway branch, merge it to get images, deploy, then revert.
+- **Step 12, before feature 6.** `packages/core/tests/test_node_control.py` covers it with a fake strategy (`test_on_stop_pauses_in_memory_keeps_the_state_and_cancels_only_entry_orders`). On the laptop, `docker compose stop trader` logged `shutdown_graceful` about 12 s after SIGTERM (10 s post stop wait plus the Kraken disconnect).
+- **Recording actor drain (AC-9).** There is no recording actor yet. Its 5 s drain arrives with feature 6.
