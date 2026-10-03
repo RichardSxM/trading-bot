@@ -1,0 +1,11 @@
+# Runs kfs-autoheal every 30 s, starting 2 minutes after boot (spec 0005 AC-15).
+[Unit]
+Description=kfs autoheal every 30 s
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=30s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

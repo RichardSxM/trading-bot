@@ -87,9 +87,126 @@ kfs_link_host() {
         systemctl daemon-reload
         for file in "$src"/*.service "$src"/*.timer; do
             [ -f "$file" ] || continue
+            # A unit a timer starts (kfs-autoheal.service) has no [Install] and is not enabled.
+            grep -q '^\[Install\]' "$file" || continue
             name=$(basename "$file")
             systemctl enable --quiet "$name"
             case $name in *.timer) systemctl start "$name" ;; esac
         done
     fi
+}
+
+# The dashboard image's control CLI (spec 0005), from the release in KFS_CONTROL_RELEASE
+# (default: the current one). One JSON line on stdout; its exit code is the CLI's.
+kfs_control() {
+    local release=${KFS_CONTROL_RELEASE:-$(kfs_current_sha)}
+    KFS_RELEASE=$release "$KFS_ROOT/releases/$release/deploy/host/kfs-compose" \
+        run --rm --no-deps -T dashboard python -m dashboard.control_cli "$@"
+}
+
+# 0 when every service of the current release is healthy (migrate: exited 0); prints the ones
+# that are not.
+kfs_services_healthy() {
+    local compose="$KFS_ROOT/current/deploy/host/kfs-compose" ps expected bad
+    ps=$("$compose" ps -a --format json | jq -sc 'if length == 1 and (.[0] | type) == "array" then .[0] else . end')
+    expected=$("$compose" config --services)
+    bad=$(jq -r --arg expected "$expected" '
+        ($expected | split("\n") | map(select(. != ""))) as $want
+        | (map({key: .Service, value: .}) | from_entries) as $by
+        | $want[]
+        | . as $s
+        | $by[$s] as $c
+        | if $c == null then "\($s): no container"
+          elif $s == "migrate" then (if $c.State == "exited" and $c.ExitCode == 0 then empty else "\($s): \($c.State) exit \($c.ExitCode)" end)
+          elif ($c.Health // "") != "" then (if $c.Health == "healthy" then empty else "\($s): \($c.Health)" end)
+          elif $c.State == "running" then empty
+          else "\($s): \($c.State)" end' <<<"$ps")
+    if [ -n "$bad" ]; then
+        echo "$bad" | paste -sd ' ' -
+        return 1
+    fi
+}
+
+# Return codes of kfs_pause_and_wait; KFS_DRAIN_REASON says why in words.
+# shellcheck disable=SC2034 # used by the scripts that source this file
+KFS_DRAIN_NO_STATE=10 KFS_DRAIN_PAUSE_FAILED=11 KFS_DRAIN_PAUSE_LIFTED=12 KFS_DRAIN_NOT_FLAT=13 KFS_DRAIN_REASON=""
+KFS_PAUSED_BY_US=false
+KFS_WAITED_S=0
+KFS_PAUSE_RESULT_S=30
+
+# Unpause only a pause we sent (AC-11). Best effort: a failure is logged, and the trader stays
+# paused, which is safe and shows on the dashboard as `paused · by deploy`.
+kfs_unpause_if_ours() {
+    [ "$KFS_PAUSED_BY_US" = true ] || return 0
+    if kfs_control unpause --source deploy --wait-result "$KFS_PAUSE_RESULT_S" >/dev/null; then
+        kfs_log INFO "trader unpaused"
+    else
+        kfs_log ERROR "unpause failed, the trader stays paused; press Resume on the dashboard"
+    fi
+}
+
+# kfs_pause_and_wait <now: true|false> <wait: 15m>
+# Pause entries (source deploy) unless already paused, then wait until the trader holds no
+# position and no entry order (AC-8). 0 when flat, or at once with now=true. Otherwise one of
+# the KFS_DRAIN_* codes, with any pause we sent already lifted again (a lifted pause sends
+# nothing). Sets KFS_PAUSED_BY_US and KFS_WAITED_S.
+# shellcheck disable=SC2034 # KFS_DRAIN_REASON is read by the scripts that source this file
+kfs_pause_and_wait() {
+    local now=$1 wait=$2 state paused rc start
+    KFS_PAUSED_BY_US=false
+    KFS_WAITED_S=0
+    KFS_DRAIN_REASON=""
+    if state=$(kfs_control state); then
+        paused=$(jq -r '.data.paused // false' <<<"$state")
+    elif [ "$now" = true ]; then
+        kfs_log WARNING "trader_state unreadable; --now sends the pause anyway"
+        paused=false
+    else
+        # Includes a running release from before spec 0005, which publishes none (fail closed).
+        KFS_DRAIN_REASON="trader_state missing or stale; use --now to skip the drain"
+        return "$KFS_DRAIN_NO_STATE"
+    fi
+    if [ "$paused" = true ]; then
+        kfs_log INFO "trader already paused, leaving that pause in place"
+    elif kfs_control pause --source deploy --wait-result "$KFS_PAUSE_RESULT_S" >/dev/null; then
+        KFS_PAUSED_BY_US=true
+        kfs_log INFO "trader paused" source deploy
+    elif [ "$now" = true ]; then
+        # It may still execute later; unpause afterwards all the same.
+        KFS_PAUSED_BY_US=true
+        kfs_log WARNING "pause not confirmed; --now goes on"
+    else
+        KFS_PAUSED_BY_US=true
+        kfs_unpause_if_ours
+        KFS_DRAIN_REASON="the trader did not confirm the pause within ${KFS_PAUSE_RESULT_S}s"
+        return "$KFS_DRAIN_PAUSE_FAILED"
+    fi
+    if [ "$now" = true ]; then
+        kfs_log WARNING "--now: not waiting for flat"
+        return 0
+    fi
+    start=$SECONDS
+    rc=0
+    kfs_control wait-flat --timeout "$wait" >/dev/null || rc=$?
+    KFS_WAITED_S=$((SECONDS - start))
+    case $rc in
+        0)
+            kfs_log INFO "trader flat" waited_s "$KFS_WAITED_S"
+            return 0
+            ;;
+        3)
+            KFS_DRAIN_REASON="the pause was lifted during the wait (Resume pressed)"
+            return "$KFS_DRAIN_PAUSE_LIFTED"
+            ;;
+        2)
+            kfs_unpause_if_ours
+            KFS_DRAIN_REASON="not flat within $wait"
+            return "$KFS_DRAIN_NOT_FLAT"
+            ;;
+        *)
+            kfs_unpause_if_ours
+            KFS_DRAIN_REASON="trader_state missing or stale during the wait"
+            return "$KFS_DRAIN_NO_STATE"
+            ;;
+    esac
 }

@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# Restarts hung containers (spec 0005 AC-15). Run every 30 s by kfs-autoheal.timer; linked as
+# /usr/local/sbin/kfs-autoheal. Docker's restart policy covers a container that exits; this
+# covers one that keeps running but turned unhealthy (a frozen trader, say).
+#
+# Each `kfs` container whose health is `unhealthy` (never `starting`, so every health check's
+# start_period is respected) gets `docker restart`, which uses its own stop timeout. After 3
+# restarts of one container within an hour it gives up on that one: CRITICAL `autoheal_gave_up`
+# once an hour, and it keeps checking the others. Restart times live in
+# /var/lib/kfs/autoheal.json, keyed by container name; delete an entry to reset it.
+#
+# It does nothing while a deploy holds its lock, so the deploy's health gate and rollback stay
+# in charge of the containers they just started.
+set -euo pipefail
+
+KFS_PROCESS=kfs-autoheal
+HOST_DIR=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+# shellcheck source=deploy/host/lib.sh
+. "$HOST_DIR/lib.sh"
+
+STATE="$KFS_STATE_DIR/autoheal.json"
+DEPLOY_LOCK=/run/lock/kfs-deploy.lock
+MAX_RESTARTS=3
+WINDOW_S=3600
+
+[ "$(id -u)" -eq 0 ] || {
+    kfs_log ERROR "run as root" >&2
+    exit 1
+}
+
+if [ -e "$DEPLOY_LOCK" ]; then
+    exec 9<"$DEPLOY_LOCK"
+    if ! flock -n -s 9; then
+        exit 0
+    fi
+    exec 9<&-
+fi
+
+now=$(date -u +%s)
+state='{}'
+if [ -s "$STATE" ]; then
+    state=$(jq -c '.' "$STATE" 2>/dev/null) || {
+        kfs_log WARNING "autoheal state unreadable, starting afresh" file "$STATE"
+        state='{}'
+    }
+fi
+# Drop restart times older than the window, and give up notes along with them.
+state=$(jq -c --argjson cutoff "$((now - WINDOW_S))" '
+    {restarts: ((.restarts // {}) | map_values(map(select(. > $cutoff))) | with_entries(select(.value | length > 0))),
+     gave_up_at: ((.gave_up_at // {}) | with_entries(select(.value > $cutoff)))}' <<<"$state")
+
+unhealthy=$(docker ps --filter label=com.docker.compose.project=kfs --filter health=unhealthy --format '{{.Names}}')
+
+for name in $unhealthy; do
+    count=$(jq -r --arg n "$name" '.restarts[$n] // [] | length' <<<"$state")
+    if [ "$count" -ge "$MAX_RESTARTS" ]; then
+        if [ "$(jq -r --arg n "$name" '.gave_up_at[$n] // empty' <<<"$state")" = "" ]; then
+            kfs_log CRITICAL autoheal_gave_up container "$name" restarts_last_hour "$count"
+            state=$(jq -c --arg n "$name" --argjson t "$now" '.gave_up_at[$n] = $t' <<<"$state")
+        fi
+        continue
+    fi
+    if docker restart "$name" >/dev/null; then
+        count=$((count + 1))
+        kfs_log WARNING autoheal_restart container "$name" restarts_last_hour "$count"
+    else
+        kfs_log ERROR "autoheal restart failed" container "$name"
+    fi
+    # A failed restart counts too, so a container that cannot restart still ends in give up.
+    state=$(jq -c --arg n "$name" --argjson t "$(date -u +%s)" '.restarts[$n] += [$t]' <<<"$state")
+done
+
+tmp=$(mktemp "$KFS_STATE_DIR/.autoheal.XXXXXX")
+printf '%s\n' "$state" >"$tmp"
+chmod 0600 "$tmp"
+mv -f "$tmp" "$STATE"

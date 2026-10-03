@@ -1,0 +1,9 @@
+# Restarts unhealthy kfs containers (spec 0005 AC-15). Started by kfs-autoheal.timer.
+[Unit]
+Description=kfs autoheal: restart unhealthy containers
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/kfs-autoheal
