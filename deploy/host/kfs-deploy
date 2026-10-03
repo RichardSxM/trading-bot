@@ -3,14 +3,18 @@
 # scripts/deploy.sh on the laptop drives it over Tailscale SSH:
 #
 #   sudo kfs-deploy receive <sha>    # unpack a release bundle (tar on stdin) into /opt/kfs/releases/<sha>
-#   sudo kfs-deploy run <sha>        # preflight, pull, switch, up, health gate, deploy log
+#   sudo kfs-deploy run <sha> [--wait 15m] [--now]
+#                                    # preflight, pull, pause and wait for flat, switch, up,
+#                                    # health gate, rollback if unhealthy, unpause, deploy log
 #   sudo kfs-deploy link-host        # relink /usr/local/sbin/kfs-* and units (bootstrap uses it)
 #
-# Exit codes of `run`: 0 deployed, 1 unhealthy, 3 another deploy holds the lock, 4 refused
-# before anything changed (preflight or pull).
+# Exit codes of `run`: 0 deployed, 1 rolled back or rollback failed, 2 aborted with nothing
+# switched (not flat, pause lifted, pause failed, no trader_state), 3 another deploy holds the
+# lock, 4 refused before anything changed (preflight or pull).
 #
-# Milestone 1 of spec 0005: no drain and no rollback yet. Milestone 2 adds the pause, the
-# wait for flat, and the rollback (AC-8 to AC-11).
+# --wait sets how long to wait for flat (90s, 15m, 1h; default 15m). --now sends the pause but
+# skips the wait, and goes on when the trader cannot confirm it (an old release, say); the
+# restart then relies on the exchange side stops.
 set -euo pipefail
 
 KFS_PROCESS=kfs-deploy
@@ -22,6 +26,7 @@ RELEASES="$KFS_ROOT/releases"
 DEPLOY_LOG="$KFS_LOG_DIR/deploys.jsonl"
 LOCK=/run/lock/kfs-deploy.lock
 HEALTH_TIMEOUT_S=180
+PAUSE_RESULT_S=30
 MIN_FREE_BYTES=5000000000
 KEEP_RELEASES=3
 
@@ -33,7 +38,7 @@ die() {
 }
 
 usage() {
-    sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//' >&2
     exit 64
 }
 
@@ -73,9 +78,10 @@ record() {
     mkdir -p "$KFS_LOG_DIR"
     jq -nc --arg sha "$SHA" --arg previous_sha "$PREVIOUS_SHA" --arg started_at "$STARTED_AT" \
         --arg finished_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg outcome "$outcome" \
+        --arg paused "$PAUSED_BY_DEPLOY" --argjson waited "$WAITED_S" \
         '{sha: $sha, previous_sha: (if $previous_sha == "" then null else $previous_sha end),
           started_at: $started_at, finished_at: $finished_at, outcome: $outcome,
-          paused_by_deploy: false, waited_for_flat_s: 0}' >>"$DEPLOY_LOG"
+          paused_by_deploy: ($paused == "true"), waited_for_flat_s: $waited}' >>"$DEPLOY_LOG"
     printf 'deploy %s: %s (previous %s) in %ss\n' "$outcome" "${SHA:0:12}" "${PREVIOUS_SHA:0:12}" "$((SECONDS - START_S))"
 }
 
@@ -95,6 +101,11 @@ preflight() {
         [ -s "$KFS_SECRETS_DIR/$name" ] || refuse "secret file $name missing or empty"
     done < <(kfs_secret_names "$RELEASES/$SHA")
     [ -s "$KFS_SECRETS_DIR/ghcr_token" ] || refuse "secret file ghcr_token missing"
+    # A nightly backup in progress: deploy again after it logs `backup done` (AC-12). Only an
+    # answer of yes counts; no backup container (the first deploy) or the stub image is a no.
+    if [ -n "$PREVIOUS_SHA" ] && compose_current exec -T backup test -e /staging/running >/dev/null 2>&1; then
+        refuse "a backup is running; deploy again after it logs backup done"
+    fi
     # Every image this release runs that is tagged with the commit, i.e. built by CI.
     images=$(compose_new config --images | grep ":$SHA\$" || true)
     [ -n "$images" ] || refuse "no image tagged $SHA in the Compose config (check KFS_IMAGE_PREFIX)"
@@ -105,11 +116,84 @@ preflight() {
     kfs_log INFO "preflight passed" sha "$SHA" images "$(echo "$images" | wc -l | tr -d ' ')"
 }
 
+# The dashboard image's control CLI from the new release (it exists there even when the
+# running release predates it). One JSON line on stdout; its exit code is the CLI's.
+control() {
+    compose_new run --rm --no-deps -T dashboard python -m dashboard.control_cli "$@"
+}
+
+# Unpause only a pause this deploy sent (AC-11). Best effort: a failure is logged, and the
+# trader stays paused, which is safe and shows on the dashboard as `paused · by deploy`.
+unpause_if_ours() {
+    [ "$PAUSED_BY_DEPLOY" = true ] || return 0
+    if control unpause --source deploy --wait-result "$PAUSE_RESULT_S" >/dev/null; then
+        kfs_log INFO "trader unpaused" sha "$SHA"
+    else
+        kfs_log ERROR "unpause failed, the trader stays paused; press Resume on the dashboard" sha "$SHA"
+    fi
+}
+
+abort() {
+    local outcome=$1 reason=$2
+    kfs_log ERROR "deploy aborted" outcome "$outcome" reason "$reason"
+    record "$outcome"
+    exit 2
+}
+
+# Pause entries and wait until the trader holds no position and no entry order (AC-8).
+drain() {
+    local state paused rc start
+    if state=$(control state); then
+        paused=$(jq -r '.data.paused // false' <<<"$state")
+    elif [ "$NOW" = true ]; then
+        kfs_log WARNING "trader_state unreadable; --now sends the pause anyway"
+        paused=false
+    else
+        # Includes a running release from before spec 0005, which publishes none (fail closed).
+        abort aborted_no_trader_state "trader_state missing or stale; deploy with --now to skip the drain"
+    fi
+    if [ "$paused" = true ]; then
+        kfs_log INFO "trader already paused, leaving that pause in place"
+    elif control pause --source deploy --wait-result "$PAUSE_RESULT_S" >/dev/null; then
+        PAUSED_BY_DEPLOY=true
+        kfs_log INFO "trader paused" source deploy
+    elif [ "$NOW" = true ]; then
+        # It may still execute later; unpause after the deploy all the same.
+        PAUSED_BY_DEPLOY=true
+        kfs_log WARNING "pause not confirmed; --now goes on"
+    else
+        PAUSED_BY_DEPLOY=true
+        unpause_if_ours
+        abort aborted_pause_failed "the trader did not confirm the pause within ${PAUSE_RESULT_S}s"
+    fi
+    if [ "$NOW" = true ]; then
+        kfs_log WARNING "--now: not waiting for flat"
+        return 0
+    fi
+    start=$SECONDS
+    rc=0
+    control wait-flat --timeout "$WAIT" >/dev/null || rc=$?
+    WAITED_S=$((SECONDS - start))
+    case $rc in
+        0) kfs_log INFO "trader flat" waited_s "$WAITED_S" ;;
+        3) abort aborted_pause_lifted "the pause was lifted during the wait (Resume pressed)" ;;
+        2)
+            unpause_if_ours
+            abort aborted_not_flat "not flat within $WAIT"
+            ;;
+        *)
+            unpause_if_ours
+            abort aborted_no_trader_state "trader_state missing or stale during the wait"
+            ;;
+    esac
+}
+
 switch_release() {
-    ln -sfn "releases/$SHA" "$KFS_ROOT/current.new"
+    local target=$1
+    ln -sfn "releases/$target" "$KFS_ROOT/current.new"
     mv -T "$KFS_ROOT/current.new" "$KFS_ROOT/current"
     kfs_link_host | while read -r line; do kfs_log INFO "host link" change "$line"; done
-    kfs_log INFO "current switched" sha "$SHA" previous_sha "$PREVIOUS_SHA"
+    kfs_log INFO "current switched" sha "$target"
 }
 
 # 0 when every service is healthy (migrate: exited 0); prints the ones that are not.
@@ -134,31 +218,56 @@ services_healthy() {
     fi
 }
 
-# 0 when the trader heartbeat is fresh and carries this commit.
-heartbeat_matches() {
-    local line commit
-    line=$(compose_new run --rm --no-deps -T dashboard python -m dashboard.control_cli heartbeat 2>/dev/null) || {
-        echo "trader heartbeat: ${line:-unreadable}"
+# 0 when the trader's snapshot (`trader_state`, or `heartbeat` with --heartbeat for a release
+# from before spec 0005) is fresh and carries commit $1.
+trader_matches() {
+    local expect=$1 snapshot=${2:-state} line commit
+    line=$(control "$snapshot" 2>/dev/null) || {
+        echo "trader $snapshot: ${line:-unreadable}"
         return 1
     }
     commit=$(jq -r '.data.git_commit // ""' <<<"$line")
-    if [ "$commit" != "$SHA" ]; then
-        echo "trader heartbeat git_commit ${commit:-none}"
+    if [ "$commit" != "$expect" ]; then
+        echo "trader $snapshot git_commit ${commit:-none}"
         return 1
     fi
 }
 
+# health_gate <sha> [state|heartbeat]
 health_gate() {
-    local deadline=$((SECONDS + HEALTH_TIMEOUT_S)) why=""
+    local expect=$1 snapshot=${2:-state} deadline=$((SECONDS + HEALTH_TIMEOUT_S)) why=""
     while [ "$SECONDS" -lt "$deadline" ]; do
-        if why=$(services_healthy) && why=$(heartbeat_matches); then
-            kfs_log INFO "health gate passed" sha "$SHA" after_s "$((SECONDS - START_S))"
+        if why=$(services_healthy) && why=$(trader_matches "$expect" "$snapshot"); then
+            kfs_log INFO "health gate passed" sha "$expect" after_s "$((SECONDS - START_S))"
             return 0
         fi
         sleep 2
     done
-    kfs_log ERROR "health gate failed" sha "$SHA" reason "$why"
+    kfs_log ERROR "health gate failed" sha "$expect" reason "$why"
     return 1
+}
+
+# Back to the previous release (AC-10): its images are still local, migrations stay applied.
+rollback() {
+    compose_current ps -a >&2 || true
+    if [ -z "$PREVIOUS_SHA" ] || [ "$PREVIOUS_SHA" = "$SHA" ] || [ ! -d "$RELEASES/$PREVIOUS_SHA" ]; then
+        kfs_log CRITICAL "no previous release to roll back to" sha "$SHA" previous_sha "$PREVIOUS_SHA"
+        record rollback_failed
+        exit 1
+    fi
+    kfs_log ERROR "rolling back" sha "$SHA" previous_sha "$PREVIOUS_SHA"
+    switch_release "$PREVIOUS_SHA"
+    # A release from before spec 0005 writes no trader_state, only the heartbeat.
+    if compose_current up -d --no-build --pull never --remove-orphans &&
+        { health_gate "$PREVIOUS_SHA" state || health_gate "$PREVIOUS_SHA" heartbeat; }; then
+        record rolled_back
+        unpause_if_ours
+        exit 1
+    fi
+    # Stays paused (if this deploy paused): nothing healthy is trading now.
+    kfs_log CRITICAL "rollback failed" sha "$SHA" previous_sha "$PREVIOUS_SHA"
+    record rollback_failed
+    exit 1
 }
 
 # Keep the current release and the two before it (from the deploy log), folders and images.
@@ -199,13 +308,30 @@ prune() {
 run() {
     SHA=$1
     shift
-    [ $# -eq 0 ] || die 64 "unknown option $1 (--wait and --now arrive with spec 0005 milestone 2)"
+    local args=("$@")
+    WAIT=15m
+    NOW=false
+    while [ $# -gt 0 ]; do
+        case $1 in
+            --wait)
+                [ $# -ge 2 ] || usage
+                [[ $2 =~ ^[0-9]+[smh]?$ ]] || die 64 "--wait needs a duration such as 90s, 15m, or 1h"
+                WAIT=$2
+                shift 2
+                ;;
+            --now)
+                NOW=true
+                shift
+                ;;
+            *) die 64 "unknown option $1" ;;
+        esac
+    done
     kfs_is_sha "$SHA" || die 64 "not a full commit sha: $SHA"
     local bundle="$RELEASES/$SHA/deploy/host/kfs-deploy"
     [ -x "$bundle" ] || die 4 "no release bundle for $SHA (run receive first)"
     # Run the new release's own copy, so a changed deploy script takes effect at once.
     if [ "$(readlink -f "$0")" != "$(readlink -f "$bundle")" ]; then
-        exec "$bundle" run "$SHA"
+        exec "$bundle" run "$SHA" ${args[@]+"${args[@]}"}
     fi
 
     exec 9>"$LOCK"
@@ -214,7 +340,9 @@ run() {
     START_S=$SECONDS
     STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     PREVIOUS_SHA=$(kfs_current_sha)
-    kfs_log INFO "deploy started" sha "$SHA" previous_sha "$PREVIOUS_SHA"
+    PAUSED_BY_DEPLOY=false
+    WAITED_S=0
+    kfs_log INFO "deploy started" sha "$SHA" previous_sha "$PREVIOUS_SHA" wait "$WAIT" now "$NOW"
 
     preflight
     if ! compose_new pull --quiet; then
@@ -222,16 +350,19 @@ run() {
     fi
     kfs_log INFO "images pulled" sha "$SHA"
 
-    switch_release
-    if compose_current up -d --no-build --pull never --remove-orphans && health_gate; then
+    # Every deploy recreates the trader, so it drains first. The first deploy has no trader yet.
+    if [ -n "$PREVIOUS_SHA" ]; then
+        drain
+    fi
+
+    switch_release "$SHA"
+    if compose_current up -d --no-build --pull never --remove-orphans && health_gate "$SHA"; then
+        unpause_if_ours
         record deployed
         prune
         exit 0
     fi
-    # Milestone 2 replaces this with the automatic rollback (AC-10).
-    compose_current ps -a >&2 || true
-    record unhealthy
-    exit 1
+    rollback
 }
 
 case "${1:-}" in
