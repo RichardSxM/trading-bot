@@ -89,3 +89,96 @@ def test_the_password_is_asked_twice_and_must_match(monkeypatch, tmp_path):
     monkeypatch.setattr("getpass.getpass", lambda prompt: next(answers))
     assert credentials.main(["--out", str(tmp_path)], out=io.StringIO()) == 1
     assert list(tmp_path.iterdir()) == []
+
+
+# --- gaps found against spec 0004 (/test pass)
+
+
+def test_twelve_characters_is_the_shortest_password_accepted():
+    """covers: AC-19"""
+    with pytest.raises(CredentialsError):
+        make_credentials("x" * 11, CHEAP)
+    assert make_credentials("x" * 12, CHEAP).password_hash.startswith("$argon2id$")
+
+
+def test_a_short_password_through_the_command_exits_1_and_says_why(monkeypatch, capsys, tmp_path):
+    """covers: AC-19"""
+    monkeypatch.setattr("getpass.getpass", lambda prompt: "short")
+    assert credentials.main(["--write", "--out", str(tmp_path)], out=io.StringIO()) == 1
+    assert "at least 12 characters" in capsys.readouterr().err
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_two_matching_entries_print_every_value_and_the_qr(monkeypatch, tmp_path):
+    """covers: AC-19"""
+    monkeypatch.setattr(credentials, "PasswordHasher", lambda: CHEAP)
+    prompts = []
+
+    def getpass(prompt):
+        prompts.append(prompt)
+        return "long enough password"
+
+    monkeypatch.setattr("getpass.getpass", getpass)
+    out = io.StringIO()
+    assert credentials.main(["--out", str(tmp_path)], out=out) == 0
+    text = out.getvalue()
+    assert len(prompts) == 2
+    assert "dashboard_password_hash: $argon2id$" in text
+    seed = next(line for line in text.splitlines() if line.startswith("dashboard_totp_seed: ")).split(": ")[1]
+    assert len(seed) == 32
+    assert seed == seed.upper()
+    assert next(line for line in text.splitlines() if line.startswith("dashboard_session_key: "))
+    assert f"secret={seed}" in text
+    assert "issuer=Kraken%20Futures%20Scalper" in text
+    assert "█" in text or "▀" in text or "▄" in text  # the terminal QR code
+    assert "long enough password" not in text  # the typed password is never printed
+
+
+def test_without_write_nothing_is_written(monkeypatch, tmp_path):
+    """covers: AC-19"""
+    monkeypatch.setattr(credentials, "PasswordHasher", lambda: CHEAP)
+    monkeypatch.setattr("getpass.getpass", lambda prompt: "long enough password")
+    assert credentials.main(["--out", str(tmp_path)], out=io.StringIO()) == 0
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("name", "warning"),
+    [
+        ("dashboard_password_hash", "the password above does NOT log in"),
+        ("dashboard_session_key", "existing sessions stay valid"),
+    ],
+)
+def test_a_kept_hash_or_session_key_says_what_it_means(tmp_path, monkeypatch, name, warning):
+    """covers: AC-19"""
+    monkeypatch.setattr(credentials, "PasswordHasher", lambda: CHEAP)
+    (tmp_path / name).write_text("kept")
+    out = io.StringIO()
+    credentials.main(["--dev", "--write", "--out", str(tmp_path)], out=out)
+    assert f"kept     {name} (already there: {warning}" in out.getvalue()
+
+
+def test_a_secret_cannot_be_passed_as_an_argument(capsys):
+    """covers: AC-19 (nothing secret in process arguments)"""
+    with pytest.raises(SystemExit) as info:
+        credentials.main(["--password", "long enough password"], out=io.StringIO())
+    assert info.value.code == 2
+
+
+def test_dev_mode_never_asks_and_draws_new_values_each_run(tmp_path, monkeypatch):
+    """covers: AC-19"""
+    monkeypatch.setattr(credentials, "PasswordHasher", lambda: CHEAP)
+
+    def refuse(prompt):
+        raise AssertionError("--dev must not ask for a password")
+
+    monkeypatch.setattr("getpass.getpass", refuse)
+    first, second = io.StringIO(), io.StringIO()
+    assert credentials.main(["--dev"], out=first) == 0
+    assert credentials.main(["--dev"], out=second) == 0
+
+    def values(text):
+        return [line for line in text.splitlines() if line.startswith(("dev password", "dashboard_"))]
+
+    assert len(values(first.getvalue())) == 4
+    assert set(values(first.getvalue())).isdisjoint(values(second.getvalue()))

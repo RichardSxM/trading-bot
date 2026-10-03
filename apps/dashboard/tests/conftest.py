@@ -41,7 +41,7 @@ class FakeRedis:
     """Holds keys and streams in dicts; ``fail`` makes every call raise like a dead Redis.
 
     ``hang`` makes ``xadd`` wait that many seconds first, like a Redis that does not answer.
-    ``reads`` counts the read calls.
+    ``reads`` counts the read calls; ``xadd_calls`` records each append's stream and trim arguments.
     """
 
     def __init__(self):
@@ -50,6 +50,7 @@ class FakeRedis:
         self.fail = None
         self.hang = 0.0
         self.reads = 0
+        self.xadd_calls = []
         self._seq = 0
 
     async def get(self, name):
@@ -67,6 +68,7 @@ class FakeRedis:
         return entry_id
 
     async def xadd(self, name, fields, id="*", maxlen=None, approximate=True):
+        self.xadd_calls.append({"name": name, "maxlen": maxlen, "approximate": approximate})
         if self.hang:
             await asyncio.sleep(self.hang)
         if self.fail is not None:
@@ -138,3 +140,11 @@ def logged_in(client, clock):
     assert log_in(client, clock).status_code == 303
     clock.now += 30  # the next login needs a newer step (replay guard)
     return client
+
+
+def live_client(redis, clock):
+    """A logged in client for ``TRADING_ENV=live``: Secure cookies, so it talks https to the test app."""
+    redis.values["live:snapshot:heartbeat"] = encode(clock.ns(), {"process": "trader"})
+    app = make_app(redis, clock, env="live", dashboard_cookie_secure=True)
+    test_client = TestClient(app, base_url="https://testserver", follow_redirects=False)
+    return test_client

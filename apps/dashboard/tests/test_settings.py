@@ -68,3 +68,46 @@ def test_bad_credentials_refuse_with_their_own_code(overrides, match):
     with pytest.raises(CredentialsInvalid, match=match) as info:
         credentials_guard(DashboardSettings(trading_env="demo"), _with(**overrides))
     assert info.value.code == "dashboard_credentials_invalid"
+
+
+# --- gaps found against spec 0004 (/test pass)
+
+
+def test_an_argon2d_hash_is_refused():
+    """covers: AC-5"""
+    argon2d = PasswordHasher(type=Type.D, memory_cost=8, time_cost=1, parallelism=1).hash("x")
+    with pytest.raises(CredentialsInvalid, match="argon2id"):
+        credentials_guard(DashboardSettings(trading_env="demo"), _with(dashboard_password_hash=argon2d))
+
+
+def test_a_seed_of_an_impossible_base32_length_is_refused():
+    """covers: AC-5"""
+    with pytest.raises(CredentialsInvalid, match="not base32"):
+        credentials_guard(DashboardSettings(trading_env="demo"), _with(dashboard_totp_seed="A" * 33))
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "dashboard_stale_amber_s",
+        "dashboard_poll_ms",
+        "dashboard_session_idle_h",
+        "dashboard_session_max_d",
+        "control_command_ttl_s",
+        "dashboard_command_hide_s",
+    ],
+)
+def test_a_zero_duration_is_refused(monkeypatch, name):
+    """covers: AC-5 (settings validation refuses to start)"""
+    monkeypatch.setenv(name.upper(), "0")
+    with pytest.raises(ValidationError):
+        DashboardSettings(trading_env="demo")
+
+
+def test_the_guard_refusal_logs_its_own_code_and_message():
+    """covers: AC-5 (exit 1 with code dashboard_credentials_invalid)"""
+    from trading_core.env_guard import EnvGuardRefused
+
+    assert issubclass(CredentialsInvalid, EnvGuardRefused)
+    assert CredentialsInvalid.code == "dashboard_credentials_invalid"
+    assert CredentialsInvalid.log_message == "dashboard credentials invalid, refusing to start"

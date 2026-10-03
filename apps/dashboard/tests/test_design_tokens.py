@@ -103,3 +103,80 @@ def test_contrast_ratio_matches_the_wcag_extremes():
     assert contrast_ratio("#777777", "#777777") == pytest.approx(1)
     with pytest.raises(ValueError, match="not a #rrggbb color"):
         contrast_ratio("red", "#ffffff")
+
+
+# --- gaps found against spec 0004 (/test pass): the checks fail when they should
+
+
+def parity_problems(css, expected):
+    """Every token name that differs between tokens.css and DESIGN.md, with how."""
+    problems = {name: "only in tokens.css" for name in set(css) - set(expected)}
+    problems |= {name: "only in DESIGN.md" for name in set(expected) - set(css)}
+    problems |= {name: "value differs" for name in set(css) & set(expected) if css[name] != expected[name]}
+    return problems
+
+
+def weak_pairs(colors, pairs):
+    """Every listed pair below its WCAG AA minimum, as (fg, bg) → ratio."""
+    return {
+        (pair["fg"], pair["bg"]): round(contrast_ratio(colors[pair["fg"]], colors[pair["bg"]]), 2)
+        for pair in pairs
+        if contrast_ratio(colors[pair["fg"]], colors[pair["bg"]]) < MINIMUMS[pair["use"]]
+    }
+
+
+def _real_css():
+    return {name: normalize(value) for name, value in read_tokens().items()}
+
+
+def test_the_real_tokens_have_no_parity_problem_and_no_weak_pair(front):
+    """covers: AC-15"""
+    colors = {name: normalize(value) for name, value in front["colors"].items()}
+    assert parity_problems(_real_css(), expected_css(front)) == {}
+    assert weak_pairs(colors, front["contrast_pairs"]) == {}
+
+
+def test_a_changed_hex_in_tokens_css_is_named(front):
+    """covers: AC-15"""
+    css = _real_css() | {"bg": "#0b0d11"}
+    assert parity_problems(css, expected_css(front)) == {"bg": "value differs"}
+
+
+def test_a_token_on_only_one_side_is_named(front):
+    """covers: AC-15"""
+    expected = expected_css(front)
+    css = _real_css()
+    del css["muted"]
+    css["extra"] = "#123456"
+    assert parity_problems(css, expected) == {"muted": "only in DESIGN.md", "extra": "only in tokens.css"}
+
+
+def test_the_parser_reads_a_real_declaration_not_a_commented_one():
+    """covers: AC-15"""
+    css = parse_tokens_css(
+        ":root {\n  /* --bg: #ffffff; */\n  --bg:   #08090B;\n"
+        "  --type-body-family: 'IBM Plex Sans',\n    sans-serif;\n}"
+    )
+    assert normalize(css["bg"]) == "#08090b"
+    assert normalize(css["type-body-family"]) == "'IBM Plex Sans', sans-serif"
+
+
+def test_a_text_pair_just_under_4_5_is_named(front):
+    """covers: AC-15 (the faint on bg example from verify step 18)"""
+    colors = {name: normalize(value) for name, value in front["colors"].items()} | {"faint": "#4a515c"}
+    weak = weak_pairs(colors, [{"fg": "faint", "bg": "bg", "use": "text"}])
+    assert list(weak) == [("faint", "bg")]
+    assert weak[("faint", "bg")] < 4.5
+
+
+@pytest.mark.parametrize(("use", "passes"), [("text", False), ("large", True), ("ui", True)])
+def test_large_text_and_ui_marks_need_3_to_1_and_body_text_4_5(use, passes):
+    """covers: AC-15"""
+    colors = {"fg": "#767676", "bg": "#1a1a1a"}  # about 4.1:1
+    assert 3 < contrast_ratio(colors["fg"], colors["bg"]) < 4.5
+    assert (weak_pairs(colors, [{"fg": "fg", "bg": "bg", "use": use}]) == {}) is passes
+
+
+def test_white_is_the_text_on_stop_and_live(front):
+    """covers: AC-15 (white on stop and live)"""
+    assert normalize(front["colors"]["on-alarm"]) == "#ffffff"

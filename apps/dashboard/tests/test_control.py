@@ -2,6 +2,7 @@
 
 import logging
 import re
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -206,3 +207,91 @@ def test_the_shell_has_the_stop_button_and_the_network_error_template(logged_in)
     assert 'id="topbar-command" sse-swap="topbar-command"' in page
     assert '<template id="stop-failed">' in page
     assert "hx-disabled-elt" not in page
+
+
+# --- gaps found against spec 0004 (/test pass)
+
+
+def test_the_append_trims_the_stream_to_about_1000(logged_in, redis):
+    """covers: AC-11 (XADD MAXLEN ~ 1000)"""
+    logged_in.post("/control/stop", data={"csrf": _csrf(logged_in)}, headers=HTMX)
+    assert redis.xadd_calls == [{"name": STREAM, "maxlen": 1000, "approximate": True}]
+
+
+def test_the_command_ttl_comes_from_settings(redis, clock):
+    """covers: AC-11 (expires_at = issued_at + CONTROL_COMMAND_TTL_S)"""
+    from fastapi.testclient import TestClient
+
+    from .conftest import log_in, make_app
+
+    with TestClient(make_app(redis, clock, control_command_ttl_s=60), follow_redirects=False) as client:
+        log_in(client, clock)
+        client.post("/control/stop", data={"csrf": _csrf(client)}, headers=HTMX)
+    [entry] = _entries(redis)
+    issued = datetime.fromisoformat(entry["issued_at"])
+    assert datetime.fromisoformat(entry["expires_at"]) - issued == timedelta(seconds=60)
+
+
+def test_live_appends_to_the_live_stream_only(redis, clock):
+    """covers: AC-11 (the stream is scoped to TRADING_ENV)"""
+    from .conftest import PASSWORD, code_at, live_client
+
+    with live_client(redis, clock) as client:
+        client.post("/login", data={"password": PASSWORD, "code": code_at(clock.now)})
+        response = client.post("/control/stop", data={"csrf": _csrf(client)}, headers=HTMX)
+    assert response.status_code == 200
+    assert [call["name"] for call in redis.xadd_calls] == ["live:control"]
+    assert STREAM not in redis.streams
+
+
+def test_a_sent_stop_logs_one_info_line_with_its_id(logged_in, redis, caplog):
+    """covers: AC-11"""
+    with caplog.at_level(logging.INFO):
+        logged_in.post("/control/stop", data={"csrf": _csrf(logged_in)}, headers=HTMX)
+    [entry] = _entries(redis)
+    sent = [r for r in caplog.records if getattr(r, "fields", {}).get("code") == "control_sent"]
+    assert len(sent) == 1
+    assert sent[0].levelno == logging.INFO
+    assert sent[0].fields == {"code": "control_sent", "id": entry["id"], "cmd": "stop"}
+
+
+def test_a_plain_post_without_a_csrf_field_is_refused_and_appends_nothing(logged_in, redis):
+    """covers: AC-11"""
+    response = logged_in.post("/control/stop", headers=REFERER)
+    assert response.status_code == 403
+    assert "Stop NOT sent: reload the page" in response.text
+    assert 'class="topbar"' in response.text
+    assert _entries(redis) == []
+
+
+def test_a_hung_redis_fails_closed_like_a_dead_one(logged_in, redis, caplog):
+    """covers: AC-13 (no answer within 1 s: 503, ERROR, nothing shown as sent)"""
+    csrf = _csrf(logged_in)
+    redis.hang = 2.0
+
+    with caplog.at_level(logging.ERROR):
+        started = time.monotonic()
+        htmx = logged_in.post("/control/stop", data={"csrf": csrf}, headers=HTMX)
+        elapsed = time.monotonic() - started
+        plain = logged_in.post("/control/stop", data={"csrf": csrf}, headers=REFERER)
+
+    assert elapsed < 1.8  # the send gives up at 1 s, long before the fake would answer
+    for response in (htmx, plain):
+        assert response.status_code == 503
+        assert "Stop NOT sent: Redis did not answer" in response.text
+        assert "sent ·" not in response.text
+    assert 'class="topbar"' in plain.text
+    codes = [r.fields["code"] for r in caplog.records if r.levelno == logging.ERROR]
+    assert codes == ["control_send_failed", "control_send_failed"]
+    assert _entries(redis) == []
+
+
+def test_a_failed_stop_never_shows_the_command_as_sent_in_the_top_bar(logged_in, redis):
+    """covers: AC-13"""
+    csrf = _csrf(logged_in)
+    redis.fail = RedisConnectionError("down")
+    logged_in.post("/control/stop", data={"csrf": csrf}, headers=HTMX)
+    redis.fail = None
+    page = logged_in.get("/").text
+    assert "sent ·" not in page
+    assert "command--none" in page

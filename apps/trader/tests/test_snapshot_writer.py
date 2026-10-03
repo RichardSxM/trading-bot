@@ -1,6 +1,7 @@
 """covers: spec 0004 AC-8, the heartbeat writer keeps the trader running through Redis trouble."""
 
 import asyncio
+import itertools
 import json
 import logging
 
@@ -85,6 +86,75 @@ def test_a_cancelled_writer_logs_nothing(caplog):
         task.add_done_callback(log_writer_crash)
         await asyncio.sleep(0)
         task.cancel()
+        await asyncio.sleep(0)
+
+    asyncio.run(run())
+    assert caplog.records == []
+
+
+# --- gaps found against spec 0004 (/test pass)
+
+
+def test_the_default_interval_is_one_second():
+    """covers: AC-8 (every 1 s)"""
+    import inspect
+
+    from trader.snapshot_writer import HEARTBEAT_TTL_S, WRITE_INTERVAL_S
+
+    assert WRITE_INTERVAL_S == 1.0
+    assert inspect.signature(write_heartbeats).parameters["interval_s"].default == WRITE_INTERVAL_S
+    assert HEARTBEAT_TTL_S == 30
+
+
+def test_no_two_outage_warnings_are_less_than_a_minute_apart():
+    """covers: AC-8 (at most one WARNING snapshot_write_failed per 60 s)"""
+    redis = FakeRedis(fail=True)
+    now = [0.0]
+    stamps = []
+
+    def monotonic():
+        now[0] += 7.0
+        return now[0]
+
+    class Stamp(logging.Handler):
+        def emit(self, record):
+            stamps.append(now[0])
+
+    handler = Stamp(level=logging.WARNING)
+    logging.getLogger("trader.snapshot_writer").addHandler(handler)
+    try:
+        _run(write_heartbeats(redis, "k", dict, 0.001, monotonic=monotonic), 0.1)
+    finally:
+        logging.getLogger("trader.snapshot_writer").removeHandler(handler)
+
+    assert len(stamps) >= 2
+    assert all(b - a >= 60 for a, b in itertools.pairwise(stamps))
+    assert all(b - a < 67 for a, b in itertools.pairwise(stamps))  # and not fewer than needed
+
+
+def test_an_os_error_is_an_outage_too(caplog):
+    """covers: AC-8 (a refused socket keeps the writer going like a Redis error)"""
+
+    class Refused(FakeRedis):
+        async def set(self, name, value, *, ex):
+            self.writes.append(name)
+            raise ConnectionRefusedError
+
+    redis = Refused()
+    with caplog.at_level(logging.WARNING):
+        _run(write_heartbeats(redis, "k", dict, 0.001), 0.05)
+    assert len(redis.writes) > 2  # kept trying
+    assert [r.fields["code"] for r in caplog.records] == ["snapshot_write_failed"]
+    assert caplog.records[0].fields["error"] == "ConnectionRefusedError"
+
+
+def test_a_writer_that_ends_normally_logs_nothing(caplog):
+    """covers: AC-8"""
+
+    async def run():
+        task = asyncio.create_task(asyncio.sleep(0))
+        task.add_done_callback(log_writer_crash)
+        await task
         await asyncio.sleep(0)
 
     asyncio.run(run())

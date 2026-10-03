@@ -198,3 +198,41 @@ def test_default_gateway_reads_the_default_route():
 )
 def test_default_gateway_is_none_without_a_usable_default_route(rows):
     assert default_gateway(HEADER + rows) is None
+
+
+# --- gaps found against spec 0004 (/test pass)
+
+
+def test_nineteen_failures_across_keys_do_not_lock_and_the_twentieth_does():
+    """covers: AC-2"""
+    lockout = Lockout()
+    for i in range(19):
+        lockout.record_failure(f"k{i}", 100 + i)
+    assert lockout.is_locked("someone-new", 119) is False
+    lockout.record_failure("k19", 119)
+    assert lockout.is_locked("someone-new", 119) is True
+
+
+def test_a_success_does_not_reset_the_global_count():
+    """covers: AC-2"""
+    lockout = Lockout()
+    for i in range(20):
+        lockout.record_failure(f"k{i}", 100)
+    lockout.record_success("k0")
+    assert lockout.is_locked("k0", 101) is True
+
+
+def test_eviction_keeps_the_newest_keys():
+    """covers: AC-2"""
+    lockout = Lockout(max_global_failures=100_000)
+    for i in range(1001):
+        for _ in range(5):
+            lockout.record_failure(f"k{i}", 1)
+    assert lockout.is_locked("k0", 2) is False  # the oldest key was evicted
+    assert lockout.is_locked("k1", 2) is True
+    assert lockout.is_locked("k1000", 2) is True
+
+
+def test_a_referer_that_does_not_parse_gives_root():
+    """covers: AC-1"""
+    assert referer_path("http://[::1") == "/"  # urlsplit raises ValueError on an open bracket

@@ -95,7 +95,7 @@ code in [apps/dashboard/src/dashboard/](../../apps/dashboard/src/dashboard/), [a
   - [x] Complete shell: nav and empty states, responsive layout, LIVE treatment, link status, vendored assets (AC-6, AC-7, AC-10, AC-18)
   - [x] Activity feed: newest 20 stop commands with their outcomes on Overview, live over SSE (AC-20)
 - [ ] Verify it: `/check verify design system & dashboard shell`
-- [ ] Test it: `/test design system & dashboard shell`
+- [x] Test it: `/test design system & dashboard shell`
 
 ## Slice 1: Core paper trading loop
 

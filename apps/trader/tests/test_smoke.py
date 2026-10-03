@@ -443,3 +443,56 @@ def test_every_env_writes_the_heartbeat_snapshot_while_the_node_runs(fake_main, 
         "trading_state": "RUNNING",
         "data_connected": True,
     }
+
+
+# --- gaps found against spec 0004 (/test pass)
+
+
+def test_a_crashed_heartbeat_writer_logs_critical_and_the_node_keeps_running(fake_main, monkeypatch, caplog):
+    """covers: AC-8 (one CRITICAL snapshot_writer_crashed, trading goes on)"""
+    import logging
+
+    class Node(_FakeNode):
+        class kernel:
+            class data_engine:
+                @staticmethod
+                def check_connected():
+                    raise RuntimeError("bug in the state read")
+
+        def run(self):
+            self.calls.append("run")
+            self.get_event_loop().run_until_complete(asyncio.sleep(0.05))
+            self.calls.append("still running")
+
+    monkeypatch.setattr(fake_main, "TradingNode", Node)
+    with caplog.at_level(logging.CRITICAL):
+        code = fake_main.run_node(
+            build_config(_settings("demo"), SECRETS), _settings("demo"), 5.0, REDIS_SECRET, fail_backoff_s=0
+        )
+
+    assert code == 0
+    assert _FakeNode.instances[0].calls[-3:] == ["run", "still running", "dispose"]
+    crashed = [r for r in caplog.records if getattr(r, "fields", {}).get("code") == "snapshot_writer_crashed"]
+    assert len(crashed) == 1
+
+
+def test_a_disconnected_data_client_reads_as_false(fake_main, monkeypatch):
+    """covers: AC-8 (data_connected is a real bool)"""
+    import json
+
+    redis = _FakeRedis()
+    monkeypatch.setattr(fake_main, "snapshot_client", lambda settings, password: redis)
+
+    class Node(_FakeNode):
+        class kernel:
+            class data_engine:
+                @staticmethod
+                def check_connected():
+                    return 0
+
+        def run(self):
+            self.get_event_loop().run_until_complete(asyncio.sleep(0.05))
+
+    monkeypatch.setattr(fake_main, "TradingNode", Node)
+    fake_main.run_node(build_config(_settings("demo"), SECRETS), _settings("demo"), 5.0, REDIS_SECRET, fail_backoff_s=0)
+    assert json.loads(redis.writes[0][1])["data"]["data_connected"] is False

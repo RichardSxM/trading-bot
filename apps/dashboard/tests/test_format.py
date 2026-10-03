@@ -88,3 +88,48 @@ def test_ts_refuses_a_naive_datetime():
 def test_ts_refuses_other_types(value):
     with pytest.raises(TypeError):
         ts(value)
+
+
+# --- gaps found against spec 0004 (/test pass)
+
+
+@pytest.mark.parametrize("value", [2, True, "1.5", None])
+def test_pnl_refuses_anything_but_a_decimal(value):
+    """covers: AC-17"""
+    with pytest.raises(TypeError, match="expected a Decimal"):
+        pnl(value)
+
+
+@pytest.mark.parametrize("value", [Decimal("Infinity"), Decimal("-Infinity")])
+def test_pnl_refuses_infinity(value):
+    """covers: AC-17"""
+    with pytest.raises(ValueError, match="cannot show"):
+        pnl(value)
+
+
+def test_the_smallest_loss_is_a_loss_not_zero():
+    """covers: AC-17"""
+    assert pnl(Decimal("-0.01")) == (
+        '<span class="pnl pnl--loss"><span class="pnl__arrow" aria-hidden="true">▼</span>\N{MINUS SIGN}0.01</span>'
+    )
+
+
+def test_ts_from_nanoseconds_carries_the_same_datetime_and_title():
+    """covers: AC-17"""
+    moment = datetime(2026, 10, 2, 14, 3, 7, tzinfo=UTC)
+    ns = int(moment.timestamp()) * 1_000_000_000 + 999_999_999
+    assert ts(ns) == ts(moment)
+
+
+def test_ts_takes_a_time_before_the_epoch():
+    """covers: AC-17 (floor, not truncation toward zero)"""
+    ns = -1  # one nanosecond before 1970-01-01T00:00:00Z
+    assert ">1969-12-31 23:59:59Z</time>" in ts(ns)
+
+
+def test_ts_names_the_type_it_refused():
+    """covers: AC-17"""
+    with pytest.raises(TypeError, match="got bool"):
+        ts(False)
+    with pytest.raises(TypeError, match="got float"):
+        ts(1.5)

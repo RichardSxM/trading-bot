@@ -501,3 +501,97 @@ def test_an_invalid_activity_entry_warns_once_not_once_per_tick(caplog):
         views = asyncio.run(run())
     assert views == ["unknown entry:|stop:awaiting trader"] * 3
     assert [r.fields["code"] for r in caplog.records] == ["control_result_invalid"]
+
+
+# --- gaps found against spec 0004 (/test pass)
+
+
+def test_clock_skew_warns_again_once_a_minute_has_passed(caplog):
+    """covers: AC-9 (one clock_skew WARNING per 60 s, not one ever)"""
+    mono = [1000.0]
+    streams = Streams()
+    poller = Poller(
+        Source(encode(NOW + 5 * S, {})),
+        _render,
+        0.001,
+        3,
+        10,
+        read_command=streams.read_command,
+        read_results=streams.read_results,
+        render_command=_render,
+        render_activity=_render_rows,
+        hide_after_s=900,
+        read_timeout_s=1.0,
+        clock_ns=lambda: NOW,
+        monotonic=lambda: mono[0],
+    )
+
+    async def run():
+        await poller.render_now()
+        mono[0] += 59.9
+        await poller.render_now()
+        mono[0] += 0.1
+        await poller.render_now()
+
+    with caplog.at_level(logging.WARNING):
+        asyncio.run(run())
+    assert [r.fields["code"] for r in caplog.records] == ["clock_skew", "clock_skew"]
+
+
+def test_not_handled_expired_still_shows_at_exactly_fifteen_minutes_after_expiry():
+    """covers: AC-12 (hidden after, not at, the 15 minute mark)"""
+    view = command_state(COMMAND_FIELDS, None, COMMAND.expires_at + timedelta(seconds=900), 900)
+    assert view == CommandView("stop sent · not handled, expired", "bad")
+
+
+def test_two_different_bad_entries_warn_once_each(caplog):
+    """covers: AC-20 (once per entry, not once per poll)"""
+    streams = Streams()
+    streams.commands = [(b"2-0", {b"id": b"nope"}), (b"1-0", {b"cmd": b"stop"})]
+
+    async def run():
+        poller, _ = _poller(Source(encode(NOW, {})), streams=streams)
+        for _ in range(3):
+            await poller.tick()
+
+    with caplog.at_level(logging.WARNING):
+        asyncio.run(run())
+    codes = [r.fields["code"] for r in caplog.records if r.levelno == logging.WARNING]
+    assert codes == ["control_result_invalid", "control_result_invalid"]
+
+
+def test_a_stop_reaches_activity_on_the_next_poll():
+    """covers: AC-20 (refreshed over SSE within one poll of a new command)"""
+    streams = Streams()
+
+    async def run():
+        poller, _ = _poller(Source(encode(NOW, {})), streams=streams)
+        queue = poller.subscribe()
+        await poller.tick()
+        while not queue.empty():
+            queue.get_nowait()
+        msg = stop_command(datetime.fromtimestamp(NOW / S, tz=UTC), 300)
+        streams.commands.insert(0, (b"1-0", {k.encode(): v.encode() for k, v in to_fields(msg).items()}))
+        poller.note_sent(msg)
+        await poller.tick()
+        return [queue.get_nowait() for _ in range(queue.qsize())]
+
+    events = asyncio.run(run())
+    activity = [html for name, html in events if name == ACTIVITY_EVENT]
+    assert activity == ["stop:awaiting trader"]
+
+
+@pytest.mark.parametrize(("newer", "text"), [(199, "stop sent · confirmed"), (200, "stop sent · awaiting trader")])
+def test_only_the_newest_200_results_are_searched(logged_in, redis, clock, newer, text):
+    """covers: AC-12 (a matching result behind 200 newer ones is not found)"""
+    command = stop_command(datetime.fromtimestamp(clock.now, tz=UTC), 300)
+    redis.append("demo:control", to_fields(command))
+    at = format_utc(datetime.fromtimestamp(clock.now, tz=UTC))
+
+    def result(command_id):
+        return {"id": command_id, "outcome": "executed", "outcome_at": at, "schema_version": "1"}
+
+    redis.append("demo:control:results", result(str(command.id)))
+    for _ in range(newer):
+        redis.append("demo:control:results", result(str(uuid.uuid4())))
+    assert text in logged_in.get("/").text

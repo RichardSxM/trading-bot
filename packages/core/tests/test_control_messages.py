@@ -126,3 +126,22 @@ def test_field_reads_str_and_bytes_and_refuses_bad_utf8():
 def test_control_message_is_a_value():
     msg = ControlMessage(uuid.UUID(ID), ControlCmd.STOP, NOW, NOW)
     assert msg == ControlMessage(uuid.UUID(ID), ControlCmd.STOP, NOW, NOW)
+
+
+# --- gaps found against spec 0004 (/test pass)
+
+
+def test_a_result_written_with_another_offset_parses_as_utc():
+    """covers: AC-12 (the dashboard compares outcome_at in UTC)"""
+    result = result_from_fields(
+        {"id": ID, "outcome": "executed", "outcome_at": "2026-10-02T16:03:07+02:00", "schema_version": "1"}
+    )
+    assert result.outcome_at == datetime(2026, 10, 2, 14, 3, 7, tzinfo=UTC)
+    assert result.outcome_at.utcoffset() == timedelta(0)
+
+
+def test_a_key_that_is_not_utf8_is_skipped_not_a_crash():
+    """covers: AC-12 (an entry that does not parse is unknown, never an exception)"""
+    assert field({b"\xff\xfe": b"x", b"id": ID.encode()}, "id") == ID
+    with pytest.raises(ControlFormatError):
+        from_fields({b"\xff": b"x"})

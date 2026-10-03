@@ -1,5 +1,6 @@
 """covers: spec 0004 AC-16, /styleguide renders every token and every component state DESIGN.md lists."""
 
+import itertools
 import re
 
 from fastapi.testclient import TestClient
@@ -66,3 +67,83 @@ def test_the_chart_script_turns_the_library_logo_off(redis, clock):
 
 def test_only_the_styleguide_loads_the_chart_library(logged_in):
     assert "lightweight-charts" not in logged_in.get("/").text
+
+
+# --- gaps found against spec 0004 (/test pass)
+
+
+def _sample(page, marker):
+    """The markup from one ``data-sample`` marker up to the next one."""
+    start = page.index(f'data-sample="{marker}"')
+    end = page.find('data-sample="', start + 1)
+    return page[start : end if end != -1 else len(page)]
+
+
+def test_each_state_sample_holds_markup_in_that_state(logged_in):
+    """covers: AC-16 (the marker wraps the real state, not just a label)"""
+    page = logged_in.get("/styleguide").text
+    assert 'class="badge badge--live">live<' in _sample(page, "badge:live")
+    assert 'class="badge badge--demo">demo<' in _sample(page, "badge:demo")
+    busy = _sample(page, "button:busy")
+    assert "button--busy" in busy
+    assert 'aria-busy="true"' in busy
+    assert re.search(r"<button[^>]* disabled", _sample(page, "button:disabled"))
+    assert '<span class="stale__age">link lost</span>' in _sample(page, "stale:lost")
+    loading = _sample(page, "stat:loading")
+    assert 'class="stat stat--loading"' in loading
+    assert 'role="status"' in loading
+    assert 'class="stat stat--error"' in _sample(page, "stat:error")
+    assert "Fills and closed trades appear here." in _sample(page, "table:empty")
+    assert "pnl--profit" in _sample(page, "pnl:profit")
+    assert "pnl--loss" in _sample(page, "pnl:loss")
+    assert "pnl--zero" in _sample(page, "pnl:zero")
+
+
+def test_every_type_space_radius_and_motion_token_has_a_sample(logged_in):
+    """covers: AC-16"""
+    from dashboard.web.styleguide import TYPE_ROLES
+
+    from .test_design_tokens import frontmatter
+
+    front = frontmatter(design_md().read_text(encoding="utf-8"))
+    page = logged_in.get("/styleguide").text
+    assert set(TYPE_ROLES) == set(front["typography"])
+    missing = [f"type:{role}" for role in front["typography"] if f'data-sample="type:{role}"' not in page]
+    missing += [f"space:{step}" for step in front["spacing"] if f'data-sample="space:{step}"' not in page]
+    missing += [f"radius:{step}" for step in front["rounded"] if f'data-sample="radius:{step}"' not in page]
+    assert missing == []
+    assert 'data-sample="motion:state"' in page
+
+
+def test_the_chart_sample_is_an_image_with_a_name(logged_in):
+    """covers: AC-16"""
+    chart = _sample(logged_in.get("/styleguide").text, "chart:default")
+    assert re.search(
+        r'<div class="chart__canvas" data-chart data-series=\'[^\']+\' role="img" aria-label="[^"]+">', chart
+    )
+
+
+def test_the_sample_candles_are_hourly_and_well_formed():
+    """covers: AC-16"""
+    from decimal import Decimal
+
+    from dashboard.web.styleguide import candles
+
+    series = candles()
+    assert len(series) == 48
+    times = [int(c["time"]) for c in series]
+    assert all(b - a == 3600 for a, b in itertools.pairwise(times))
+    for candle in series:
+        prices = {k: Decimal(str(candle[k])) for k in ("open", "high", "low", "close")}
+        assert all(isinstance(candle[k], str) for k in prices)
+        assert prices["high"] >= max(prices["open"], prices["close"])
+        assert prices["low"] <= min(prices["open"], prices["close"])
+
+
+def test_the_styleguide_shows_the_number_rules_from_verify_step_18(logged_in):
+    """covers: AC-16, AC-17"""
+    page = logged_in.get("/styleguide").text
+    assert "\N{MINUS SIGN}42.10" in page
+    assert "▲</span>+312.40" in page
+    assert "▼</span>\N{MINUS SIGN}87.15" in page
+    assert 'title="10:30:00 CET, Amsterdam">2026-01-15 09:30:00Z</time>' in page

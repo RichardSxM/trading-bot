@@ -44,3 +44,46 @@ def test_redis_down_shows_activity_unavailable(logged_in, redis):
     feed = _feed(logged_in.get("/").text)
     assert "Activity unavailable: link lost" in feed
     assert 'role="alert"' in feed
+
+
+# --- gaps found against spec 0004 (/test pass)
+
+
+def test_activity_shows_the_newest_20_commands_newest_first(logged_in, redis, clock):
+    """covers: AC-20"""
+    now = datetime.fromtimestamp(clock.now, tz=UTC)
+    commands = [stop_command(now - timedelta(minutes=22 - i), 300) for i in range(22)]
+    for command in commands:
+        redis.append("demo:control", to_fields(command))
+    feed = _feed(logged_in.get("/").text)
+    rows = re.findall(r'<time[^>]*datetime="([^"]+)"', feed)
+    assert len(re.findall(r'<li class="activity__row">', feed)) == 20
+    shown = [format_utc(c.issued_at)[:19] for c in reversed(commands[2:])]
+    assert [row[:19] for row in rows] == shown
+
+
+def test_activity_colors_each_outcome_like_the_top_bar(logged_in, redis, clock):
+    """covers: AC-20"""
+    now = datetime.fromtimestamp(clock.now, tz=UTC)
+    failed = stop_command(now - timedelta(minutes=1), 300)
+    expired = stop_command(now - timedelta(hours=1), 300)  # no result, past expires_at
+    redis.append("demo:control", to_fields(expired))
+    redis.append("demo:control", to_fields(failed))
+    redis.append(
+        "demo:control:results",
+        {"id": str(failed.id), "outcome": "failed", "outcome_at": format_utc(now), "schema_version": "1"},
+    )
+    redis.append("demo:control", {"id": "nope"})
+    feed = _feed(logged_in.get("/").text)
+    assert '<span class="activity__outcome command--bad">failed</span>' in feed
+    assert '<span class="activity__outcome command--bad">not handled, expired</span>' in feed
+    assert '<span class="activity__cmd command--warn">unknown entry</span>' in feed
+
+
+def test_activity_rows_show_their_time_through_the_ts_filter(logged_in, redis, clock):
+    """covers: AC-20, AC-17 (UTC with Z, an Amsterdam tooltip)"""
+    command = stop_command(datetime(2026, 7, 2, 14, 3, 7, tzinfo=UTC), 300)
+    redis.append("demo:control", to_fields(command))
+    feed = _feed(logged_in.get("/").text)
+    assert "2026-07-02 14:03:07Z" in feed
+    assert 'title="16:03:07 CEST, Amsterdam"' in feed
