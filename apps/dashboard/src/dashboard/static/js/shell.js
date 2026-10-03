@@ -1,6 +1,7 @@
 // Shell behaviour (spec 0004). Hardens htmx, gives the stop button its error states (AC-13),
 // and maps the SSE link to the link status: live, reconnecting after 5 s of silence, lost after
-// 15 s, with the age and command dimmed and labelled while it is not live (AC-10).
+// 15 s, with the age and command dimmed and labelled while it is not live (AC-10). A live link
+// whose partials say the dashboard cannot read Redis shows amber "no data", never a green dot.
 "use strict";
 (function () {
   if (!window.htmx) return;
@@ -27,6 +28,8 @@
     form.insertBefore(failed.content.cloneNode(true), form.querySelector("button"));
     var label = form.querySelector(".button__label");
     if (label) label.textContent = "Retry stop";
+    // The request never left the browser, so the link is not live either: no green dot beside "NOT sent".
+    if (link) show("reconnecting"); // show and link are declared below; a tap comes after they are set
   });
 
   // ---- Link status ----
@@ -43,13 +46,18 @@
     if (link.dataset.state === state) return;
     link.dataset.state = state;
     link.className = "link link--" + state;
-    text.textContent = state === "connecting" ? "connecting" : state;
+    text.textContent = state === "degraded" ? "no data" : state;
     document.body.dataset.link = state;
+  }
+
+  // The server renders the age "no data" (level lost) while it cannot read Redis.
+  function connected() {
+    return document.querySelector(".topbar__age .age--lost") ? "degraded" : "live";
   }
 
   function beat() {
     lastEvent = Date.now();
-    show("live");
+    show(connected());
     link.classList.remove("is-beat");
     void link.offsetWidth; // restart the one shot animation
     link.classList.add("is-beat");
@@ -76,6 +84,10 @@
     var source = event.detail.source;
     EVENTS.forEach(function (name) { source.addEventListener(name, beat); });
     beat();
+  });
+  // A swapped partial may start or end "no data"; recheck once htmx has settled it.
+  document.body.addEventListener("htmx:afterSettle", function () {
+    if (link.dataset.state === "live" || link.dataset.state === "degraded") show(connected());
   });
   document.body.addEventListener("htmx:sseError", function (event) {
     var source = event.detail.source;

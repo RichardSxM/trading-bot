@@ -128,7 +128,9 @@ def test_idle_limit_slides_with_each_request_and_the_hard_cap_does_not():
 def test_tampered_foreign_and_old_password_cookies_are_no_session():
     codec = _codec()
     cookie = codec.encode(codec.new(0))
-    assert codec.decode(cookie[:-1] + ("A" if cookie[-1] != "A" else "B"), 1) is None
+    # Change a character early in the payload: every one there carries 6 full bits. The last
+    # character of the signature carries 2 padding bits, so changing it can leave the bytes as they were.
+    assert codec.decode(cookie[:4] + ("A" if cookie[4] != "A" else "B") + cookie[5:], 1) is None
     assert codec.decode(None, 1) is None
     assert codec.decode("", 1) is None
     assert _codec(key="x" * 48).decode(cookie, 1) is None  # a rotated session key ends it

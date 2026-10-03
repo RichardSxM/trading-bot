@@ -116,6 +116,10 @@ time[title] { text-decoration: underline dotted var(--edge); text-underline-offs
 .link--lost { color: var(--loss); }
 .link--lost .link__dot { background: var(--loss); }
 .link--lost .link__text { color: var(--loss); }
+/* The browser's link is live but the dashboard cannot read Redis (AC-10): never a green dot then. */
+.link--degraded { color: var(--warn); }
+.link--degraded .link__dot { background: var(--warn); }
+.link--degraded .link__text { color: var(--warn); }
 .link.is-beat .link__dot::after { animation: beat 700ms cubic-bezier(0.16, 1, 0.3, 1); }
 @keyframes beat { from { opacity: 0.9; transform: scale(1); } to { opacity: 0; transform: scale(2.75); } }
 
@@ -160,7 +164,8 @@ time[title] { text-decoration: underline dotted var(--edge); text-underline-offs
 .table td { border-bottom: 1px solid var(--rule); transition: background-color var(--motion-state); }
 .table tbody tr:last-child td { border-bottom: 0; }
 .table tbody tr:hover td { background: var(--raised); }
-.table .is-num { text-align: right; font-family: var(--type-number-family); font-variant-numeric: tabular-nums; }
+.table .is-num { text-align: right; }
+.table td.is-num { font-family: var(--type-number-family); font-variant-numeric: tabular-nums; }
 .table__empty td { padding: var(--space-32) var(--space-16); color: var(--muted); text-align: left; white-space: normal; }
 .table__empty tr:hover td, .table__empty:hover td { background: transparent; }
 
@@ -259,10 +264,13 @@ time[title] { text-decoration: underline dotted var(--edge); text-underline-offs
 .activity__row:last-child { border-bottom: 0; }
 .activity__time { grid-area: time; color: var(--muted); font-size: var(--type-caption-size); }
 .activity__none { color: var(--faint); }
-.activity__cmd { grid-area: cmd; color: var(--text); font-weight: 500; }
+.activity__cmd { grid-area: cmd; color: var(--text); font-weight: 500; white-space: nowrap; }
+.activity__count { margin-left: var(--space-4); color: var(--muted); font-weight: 400; }
+.activity__span { display: block; color: var(--faint); font-size: var(--type-caption-size); }
 .activity__outcome { grid-area: outcome; justify-self: end; text-align: right; }
 @media (min-width: 600px) {
-  .activity__row { grid-template-columns: 11.5rem 4.5rem 1fr; grid-template-areas: "time cmd outcome"; }
+  /* The command column fits its longest word ("unknown entry") and a count ("stop ×20") on one line. */
+  .activity__row { grid-template-columns: 11.5rem 7.5rem 1fr; grid-template-areas: "time cmd outcome"; }
   .activity__time { font-size: inherit; }
 }
 
@@ -349,6 +357,22 @@ time[title] { text-decoration: underline dotted var(--edge); text-underline-offs
 .command--ok { color: var(--text); }
 .command--warn { color: var(--warn); }
 .command--bad { color: var(--loss); }
+.command__age { color: var(--faint); }
+
+/* The alert bar (AC-21): one full width line under the top bar, only while something is wrong. */
+.alert-bar { grid-column: 1 / -1; margin: 0 calc(-1 * var(--space-16)) calc(-1 * var(--space-8)); }
+.alert-bar:empty { display: none; }
+.alert {
+  display: flex; align-items: flex-start; gap: var(--space-12);
+  margin: 0; padding: var(--space-12) var(--space-16);
+  background: var(--raised); border-top: 2px solid var(--loss);
+  color: var(--text); font-size: var(--type-label-size); line-height: 1.45;
+}
+.alert .icon { flex: none; width: 18px; height: 18px; margin-top: 1px; color: var(--loss); }
+.alert__title { color: var(--loss); font-weight: 600; }
+.alert--warn { border-top-color: var(--warn); }
+.alert--warn .icon, .alert--warn .alert__title { color: var(--warn); }
+.alert__out { display: block; margin-top: var(--space-4); color: var(--muted); }
 
 .stop-area { display: flex; align-items: center; gap: var(--space-12); }
 .stop-area__error { color: var(--loss); font-weight: 600; font-size: var(--type-caption-size); max-width: 22ch; text-align: right; }
@@ -416,11 +440,15 @@ time[title] { text-decoration: underline dotted var(--edge); text-underline-offs
     gap: var(--space-24); min-height: 60px; padding: var(--space-8) var(--space-8) var(--space-8) var(--space-24);
   }
   .topbar__end { padding-left: var(--space-16); border-left: 1px solid var(--rule); }
+  .alert-bar { margin: 0 calc(-1 * var(--space-8)) calc(-1 * var(--space-8)) calc(-1 * var(--space-24)); }
+  .alert { padding: var(--space-12) var(--space-24); }
   .region { padding: var(--space-24); }
   .table-wrap { margin: 0 calc(-1 * var(--space-24)); }
   .table th, .table td { padding-left: var(--space-24); padding-right: var(--space-24); }
   .page__session { display: none; }
   .page { min-height: calc(100dvh - 16px - 62px); align-content: stretch; }
+  /* Only Overview's board fills the pane; an empty Trades table should not stretch into a void. */
+  .board:not(.board--overview) { align-self: start; }
 }
 @media (min-width: 1100px) {
   .board { grid-template-columns: minmax(0, 1fr) minmax(320px, 400px); }

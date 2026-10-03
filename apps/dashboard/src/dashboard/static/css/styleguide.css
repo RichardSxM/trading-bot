@@ -75,3 +75,4 @@
 .sg-nav .nav__item { flex-direction: row; justify-content: flex-start; min-height: 36px; padding: 0 var(--space-8); font-size: var(--type-label-size); }
 .sg-nav .nav__item .icon { width: 16px; height: 16px; }
 .sg-nav .nav__item.is-current { background: var(--raised); }
+.sg-alerts { display: grid; gap: var(--space-8); margin: 0 0 var(--space-16); }

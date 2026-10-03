@@ -95,6 +95,7 @@ def test_a_seed_of_an_impossible_base32_length_is_refused():
         "dashboard_session_max_d",
         "control_command_ttl_s",
         "dashboard_command_hide_s",
+        "dashboard_ack_warn_s",
     ],
 )
 def test_a_zero_duration_is_refused(monkeypatch, name):

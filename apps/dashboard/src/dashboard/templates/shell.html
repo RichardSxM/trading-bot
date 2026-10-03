@@ -36,6 +36,7 @@
       <div class="topbar__end">
         {% with csrf=csrf, error=stop_error %}{% include "partials/stop_area.html" %}{% endwith %}
       </div>
+      <div class="alert-bar" id="alert-bar" sse-swap="topbar-alert" role="alert">{{ live["topbar-alert"] }}</div>
       <template id="stop-failed"><span class="stop-area__error" role="alert">Stop NOT sent: no connection to the dashboard</span></template>
     </header>
 

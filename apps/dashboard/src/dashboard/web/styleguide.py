@@ -7,7 +7,17 @@ from typing import Final
 
 from markupsafe import Markup
 
-from dashboard.live.state import UNKNOWN_ENTRY, ActivityRow
+from dashboard.live.state import (
+    COMMAND_NO_DATA,
+    NO_COMMAND,
+    UNKNOWN_ENTRY,
+    UNKNOWN_RESULT,
+    ActivityRow,
+    AlertKind,
+    AlertView,
+    CommandView,
+    collapse,
+)
 from dashboard.ui.format import num, pnl, ts
 from dashboard.ui.tokens import color_tokens, contrast_ratio, read_tokens
 
@@ -39,6 +49,32 @@ ACTIVITY_SAMPLE: Final = (
     ActivityRow("stop", SAMPLE_TIME - timedelta(minutes=4), "confirmed", "ok", final=True),
     ActivityRow("stop", SAMPLE_TIME - timedelta(minutes=31), "not handled, expired", "bad"),
     UNKNOWN_ENTRY,
+)
+# A run of three identical rows, which the feed shows as one line with a count.
+ACTIVITY_RUN: Final = (
+    *(ActivityRow("stop", SAMPLE_TIME - timedelta(seconds=s), "not handled, expired", "bad") for s in (0, 2, 5)),
+    ActivityRow("stop", SAMPLE_TIME - timedelta(minutes=9), "confirmed", "ok", final=True),
+)
+# The top bar's command state, one per level, each with its age.
+COMMAND_SAMPLES: Final[dict[str, CommandView]] = {
+    "none": NO_COMMAND,
+    "pending": CommandView(
+        "stop sent · awaiting trader", "pending", status="awaiting", since=SAMPLE_TIME, age="12s ago"
+    ),
+    "ok": CommandView("stop sent · confirmed", "ok", final=True, status="executed", since=SAMPLE_TIME, age="3m ago"),
+    "warn": UNKNOWN_RESULT,
+    "bad": CommandView("stop sent · not handled, expired", "bad", status="unhandled", since=SAMPLE_TIME, age="2m ago"),
+    "lost": COMMAND_NO_DATA,
+}
+# The alert bar in each of its states (AC-21).
+ALERT_KINDS: Final[tuple[tuple[AlertKind, str], ...]] = (
+    ("stop_unhandled", "bad"),
+    ("stop_failed", "bad"),
+    ("stop_late", "bad"),
+    ("stop_unknown", "warn"),
+    ("trader_silent", "bad"),
+    ("stop_unacknowledged", "warn"),
+    ("no_data", "warn"),
 )
 WINTER_TIME: Final = datetime(2026, 1, 15, 9, 30, 0, tzinfo=UTC)
 # Sample heartbeat ages for the tape, one a second; -1 is a second without a live link.
@@ -119,6 +155,18 @@ def styleguide_context() -> dict[str, object]:
         "candles": candles(),
         "pulse_sample": PULSE_SAMPLE,
         "stale_s": (3, 10),
-        "activity_rows": ACTIVITY_SAMPLE,
+        "activity_groups": collapse(ACTIVITY_SAMPLE),
+        "activity_run": collapse(ACTIVITY_RUN),
+        "command_samples": COMMAND_SAMPLES,
+        "kraken_url": "https://demo-futures.kraken.com/",  # the sample alerts link to the demo venue
+        "alert_samples": [
+            AlertView(
+                kind,
+                "bad" if level == "bad" else "warn",
+                None if kind.startswith(("trader", "no_")) else SAMPLE_TIME,
+                SAMPLE_TIME + timedelta(minutes=5) if kind == "stop_unacknowledged" else None,
+            )
+            for kind, level in ALERT_KINDS
+        ],
         "sample_nav": (("/styleguide", "Overview", "activity"), ("#trades", "Trades", "arrow-left-right")),
     }

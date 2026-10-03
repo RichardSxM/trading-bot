@@ -41,6 +41,8 @@ class DashboardSettings(Settings):
     dashboard_session_max_d: float = Field(default=7, gt=0)
     control_command_ttl_s: int = Field(default=300, gt=0)
     dashboard_command_hide_s: int = Field(default=900, gt=0)
+    # A stop a running trader has not answered for this long raises the amber alert (AC-21).
+    dashboard_ack_warn_s: float = Field(default=10, gt=0)
 
     @model_validator(mode="after")
     def _check(self) -> Self:

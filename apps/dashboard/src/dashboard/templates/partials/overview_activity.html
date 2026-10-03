@@ -1,15 +1,17 @@
-{# Overview's Activity feed (spec 0004 AC-20): the newest commands and their outcomes, never hidden. rows is None when Redis fails. #}
+{# Overview's Activity feed (spec 0004 AC-20): the newest commands and their outcomes, never hidden.
+   groups (from live.state.collapse) merge a run of rows that read the same into one line with a
+   count. groups is None when Redis fails. #}
 {% from "components/states.html" import empty_state, error_state %}
-{% if rows is none -%}
-{{ error_state("Activity unavailable: link lost", "The dashboard cannot read Redis; this list updates once it can.") }}
-{%- elif not rows -%}
-{{ empty_state("Fills, commands, and alerts appear here as they happen.", glyph="radio") }}
+{% if groups is none -%}
+{{ error_state("Activity unavailable: no data from Redis", "The dashboard can't read Redis; this list updates once it can.") }}
+{%- elif not groups -%}
+{{ empty_state("Stop commands appear here as they happen. Fills and alerts join this feed later.", glyph="radio") }}
 {%- else -%}
 <ol class="activity">
-  {%- for row in rows %}
+  {%- for group in groups %}{% set row = group.row %}
   <li class="activity__row">
-    <span class="activity__time">{% if row.issued_at %}{{ row.issued_at|ts }}{% else %}<span class="activity__none">no time</span>{% endif %}</span>
-    <span class="activity__cmd{% if row.invalid and not row.issued_at %} command--warn{% endif %}">{{ row.cmd }}</span>
+    <span class="activity__time">{% if row.issued_at %}{{ row.issued_at|ts }}{% if group.count > 1 and group.oldest %}<span class="activity__span">from {{ group.oldest|ts }}</span>{% endif %}{% else %}<span class="activity__none">no time</span>{% endif %}</span>
+    <span class="activity__cmd{% if row.invalid and not row.issued_at %} command--warn{% endif %}">{{ row.cmd }}{% if group.count > 1 %} <span class="activity__count num"><span aria-hidden="true">×</span>{{ group.count }}<span class="visually-hidden"> times</span></span>{% endif %}</span>
     {% if row.text %}<span class="activity__outcome command--{{ row.level }}">{{ row.text }}</span>{% endif %}
   </li>
   {%- endfor %}

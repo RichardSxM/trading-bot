@@ -2,12 +2,13 @@
 
 While at least one SSE subscriber exists it reads the trader heartbeat and the newest control
 commands (plus their results until each is final) every ``DASHBOARD_POLL_MS``, renders the top
-bar partials and Overview's Activity (AC-20), and publishes each to every subscriber only when
-its HTML changed. With no subscriber it idles. A Redis error renders every partial ``link lost``
-and the next tick tries again.
+bar partials, its alert bar (AC-21), and Overview's Activity (AC-20), and publishes each to every
+subscriber only when its HTML changed. With no subscriber it idles. A Redis error renders every
+partial ``no data`` and the next tick tries again.
 """
 
 import asyncio
+import dataclasses
 import logging
 import time
 from collections.abc import Awaitable, Callable, Sequence
@@ -17,13 +18,15 @@ from typing import Final, Protocol
 from redis.exceptions import RedisError
 
 from dashboard.live.state import (
-    COMMAND_LINK_LOST,
-    LINK_LOST,
+    COMMAND_NO_DATA,
+    NO_DATA,
     ActivityRow,
     AgeView,
+    AlertView,
     CommandView,
     Entry,
     activity_row,
+    alert_state,
     command_state,
     find_result,
     heartbeat_view,
@@ -34,6 +37,7 @@ log = logging.getLogger(__name__)
 
 AGE_EVENT: Final = "topbar-age"
 COMMAND_EVENT: Final = "topbar-command"
+ALERT_EVENT: Final = "topbar-alert"
 ACTIVITY_EVENT: Final = "overview-activity"
 ACTIVITY_SIZE: Final = 20
 REDIS_ERRORS: Final = (RedisError, OSError, TimeoutError)
@@ -58,8 +62,10 @@ class Poller:
         read_command: Callable[[], Awaitable[Sequence[Entry] | None]],
         read_results: Callable[[], Awaitable[Sequence[Entry] | None]],
         render_command: Callable[[CommandView], str],
+        render_alert: Callable[[AlertView | None], str],
         render_activity: Callable[[Sequence[ActivityRow] | None], str],
         hide_after_s: float,
+        ack_warn_s: float,
         read_timeout_s: float,
         clock_ns: Callable[[], int] = time.time_ns,
         monotonic: Callable[[], float] = time.monotonic,
@@ -70,8 +76,10 @@ class Poller:
         self._read_command = read_command
         self._read_results = read_results
         self._render_command = render_command
+        self._render_alert = render_alert
         self._render_activity = render_activity
         self._hide_after_s = hide_after_s
+        self._ack_warn_s = ack_warn_s
         self._interval_s = interval_s
         self._amber_s = amber_s
         self._red_s = red_s
@@ -81,6 +89,8 @@ class Poller:
         self._wake = asyncio.Event()
         self._cache: dict[str, str] = {}
         self._last_skew_warning: float | None = None
+        # The latest age, so a stop sent between ticks can update the alert bar at once.
+        self._age: AgeView | None = None
         # Stream id to final result for the commands in view: no need to read those results again.
         self._finals: dict[str | bytes | None, Fields] = {}
         self._warned_invalid: set[tuple[object, ...]] = set()
@@ -113,21 +123,26 @@ class Poller:
             log.warning(
                 "redis read failed", extra={"fields": {"code": "redis_read_failed", "error": type(exc).__name__}}
             )
-            return self.link_lost()
+            return self.no_data()
         age = heartbeat_view(raw, self._clock_ns(), self._amber_s, self._red_s)
         if age.skewed:
             self._warn_skew()
+        self._age = age
+        alert = self._alert(age, command)
         return {
             AGE_EVENT: self._render_age(age),
-            COMMAND_EVENT: self._render_command(command),
+            COMMAND_EVENT: self._render_command(_tinted(command, alert)),
+            ALERT_EVENT: self._render_alert(alert),
             ACTIVITY_EVENT: self._render_activity(rows),
         }
 
-    def link_lost(self) -> dict[str, str]:
-        """Every partial in its ``link lost`` state, without reading Redis."""
+    def no_data(self) -> dict[str, str]:
+        """Every partial in its ``no data`` state (Redis unreadable), without reading Redis."""
+        self._age = NO_DATA
         return {
-            AGE_EVENT: self._render_age(LINK_LOST),
-            COMMAND_EVENT: self._render_command(COMMAND_LINK_LOST),
+            AGE_EVENT: self._render_age(NO_DATA),
+            COMMAND_EVENT: self._render_command(COMMAND_NO_DATA),
+            ALERT_EVENT: self._render_alert(self._alert(NO_DATA, COMMAND_NO_DATA)),
             ACTIVITY_EVENT: self._render_activity(None),
         }
 
@@ -172,10 +187,17 @@ class Poller:
     def note_sent(self, msg: ControlMessage) -> None:
         """Show a command the dashboard just appended at once, in the cache and to every subscriber."""
         view = command_state(to_fields(msg), None, self._now(), self._hide_after_s)
-        html = self._render_command(view)
-        if self._cache.get(COMMAND_EVENT) != html:
-            self._cache[COMMAND_EVENT] = html
-            self._publish((COMMAND_EVENT, html))
+        partials = {COMMAND_EVENT: self._render_command(view)}
+        if self._age is not None:  # a new stop replaces the alert about the last one
+            alert = self._alert(self._age, view)
+            partials = {
+                COMMAND_EVENT: self._render_command(_tinted(view, alert)),
+                ALERT_EVENT: self._render_alert(alert),
+            }
+        for name, html in partials.items():
+            if self._cache.get(name) != html:
+                self._cache[name] = html
+                self._publish((name, html))
 
     async def tick(self) -> None:
         """One poll: render each partial and publish the ones whose HTML changed."""
@@ -199,6 +221,9 @@ class Poller:
                 queue.get_nowait()
             queue.put_nowait(event)
 
+    def _alert(self, age: AgeView, command: CommandView) -> AlertView | None:
+        return alert_state(age, command, self._now(), self._ack_warn_s)
+
     def _now(self) -> datetime:
         return datetime.fromtimestamp(self._clock_ns() / 1_000_000_000, tz=UTC)
 
@@ -217,6 +242,13 @@ class Poller:
         if self._last_skew_warning is None or now - self._last_skew_warning >= SKEW_WARN_EVERY_S:
             self._last_skew_warning = now
             log.warning("heartbeat is from the future, showing 0s", extra={"fields": {"code": "clock_skew"}})
+
+
+def _tinted(command: CommandView, alert: AlertView | None) -> CommandView:
+    """The command state in amber while the alert bar warns it is not acknowledged (AC-21)."""
+    if alert is not None and alert.kind == "stop_unacknowledged":
+        return dataclasses.replace(command, level="warn")
+    return command
 
 
 class Runnable(Protocol):

@@ -20,7 +20,7 @@ from dashboard.auth.proxy import default_gateway
 from dashboard.auth.session import SessionCodec
 from dashboard.auth.totp import TotpGuard
 from dashboard.live.poller import ACTIVITY_SIZE, Poller, supervise
-from dashboard.live.state import ActivityRow, AgeView, CommandView
+from dashboard.live.state import ActivityRow, AgeView, AlertView, CommandView, collapse
 from dashboard.settings import DashboardSettings, normalize_seed
 from dashboard.ui.format import num, pnl, ts
 from dashboard.web import auth_routes, control_routes, page_routes
@@ -42,6 +42,8 @@ PACKAGE_DIR: Final = Path(__file__).resolve().parent.parent
 REDIS_TIMEOUT_S: Final = 1.0
 # Only the newest results are searched for the latest command (AC-12).
 RESULTS_SEARCHED: Final = 200
+# Where the red stop alerts send you when the bot will not stop: close positions on Kraken directly (AC-21).
+KRAKEN_FUTURES_URL: Final = {"demo": "https://demo-futures.kraken.com/", "live": "https://futures.kraken.com/"}
 ROUTE_TABLE: Final = Path("/proc/net/route")
 
 log = logging.getLogger(__name__)
@@ -86,6 +88,7 @@ def create_app(
     templates.env.filters.update(num=num, pnl=pnl, ts=ts)
     age_template = templates.get_template("partials/topbar_age.html")
     command_template = templates.get_template("partials/topbar_command.html")
+    alert_template = templates.get_template("partials/topbar_alert.html")
     activity_template = templates.get_template("partials/overview_activity.html")
     heartbeat_key = snapshot_key(settings.trading_env, "heartbeat")
     password_hash = secrets[DASHBOARD_PASSWORD_HASH].get_secret_value()
@@ -99,8 +102,13 @@ def create_app(
     def render_command(view: CommandView) -> str:
         return command_template.render(view=view)
 
+    kraken_url = KRAKEN_FUTURES_URL[settings.trading_env]
+
+    def render_alert(view: AlertView | None) -> str:
+        return alert_template.render(view=view, kraken_url=kraken_url)
+
     def render_activity(rows: Sequence[ActivityRow] | None) -> str:
-        return activity_template.render(rows=rows)
+        return activity_template.render(groups=None if rows is None else collapse(rows))
 
     context = AppContext(
         settings=settings,
@@ -123,8 +131,10 @@ def create_app(
             read_command=lambda: client.xrevrange(commands, count=ACTIVITY_SIZE),
             read_results=lambda: client.xrevrange(results, count=RESULTS_SEARCHED),
             render_command=render_command,
+            render_alert=render_alert,
             render_activity=render_activity,
             hide_after_s=settings.dashboard_command_hide_s,
+            ack_warn_s=settings.dashboard_ack_warn_s,
             read_timeout_s=REDIS_TIMEOUT_S,
             clock_ns=clock_ns,
         ),

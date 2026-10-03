@@ -1,4 +1,7 @@
-"""What the top bar and Overview's Activity show for live values (spec 0004 AC-9, AC-12, AC-20), as pure functions."""
+"""What the top bar, its alert bar, and Overview's Activity show for live values, as pure functions.
+
+Spec 0004 AC-9, AC-10, AC-12, AC-20, and AC-21.
+"""
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -19,6 +22,13 @@ from trading_core.snapshot.envelope import SnapshotFormatError, decode
 
 Level = Literal["ok", "warn", "bad", "lost"]
 CommandLevel = Literal["none", "pending", "ok", "warn", "bad", "lost"]
+CommandStatus = Literal[
+    "none", "lost", "unknown", "awaiting", "unhandled", "received", "executed", "duplicate", "failed", "expired"
+]
+"""Which state the command is in, independent of its words: the alert bar keys on it."""
+AlertKind = Literal[
+    "stop_unhandled", "stop_failed", "stop_late", "stop_unknown", "trader_silent", "stop_unacknowledged", "no_data"
+]
 Entry = tuple[str | bytes | None, Mapping[str | bytes, str | bytes] | None]
 """One stream entry as redis-py's ``XREVRANGE`` types it: the stream id and its fields, either may be None."""
 
@@ -36,7 +46,8 @@ class AgeView:
 
 NO_HEARTBEAT: Final = AgeView("no heartbeat", "bad")
 BAD_SNAPSHOT: Final = AgeView("bad snapshot", "bad")
-LINK_LOST: Final = AgeView("link lost", "lost")
+# The dashboard cannot read Redis. "no data", not "link lost": the browser's link may be fine (AC-10).
+NO_DATA: Final = AgeView("no data", "lost")
 
 
 def age_state(now_ns: int, ts_ns: int, amber_s: float, red_s: float) -> AgeView:
@@ -65,26 +76,45 @@ class CommandView:
     """The last command's state in the top bar.
 
     ``final`` marks an outcome that no later result can change, so the poller stops reading
-    results for it. ``invalid`` marks an entry that does not parse (logged once).
+    results for it. ``invalid`` marks an entry that does not parse (logged once). ``since`` is
+    the moment the shown state began (issued, answered, or expired) and ``age`` how long ago
+    that was, as ``12s ago`` (AC-12: a value is never shown without its age).
     """
 
     text: str
     level: CommandLevel
     final: bool = False
     invalid: bool = False
+    status: CommandStatus = "none"
+    since: datetime | None = None
+    age: str | None = None
+    expires_at: datetime | None = None
 
 
 NO_COMMAND: Final = CommandView("none", "none")
-COMMAND_LINK_LOST: Final = CommandView("link lost", "lost")
-UNKNOWN_RESULT: Final = CommandView("unknown result", "warn", invalid=True)
+COMMAND_NO_DATA: Final = CommandView("no data", "lost", status="lost")
+UNKNOWN_RESULT: Final = CommandView("unknown result", "warn", invalid=True, status="unknown")
 
-_OUTCOMES: Final[dict[ControlOutcome, tuple[str, CommandLevel, bool]]] = {
-    ControlOutcome.RECEIVED: ("received by trader", "pending", False),
-    ControlOutcome.EXECUTED: ("confirmed", "ok", True),
-    ControlOutcome.DUPLICATE: ("duplicate", "none", True),
-    ControlOutcome.FAILED: ("failed", "bad", True),
-    ControlOutcome.EXPIRED: ("expired", "bad", True),
+_OUTCOMES: Final[dict[ControlOutcome, tuple[str, CommandLevel, bool, CommandStatus]]] = {
+    ControlOutcome.RECEIVED: ("received by trader", "pending", False, "received"),
+    ControlOutcome.EXECUTED: ("confirmed", "ok", True, "executed"),
+    ControlOutcome.DUPLICATE: ("duplicate", "none", True, "duplicate"),
+    ControlOutcome.FAILED: ("failed", "bad", True, "failed"),
+    ControlOutcome.EXPIRED: ("expired", "bad", True, "expired"),
 }
+
+
+def ago(seconds: float) -> str:
+    """A short elapsed time: ``12s ago`` under a minute, ``3m ago`` under an hour, else ``2h ago``.
+
+    A negative span (clock skew) reads ``0s ago``.
+    """
+    whole = max(int(seconds), 0)
+    if whole < 60:
+        return f"{whole}s ago"
+    if whole < 3600:
+        return f"{whole // 60}m ago"
+    return f"{whole // 3600}h ago"
 
 
 def find_result(entries: Sequence[Entry] | None, command_id: str) -> Fields | None:
@@ -100,7 +130,8 @@ def command_state(command: Fields | None, result: Fields | None, now: datetime, 
 
     No result yet is ``awaiting trader``, or ``not handled, expired`` once ``expires_at`` has
     passed. A final state is hidden ``hide_after_s`` after its ``outcome_at`` (or ``expires_at``).
-    An entry that does not parse, or an outcome we do not know, is ``unknown result``.
+    An entry that does not parse, or an outcome we do not know, is ``unknown result``. Every shown
+    state carries its age: since the command was issued, answered, or expired.
     """
     if command is None:
         return NO_COMMAND
@@ -109,10 +140,18 @@ def command_state(command: Fields | None, result: Fields | None, now: datetime, 
         outcome = None if result is None else result_from_fields(result)
     except ControlFormatError:
         return UNKNOWN_RESULT
-    label, level, final, shown_since = _outcome(msg, outcome, now)
-    if shown_since is not None and (now - shown_since).total_seconds() > hide_after_s:
-        return CommandView(NO_COMMAND.text, NO_COMMAND.level, final=final)
-    return CommandView(f"{msg.cmd.value} sent · {label}", level, final=final)
+    state = _outcome(msg, outcome, now)
+    if state.hide_from is not None and (now - state.hide_from).total_seconds() > hide_after_s:
+        return CommandView(NO_COMMAND.text, NO_COMMAND.level, final=state.final)
+    return CommandView(
+        f"{msg.cmd.value} sent · {state.label}",
+        state.level,
+        final=state.final,
+        status=state.status,
+        since=state.since,
+        age=ago((now - state.since).total_seconds()),
+        expires_at=msg.expires_at,
+    )
 
 
 @dataclass(frozen=True)
@@ -144,18 +183,105 @@ def activity_row(command: Fields, result: Fields | None, now: datetime) -> Activ
         outcome = None if result is None else result_from_fields(result)
     except ControlFormatError:
         return ActivityRow(msg.cmd.value, msg.issued_at, UNKNOWN_RESULT.text, "warn", invalid=True)
-    label, level, final, _ = _outcome(msg, outcome, now)
-    return ActivityRow(msg.cmd.value, msg.issued_at, label, level, final=final)
+    state = _outcome(msg, outcome, now)
+    return ActivityRow(msg.cmd.value, msg.issued_at, state.label, state.level, final=state.final)
 
 
-def _outcome(
-    msg: ControlMessage, outcome: ControlResult | None, now: datetime
-) -> tuple[str, CommandLevel, bool, datetime | None]:
-    """Label, level, finality, and the moment the hide clock starts (None: never hidden)."""
+@dataclass(frozen=True)
+class ActivityGroup:
+    """A run of consecutive Activity rows that read the same (AC-20): one line with a count.
+
+    ``row`` is the newest of the run and ``oldest`` the ``issued_at`` of its oldest row; for a
+    single row ``count`` is 1 and ``oldest`` equals ``row.issued_at``.
+    """
+
+    row: ActivityRow
+    count: int
+    oldest: datetime | None
+
+
+def collapse(rows: Sequence[ActivityRow]) -> list[ActivityGroup]:
+    """Merge newest first ``rows`` into runs of the same command, outcome words, and level.
+
+    Order is kept and nothing is dropped: the counts add up to ``len(rows)``.
+    """
+    groups: list[ActivityGroup] = []
+    for row in rows:
+        last = groups[-1] if groups else None
+        if last is not None and _same(last.row, row):
+            groups[-1] = ActivityGroup(last.row, last.count + 1, row.issued_at)
+        else:
+            groups.append(ActivityGroup(row, 1, row.issued_at))
+    return groups
+
+
+def _same(a: ActivityRow, b: ActivityRow) -> bool:
+    return (a.cmd, a.text, a.level, a.invalid) == (b.cmd, b.text, b.level, b.invalid)
+
+
+@dataclass(frozen=True)
+class AlertView:
+    """The one alert the alert bar shows (AC-21): what went wrong, how bad, and since when.
+
+    ``at`` is the moment it began (the stop's expiry, answer, or sending), None when no single
+    moment applies; ``until`` is when an unanswered stop expires. The words live in
+    ``partials/topbar_alert.html``, so the times go through ``ts``.
+    """
+
+    kind: AlertKind
+    level: Literal["warn", "bad"]
+    at: datetime | None = None
+    until: datetime | None = None
+
+
+_STOP_ALERTS: Final[dict[CommandStatus, tuple[AlertKind, Literal["warn", "bad"]]]] = {
+    "unhandled": ("stop_unhandled", "bad"),
+    "failed": ("stop_failed", "bad"),
+    "expired": ("stop_late", "bad"),
+    "unknown": ("stop_unknown", "warn"),
+}
+
+
+def alert_state(age: AgeView, command: CommandView, now: datetime, ack_warn_s: float) -> AlertView | None:
+    """The most severe thing wrong right now, or None when all is well (AC-21).
+
+    A stop that did not take effect comes first, then a silent trader, then a stop that a running
+    trader has left unanswered for more than ``ack_warn_s``, then a dashboard that cannot read
+    Redis. A stop's alert follows the top bar, so it hides when the command does.
+    """
+    stop = _STOP_ALERTS.get(command.status)
+    if stop is not None:
+        return AlertView(stop[0], stop[1], command.since)
+    if age.level == "bad":
+        return AlertView("trader_silent", "bad")
+    if (
+        command.status == "awaiting"
+        and command.since is not None
+        and (now - command.since).total_seconds() > ack_warn_s
+    ):
+        return AlertView("stop_unacknowledged", "warn", command.since, command.expires_at)
+    if age.level == "lost":
+        return AlertView("no_data", "warn")
+    return None
+
+
+@dataclass(frozen=True)
+class _State:
+    label: str
+    level: CommandLevel
+    final: bool
+    status: CommandStatus
+    since: datetime
+    hide_from: datetime | None
+    """When the hide clock starts; None: never hidden."""
+
+
+def _outcome(msg: ControlMessage, outcome: ControlResult | None, now: datetime) -> _State:
+    """The words, level, finality, and timing for a command and its newest result."""
     if outcome is None:
         if now <= msg.expires_at:
-            return "awaiting trader", "pending", False, None
+            return _State("awaiting trader", "pending", False, "awaiting", msg.issued_at, None)
         # Not final: a late result from the trader still replaces it.
-        return "not handled, expired", "bad", False, msg.expires_at
-    label, level, final = _OUTCOMES[outcome.outcome]
-    return label, level, final, outcome.outcome_at if final else None
+        return _State("not handled, expired", "bad", False, "unhandled", msg.expires_at, msg.expires_at)
+    label, level, final, status = _OUTCOMES[outcome.outcome]
+    return _State(label, level, final, status, outcome.outcome_at, outcome.outcome_at if final else None)

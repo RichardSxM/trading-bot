@@ -11,6 +11,7 @@ from redis.exceptions import ConnectionError as RedisConnectionError
 from dashboard.auth.next_path import PAGE_PATHS
 from dashboard.web.page_routes import PAGES
 from trading_core.control.messages import format_utc
+from trading_core.snapshot.envelope import encode
 
 STREAM = "demo:control"
 RESULTS = "demo:control:results"
@@ -295,3 +296,64 @@ def test_a_failed_stop_never_shows_the_command_as_sent_in_the_top_bar(logged_in,
     page = logged_in.get("/").text
     assert "sent ·" not in page
     assert "command--none" in page
+
+
+# --- critique round 2026-10-03: the alert bar after a stop
+
+
+def _alert_bar(page):
+    match = re.search(r'sse-swap="topbar-alert" role="alert">(.*?)</div>', page, re.S)
+    assert match, "no alert bar"
+    return match.group(1)
+
+
+def test_a_failed_stop_raises_the_failed_alert_with_its_time(logged_in, redis, clock):
+    """covers: AC-21"""
+    logged_in.post("/control/stop", data={"csrf": _csrf(logged_in)})
+    command_id = _entries(redis)[-1]["id"]
+    at = format_utc(datetime.fromtimestamp(clock.now, tz=UTC))
+    redis.append(
+        "demo:control:results", {"id": command_id, "outcome": "failed", "outcome_at": at, "schema_version": "1"}
+    )
+    bar = _alert_bar(logged_in.get("/").text)
+    assert '<p class="alert alert--bad" data-alert="stop_failed">' in bar
+    assert f'<time datetime="{at[:19]}Z"' in bar  # an absolute time through ts, never a ticking count
+    assert "Tap Stop again" in bar
+
+
+def test_a_stop_nobody_handles_raises_the_not_handled_alert_after_its_expiry(logged_in, redis, clock):
+    """covers: AC-21"""
+    logged_in.post("/control/stop", data={"csrf": _csrf(logged_in)})
+    redis.values["demo:snapshot:heartbeat"] = encode(clock.ns(), {"process": "trader"})
+    assert _alert_bar(logged_in.get("/").text) == ""  # awaiting trader, with a fresh trader, is not an alarm
+    clock.now += 301
+    bar = _alert_bar(logged_in.get("/").text)
+    assert 'data-alert="stop_unhandled"' in bar
+    assert "Stop not handled." in bar
+
+
+def test_the_command_in_the_top_bar_carries_its_age(logged_in, clock):
+    """covers: AC-12"""
+    logged_in.post("/control/stop", data={"csrf": _csrf(logged_in)})
+    clock.now += 12
+    assert '<span class="command__age">· 12s ago</span>' in logged_in.get("/").text
+
+
+def test_a_stop_the_running_trader_ignores_raises_the_not_acknowledged_alert(logged_in, redis, clock):
+    """covers: AC-21 (after DASHBOARD_ACK_WARN_S with a fresh heartbeat, amber, with the send time)"""
+    logged_in.post("/control/stop", data={"csrf": _csrf(logged_in)})
+    clock.now += 11
+    redis.values["demo:snapshot:heartbeat"] = encode(clock.ns(), {"process": "trader"})
+    bar = _alert_bar(logged_in.get("/").text)
+    assert '<p class="alert alert--warn" data-alert="stop_unacknowledged">' in bar
+    assert "Stop not acknowledged." in bar
+
+
+def test_every_stop_alert_names_the_way_out_on_this_environments_venue(logged_in, redis, clock):
+    """covers: AC-21 (close positions on Kraken directly when the bot will not stop)"""
+    logged_in.post("/control/stop", data={"csrf": _csrf(logged_in)})
+    clock.now += 301
+    bar = _alert_bar(logged_in.get("/").text)
+    assert (
+        '<a href="https://demo-futures.kraken.com/" rel="noopener noreferrer" target="_blank">Kraken Futures</a>' in bar
+    )

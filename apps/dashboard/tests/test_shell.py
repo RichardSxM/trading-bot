@@ -218,15 +218,14 @@ def test_the_nav_names_each_page(logged_in):
     ]
 
 
-def test_link_lost_shows_in_the_data_age_and_command_when_redis_fails(logged_in, redis):
-    """covers: AC-10 (scoped to the live values, not the static label)"""
+def test_no_data_shows_in_the_data_age_and_command_when_redis_fails(logged_in, redis):
+    """covers: AC-10 (Redis unreadable is "no data", never "link lost": the browser's link may be fine)"""
     redis.fail = TimeoutError()
     topbar = _topbar(logged_in.get("/").text)
     assert (
-        '<span class="age age--lost"><span class="age__label">trader</span> <span class="num">link lost</span>'
-        in topbar
+        '<span class="age age--lost"><span class="age__label">trader</span> <span class="num">no data</span>' in topbar
     )
-    assert '<span class="command command--lost"><span class="command__label">command</span> link lost</span>' in topbar
+    assert '<span class="command command--lost"><span class="command__label">command</span> no data</span>' in topbar
 
 
 def test_a_heartbeat_from_the_future_shows_0s_on_the_page(logged_in, redis, clock):
@@ -313,7 +312,7 @@ def test_the_event_stream_carries_the_security_headers(logged_in, monkeypatch):
     assert response.headers["content-type"].startswith("text/event-stream")
     assert response.headers["content-security-policy"] == CSP
     assert response.headers["x-accel-buffering"] == "no"
-    assert set(seen) == {"topbar-age", "topbar-command", "overview-activity"}
+    assert set(seen) == {"topbar-age", "topbar-command", "topbar-alert", "overview-activity"}
     assert "event: topbar-age\n" in response.text
 
 
@@ -380,3 +379,40 @@ def test_a_failed_stop_is_announced(logged_in):
     assert '<span class="stop-area__error" role="alert">Stop NOT sent: reload the page</span>' in reply
     template = logged_in.get("/").text
     assert '<template id="stop-failed"><span class="stop-area__error" role="alert">' in template
+
+
+# --- critique round 2026-10-03: the alert bar and "no data"
+
+
+def _alert_bar(page):
+    match = re.search(
+        r'<div class="alert-bar" id="alert-bar" sse-swap="topbar-alert" role="alert">(.*?)</div>', page, re.S
+    )
+    assert match, "no alert bar"
+    return match.group(1)
+
+
+@pytest.mark.parametrize("path", SHELL_PAGES)
+def test_every_shell_page_has_an_empty_alert_bar_inside_the_top_bar_when_all_is_well(logged_in, redis, clock, path):
+    """covers: AC-21 (inside the sticky top bar, a role=alert region, empty while the trader is fresh)"""
+    redis.values["demo:snapshot:heartbeat"] = encode(clock.ns(), {"process": "trader"})
+    page = logged_in.get(path).text
+    assert 'id="alert-bar"' in _topbar(page)
+    assert _alert_bar(page) == ""
+
+
+def test_a_silent_trader_raises_the_alert_on_the_page(logged_in, redis):
+    """covers: AC-21"""
+    del redis.values["demo:snapshot:heartbeat"]
+    bar = _alert_bar(logged_in.get("/trades").text)
+    assert 'data-alert="trader_silent"' in bar
+    assert "Trader silent." in bar
+    assert "Check that the trader is running." in bar
+
+
+def test_unreadable_redis_raises_the_no_data_alert(logged_in, redis):
+    """covers: AC-21, AC-10"""
+    redis.fail = TimeoutError()
+    bar = _alert_bar(logged_in.get("/").text)
+    assert '<p class="alert alert--warn" data-alert="no_data">' in bar
+    assert "can't read Redis" in bar

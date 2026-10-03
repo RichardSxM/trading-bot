@@ -21,7 +21,7 @@
 
 <nav class="sg-toc" aria-label="Styleguide sections">
   <a href="#colors">Colors</a><a href="#type">Type</a><a href="#space">Space and shape</a><a href="#numbers">Numbers and time</a>
-  <a href="#status">Badges and status</a><a href="#shell">Nav, link, icons</a><a href="#pulse">Pulse</a><a href="#stats">Stats and freshness</a><a href="#table">Table</a>
+  <a href="#status">Badges and status</a><a href="#shell">Nav, link, icons</a><a href="#topbar">Top bar states</a><a href="#pulse">Pulse</a><a href="#stats">Stats and freshness</a><a href="#table">Table</a>
   <a href="#buttons">Buttons</a><a href="#states">Empty, loading, error</a><a href="#chart">Chart</a>
 </nav>
 
@@ -103,7 +103,7 @@
     <span data-sample="nav_links:default">{{ nav_links(sample_nav[1:], "/styleguide") }}</span>
   </nav>
   <div class="sg-line">
-    {% for state, label in [("static", "snapshot"), ("connecting", "connecting"), ("live", "live"), ("reconnecting", "reconnecting"), ("lost", "lost")] %}
+    {% for state, label in [("static", "snapshot"), ("connecting", "connecting"), ("live", "live"), ("degraded", "no data"), ("reconnecting", "reconnecting"), ("lost", "lost")] %}
     <span data-sample="link:{{ state }}"><span class="link link--{{ state }}"><span class="link__dot" aria-hidden="true"></span><span class="link__label">link</span> <span class="link__text">{{ label }}</span></span></span>
     {% endfor %}
   </div>
@@ -112,15 +112,31 @@
   </div>
 </section>
 
+<section class="sg-section" id="topbar" aria-labelledby="topbar-h">
+  <h2 class="sg-h" id="topbar-h">Top bar states</h2>
+  <div class="sg-line">
+    {% for state, view in command_samples.items() %}
+    <span data-sample="command:{{ state }}">{% include "partials/topbar_command.html" %}</span>
+    {% endfor %}
+  </div>
+  <div class="sg-alerts">
+    {% for view in alert_samples %}
+    <div class="sg-alert" data-sample="alert:{{ view.kind }}">{% include "partials/topbar_alert.html" %}</div>
+    {% endfor %}
+  </div>
+  <p class="sg-note">Sample alerts: the real bar sits under the top bar and shows only the most severe one, only while something is wrong.</p>
+</section>
+
 <section class="sg-section" id="pulse" aria-labelledby="pulse-sample-h">
   <div data-sample="pulse:default">{{ pulse("pulse-sample-h", stale_s, sample=pulse_sample) }}</div>
 </section>
 
 <section class="sg-section" id="activity" aria-labelledby="activity-sample-h">
   <h2 class="sg-h" id="activity-sample-h">Activity feed</h2>
-  <div data-sample="activity:filled">{% with rows=activity_rows %}{% include "partials/overview_activity.html" %}{% endwith %}</div>
-  <div data-sample="activity:empty">{% with rows=[] %}{% include "partials/overview_activity.html" %}{% endwith %}</div>
-  <div data-sample="activity:error">{% with rows=none %}{% include "partials/overview_activity.html" %}{% endwith %}</div>
+  <div data-sample="activity:filled">{% with groups=activity_groups %}{% include "partials/overview_activity.html" %}{% endwith %}</div>
+  <div data-sample="activity:collapsed">{% with groups=activity_run %}{% include "partials/overview_activity.html" %}{% endwith %}</div>
+  <div data-sample="activity:empty">{% with groups=[] %}{% include "partials/overview_activity.html" %}{% endwith %}</div>
+  <div data-sample="activity:error">{% with groups=none %}{% include "partials/overview_activity.html" %}{% endwith %}</div>
 </section>
 
 <section class="sg-section" id="stats" aria-labelledby="stats-h">
