@@ -113,7 +113,7 @@ Run the bot 24/7 on a hosted server near Kraken, with automatic restart, logs, a
 spec [0005](../specs/0005-always-on-cloud-deployment/index.md) · code in [deploy/](../../deploy/), [scripts/deploy.sh](../../scripts/deploy.sh), [compose.vps.yaml](../../compose.vps.yaml)
 - [x] Design it (spec): `/architect always on cloud deployment`
 - [ ] Build it: `/develop always on cloud deployment`
-  - [ ] Thin thread to the VPS: compose image vars and `kfs-compose`, CI images to GHCR, bootstrap, secret placement, deploy v1 with health gate, tailnet policy, 0004 carryover on the box (AC-1 to AC-5, AC-22, AC-23)
+  - [x] Thin thread to the VPS: compose image vars and `kfs-compose`, CI images to GHCR, bootstrap, secret placement, deploy v1 with health gate, tailnet policy, 0004 carryover on the box (AC-1 to AC-5, AC-22, AC-23)
   - [ ] Safe deploy: pause and unpause commands, `KfsStrategy` gate, trader control consumer and `trader_state`, graceful shutdown, wait for flat, rollback, dashboard Pause and Resume (AC-6 to AC-13)
   - [ ] Self healing: autoheal timer, safe reboot, missing disk guard, the four restart drills (AC-14 to AC-18)
   - [ ] Backups: append only key gate, backup image and nightly loop, restore drill with prune (AC-19 to AC-21)
