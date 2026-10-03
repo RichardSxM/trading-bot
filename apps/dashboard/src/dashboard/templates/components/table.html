@@ -1,7 +1,8 @@
 {# A dense table (DESIGN.md: Table). ``columns`` is a list of (heading, is_number);
-   ``rows`` a list of rows of already formatted cells. Empty rows show ``empty``. #}
-{% from "components/states.html" import loading as loading_bars %}
-{% macro table(caption, columns, rows, empty, loading=False) -%}
+   ``rows`` a list of rows of already formatted cells. Empty rows show ``empty``, as an
+   empty state with its line icon when ``empty_glyph`` is given. #}
+{% from "components/states.html" import loading as loading_bars, empty_state %}
+{% macro table(caption, columns, rows, empty, loading=False, empty_glyph=None) -%}
 <div class="table-wrap">
   <table class="table">
     <caption class="visually-hidden">{{ caption }}</caption>
@@ -9,7 +10,7 @@
     {% if loading %}
     <tbody class="table__empty"><tr><td colspan="{{ columns | length }}">{{ loading_bars("Loading " ~ caption) }}</td></tr></tbody>
     {% elif not rows %}
-    <tbody class="table__empty"><tr><td colspan="{{ columns | length }}">{{ empty }}</td></tr></tbody>
+    <tbody class="table__empty"><tr><td colspan="{{ columns | length }}">{% if empty_glyph %}{{ empty_state(empty, glyph=empty_glyph) }}{% else %}{{ empty }}{% endif %}</td></tr></tbody>
     {% else %}
     <tbody>
       {% for row in rows %}<tr>{% for cell in row %}<td{% if columns[loop.index0][1] %} class="is-num"{% endif %}>{{ cell }}</td>{% endfor %}</tr>

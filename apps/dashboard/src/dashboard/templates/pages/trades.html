@@ -4,7 +4,7 @@
 <div class="board">
   <section class="region region--wide" aria-labelledby="fills-h">
     <header class="region__head"><h2 class="region__title" id="fills-h">Fills</h2><span class="region__meta">times in UTC</span></header>
-    {{ table("Fills", fill_columns, [], "Fills and closed trades appear here.") }}
+    {{ table("Fills", fill_columns, [], "Fills and closed trades appear here.", empty_glyph="arrow-left-right") }}
   </section>
 </div>
 {% endblock %}

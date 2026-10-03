@@ -54,6 +54,7 @@ def test_every_nav_page_shows_the_shell_its_empty_state_and_marks_itself_current
     page = logged_in.get(path).text
     assert f"<title>DEMO · {title}</title>" in page
     assert empty in page
+    assert re.search(r'<span class="empty-state__icon"><svg class="icon"', page)  # its line icon (verify step 19)
     assert 'id="stop-area"' in page
     links = re.findall(r'<a class="nav__item[^"]*" href="([^"]+)"', page)
     assert links == ["/", "/trades", "/strategies", "/system"]
