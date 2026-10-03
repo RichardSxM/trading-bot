@@ -359,6 +359,20 @@ time[title] { text-decoration: underline dotted var(--edge); text-underline-offs
 .command--bad { color: var(--loss); }
 .command__age { color: var(--faint); }
 
+/* The pause cue (spec 0005 AC-13): only while the trader is paused or its state is unreadable. */
+.status-strip > .topbar__pause:empty { display: none; }
+.pause { white-space: nowrap; transition: color var(--motion-state), opacity var(--motion-state); }
+.pause__label { color: var(--faint); margin-right: var(--space-4); }
+.pause--warn { color: var(--warn); font-weight: 600; }
+.pause--bad { color: var(--loss); }
+.pause--lost { color: var(--muted); opacity: 0.6; }
+[data-link="reconnecting"] .topbar__pause, [data-link="lost"] .topbar__pause { opacity: 0.5; }
+
+/* Pause and Resume on System (spec 0005 AC-13): two forms side by side, the error above them. */
+.pause-area { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-12); }
+.pause-area__error { flex-basis: 100%; color: var(--loss); font-weight: 600; font-size: var(--type-caption-size); }
+.pause-area__note { flex-basis: 100%; color: var(--muted); font-size: var(--type-caption-size); }
+
 /* The alert bar (AC-21): one full width line under the top bar, only while something is wrong. */
 .alert-bar { grid-column: 1 / -1; margin: 0 calc(-1 * var(--space-16)) calc(-1 * var(--space-8)); }
 .alert-bar:empty { display: none; }

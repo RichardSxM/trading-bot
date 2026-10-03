@@ -103,6 +103,9 @@ def test_dashboard_reads_the_control_and_result_streams(dashboard, command):
         ("XADD", "acltest:control:results", "*", "probe", "1"),
         ("XTRIM", "acltest:control", "MAXLEN", "0"),
         ("GET", "trader-ACLTEST:probe"),
+        # The pause key is the trader's alone (spec 0005 AC-6); the dashboard pauses through the stream.
+        ("SET", "acltest:trader:pause", "1"),
+        ("DEL", "acltest:trader:pause"),
         ("XADD", "acltest:other", "*", "probe", "1"),
         ("FLUSHDB",),
     ],

@@ -1,4 +1,4 @@
-"""covers: spec 0004 data model, the control command and result formats (AC-11, AC-12)."""
+"""covers: spec 0004 data model, the control command and result formats (AC-11, AC-12); spec 0005 AC-6."""
 
 import uuid
 from datetime import UTC, datetime, timedelta, timezone
@@ -13,12 +13,15 @@ from trading_core.control.messages import (
     field,
     format_utc,
     from_fields,
+    pause_command,
     result_from_fields,
+    result_to_fields,
     results_stream,
     stop_command,
     to_fields,
+    unpause_command,
 )
-from trading_core.recording.enums import ControlCmd, ControlOutcome
+from trading_core.recording.enums import ControlCmd, ControlOutcome, ControlSource
 
 NOW = datetime(2026, 10, 2, 14, 3, 7, 250_000, tzinfo=UTC)
 ID = "8b5e3c1a-6d2f-4c4e-9a7b-0f1e2d3c4b5a"
@@ -62,6 +65,7 @@ def test_fields_are_strings_with_z_timestamps_and_round_trip():
         "issued_at": "2026-10-02T14:03:07.250000Z",
         "expires_at": "2026-10-02T14:08:07.250000Z",
         "schema_version": "1",
+        "source": "dashboard",
     }
     assert from_fields(fields) == msg
     assert from_fields({k.encode(): v.encode() for k, v in fields.items()}) == msg
@@ -145,3 +149,39 @@ def test_a_key_that_is_not_utf8_is_skipped_not_a_crash():
     assert field({b"\xff\xfe": b"x", b"id": ID.encode()}, "id") == ID
     with pytest.raises(ControlFormatError):
         from_fields({b"\xff": b"x"})
+
+
+def test_pause_and_unpause_carry_their_source_and_round_trip():
+    pause = pause_command(NOW, 60, ControlSource.DEPLOY)
+    unpause = unpause_command(NOW, 60, ControlSource.DASHBOARD)
+
+    assert (pause.cmd, pause.source) == (ControlCmd.PAUSE, ControlSource.DEPLOY)
+    assert (unpause.cmd, unpause.source) == (ControlCmd.UNPAUSE, ControlSource.DASHBOARD)
+    assert pause.expires_at - pause.issued_at == timedelta(seconds=60)
+    assert to_fields(pause)["source"] == "deploy"
+    assert from_fields(to_fields(pause)) == pause
+    assert from_fields(to_fields(unpause)) == unpause
+
+
+def test_an_entry_without_source_came_from_the_dashboard():
+    fields = to_fields(pause_command(NOW, 60, ControlSource.DEPLOY))
+    del fields["source"]
+
+    assert from_fields(fields).source is ControlSource.DASHBOARD
+
+
+def test_an_unknown_source_is_refused():
+    fields = to_fields(pause_command(NOW, 60, ControlSource.DEPLOY)) | {"source": "cron"}
+
+    with pytest.raises(ControlFormatError, match="unknown control source"):
+        from_fields(fields)
+
+
+def test_a_failed_result_carries_its_reason_and_round_trips():
+    failed = ControlResult(uuid.UUID(ID), ControlOutcome.FAILED, NOW, "not_implemented")
+    executed = ControlResult(uuid.UUID(ID), ControlOutcome.EXECUTED, NOW)
+
+    assert result_to_fields(failed)["reason"] == "not_implemented"
+    assert "reason" not in result_to_fields(executed)
+    assert result_from_fields(result_to_fields(failed)) == failed
+    assert result_from_fields(result_to_fields(executed)) == executed

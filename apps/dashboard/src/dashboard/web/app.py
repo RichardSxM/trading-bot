@@ -20,7 +20,7 @@ from dashboard.auth.proxy import default_gateway
 from dashboard.auth.session import SessionCodec
 from dashboard.auth.totp import TotpGuard
 from dashboard.live.poller import ACTIVITY_SIZE, Poller, supervise
-from dashboard.live.state import ActivityRow, AgeView, AlertView, CommandView, collapse
+from dashboard.live.state import ActivityRow, AgeView, AlertView, CommandView, PauseView, collapse
 from dashboard.settings import DashboardSettings, normalize_seed
 from dashboard.ui.format import num, pnl, ts
 from dashboard.web import auth_routes, control_routes, page_routes
@@ -90,7 +90,9 @@ def create_app(
     command_template = templates.get_template("partials/topbar_command.html")
     alert_template = templates.get_template("partials/topbar_alert.html")
     activity_template = templates.get_template("partials/overview_activity.html")
+    pause_template = templates.get_template("partials/topbar_pause.html")
     heartbeat_key = snapshot_key(settings.trading_env, "heartbeat")
+    trader_state_key = snapshot_key(settings.trading_env, "trader_state")
     password_hash = secrets[DASHBOARD_PASSWORD_HASH].get_secret_value()
 
     commands = control_stream(settings.trading_env)
@@ -109,6 +111,9 @@ def create_app(
 
     def render_activity(rows: Sequence[ActivityRow] | None) -> str:
         return activity_template.render(groups=None if rows is None else collapse(rows))
+
+    def render_pause(view: PauseView) -> str:
+        return pause_template.render(view=view)
 
     context = AppContext(
         settings=settings,
@@ -133,6 +138,8 @@ def create_app(
             render_command=render_command,
             render_alert=render_alert,
             render_activity=render_activity,
+            read_trader_state=lambda: client.get(trader_state_key),
+            render_pause=render_pause,
             hide_after_s=settings.dashboard_command_hide_s,
             ack_warn_s=settings.dashboard_ack_warn_s,
             read_timeout_s=REDIS_TIMEOUT_S,

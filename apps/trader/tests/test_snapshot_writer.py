@@ -43,6 +43,15 @@ def test_writes_an_envelope_with_a_30_second_expiry_every_interval():
     assert json.loads(value) == {"schema_version": 1, "ts_ns": 42, "data": {"process": "trader"}}
 
 
+def test_a_state_not_known_yet_writes_nothing_that_round():
+    redis = FakeRedis()
+    states = itertools.chain([None, None], itertools.repeat({"paused": True}))
+    _run(write_heartbeats(redis, "demo:snapshot:trader_state", lambda: next(states), 0.01, lambda: 42), 0.05)
+
+    assert redis.writes
+    assert all(json.loads(value)["data"] == {"paused": True} for _, value, _ in redis.writes)
+
+
 def test_a_redis_outage_logs_at_most_one_warning_a_minute_and_keeps_trying(caplog):
     redis = FakeRedis(fail=True)
     now = [0.0]

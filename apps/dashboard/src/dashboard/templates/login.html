@@ -11,6 +11,7 @@
     <h1 class="login__title">Log in to Scalper</h1>
     <p class="login__lede">Your password, then the 6 digit code from your authenticator.</p>
     {% if stop_lost %}<p class="notice notice--loss" role="alert">Your stop was NOT sent. Log in and tap stop again.</p>{% endif %}
+    {% if lost_notice %}<p class="notice notice--loss" role="alert">{{ lost_notice }}</p>{% endif %}
     {% if error %}<p class="notice notice--loss" role="alert">{{ error }}</p>{% endif %}
     <form method="post" action="/login" class="login__form">
       <input type="hidden" name="next" value="{{ next }}">

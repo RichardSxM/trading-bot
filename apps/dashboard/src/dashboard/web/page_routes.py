@@ -52,15 +52,16 @@ async def render_page(
     title: str,
     *,
     path: str | None = None,
-    stop_error: str | None = None,
+    errors: Mapping[str, str] | None = None,
     status_code: int = 200,
     live: Mapping[str, str] | None = None,
 ) -> Response:
     """A page inside the shell, its live partials read from Redis right now.
 
-    ``path`` marks the current nav item (the request path when None). ``stop_error`` renders the
-    stop area in its ``Stop NOT sent`` state (a plain form post failed). ``live`` replaces the
-    Redis read with these partials (a failed send already proved Redis down).
+    ``path`` marks the current nav item (the request path when None). ``errors`` renders a
+    control area in its ``NOT sent`` state after a plain form post failed: ``stop_error`` for the
+    stop, ``pause_error`` for Pause and Resume. ``live`` replaces the Redis read with these
+    partials (a failed send already proved Redis down).
     """
     partials = live if live is not None else await context.poller.render_now()
     return context.templates.TemplateResponse(
@@ -74,7 +75,8 @@ async def render_page(
             "stale_s": (context.settings.dashboard_stale_amber_s, context.settings.dashboard_stale_red_s),
             "csrf": session.csrf,
             "session_end": session_end_cue(context, session),
-            "stop_error": stop_error,
+            "stop_error": (errors or {}).get("stop_error"),
+            "pause_error": (errors or {}).get("pause_error"),
             # Rendered by our own autoescaping templates.
             "live": {name: Markup(html) for name, html in partials.items()},
             **(PAGE_DATA[template]() if template in PAGE_DATA else {}),
@@ -88,11 +90,11 @@ async def render_referring_page(
     context: AppContext,
     session: Session,
     *,
-    stop_error: str,
+    errors: Mapping[str, str],
     status_code: int,
     live: Mapping[str, str] | None = None,
 ) -> Response:
-    """The page the ``Referer`` names (Overview when unknown), with the stop area in its error state."""
+    """The page the ``Referer`` names (Overview when unknown), with a control area in its error state."""
     path = referer_page(request.headers.get("referer"))
     template, title = PAGES[path]
     return await render_page(
@@ -102,7 +104,7 @@ async def render_referring_page(
         template,
         title,
         path=path,
-        stop_error=stop_error,
+        errors=errors,
         status_code=status_code,
         live=live,
     )

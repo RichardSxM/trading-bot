@@ -34,9 +34,10 @@ def test_one_tap_appends_exactly_one_stop_with_every_field(logged_in, redis, clo
 
     assert response.status_code == 200
     [entry] = _entries(redis)
-    assert set(entry) == {"id", "cmd", "issued_at", "expires_at", "schema_version"}
+    assert set(entry) == {"id", "cmd", "issued_at", "expires_at", "schema_version", "source"}
     assert uuid.UUID(entry["id"]).version == 4
     assert entry["cmd"] == "stop"
+    assert entry["source"] == "dashboard"
     assert entry["schema_version"] == "1"
     issued = datetime.fromisoformat(entry["issued_at"])
     assert entry["issued_at"].endswith("Z")

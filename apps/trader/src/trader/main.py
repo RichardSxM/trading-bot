@@ -1,12 +1,19 @@
 """Trader entry point. Runs a node with no strategy yet: public Kraken data, and in live the Kraken
-execution client with its startup key check (spec 0003; allowed by the env guard from feature 19)."""
+execution client with its startup key check (spec 0003; allowed by the env guard from feature 19).
+
+Every env runs the control actor (pause and unpause, spec 0005) and writes the heartbeat and
+``trader_state`` snapshots. SIGTERM stops the node gracefully: entry orders are cancelled,
+positions and stops are kept.
+"""
 
 import asyncio
 import logging
 import os
+import signal
 import sys
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Final, Self
 
@@ -27,17 +34,25 @@ from nautilus_trader.config import (
 from nautilus_trader.live.node import TradingNode
 from nautilus_trader.model.identifiers import TraderId, Venue
 from pydantic import Field, SecretStr, field_validator, model_validator
+from redis import Redis as SyncRedis
 from redis.asyncio import Redis
+from sqlalchemy import create_engine
 
 from trader.snapshot_writer import log_writer_crash, write_heartbeats
 from trading_core import env_guard
 from trading_core.boot import boot
+from trading_core.control.consumer import ControlConsumer
+from trading_core.control.pause import pause_key
+from trading_core.control.records import PostgresCommandRecorder
 from trading_core.env_guard import ALLOWED_EXEC_CLIENTS, ExecClientAllowlist
 from trading_core.naming import node_id
+from trading_core.node.control import ControlActor, PauseController, shutdown_counts, trader_state
 from trading_core.node.heartbeat import HeartbeatActor, HeartbeatConfig
 from trading_core.node.key_actors import KeyAgeActor, KeyAgeConfig
 from trading_core.node.key_check import watch_key_check
 from trading_core.node.kraken import futures_data_client, futures_exec_client
+from trading_core.node.strategy import PauseGate
+from trading_core.recording.enums import Env
 from trading_core.redis_check import redis_reachable
 from trading_core.secrets import (
     KRAKEN_API_KEY,
@@ -53,6 +68,11 @@ log = logging.getLogger("trader")
 # A failed live key check waits this long before exiting, so Compose's restart policy retries
 # every few minutes instead of hammering Kraken into a rate ban (spec 0003 AC-8).
 KEY_CHECK_FAIL_BACKOFF_S: Final = 300.0
+
+# How long a stop waits for entry order cancels to be acknowledged (spec 0005 AC-9).
+POST_STOP_S: Final = 10.0
+# The control reader blocks 1 s per read, so its socket timeout sits above that.
+CONTROL_SOCKET_TIMEOUT_S: Final = 3.0
 
 KrakenUrls = tuple[str, str]
 
@@ -125,6 +145,8 @@ def build_config(
         exec_engine=LiveExecEngineConfig(reconciliation=False),
         data_clients={KRAKEN: futures_data_client()},
         exec_clients=exec_clients,
+        # Cancels sent by the strategies on stop get this long to be acknowledged (spec 0005 AC-9).
+        timeout_post_stop=POST_STOP_S,
     )
 
 
@@ -158,6 +180,56 @@ def snapshot_client(settings: Settings, password: SecretStr) -> Redis:
     )
 
 
+@dataclass(frozen=True)
+class ControlParts:
+    """What ``run_node`` needs from the control side: the actor, the ``trader_state`` reader, the stop counts."""
+
+    actor: ControlActor
+    read_state: Callable[[], Mapping[str, object] | None]
+    shutdown_counts: Callable[[], Mapping[str, int]]
+
+
+def control_parts(node: TradingNode, settings: Settings, secrets: Mapping[str, SecretStr]) -> ControlParts:
+    """Build the pause gate, the control actor with its own Redis and Postgres logins, and the readers."""
+    env = settings.trading_env
+    password = secrets[REDIS_PASSWORD].get_secret_value()
+    client = Redis(
+        host=settings.redis_host,
+        port=settings.redis_port,
+        username=settings.redis_username,
+        password=password,
+        socket_timeout=CONTROL_SOCKET_TIMEOUT_S,
+        socket_connect_timeout=CONTROL_SOCKET_TIMEOUT_S,
+    )
+    start_client = SyncRedis(
+        host=settings.redis_host,
+        port=settings.redis_port,
+        username=settings.redis_username,
+        password=password,
+        socket_timeout=CONTROL_SOCKET_TIMEOUT_S,
+        socket_connect_timeout=CONTROL_SOCKET_TIMEOUT_S,
+    )
+    engine = create_engine(settings.database_url(secrets[POSTGRES_PASSWORD]), pool_size=1, pool_pre_ping=True)
+    gate = PauseGate()
+    risk_engine = node.kernel.risk_engine
+
+    def now() -> datetime:
+        return datetime.now(UTC)
+
+    controller = PauseController(gate, risk_engine, client, env, now)
+    consumer = ControlConsumer(client, env, controller.execute, PostgresCommandRecorder(engine, Env(env)), now)
+
+    def read_pause_key() -> str | bytes | None:
+        value = start_client.get(pause_key(env))
+        return value if isinstance(value, str | bytes) else None
+
+    return ControlParts(
+        actor=ControlActor(controller, read_pause_key, consumer.run),
+        read_state=lambda: trader_state(gate, risk_engine, node.cache, settings.git_commit),
+        shutdown_counts=lambda: shutdown_counts(gate, node.cache),
+    )
+
+
 def heartbeat_state(node: TradingNode, settings: Settings) -> dict[str, object]:
     """The heartbeat snapshot's data: the process, its commit, the trader state, and the data link."""
     return {
@@ -172,18 +244,22 @@ def run_node(
     config: TradingNodeConfig,
     settings: TraderSettings,
     key_check_timeout_s: float,
-    redis_password: SecretStr,
+    secrets: Mapping[str, SecretStr],
     fail_backoff_s: float = KEY_CHECK_FAIL_BACKOFF_S,
 ) -> int:
     """Build and run the node until it stops; return the process exit code.
 
-    In every env a task on the node's event loop writes the heartbeat snapshot for the
-    dashboard (spec 0004). In live the node also runs the key age actor and the startup key
+    In every env the control actor is registered first (before any strategy), and tasks on the
+    node's event loop write the heartbeat and ``trader_state`` snapshots for the dashboard
+    (specs 0004, 0005). SIGTERM and SIGINT stop the node gracefully; a clean stop logs
+    ``shutdown_graceful``. In live the node also runs the key age actor and the startup key
     check. The check is a task on the node's event loop, not an actor: when the Kraken client
     cannot connect, Nautilus never starts the trader, so an actor would never run. A failed
     check stops the node and makes this return 1 after ``fail_backoff_s``.
     """
     node = TradingNode(config=config)
+    control = control_parts(node, settings, secrets)
+    node.trader.add_actor(control.actor)
     node.trader.add_actor(
         HeartbeatActor(HeartbeatConfig(path=os.environ.get("HEARTBEAT_FILE", "/run/heartbeat/alive")))
     )
@@ -228,22 +304,34 @@ def run_node(
     loop = node.get_event_loop()
     if loop is None:  # the live node always has one; without it the dashboard would see no heartbeat
         raise RuntimeError("trading node has no event loop for the snapshot writer")
-    # Kept in a local so the task lives as long as the node runs; a crash is logged, trading goes on.
-    writer = loop.create_task(
-        write_heartbeats(
-            snapshot_client(settings, redis_password),
-            snapshot_key(settings.trading_env, "heartbeat"),
-            lambda: heartbeat_state(node, settings),
+    snapshots = snapshot_client(settings, secrets[REDIS_PASSWORD])
+    # Kept in locals so the tasks live as long as the node runs; a crash is logged, trading goes on.
+    writers = [
+        loop.create_task(write_heartbeats(snapshots, snapshot_key(settings.trading_env, name), read_state))
+        for name, read_state in (
+            ("heartbeat", lambda: heartbeat_state(node, settings)),
+            ("trader_state", control.read_state),
         )
-    )
-    writer.add_done_callback(log_writer_crash)
+    ]
+    for writer in writers:
+        writer.add_done_callback(log_writer_crash)
+    stop_signals = (signal.SIGTERM, signal.SIGINT)
+    for signum in stop_signals:
+        loop.add_signal_handler(signum, node.stop)
     try:
         node.run()
+        log.info(
+            "trader stopped",
+            extra={"fields": {"code": "shutdown_graceful", **control.shutdown_counts()}},
+        )
     finally:
-        writer.cancel()
-        # Let the cancelled writer finish on the stopped loop, so it is not destroyed while pending.
+        for signum in stop_signals:
+            loop.remove_signal_handler(signum)
+        for writer in writers:
+            writer.cancel()
+        # Let the cancelled writers finish on the stopped loop, so none is destroyed while pending.
         if not loop.is_closed() and not loop.is_running():
-            loop.run_until_complete(asyncio.gather(writer, return_exceptions=True))
+            loop.run_until_complete(asyncio.gather(*writers, return_exceptions=True))
         node.dispose()
     if failed:
         time.sleep(fail_backoff_s)
@@ -265,7 +353,7 @@ def main() -> None:
         build_config(settings, started.secrets),
         settings,
         settings.kraken_key_check_timeout_s,
-        started.secrets[REDIS_PASSWORD],
+        started.secrets,
     )
     if code:
         sys.exit(code)

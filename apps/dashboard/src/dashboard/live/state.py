@@ -1,6 +1,6 @@
 """What the top bar, its alert bar, and Overview's Activity show for live values, as pure functions.
 
-Spec 0004 AC-9, AC-10, AC-12, AC-20, and AC-21.
+Spec 0004 AC-9, AC-10, AC-12, AC-20, and AC-21; spec 0005 AC-13 (the pause in the top bar).
 """
 
 from collections.abc import Mapping, Sequence
@@ -78,7 +78,8 @@ class CommandView:
     ``final`` marks an outcome that no later result can change, so the poller stops reading
     results for it. ``invalid`` marks an entry that does not parse (logged once). ``since`` is
     the moment the shown state began (issued, answered, or expired) and ``age`` how long ago
-    that was, as ``12s ago`` (AC-12: a value is never shown without its age).
+    that was, as ``12s ago`` (AC-12: a value is never shown without its age). ``cmd`` is the
+    command's name, None when nothing parses.
     """
 
     text: str
@@ -89,6 +90,7 @@ class CommandView:
     since: datetime | None = None
     age: str | None = None
     expires_at: datetime | None = None
+    cmd: str | None = None
 
 
 NO_COMMAND: Final = CommandView("none", "none")
@@ -151,6 +153,7 @@ def command_state(command: Fields | None, result: Fields | None, now: datetime, 
         since=state.since,
         age=ago((now - state.since).total_seconds()),
         expires_at=msg.expires_at,
+        cmd=msg.cmd.value,
     )
 
 
@@ -247,15 +250,19 @@ def alert_state(age: AgeView, command: CommandView, now: datetime, ack_warn_s: f
 
     A stop that did not take effect comes first, then a silent trader, then a stop that a running
     trader has left unanswered for more than ``ack_warn_s``, then a dashboard that cannot read
-    Redis. A stop's alert follows the top bar, so it hides when the command does.
+    Redis. A stop's alert follows the top bar, so it hides when the command does. Only a stop
+    (or an entry too broken to name) raises a stop alert; a pause or unpause shows its outcome in
+    the top bar alone.
     """
-    stop = _STOP_ALERTS.get(command.status)
+    is_stop = command.cmd in (None, "stop")
+    stop = _STOP_ALERTS.get(command.status) if is_stop else None
     if stop is not None:
         return AlertView(stop[0], stop[1], command.since)
     if age.level == "bad":
         return AlertView("trader_silent", "bad")
     if (
-        command.status == "awaiting"
+        is_stop
+        and command.status == "awaiting"
         and command.since is not None
         and (now - command.since).total_seconds() > ack_warn_s
     ):
@@ -285,3 +292,30 @@ def _outcome(msg: ControlMessage, outcome: ControlResult | None, now: datetime) 
         return _State("not handled, expired", "bad", False, "unhandled", msg.expires_at, msg.expires_at)
     label, level, final, status = _OUTCOMES[outcome.outcome]
     return _State(label, level, final, status, outcome.outcome_at, outcome.outcome_at if final else None)
+
+
+@dataclass(frozen=True)
+class PauseView:
+    """The pause cue in the top bar (spec 0005 AC-13): empty text while the trader runs."""
+
+    text: str
+    level: Level
+
+
+RUNNING: Final = PauseView("", "ok")
+PAUSE_NO_DATA: Final = PauseView("no data", "lost")
+_PAUSED_BY: Final = {"dashboard": "paused · by you", "deploy": "paused · by deploy"}
+
+
+def pause_view(raw: str | bytes | None) -> PauseView:
+    """The pause cue for the raw ``{env}:snapshot:trader_state`` value (None when the key is missing)."""
+    if raw is None:
+        return PAUSE_NO_DATA
+    try:
+        snapshot = decode(raw)
+    except SnapshotFormatError:
+        return PauseView("bad snapshot", "bad")
+    if snapshot.data.get("paused") is not True:
+        return RUNNING
+    source = snapshot.data.get("pause_source")
+    return PauseView(_PAUSED_BY.get(source, "paused") if isinstance(source, str) else "paused", "warn")

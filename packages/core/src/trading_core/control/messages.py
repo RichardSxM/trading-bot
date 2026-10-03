@@ -1,7 +1,7 @@
 """The control command and result formats on the Redis streams (spec 0004, data model).
 
-The dashboard appends commands to ``{env}:control``; the trader (feature 9) appends what
-happened to each one to ``{env}:control:results``. Every field is a string, as Redis stream
+The dashboard (and a deploy, spec 0005) appends commands to ``{env}:control``; the trader
+appends what happened to each one to ``{env}:control:results``. Every field is a string, as Redis stream
 fields are. Timestamps are ISO 8601 UTC with a ``Z`` suffix.
 """
 
@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Final
 
-from trading_core.recording.enums import ControlCmd, ControlOutcome
+from trading_core.recording.enums import ControlCmd, ControlOutcome, ControlSource
 from trading_core.settings import TradingEnv
 
 SCHEMA_VERSION: Final = "1"
@@ -25,21 +25,29 @@ class ControlFormatError(ValueError):
 
 @dataclass(frozen=True)
 class ControlMessage:
-    """One command on ``{env}:control``; ``issued_at`` and ``expires_at`` are aware UTC datetimes."""
+    """One command on ``{env}:control``; ``issued_at`` and ``expires_at`` are aware UTC datetimes.
+
+    ``source`` says who sent it; an entry without the field came from the dashboard.
+    """
 
     id: uuid.UUID
     cmd: ControlCmd
     issued_at: datetime
     expires_at: datetime
+    source: ControlSource = ControlSource.DASHBOARD
 
 
 @dataclass(frozen=True)
 class ControlResult:
-    """One outcome on ``{env}:control:results`` for the command with the same ``id``."""
+    """One outcome on ``{env}:control:results`` for the command with the same ``id``.
+
+    ``reason`` explains a ``failed`` outcome (e.g. ``not_implemented``); it is None otherwise.
+    """
 
     id: uuid.UUID
     outcome: ControlOutcome
     outcome_at: datetime
+    reason: str | None = None
 
 
 def control_stream(env: TradingEnv) -> str:
@@ -59,12 +67,29 @@ def format_utc(moment: datetime) -> str:
     return moment.astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
-def stop_command(now: datetime, ttl_s: int) -> ControlMessage:
-    """A new ``stop`` command with a fresh UUID4, issued at ``now`` and expiring ``ttl_s`` later."""
+def command(
+    cmd: ControlCmd, now: datetime, ttl_s: int, source: ControlSource = ControlSource.DASHBOARD
+) -> ControlMessage:
+    """A new ``cmd`` with a fresh UUID4, issued at ``now`` and expiring ``ttl_s`` later."""
     if now.tzinfo is None:
         raise ValueError("naive datetime; control timestamps must be timezone aware UTC")
     issued_at = now.astimezone(UTC)
-    return ControlMessage(uuid.uuid4(), ControlCmd.STOP, issued_at, issued_at + timedelta(seconds=ttl_s))
+    return ControlMessage(uuid.uuid4(), cmd, issued_at, issued_at + timedelta(seconds=ttl_s), source)
+
+
+def stop_command(now: datetime, ttl_s: int) -> ControlMessage:
+    """A new ``stop`` command with a fresh UUID4, issued at ``now`` and expiring ``ttl_s`` later."""
+    return command(ControlCmd.STOP, now, ttl_s)
+
+
+def pause_command(now: datetime, ttl_s: int, source: ControlSource) -> ControlMessage:
+    """A new ``pause`` command from ``source`` (spec 0005 AC-6)."""
+    return command(ControlCmd.PAUSE, now, ttl_s, source)
+
+
+def unpause_command(now: datetime, ttl_s: int, source: ControlSource) -> ControlMessage:
+    """A new ``unpause`` command from ``source`` (spec 0005 AC-6)."""
+    return command(ControlCmd.UNPAUSE, now, ttl_s, source)
 
 
 def to_fields(msg: ControlMessage) -> dict[str, str]:
@@ -75,7 +100,21 @@ def to_fields(msg: ControlMessage) -> dict[str, str]:
         "issued_at": format_utc(msg.issued_at),
         "expires_at": format_utc(msg.expires_at),
         "schema_version": SCHEMA_VERSION,
+        "source": msg.source.value,
     }
+
+
+def result_to_fields(result: ControlResult) -> dict[str, str]:
+    """The stream fields for ``result``; ``reason`` only when set."""
+    fields = {
+        "id": str(result.id),
+        "outcome": result.outcome.value,
+        "outcome_at": format_utc(result.outcome_at),
+        "schema_version": SCHEMA_VERSION,
+    }
+    if result.reason is not None:
+        fields["reason"] = result.reason
+    return fields
 
 
 def from_fields(fields: Fields) -> ControlMessage:
@@ -86,8 +125,17 @@ def from_fields(fields: Fields) -> ControlMessage:
         cmd = ControlCmd(values["cmd"])
     except ValueError:
         raise ControlFormatError(f"unknown control cmd {values['cmd']!r}") from None
+    source_text = field(fields, "source")
+    try:
+        source = ControlSource.DASHBOARD if source_text is None else ControlSource(source_text)
+    except ValueError:
+        raise ControlFormatError(f"unknown control source {source_text!r}") from None
     return ControlMessage(
-        _uuid(values["id"]), cmd, _utc(values["issued_at"], "issued_at"), _utc(values["expires_at"], "expires_at")
+        _uuid(values["id"]),
+        cmd,
+        _utc(values["issued_at"], "issued_at"),
+        _utc(values["expires_at"], "expires_at"),
+        source,
     )
 
 
@@ -99,7 +147,9 @@ def result_from_fields(fields: Fields) -> ControlResult:
         outcome = ControlOutcome(values["outcome"])
     except ValueError:
         raise ControlFormatError(f"unknown control outcome {values['outcome']!r}") from None
-    return ControlResult(_uuid(values["id"]), outcome, _utc(values["outcome_at"], "outcome_at"))
+    return ControlResult(
+        _uuid(values["id"]), outcome, _utc(values["outcome_at"], "outcome_at"), field(fields, "reason")
+    )
 
 
 def field(fields: Fields, name: str) -> str | None:

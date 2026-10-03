@@ -249,6 +249,15 @@ class ControlCmd(StrEnum):
     STOP = "stop"
     RESUME = "resume"
     FLATTEN = "flatten"
+    PAUSE = "pause"
+    UNPAUSE = "unpause"
+
+
+class ControlSource(StrEnum):
+    """Who sent a control command: you from the dashboard, or a deploy (spec 0005)."""
+
+    DASHBOARD = "dashboard"
+    DEPLOY = "deploy"
 
 
 class ControlOutcome(StrEnum):

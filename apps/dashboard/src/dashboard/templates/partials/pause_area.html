@@ -1,0 +1,15 @@
+{#- Pause and Resume (spec 0005 AC-13): the stop's path, one form per command. Pause blocks new
+    entries; exits and protective stops still go through. Resume clears any pause, whoever set it. -#}
+{% from "components/button.html" import button %}
+<div id="pause-area" class="pause-area">
+  {% if error %}<span class="pause-area__error" role="alert">{{ error }}</span>{% endif %}
+  <form method="post" action="/control/pause" hx-post="/control/pause" hx-target="#pause-area" hx-swap="outerHTML" data-not-sent="Pause NOT sent: no connection to the dashboard">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    {{ button("Pause", type="submit") }}
+  </form>
+  <form method="post" action="/control/unpause" hx-post="/control/unpause" hx-target="#pause-area" hx-swap="outerHTML" data-not-sent="Resume NOT sent: no connection to the dashboard">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    {{ button("Resume", type="submit") }}
+  </form>
+  <p class="pause-area__note">Pause stops new entries; open positions keep their exits and stops. Resume lifts any pause, also one a deploy set. The top bar shows who paused.</p>
+</div>
