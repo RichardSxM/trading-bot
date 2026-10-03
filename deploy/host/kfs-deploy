@@ -168,7 +168,10 @@ prune() {
         {
             echo "$SHA"
             [ -n "$PREVIOUS_SHA" ] && echo "$PREVIOUS_SHA"
-            jq -r 'select(.outcome == "deployed") | .sha' "$DEPLOY_LOG" 2>/dev/null | tac
+            # Newest first, each deploy's sha then the release it replaced, so a redeploy of the
+            # same sha (previous_sha == sha) never hides the release before it.
+            jq -r 'select(.outcome == "deployed") | .sha, (.previous_sha // "")' "$DEPLOY_LOG" 2>/dev/null |
+                paste - - | tac | tr '\t' '\n'
         } | awk 'NF && !seen[$0]++' | head -n "$KEEP_RELEASES"
     )
     # Explicit ifs: under set -e a loop whose last command failed would end the script.
