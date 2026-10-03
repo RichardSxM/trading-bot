@@ -12,7 +12,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import Response, StreamingResponse
 from markupsafe import Markup
 
-from dashboard.auth.next_path import referer_path
+from dashboard.auth.next_path import referer_page
 from dashboard.auth.session import Session
 from dashboard.live.poller import Event, Poller
 from dashboard.web.context import AppContext, app_context
@@ -93,9 +93,7 @@ async def render_referring_page(
     live: Mapping[str, str] | None = None,
 ) -> Response:
     """The page the ``Referer`` names (Overview when unknown), with the stop area in its error state."""
-    path = referer_path(request.headers.get("referer"))
-    if path not in PAGES:
-        path = "/"
+    path = referer_page(request.headers.get("referer"))
     template, title = PAGES[path]
     return await render_page(
         request,

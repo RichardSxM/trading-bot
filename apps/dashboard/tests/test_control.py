@@ -7,6 +7,8 @@ from datetime import UTC, datetime, timedelta
 
 from redis.exceptions import ConnectionError as RedisConnectionError
 
+from dashboard.auth.next_path import PAGE_PATHS
+from dashboard.web.page_routes import PAGES
 from trading_core.control.messages import format_utc
 
 STREAM = "demo:control"
@@ -81,6 +83,23 @@ def test_a_plain_form_post_never_redirects_off_site(logged_in):
     assert response.headers["location"] == "/"
 
 
+def test_a_retry_from_the_not_sent_page_returns_to_a_real_page_not_a_405(logged_in, redis):
+    csrf = _csrf(logged_in)
+    retry = {"Referer": "http://testserver/control/stop"}
+    redis.fail = RedisConnectionError("down")
+    failed = logged_in.post("/control/stop", data={"csrf": csrf}, headers=retry)
+    assert failed.status_code == 503
+    assert "<title>DEMO · Overview</title>" in failed.text
+
+    redis.fail = None
+    sent = logged_in.post("/control/stop", data={"csrf": csrf}, headers=retry)
+
+    assert sent.status_code == 303
+    assert sent.headers["location"] == "/"
+    assert logged_in.get(sent.headers["location"]).status_code == 200
+    assert len(_entries(redis)) == 1
+
+
 def test_a_missing_or_wrong_csrf_token_is_refused_and_appends_nothing(logged_in, redis):
     missing = logged_in.post("/control/stop", headers=HTMX)
     wrong = logged_in.post("/control/stop", data={"csrf": "wrong"}, headers=HTMX)
@@ -146,6 +165,17 @@ def test_a_stop_without_a_session_goes_to_login_saying_it_was_not_sent(client, r
     assert plain.headers["location"] == "/login?next=%2F&stop_lost=1"
     assert "Your stop was NOT sent" in client.get(plain.headers["location"]).text
     assert _entries(redis) == []
+
+
+def test_a_lost_stop_retried_from_the_not_sent_page_logs_in_to_a_real_page(client, redis):
+    response = client.post("/control/stop", headers={"Referer": "http://testserver/control/stop"})
+
+    assert response.headers["location"] == "/login?next=%2F&stop_lost=1"
+    assert _entries(redis) == []
+
+
+def test_every_shell_page_is_a_referer_page():
+    assert set(PAGES) == PAGE_PATHS
 
 
 def test_the_command_state_survives_a_reload_and_shows_the_result(logged_in, redis, clock):

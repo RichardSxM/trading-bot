@@ -14,7 +14,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse, Response
 from redis.typing import EncodableT, FieldT
 
-from dashboard.auth.next_path import referer_path
+from dashboard.auth.next_path import referer_page
 from dashboard.auth.session import Session
 from dashboard.live.poller import COMMAND_EVENT, REDIS_ERRORS
 from dashboard.web.context import AppContext, app_context
@@ -78,7 +78,7 @@ async def stop(request: Request, session: CsrfDep) -> Response:
     context.poller.note_sent(msg)
     if is_htmx(request):
         return render_stop_area(context, session, None, 200)
-    return RedirectResponse(referer_path(request.headers.get("referer")), status_code=303)
+    return RedirectResponse(referer_page(request.headers.get("referer")), status_code=303)
 
 
 async def handle_csrf_refused_on_stop(request: Request, exc: Exception) -> Response:

@@ -25,3 +25,17 @@ def referer_path(referer: str | None) -> str:
         return safe_next(urlsplit(referer).path)
     except ValueError:
         return "/"
+
+
+# Every page inside the shell; ``web/page_routes.PAGES`` must list the same paths.
+PAGE_PATHS: Final = frozenset({"/", "/trades", "/strategies", "/system", "/styleguide"})
+
+
+def referer_page(referer: str | None) -> str:
+    """The page a ``Referer`` names, ``/`` for anything else.
+
+    A form posted from the stop error page has ``Referer: /control/stop``; sending the browser
+    there would be a ``GET`` the route refuses with 405.
+    """
+    path = referer_path(referer)
+    return path if path in PAGE_PATHS else "/"

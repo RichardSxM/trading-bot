@@ -8,7 +8,7 @@ from urllib.parse import urlencode
 from fastapi import Depends, Request
 from fastapi.responses import RedirectResponse, Response
 
-from dashboard.auth.next_path import referer_path, safe_next
+from dashboard.auth.next_path import referer_page, safe_next
 from dashboard.auth.session import COOKIE_NAME, Session
 from dashboard.web.context import AppContext, app_context
 
@@ -80,7 +80,7 @@ def login_redirect_target(request: Request) -> str:
 
     A stop tap without a session adds ``stop_lost=1``, so the login page says the stop was NOT sent.
     """
-    path = request.url.path if request.method == "GET" else referer_path(request.headers.get("referer"))
+    path = request.url.path if request.method == "GET" else referer_page(request.headers.get("referer"))
     query = {"next": safe_next(path)}
     if request.url.path == STOP_PATH:
         query["stop_lost"] = "1"
