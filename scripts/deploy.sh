@@ -47,6 +47,8 @@ bootstrap() {
         case $1 in
             --data-disk)
                 [ $# -ge 2 ] || usage
+                case $2 in /dev/[a-z0-9]*) ;; *) die "--data-disk needs a device such as /dev/sdb" ;; esac
+                case $2 in *[!a-z0-9/]*) die "--data-disk needs a device such as /dev/sdb" ;; esac
                 disk=(--data-disk "$2")
                 shift 2
                 ;;
@@ -66,11 +68,13 @@ bootstrap() {
     [ -n "$ip" ] || usage
     sha=$(resolve origin/main)
     echo "bootstrap: sending release ${sha:0:12} to $user@$ip"
+    # The bundle lands in the login user's home first, with no sudo: sudo may ask for a
+    # password, and that needs the terminal of the second call.
     # shellcheck disable=SC2029 # $sha expands here on purpose (a checked 40 hex commit)
-    git archive --format=tar "$sha" "${BUNDLE[@]}" |
-        ssh "$user@$ip" "sudo mkdir -p /opt/kfs/releases/$sha && sudo tar -x --no-same-owner -C /opt/kfs/releases/$sha"
+    git archive --format=tar "$sha" "${BUNDLE[@]}" | ssh "$user@$ip" "cat >kfs-$sha.tar"
     # ${disk[@]+...}: macOS bash 3.2 treats an empty array as unset under set -u.
-    exec ssh -t "$user@$ip" sudo "/opt/kfs/releases/$sha/deploy/host/bootstrap.sh" --release "$sha" ${disk[@]+"${disk[@]}"}
+    # shellcheck disable=SC2029
+    exec ssh -t "$user@$ip" "sudo mkdir -p /opt/kfs/releases/$sha && sudo tar -x --no-same-owner -f kfs-$sha.tar -C /opt/kfs/releases/$sha && rm -f kfs-$sha.tar && sudo /opt/kfs/releases/$sha/deploy/host/bootstrap.sh --release $sha ${disk[*]+${disk[*]}}"
 }
 
 deploy() {

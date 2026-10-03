@@ -69,12 +69,12 @@ ask() {
     printf '%s' "$answer"
 }
 
-# 1. Ubuntu 24.04 and root; UTC; host name.
+# 1. Ubuntu 26.04 and root; UTC; host name.
 step_system() {
     [ "$(id -u)" -eq 0 ] || die "run as root"
     # shellcheck source=/dev/null
     . /etc/os-release
-    [ "${ID:-}" = ubuntu ] && [ "${VERSION_ID:-}" = 24.04 ] || die "needs Ubuntu 24.04, found ${PRETTY_NAME:-unknown}"
+    [ "${ID:-}" = ubuntu ] && [ "${VERSION_ID:-}" = 26.04 ] || die "needs Ubuntu 26.04, found ${PRETTY_NAME:-unknown}"
     if [ "$(timedatectl show -p Timezone --value)" = UTC ]; then ok "time zone UTC"; else
         timedatectl set-timezone UTC
         changed "time zone UTC"
@@ -125,14 +125,17 @@ step_user() {
     if [ -f /etc/sudoers.d/kfs ] && [ "$(cat /etc/sudoers.d/kfs)" = "$rule" ]; then ok "sudoers kfs-* rule"; else
         tmp=$(mktemp)
         printf '%s\n' "$rule" >"$tmp"
-        visudo -cqf "$tmp" || die "sudoers rule did not validate"
+        # sudo-rs (the 26.04 default) has visudo too; it allows a wildcard in the command path.
+        visudo -c -f "$tmp" >/dev/null || die "sudoers rule did not validate"
         install -m 0440 -o root -g root "$tmp" /etc/sudoers.d/kfs
         rm -f "$tmp"
         changed "sudoers kfs-* rule"
     fi
+    sudo -l -U kfs 2>/dev/null | grep -qF '/usr/local/sbin/kfs-*' ||
+        die "sudo -l -U kfs does not list /usr/local/sbin/kfs-*; check /etc/sudoers.d/kfs"
 }
 
-# 3. Packages: chrony (replaces timesyncd), ufw, unattended-upgrades for security only, needrestart list only.
+# 3. Packages: chrony (the 26.04 default; timesyncd stays off), ufw, unattended-upgrades for security only, needrestart list only.
 step_packages() {
     local missing=() pkg
     for pkg in chrony ufw unattended-upgrades jq curl; do
@@ -283,10 +286,12 @@ step_docker() {
 
 # 7. Tailscale: tag:kfs, Tailscale SSH, host name kfs-vps; serve the dashboard on 443.
 step_tailscale() {
-    local state prefs keyfile
+    local state prefs keyfile codename
     if installed tailscale; then ok "tailscale package"; else
-        curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/noble.noarmor.gpg -o /usr/share/keyrings/tailscale-archive-keyring.gpg
-        curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/noble.tailscale-keyring.list -o /etc/apt/sources.list.d/tailscale.list
+        # shellcheck source=/dev/null
+        codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
+        curl -fsSL "https://pkgs.tailscale.com/stable/ubuntu/$codename.noarmor.gpg" -o /usr/share/keyrings/tailscale-archive-keyring.gpg
+        curl -fsSL "https://pkgs.tailscale.com/stable/ubuntu/$codename.tailscale-keyring.list" -o /etc/apt/sources.list.d/tailscale.list
         apt-get update -q >/dev/null
         apt_install tailscale
         changed "tailscale package"
@@ -347,7 +352,13 @@ step_gate() {
 step_firewall() {
     if ssh_disabled; then ok "openssh disabled"; else
         # Stopping the service keeps this session: ssh.service kills only its listener.
-        systemctl disable --now ssh.socket ssh.service >/dev/null 2>&1
+        local unit
+        for unit in ssh.socket ssh.service; do
+            # A unit this image does not have is skipped.
+            if systemctl cat "$unit" >/dev/null 2>&1; then
+                systemctl disable --now "$unit" >/dev/null 2>&1
+            fi
+        done
         changed "openssh disabled"
     fi
     local status

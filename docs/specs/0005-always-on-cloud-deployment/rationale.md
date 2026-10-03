@@ -76,7 +76,9 @@ Inside Option 1, these smaller calls were mine (each with its runner up):
 - **Tailscale SSH only, with the KVM console as the way back in.** It removes public port 22 and SSH key management entirely. The bootstrap refuses to close OpenSSH until a Tailscale login is confirmed, so you cannot lock yourself out in the same run.
 - **Backup scheduling inside the backup container** (your pick) keeps the laptop and VPS identical, since the laptop has no systemd.
 
-Your answers fixed the rest: Ubuntu 24.04 (more familiar than Debian 13, supported to 2029), the bootstrap script over Ansible, a laptop triggered deploy, release bundles per commit, local logs only, 14 daily, 8 weekly, and 24 monthly retention, and a soak that allows self healing but counts it.
+Your answers fixed the rest: Ubuntu LTS (more familiar than Debian 13; changed from 24.04 to 26.04 on 2026-10-03, see below), the bootstrap script over Ansible, a laptop triggered deploy, release bundles per commit, local logs only, 14 daily, 8 weekly, and 24 monthly retention, and a soak that allows self healing but counts it.
+
+**Ubuntu 26.04 instead of 24.04 (amended 2026-10-03).** The VPS arrived with Ubuntu 26.04 LTS, and you chose to keep it rather than reinstall. 26.04 is supported to 2031, two years longer than 24.04. Docker's and Tailscale's apt repositories both publish `resolute` packages, chrony is already the default time service, and unattended-upgrades, needrestart, and `ssh.socket` work as on 24.04. Two defaults changed: `sudo` is sudo-rs, and most core utilities are the Rust coreutils (`cp`, `mv`, and `rm` stay GNU). I kept both defaults. The one sudoers rule uses a wildcard only in the command path, which sudo-rs supports, and the host scripts use only common coreutils flags (`readlink -f`, `install`, `stat -c`, `df -B1`, `mktemp -d`, `date -u`). Runner up: switching back to `sudo.ws` and GNU coreutils, rejected because it moves the box off the path Canonical tests, for no feature we need. If a script ever trips on a Rust coreutils difference, fix the script, or switch that one tool back to the GNU package.
 
 ## Evidence
 
