@@ -25,6 +25,7 @@ docker compose run --rm -T trader pytest -q -m redis              # Redis ACL te
 - Redis cache keys stay stable across restarts (`trader-TRADER-<ENV>:...`), so the trader reloads state and then reconciles with Kraken. Never turn on `flush_on_start` or instance ids.
 - The trader refuses to start when Redis is unreachable. It logs in to Redis as its own ACL user `trader`.
 - Live runs only on the VPS with `compose.live.yaml`, which adds the Kraken key files and `KRAKEN_KEY_ROTATED_ON`. A live start runs the key check task (`trading_core.node.key_check`) and exits 1 when Kraken never confirms the account. The env guard refuses live until feature 19.
+- `snapshot_writer.py` writes the heartbeat snapshot every second through the `trading_core.snapshot` envelope; a Redis outage only logs (at most one warning a minute) and never stops the trader.
 - Strategies stay thin; risk and sizing logic lives in `packages/core`.
 
 _Drafted by /audit from the repo, worth a quick human pass. Edit freely: once a line stops matching this draft, later runs treat it as curated and will flag rather than overwrite it._

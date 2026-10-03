@@ -1,7 +1,7 @@
 # 0002. Record trading in Postgres as traceable, idempotent, environment tagged tables
 
 **Date**: 2026-10-01
-**Status**: In Progress
+**Status**: Accepted
 
 ## Summary
 

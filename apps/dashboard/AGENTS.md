@@ -16,6 +16,7 @@ The private web dashboard, reachable only over Tailscale. History comes from Pos
 docker compose build dashboard
 docker compose run --rm --no-deps -T dashboard pytest -q
 docker compose run --rm -T dashboard pytest -q -m redis   # Redis ACL tests against the Compose Redis
+scripts/dashboard-credentials.sh --dev --write            # laptop: login files (password hash, authenticator seed, session key); never overwrites
 ```
 
 ## Conventions
