@@ -1,0 +1,35 @@
+# VPS only override (spec 0005). Never used on the laptop. Always applied through
+# kfs-compose, which also sets the project name `kfs`, the env file /etc/kfs/kfs.env, and
+# KFS_TAG (the deployed commit).
+#
+# The catalog lives on the extra disk at /srv/kfs (mounted by bootstrap.sh) instead of a
+# named volume, so it survives a lost Docker data root and the backup can read it.
+
+services:
+  recorder:
+    environment:
+      CATALOG_REQUIRE_MARKER: "true"
+    volumes:
+      - type: bind
+        source: /srv/kfs/catalog
+        target: /data/catalog
+        bind:
+          create_host_path: true
+
+  trader:
+    volumes:
+      - type: bind
+        source: /srv/kfs/catalog
+        target: /data/catalog
+        read_only: true
+        bind:
+          create_host_path: true
+
+  dashboard:
+    volumes:
+      - type: bind
+        source: /srv/kfs/catalog
+        target: /data/catalog
+        read_only: true
+        bind:
+          create_host_path: true

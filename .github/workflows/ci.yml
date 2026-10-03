@@ -62,3 +62,55 @@ jobs:
       - name: canary leak test (no secret in any output, spec 0003 AC-6)
         working-directory: apps/trader
         run: uv run --frozen pytest -q -m canary
+
+  # The images the VPS deploys (spec 0005 AC-3): one per app, tagged with the commit CI tested.
+  # Only on a push to main; no other branch builds an image, and there is no `latest` tag.
+  images:
+    needs: check
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { app: core, package: trading-core, app_dir: packages/core }
+          - { app: trader, package: trader, app_dir: apps/trader }
+          - { app: recorder, package: recorder, app_dir: apps/recorder }
+          - { app: dashboard, package: dashboard, app_dir: apps/dashboard }
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push kfs-${{ matrix.app }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: runtime
+          build-args: |
+            PACKAGE=${{ matrix.package }}
+            APP_DIR=${{ matrix.app_dir }}
+            GIT_COMMIT=${{ github.sha }}
+          tags: ghcr.io/richardsxm/kfs-${{ matrix.app }}:${{ github.sha }}
+          push: true
+          provenance: false
+          cache-from: type=gha,scope=${{ matrix.app }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.app }}
+
+      - name: Keep the newest 10 versions of kfs-${{ matrix.app }}
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: kfs-${{ matrix.app }}
+          package-type: container
+          min-versions-to-keep: 10

@@ -8,6 +8,9 @@
 # by compose.live.yaml.
 # No service publishes a port on 0.0.0.0: only the dashboard, on the host's 127.0.0.1,
 # exposed to the tailnet with `tailscale serve`.
+# Image names (spec 0005): ${KFS_IMAGE_PREFIX}<app>:${KFS_TAG}. On the laptop both are unset,
+# so images stay kfs/<app>:<IMAGE_TARGET> and are built locally. On the VPS, kfs-compose sets
+# KFS_TAG to the deployed commit and /etc/kfs/kfs.env sets the GHCR prefix; nothing is built there.
 
 x-logging: &logging
   driver: json-file
@@ -107,7 +110,7 @@ services:
         PACKAGE: trading-core
         APP_DIR: packages/core
         GIT_COMMIT: ${GIT_COMMIT:-unknown}
-    image: kfs/core:${IMAGE_TARGET:-runtime}
+    image: ${KFS_IMAGE_PREFIX:-kfs/}core:${KFS_TAG:-${IMAGE_TARGET:-runtime}}
     restart: "no"
     # Role setup first (idempotent), then the schema, both as the owner role.
     command: ["sh", "-c", "python -m trading_core.db_roles && alembic upgrade head"]
@@ -136,7 +139,7 @@ services:
         PACKAGE: trader
         APP_DIR: apps/trader
         GIT_COMMIT: ${GIT_COMMIT:-unknown}
-    image: kfs/trader:${IMAGE_TARGET:-runtime}
+    image: ${KFS_IMAGE_PREFIX:-kfs/}trader:${KFS_TAG:-${IMAGE_TARGET:-runtime}}
     command: ["python", "-m", "trader.main"]
     # Kraken keys are added by compose.live.yaml only; no other service ever gets them.
     # An explicit TRADER_ID goes in a compose override: an empty value would be refused.
@@ -175,7 +178,7 @@ services:
         PACKAGE: recorder
         APP_DIR: apps/recorder
         GIT_COMMIT: ${GIT_COMMIT:-unknown}
-    image: kfs/recorder:${IMAGE_TARGET:-runtime}
+    image: ${KFS_IMAGE_PREFIX:-kfs/}recorder:${KFS_TAG:-${IMAGE_TARGET:-runtime}}
     command: ["python", "-m", "recorder.main"]
     # No Redis, no Postgres, never Kraken keys (the env guard refuses them in any env).
     environment:
@@ -183,6 +186,8 @@ services:
       PROCESS_NAME: recorder
       CATALOG_PATH: /data/catalog
       RECORDER_INSTRUMENTS: ${RECORDER_INSTRUMENTS:-PF_XBTUSD.KRAKEN,PF_ETHUSD.KRAKEN}
+      # true on the VPS (compose.vps.yaml): refuse to start without the extra disk's marker (spec 0005).
+      CATALOG_REQUIRE_MARKER: ${CATALOG_REQUIRE_MARKER:-false}
     volumes:
       - catalog:/data/catalog
     healthcheck: *node-healthcheck
@@ -198,7 +203,7 @@ services:
         PACKAGE: dashboard
         APP_DIR: apps/dashboard
         GIT_COMMIT: ${GIT_COMMIT:-unknown}
-    image: kfs/dashboard:${IMAGE_TARGET:-runtime}
+    image: ${KFS_IMAGE_PREFIX:-kfs/}dashboard:${KFS_TAG:-${IMAGE_TARGET:-runtime}}
     command: ["python", "-m", "dashboard.main"]
     environment:
       <<: [*base-env, *redis-env, *app-db-env]
@@ -245,7 +250,7 @@ services:
 
   backup:
     # Stub: checks and fingerprints its secret files, then idles (spec 0003). The real job
-    # (downsample, pg_dump, restic to Backblaze B2) arrives with feature 7.
+    # (downsample, pg_dump, restic to Backblaze B2) arrives with spec 0005 milestone 4.
     image: alpine:3.20
     restart: unless-stopped
     logging: *logging
@@ -269,7 +274,7 @@ services:
     # Never started by `up`: run through scripts/dashboard-credentials.sh (spec 0004 AC-19).
     # Mounts no secrets, so it works before they exist; writes into the host secrets folder.
     profiles: ["tools"]
-    image: kfs/dashboard:${IMAGE_TARGET:-runtime}
+    image: ${KFS_IMAGE_PREFIX:-kfs/}dashboard:${KFS_TAG:-${IMAGE_TARGET:-runtime}}
     restart: "no"
     network_mode: none
     command: ["python", "-m", "dashboard.credentials"]

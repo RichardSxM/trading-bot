@@ -1,0 +1,46 @@
+// The tailnet policy for the VPS (spec 0005 AC-22). Paste it into the Tailscale admin
+// console (Access controls) before the first bootstrap, after replacing
+// you@example.com with your own Tailscale login. Keep your real address out of the repo.
+//
+// Only you reach tag:kfs: the dashboard on tcp 443, and Tailscale SSH as the `kfs` user.
+// tag:kfs itself may start no connection to any other tailnet device, so a compromised
+// VPS cannot reach your laptop or phone. Another tailnet identity cannot reach the VPS.
+//
+// This file replaces the whole policy. If your tailnet already has rules your other devices
+// rely on (for example the default allow all), merge these sections into it instead, and
+// make sure no existing rule names tag:kfs, autogroup:tagged, or * as a source or destination.
+{
+	"tagOwners": {
+		// Who may hand out tag:kfs (create the one time auth key bootstrap asks for).
+		"tag:kfs": ["autogroup:admin"],
+	},
+
+	"grants": [
+		// Your devices to the dashboard. Nothing grants anything to or from tag:kfs beyond this.
+		{
+			"src": ["you@example.com"],
+			"dst": ["tag:kfs"],
+			"ip":  ["tcp:443"],
+		},
+	],
+
+	"ssh": [
+		// Tailscale SSH as kfs only (never root); `check` asks you to re-authenticate
+		// in the browser at most every 12 hours.
+		{
+			"action":      "check",
+			"checkPeriod": "12h",
+			"src":         ["you@example.com"],
+			"dst":         ["tag:kfs"],
+			"users":       ["kfs"],
+		},
+	],
+
+	"tests": [
+		{
+			"src":    "you@example.com",
+			"accept": ["tag:kfs:443"],
+			"deny":   ["tag:kfs:22", "tag:kfs:8000"],
+		},
+	],
+}
