@@ -22,6 +22,8 @@ The shared library every process imports: settings, JSON logging, the startup cl
 | `src/trading_core/db.py` | Shared metadata, constraint naming convention, and column type map (Decimal to numeric, datetime to timestamptz) |
 | `src/trading_core/db_roles.py` | Creates or updates the `trader_app`, `dashboard_app`, `backup_app` roles before migrations (spec 0002) |
 | `src/trading_core/recording/` | Postgres business records (spec 0002): `enums`, `rows` (frozen row values), `models` (18 tables), `errors`, `repository` (the idempotent write API), `queries` (`journal_rows`, the trade journal read) |
+| `src/trading_core/control/` | The control command and result formats on the `{env}:control` and `{env}:control:results` Redis streams (spec 0004) |
+| `src/trading_core/snapshot/` | The `{env}:snapshot:<name>` key and its JSON envelope (`schema_version`, `ts_ns`, `data`) that every snapshot writer and reader shares |
 | `src/trading_core/migrations/` | Alembic env and versions (`alembic.ini` at package root) |
 | `src/trading_core/node/` | Nautilus helpers (Kraken data and live execution client configs, heartbeat and key age actors); the only Nautilus imports in core |
 

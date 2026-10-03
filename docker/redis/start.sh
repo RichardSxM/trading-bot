@@ -34,12 +34,13 @@ dashboard=$(hash_of redis_dashboard_password)
 
 # default: no login, PING only (the healthcheck and the apps' startup reachability probe).
 # trader: everything except admin commands and flushes (spec 0001: a FLUSHDB wipes both envs).
-# dashboard: read snapshot keys, append to the control stream, nothing else.
+# dashboard: read snapshot keys, read and append to the control stream, read control results,
+# nothing else (spec 0004 AC-14).
 umask 077
 cat >"$acl" <<ACL
 user default on nopass resetkeys resetchannels -@all +ping
 user trader on #$trader ~* &* +@all -@admin -flushall -flushdb
-user dashboard on #$dashboard resetkeys resetchannels %R~*:snapshot:* %W~*:control -@all +@read +xadd +ping +hello +auth +client|setname +client|setinfo
+user dashboard on #$dashboard resetkeys resetchannels %R~*:snapshot:* %RW~*:control %R~*:control:results -@all +@read +xadd +ping +hello +auth +client|setname +client|setinfo
 ACL
 chown redis:redis "$acl"
 chmod 0400 "$acl"

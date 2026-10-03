@@ -1,0 +1,8 @@
+{# The page links: a side column from 900 px wide, a bottom tab bar below (DESIGN.md: Nav item).
+   ``items`` is a list of (path, label, icon); ``current`` is the path of this page. #}
+{% from "components/icon.html" import icon %}
+{% macro nav_links(items, current) -%}
+{% for href, label, glyph in items %}
+<a class="nav__item{% if href == current %} is-current{% endif %}" href="{{ href }}"{% if href == current %} aria-current="page"{% endif %}>{{ icon(glyph) }}<span>{{ label }}</span></a>
+{%- endfor %}
+{%- endmacro %}

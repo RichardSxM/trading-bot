@@ -32,6 +32,10 @@ POSTGRES_PASSWORD: Final = "postgres_password"
 REDIS_PASSWORD: Final = "redis_password"
 KRAKEN_API_KEY: Final = "kraken_api_key"
 KRAKEN_API_SECRET: Final = "kraken_api_secret"
+# The dashboard login (spec 0004), mounted into the dashboard only.
+DASHBOARD_PASSWORD_HASH: Final = "dashboard_password_hash"
+DASHBOARD_TOTP_SEED: Final = "dashboard_totp_seed"
+DASHBOARD_SESSION_KEY: Final = "dashboard_session_key"
 
 Reason = Literal["missing", "empty", "not_a_file", "unreadable", "too_short", "whitespace"]
 

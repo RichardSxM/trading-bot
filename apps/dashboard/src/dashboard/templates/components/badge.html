@@ -1,0 +1,12 @@
+{# Badges and status dots (DESIGN.md: Badge, Status dot). #}
+{% macro badge(label, kind="neutral") -%}
+<span class="badge badge--{{ kind }}">{{ label }}</span>
+{%- endmacro %}
+
+{% macro env_badge(env) -%}
+<span class="badge badge--{{ env }}" role="status">{{ env | upper }}</span>
+{%- endmacro %}
+
+{% macro status_dot(label, level="off") -%}
+<span class="status"><span class="status-dot status-dot--{{ level }}" aria-hidden="true"></span>{{ label }}</span>
+{%- endmacro %}

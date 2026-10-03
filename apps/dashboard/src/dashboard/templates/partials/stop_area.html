@@ -1,0 +1,6 @@
+{% from "components/button.html" import button %}
+<form id="stop-area" class="stop-area{% if error %} stop-area--failed{% endif %}" method="post" action="/control/stop" hx-post="/control/stop" hx-target="this" hx-swap="outerHTML">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  {% if error %}<span class="stop-area__error" role="alert">{{ error }}</span>{% endif %}
+  {{ button("Retry stop" if error else "Stop", kind="stop", type="submit", glyph="octagon-x") }}
+</form>

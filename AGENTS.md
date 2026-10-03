@@ -21,7 +21,8 @@ docker compose up -d                      # run the stack (TRADING_ENV=demo on t
 docker compose run --rm migrate           # alembic upgrade head
 docker compose run --rm --no-deps -T <app> pytest -q                       # app tests
 docker compose run --rm --no-deps -T -w /app/packages/core trader pytest -q  # core tests
-pre-commit run --all-files                # gitleaks + ruff check + ruff format + mypy (Docker must be running)
+pre-commit run --all-files                # gitleaks + ruff check + ruff format (the commit hooks)
+pre-commit run --all-files --hook-stage pre-push   # mypy, the push hook (Docker must be running)
 scripts/typecheck.sh                      # mypy strict; on the Mac it runs in the `tools` Compose service
 ```
 
@@ -45,7 +46,7 @@ Stored in `docs/specs/`. Format: `docs/specs/NNNN-title/index.md` (plus `rationa
 
 ## Tooling
 
-Ruff (lint + format; its version is pinned in both `pyproject.toml` and `.pre-commit-config.yaml`, bump them together), mypy strict (needs NautilusTrader, so Linux only: the `tools` container locally, directly in CI), pre-commit running gitleaks, ruff check, ruff format, and mypy on every commit, GitHub Actions on push and PR (gitleaks, lint, typecheck, pytest, and the trader's canary leak test on Linux). Testing gate: pytest unit tests for core logic (no infrastructure mocks) plus integration tests against real Postgres and Redis in Compose.
+Ruff (lint + format; its version is pinned in both `pyproject.toml` and `.pre-commit-config.yaml`, bump them together), mypy strict (needs NautilusTrader, so Linux only: the `tools` container locally, directly in CI), pre-commit running gitleaks, ruff check, and ruff format on every commit and mypy before every push (it is slow in the Mac's `tools` container), GitHub Actions on push and PR (gitleaks, lint, typecheck, pytest, and the trader's canary leak test on Linux). Testing gate: pytest unit tests for core logic (no infrastructure mocks) plus integration tests against real Postgres and Redis in Compose.
 
 ## Git
 

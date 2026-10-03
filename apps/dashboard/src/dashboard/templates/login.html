@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% from "components/badge.html" import env_badge %}
+{% from "components/button.html" import button %}
+{% block body %}
+<main class="login" id="main">
+  <div class="login__panel">
+    <div class="login__brand">
+      <svg class="brand__mark brand__mark--lg" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><rect class="brand__tile" x="0.5" y="0.5" width="19" height="19" rx="4"/><path class="brand__trace" d="M3.5 11h3l1.75-4.5 3 8L13 8.5l1 2.5h2.5"/></svg>
+      {{ env_badge(env) }}
+    </div>
+    <h1 class="login__title">Log in to Scalper</h1>
+    <p class="login__lede">Your password, then the 6 digit code from your authenticator.</p>
+    {% if stop_lost %}<p class="notice notice--loss" role="alert">Your stop was NOT sent. Log in and tap stop again.</p>{% endif %}
+    {% if error %}<p class="notice notice--loss" role="alert">{{ error }}</p>{% endif %}
+    <form method="post" action="/login" class="login__form">
+      <input type="hidden" name="next" value="{{ next }}">
+      <div class="field">
+        <label class="field__label" for="password">Password</label>
+        <input class="input" id="password" name="password" type="password" autocomplete="current-password" required autofocus>
+      </div>
+      <div class="field">
+        <label class="field__label" for="code">Authenticator code</label>
+        <input class="input input--code" id="code" name="code" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" placeholder="000000" required>
+      </div>
+      {{ button("Log in", kind="primary", type="submit") }}
+    </form>
+    <p class="login__foot">Kraken Futures · private, reachable only over Tailscale</p>
+  </div>
+</main>
+{% endblock %}

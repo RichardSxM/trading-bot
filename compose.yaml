@@ -205,11 +205,25 @@ services:
       PROCESS_NAME: dashboard
       POSTGRES_USER: dashboard_app
       REDIS_USERNAME: dashboard
+      # spec 0004; DASHBOARD_COOKIE_SECURE=false only in demo, for a browser on http://127.0.0.1.
+      DASHBOARD_COOKIE_SECURE: ${DASHBOARD_COOKIE_SECURE:-true}
+      DASHBOARD_STALE_AMBER_S: ${DASHBOARD_STALE_AMBER_S:-3}
+      DASHBOARD_STALE_RED_S: ${DASHBOARD_STALE_RED_S:-10}
+      DASHBOARD_POLL_MS: ${DASHBOARD_POLL_MS:-500}
+      DASHBOARD_SESSION_IDLE_H: ${DASHBOARD_SESSION_IDLE_H:-24}
+      DASHBOARD_SESSION_MAX_D: ${DASHBOARD_SESSION_MAX_D:-7}
+      CONTROL_COMMAND_TTL_S: ${CONTROL_COMMAND_TTL_S:-300}
+      DASHBOARD_COMMAND_HIDE_S: ${DASHBOARD_COMMAND_HIDE_S:-900}
+      DASHBOARD_ACK_WARN_S: ${DASHBOARD_ACK_WARN_S:-10}
     secrets:
       - source: postgres_dashboard_password
         target: postgres_password
       - source: redis_dashboard_password
         target: redis_password
+      # The login (spec 0004): made by scripts/dashboard-credentials.sh, dashboard only.
+      - dashboard_password_hash
+      - dashboard_totp_seed
+      - dashboard_session_key
     ports:
       - "127.0.0.1:${DASHBOARD_HOST_PORT:-8000}:8000"
     volumes:
@@ -251,6 +265,17 @@ services:
       interval: 30s
     mem_limit: 128m
 
+  dashboard-credentials:
+    # Never started by `up`: run through scripts/dashboard-credentials.sh (spec 0004 AC-19).
+    # Mounts no secrets, so it works before they exist; writes into the host secrets folder.
+    profiles: ["tools"]
+    image: kfs/dashboard:${IMAGE_TARGET:-runtime}
+    restart: "no"
+    network_mode: none
+    command: ["python", "-m", "dashboard.credentials"]
+    volumes:
+      - ${SECRETS_DIR:-./secrets}:/out
+
   tools:
     # Never started by `up`: run on demand, e.g. `docker compose run --rm tools scripts/typecheck.sh`.
     # The repo is bind mounted over /app, so it checks your working tree without a rebuild.
@@ -284,6 +309,12 @@ secrets:
     file: ${SECRETS_DIR:-./secrets}/redis_trader_password
   redis_dashboard_password:
     file: ${SECRETS_DIR:-./secrets}/redis_dashboard_password
+  dashboard_password_hash:
+    file: ${SECRETS_DIR:-./secrets}/dashboard_password_hash
+  dashboard_totp_seed:
+    file: ${SECRETS_DIR:-./secrets}/dashboard_totp_seed
+  dashboard_session_key:
+    file: ${SECRETS_DIR:-./secrets}/dashboard_session_key
   restic_password:
     file: ${SECRETS_DIR:-./secrets}/restic_password
   b2_key_id:

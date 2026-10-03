@@ -1,0 +1,194 @@
+{% extends "shell.html" %}
+{% from "components/badge.html" import badge, status_dot %}
+{% from "components/icon.html" import icon, ICONS %}
+{% from "components/nav.html" import nav_links %}
+{% from "components/pulse.html" import pulse %}
+{% from "components/button.html" import button %}
+{% from "components/chart.html" import chart %}
+{% from "components/stale.html" import stale %}
+{% from "components/stat.html" import stat %}
+{% from "components/states.html" import empty_state, loading, error_state %}
+{% from "components/table.html" import table %}
+{% block head %}<link rel="stylesheet" href="/static/css/styleguide.css">{% endblock %}
+{% block scripts %}
+  <script defer src="/static/vendor/lightweight-charts.standalone.production.js"></script>
+  <script defer src="/static/js/chart.js"></script>
+  <script defer src="/static/js/pulse.js"></script>
+{% endblock %}
+{% block page %}
+<div class="sg">
+<p class="sg-lede">Every token and component from <code>DESIGN.md</code>, in every state. All values on this page are samples, never live data.</p>
+
+<nav class="sg-toc" aria-label="Styleguide sections">
+  <a href="#colors">Colors</a><a href="#type">Type</a><a href="#space">Space and shape</a><a href="#numbers">Numbers and time</a>
+  <a href="#status">Badges and status</a><a href="#shell">Nav, link, icons</a><a href="#topbar">Top bar states</a><a href="#pulse">Pulse</a><a href="#stats">Stats and freshness</a><a href="#table">Table</a>
+  <a href="#buttons">Buttons</a><a href="#states">Empty, loading, error</a><a href="#chart">Chart</a>
+</nav>
+
+<section class="sg-section" id="colors" aria-labelledby="colors-h">
+  <h2 class="sg-h" id="colors-h">Colors</h2>
+  <ul class="sg-swatches">
+    {% for s in swatches %}
+    <li class="sg-swatch" data-sample="token:{{ s.name }}">
+      <span class="sg-swatch__chip sg-chip--{{ s.name }}"><span class="sg-on--{{ s.partner }}">Aa</span></span>
+      <span class="sg-swatch__name">{{ s.name }}</span>
+      <span class="sg-swatch__meta num">{{ s.value }} · {{ s.partner }} {{ s.ratio }}:1</span>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+
+<section class="sg-section" id="type" aria-labelledby="type-h">
+  <h2 class="sg-h" id="type-h">Type</h2>
+  <dl class="sg-rows">
+    {% for role in type_roles %}
+    <div class="sg-row" data-sample="type:{{ role }}">
+      <dt class="sg-row__key">{{ role }}</dt>
+      <dd class="sg-row__val sg-type--{{ role }}">{% if role.startswith("number") %}64,288.00 −1,234.50{% else %}Trader heartbeat is fresh{% endif %}</dd>
+    </div>
+    {% endfor %}
+  </dl>
+</section>
+
+<section class="sg-section" id="space" aria-labelledby="space-h">
+  <h2 class="sg-h" id="space-h">Space and shape</h2>
+  <dl class="sg-rows">
+    {% for step in spacing %}
+    <div class="sg-row" data-sample="space:{{ step }}"><dt class="sg-row__key num">space {{ step }}</dt><dd class="sg-row__val"><span class="sg-bar sg-space--{{ step }}"></span></dd></div>
+    {% endfor %}
+    {% for step in radii %}
+    <div class="sg-row" data-sample="radius:{{ step }}"><dt class="sg-row__key num">radius {{ step }}</dt><dd class="sg-row__val"><span class="sg-corner sg-radius--{{ step }}"></span></dd></div>
+    {% endfor %}
+    <div class="sg-row" data-sample="motion:state"><dt class="sg-row__key">motion state</dt><dd class="sg-row__val num">120ms ease-out · none under reduced motion</dd></div>
+  </dl>
+</section>
+
+<section class="sg-section" id="numbers" aria-labelledby="numbers-h">
+  <h2 class="sg-h" id="numbers-h">Numbers and time</h2>
+  <dl class="sg-rows">
+    {% for state, value in numbers.items() %}
+    <div class="sg-row" data-sample="num:{{ state }}"><dt class="sg-row__key">num · {{ state }}</dt><dd class="sg-row__val"><span class="num">{{ value | num }}</span><code class="sg-src">Decimal("{{ value }}")</code></dd></div>
+    {% endfor %}
+    {% for state, value in pnls.items() %}
+    <div class="sg-row" data-sample="pnl:{{ state }}"><dt class="sg-row__key">pnl · {{ state }}</dt><dd class="sg-row__val">{{ value | pnl }}<code class="sg-src">Decimal("{{ value }}")</code></dd></div>
+    {% endfor %}
+    <div class="sg-row" data-sample="ts:utc"><dt class="sg-row__key">ts · summer</dt><dd class="sg-row__val">{{ sample_time | ts }}<code class="sg-src">hover for Amsterdam time</code></dd></div>
+    <div class="sg-row"><dt class="sg-row__key">ts · winter</dt><dd class="sg-row__val">{{ winter_time | ts }}</dd></div>
+    <div class="sg-row"><dt class="sg-row__key">ts · nanoseconds</dt><dd class="sg-row__val">{{ sample_ns | ts }}</dd></div>
+  </dl>
+</section>
+
+<section class="sg-section" id="status" aria-labelledby="status-h">
+  <h2 class="sg-h" id="status-h">Badges and status</h2>
+  <div class="sg-line">
+    <span data-sample="badge:demo">{{ badge("demo", "demo") }}</span>
+    <span data-sample="badge:live">{{ badge("live", "live") }}</span>
+    <span data-sample="badge:ok">{{ badge("connected", "ok") }}</span>
+    <span data-sample="badge:warn">{{ badge("degraded", "warn") }}</span>
+    <span data-sample="badge:bad">{{ badge("down", "bad") }}</span>
+    <span data-sample="badge:neutral">{{ badge("idle", "neutral") }}</span>
+  </div>
+  <div class="sg-line">
+    <span data-sample="status_dot:ok">{{ status_dot("Kraken data connected", "ok") }}</span>
+    <span data-sample="status_dot:warn">{{ status_dot("Reconnecting", "warn") }}</span>
+    <span data-sample="status_dot:bad">{{ status_dot("Order link down", "bad") }}</span>
+    <span data-sample="status_dot:off">{{ status_dot("Recorder not running", "off") }}</span>
+  </div>
+</section>
+
+<section class="sg-section" id="shell" aria-labelledby="shell-h">
+  <h2 class="sg-h" id="shell-h">Nav, link, icons</h2>
+  <nav class="sg-nav nav" aria-label="Sample nav">
+    <span data-sample="nav_links:current">{{ nav_links(sample_nav[:1], "/styleguide") }}</span>
+    <span data-sample="nav_links:default">{{ nav_links(sample_nav[1:], "/styleguide") }}</span>
+  </nav>
+  <div class="sg-line">
+    {% for state, label in [("static", "snapshot"), ("connecting", "connecting"), ("live", "live"), ("degraded", "no data"), ("reconnecting", "reconnecting"), ("lost", "lost")] %}
+    <span data-sample="link:{{ state }}"><span class="link link--{{ state }}"><span class="link__dot" aria-hidden="true"></span><span class="link__label">link</span> <span class="link__text">{{ label }}</span></span></span>
+    {% endfor %}
+  </div>
+  <div class="sg-line sg-icons" data-sample="icon:default">
+    {% for name in ICONS %}<span class="sg-icon">{{ icon(name) }}<span class="num">{{ name }}</span></span>{% endfor %}
+  </div>
+</section>
+
+<section class="sg-section" id="topbar" aria-labelledby="topbar-h">
+  <h2 class="sg-h" id="topbar-h">Top bar states</h2>
+  <div class="sg-line">
+    {% for state, view in command_samples.items() %}
+    <span data-sample="command:{{ state }}">{% include "partials/topbar_command.html" %}</span>
+    {% endfor %}
+  </div>
+  <div class="sg-alerts">
+    {% for view in alert_samples %}
+    <div class="sg-alert" data-sample="alert:{{ view.kind }}">{% include "partials/topbar_alert.html" %}</div>
+    {% endfor %}
+  </div>
+  <p class="sg-note">Sample alerts: the real bar sits under the top bar and shows only the most severe one, only while something is wrong.</p>
+</section>
+
+<section class="sg-section" id="pulse" aria-labelledby="pulse-sample-h">
+  <div data-sample="pulse:default">{{ pulse("pulse-sample-h", stale_s, sample=pulse_sample) }}</div>
+</section>
+
+<section class="sg-section" id="activity" aria-labelledby="activity-sample-h">
+  <h2 class="sg-h" id="activity-sample-h">Activity feed</h2>
+  <div data-sample="activity:filled">{% with groups=activity_groups %}{% include "partials/overview_activity.html" %}{% endwith %}</div>
+  <div data-sample="activity:collapsed">{% with groups=activity_run %}{% include "partials/overview_activity.html" %}{% endwith %}</div>
+  <div data-sample="activity:empty">{% with groups=[] %}{% include "partials/overview_activity.html" %}{% endwith %}</div>
+  <div data-sample="activity:error">{% with groups=none %}{% include "partials/overview_activity.html" %}{% endwith %}</div>
+</section>
+
+<section class="sg-section" id="stats" aria-labelledby="stats-h">
+  <h2 class="sg-h" id="stats-h">Stats and freshness</h2>
+  <div class="sg-stats">
+    <div data-sample="stat:default">{% call stat("Unrealized P&L", note="2s old") %}{{ pnls.profit | pnl }}{% endcall %}</div>
+    <div data-sample="stat:stale">{% call stat("Position", state="stale", note="7s old, stale") %}<span class="num">{{ numbers.positive | num }}</span>{% endcall %}</div>
+    <div data-sample="stat:error">{% call stat("Margin", state="error", note="Redis did not answer; retrying") %}Unavailable{% endcall %}</div>
+    <div data-sample="stat:loading">{{ stat("Funding", state="loading") }}</div>
+  </div>
+  <div class="sg-line">
+    <span data-sample="stale:ok">{% call stale("1s", "ok") %}<span class="num">{{ numbers.positive | num }}</span>{% endcall %}</span>
+    <span data-sample="stale:warn">{% call stale("5s", "warn") %}<span class="num">{{ numbers.positive | num }}</span>{% endcall %}</span>
+    <span data-sample="stale:bad">{% call stale("14s", "bad") %}<span class="num">{{ numbers.positive | num }}</span>{% endcall %}</span>
+    <span data-sample="stale:lost">{% call stale("", "lost") %}<span class="num">{{ numbers.positive | num }}</span>{% endcall %}</span>
+  </div>
+</section>
+
+<section class="sg-section" id="table" aria-labelledby="table-h">
+  <h2 class="sg-h" id="table-h">Table</h2>
+  <div data-sample="table:default">{{ table("Sample fills", fill_columns, fills, "Fills appear here.") }}</div>
+  <div class="sg-pair">
+    <div data-sample="table:empty">{{ table("Sample fills, empty", fill_columns, [], "Fills and closed trades appear here.", empty_glyph="arrow-left-right") }}</div>
+    <div data-sample="table:loading">{{ table("Sample fills, loading", fill_columns, [], "", loading=True) }}</div>
+  </div>
+</section>
+
+<section class="sg-section" id="buttons" aria-labelledby="buttons-h">
+  <h2 class="sg-h" id="buttons-h">Buttons</h2>
+  <div class="sg-line">
+    <span data-sample="button:default">{{ button("Refresh") }}</span>
+    <span data-sample="button:quiet">{{ button("Log out", kind="quiet") }}</span>
+    <span data-sample="button:danger">{{ button("Flatten", kind="danger") }}</span>
+    <span data-sample="button:stop">{{ button("Stop", kind="stop") }}</span>
+    <span data-sample="button:disabled">{{ button("Resume", disabled=True) }}</span>
+    <span data-sample="button:busy">{{ button("Sending", busy=True) }}</span>
+  </div>
+  <p class="sg-note">The sample stop above sends nothing. The real one sits in the top bar.</p>
+</section>
+
+<section class="sg-section" id="states" aria-labelledby="states-h">
+  <h2 class="sg-h" id="states-h">Empty, loading, error</h2>
+  <div class="sg-pair">
+    <div data-sample="empty_state:default">{{ empty_state("Backtests and strategy scores appear here.") }}</div>
+    <div data-sample="loading:default">{{ loading("Loading sample") }}</div>
+  </div>
+  <div data-sample="error_state:default">{{ error_state("Trades could not load.", " Postgres did not answer within 2 s. The page retries on its own; reload to try now.") }}</div>
+</section>
+
+<section class="sg-section" id="chart" aria-labelledby="chart-h">
+  <h2 class="sg-h" id="chart-h">Chart</h2>
+  <div data-sample="chart:default">{{ chart("Sample BTC perp, 1 hour candles", candles) }}</div>
+</section>
+</div>
+{% endblock %}

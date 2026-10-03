@@ -1,0 +1,27 @@
+{#- The alert bar under the top bar (spec 0004 AC-21, DESIGN.md: Alert bar): the one most severe
+    thing wrong, what it means, and what to do. Empty when all is well, so the bar takes no space.
+    Times are absolute, never a ticking count, so the role="alert" region speaks once per change.
+    Every stop alert ends with the way out when the bot will not stop: Kraken itself (kraken_url). -#}
+{%- from "components/icon.html" import icon -%}
+{%- macro way_out() -%}
+<span class="alert__out">If it keeps trading, close positions on <a href="{{ kraken_url }}" rel="noopener noreferrer" target="_blank">Kraken Futures</a> directly.</span>
+{%- endmacro -%}
+{%- if view -%}
+<p class="alert alert--{{ view.level }}" data-alert="{{ view.kind }}">{{ icon("octagon-alert" if view.level == "bad" else "triangle-alert") }}<span class="alert__text">
+{%- if view.kind == "stop_unhandled" -%}
+<strong class="alert__title">Stop not handled.</strong> The trader did not answer, and the stop expired at {{ view.at | ts }}. Check that the trader is running, then tap Stop again. {{ way_out() }}
+{%- elif view.kind == "stop_failed" -%}
+<strong class="alert__title">Stop failed.</strong> The trader reported a failure at {{ view.at | ts }}. Tap Stop again, and check the trader's log. {{ way_out() }}
+{%- elif view.kind == "stop_late" -%}
+<strong class="alert__title">Stop came too late.</strong> The trader received it after it expired, at {{ view.at | ts }}. Tap Stop again. {{ way_out() }}
+{%- elif view.kind == "stop_unknown" -%}
+<strong class="alert__title">Stop answer unreadable.</strong> The trader's reply to the stop can't be read. Check the trader's log before you rely on it. {{ way_out() }}
+{%- elif view.kind == "stop_unacknowledged" -%}
+<strong class="alert__title">Stop not acknowledged.</strong> The trader has not answered the stop sent at {{ view.at | ts }}. It can still take it until {{ view.until | ts }}. {{ way_out() }}
+{%- elif view.kind == "trader_silent" -%}
+<strong class="alert__title">Trader silent.</strong> Its heartbeat is late or missing, so nothing on this page is live. Check that the trader is running.
+{%- else -%}
+<strong class="alert__title">No data.</strong> The dashboard can't read Redis, so nothing on this page is live. It keeps retrying.
+{%- endif -%}
+</span></p>
+{%- endif -%}

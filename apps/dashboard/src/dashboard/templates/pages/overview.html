@@ -1,0 +1,19 @@
+{% extends "shell.html" %}
+{% from "components/states.html" import empty_state %}
+{% from "components/pulse.html" import pulse %}
+{% block scripts %}<script defer src="/static/js/pulse.js"></script>{% endblock %}
+{% block page %}
+<div class="board board--overview">
+  <section class="region region--wide" aria-labelledby="pulse-h">
+    {{ pulse("pulse-h", stale_s) }}
+  </section>
+  <section class="region region--main" aria-labelledby="activity-h">
+    <header class="region__head"><h2 class="region__title" id="activity-h">Activity</h2><span class="region__meta">newest first</span></header>
+    <div class="activity-feed" sse-swap="overview-activity">{{ live["overview-activity"] }}</div>
+  </section>
+  <section class="region region--side" aria-labelledby="position-h">
+    <header class="region__head"><h2 class="region__title" id="position-h">Position and P&amp;L</h2></header>
+    {{ empty_state("Live position and P&L appear here once the trader runs a strategy.", glyph="activity") }}
+  </section>
+</div>
+{% endblock %}

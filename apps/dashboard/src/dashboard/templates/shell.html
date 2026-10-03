@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% from "components/badge.html" import env_badge %}
+{% from "components/button.html" import button %}
+{% from "components/icon.html" import icon %}
+{% from "components/nav.html" import nav_links %}
+{% block body %}
+<a class="skip-link" href="#main">Skip to content</a>
+<div class="app">
+  <aside class="sidebar">
+    <a class="brand" href="/">
+      <svg class="brand__mark" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><rect class="brand__tile" x="0.5" y="0.5" width="19" height="19" rx="4"/><path class="brand__trace" d="M3.5 11h3l1.75-4.5 3 8L13 8.5l1 2.5h2.5"/></svg>
+      <span class="brand__text"><span class="brand__name">Scalper</span><span class="brand__venue">Kraken Futures</span></span>
+    </a>
+    <nav class="nav" aria-label="Pages">{{ nav_links(nav, path) }}</nav>
+    <div class="sidebar__foot">
+      <form method="post" action="/logout">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button type="submit" class="nav__item nav__item--quiet">{{ icon("log-out") }}<span>Log out</span></button>
+      </form>
+    </div>
+  </aside>
+
+  <div class="workspace" hx-ext="sse" sse-connect="/events">
+    <header class="topbar">
+      <div class="topbar__start">
+        {{ env_badge(env) }}
+        <h1 class="topbar__title">{{ title }}</h1>
+      </div>
+      <div class="status-strip">
+        <span class="link link--static" id="link-status" role="status"><span class="link__dot" aria-hidden="true"></span><span class="link__label">link</span> <span class="link__text">snapshot</span></span>
+        <span class="topbar__age" sse-swap="topbar-age">{{ live["topbar-age"] }}</span>
+        <span class="topbar__command" id="topbar-command" sse-swap="topbar-command">{{ live["topbar-command"] }}</span>
+        <span class="status-strip__lost">link lost</span>
+        {% if session_end %}<span class="session-cue">session ends {{ session_end }}</span>{% endif %}
+      </div>
+      <div class="topbar__end">
+        {% with csrf=csrf, error=stop_error %}{% include "partials/stop_area.html" %}{% endwith %}
+      </div>
+      <div class="alert-bar" id="alert-bar" sse-swap="topbar-alert" role="alert">{{ live["topbar-alert"] }}</div>
+      <template id="stop-failed"><span class="stop-area__error" role="alert">Stop NOT sent: no connection to the dashboard</span></template>
+    </header>
+
+    <main class="page" id="main">
+      {% block page %}{% endblock %}
+      <footer class="page__session">
+        <form method="post" action="/logout">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          {{ button("Log out", kind="quiet", type="submit") }}
+        </form>
+      </footer>
+    </main>
+  </div>
+</div>
+{% endblock %}

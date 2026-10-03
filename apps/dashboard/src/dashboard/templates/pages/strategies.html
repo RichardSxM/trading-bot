@@ -1,0 +1,10 @@
+{% extends "shell.html" %}
+{% from "components/states.html" import empty_state %}
+{% block page %}
+<div class="board">
+  <section class="region region--wide" aria-labelledby="strategies-h">
+    <header class="region__head"><h2 class="region__title" id="strategies-h">Backtests</h2></header>
+    {{ empty_state("Backtests and strategy scores appear here.", glyph="flask-conical") }}
+  </section>
+</div>
+{% endblock %}

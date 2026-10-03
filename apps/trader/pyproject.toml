@@ -3,7 +3,7 @@ name = "trader"
 version = "0.1.0"
 description = "Nautilus node that holds positions: strategies, risk, execution."
 requires-python = ">=3.14,<3.15"
-dependencies = ["trading-core[node]"]
+dependencies = ["trading-core[node]", "redis>=5.2"]
 
 [project.scripts]
 trader = "trader.main:main"

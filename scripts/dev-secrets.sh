@@ -21,6 +21,7 @@ redis_dashboard_password
 restic_password
 b2_key_id
 b2_application_key
+dashboard_session_key
 "
 
 mkdir -p "$dir"
@@ -40,3 +41,8 @@ for name in $names; do
     chmod 0444 "$file"
     echo "created  $name"
 done
+
+# The dashboard password hash and authenticator seed need the credentials command (spec 0004).
+if [ ! -e "$dir/dashboard_password_hash" ] || [ ! -e "$dir/dashboard_totp_seed" ]; then
+    echo "next: docker compose build dashboard && scripts/dashboard-credentials.sh --dev --write"
+fi

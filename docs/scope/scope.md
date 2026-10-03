@@ -13,9 +13,9 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 |---|---------|-------|--------|
 | 1 | Stack & architecture | Foundation | done |
 | 2 | Coding standards & tooling | Foundation | done |
-| 3 | Data model | Foundation | in-progress |
+| 3 | Data model | Foundation | done |
 | 4 | API keys & secrets | Foundation | in-progress |
-| 5 | Design system & dashboard shell | Foundation | planned |
+| 5 | Design system & dashboard shell | Foundation | done |
 | 6 | Core paper trading loop | Slice 1 | planned |
 | 7 | Always on cloud deployment | Slice 2 | planned |
 | 8 | Order book recorder | Slice 3 | planned |
@@ -50,7 +50,7 @@ Capture conventions and tooling from the real scaffolded project, then install l
 code in [AGENTS.md](../../AGENTS.md), [pyproject.toml](../../pyproject.toml), [.pre-commit-config.yaml](../../.pre-commit-config.yaml), [scripts/typecheck.sh](../../scripts/typecheck.sh), [.github/workflows/ci.yml](../../.github/workflows/ci.yml)
 - [x] Capture conventions + tooling choices: `/audit`
 
-### 3. Data model · in-progress
+### 3. Data model · done
 Core records every feature builds on: market data (trades, book snapshots, candles), orders, fills, positions, funding payments, strategy runs, backtest results, risk events.
 **Done when:** the model supports paper and live trading, backtests, and the journal export without a breaking migration, and every order traces to the strategy decision that caused it.
 spec [0002](../specs/0002-data-model/index.md) · code in [packages/core/src/trading_core/recording/](../../packages/core/src/trading_core/recording/)
@@ -82,10 +82,20 @@ spec [0003](../specs/0003-api-keys-secrets/index.md) · code in [packages/core/s
 - [x] Review it (fresh model): `/check review API keys & secrets`
 - [x] Document it: `/document API keys & secrets`
 
-### 5. Design system & dashboard shell · needs a decision · Beta
+### 5. Design system & dashboard shell · done · Beta
 A small, clear visual language for a private dashboard: numbers, tables, charts, status colors, and an always visible stop button.
 **Done when:** `design.md` covers type, color, spacing, and base components, and the shell renders behind a login only you can pass.
-- [ ] Design it (spec): `/architect design system & dashboard shell`
+spec [0004](../specs/0004-design-system-dashboard-shell/index.md)
+code in [apps/dashboard/src/dashboard/](../../apps/dashboard/src/dashboard/), [apps/trader/src/trader/snapshot_writer.py](../../apps/trader/src/trader/snapshot_writer.py), [packages/core/src/trading_core/snapshot/](../../packages/core/src/trading_core/snapshot/), [packages/core/src/trading_core/control/](../../packages/core/src/trading_core/control/), [docker/redis/start.sh](../../docker/redis/start.sh)
+- [x] Design it (spec): `/architect design system & dashboard shell`
+- [x] Build it: `/develop design system & dashboard shell`
+  - [x] Thin thread: credentials and login, bare shell, trader heartbeat to live data age over SSE (AC-1 to AC-5, AC-7 to AC-9, AC-18, AC-19)
+  - [x] Stop path: control command, ACL change, command state from results, Redis down handling (AC-11 to AC-14)
+  - [x] Design system: `PRODUCT.md`, root `DESIGN.md`, tokens, fonts, components, filters, `/styleguide`, Impeccable critique and polish (AC-15 to AC-17)
+  - [x] Complete shell: nav and empty states, responsive layout, LIVE treatment, link status, vendored assets (AC-6, AC-7, AC-10, AC-18)
+  - [x] Activity feed: newest 20 stop commands with their outcomes on Overview, live over SSE (AC-20)
+- [x] Verify it: `/check verify design system & dashboard shell`
+- [x] Test it: `/test design system & dashboard shell`
 
 ## Slice 1: Core paper trading loop
 
@@ -99,6 +109,7 @@ The thinnest real thread (this is the walking skeleton): live BTC perp data from
 ### 7. Always on cloud deployment · needs a decision
 Run the bot 24/7 on a hosted server near Kraken, with automatic restart, logs, and a safe way to deploy updates.
 **Done when:** the paper loop runs unattended for 72 hours, survives a forced restart, and a deploy never leaves an order unmanaged.
+**Carried over from feature 5:** once the VPS and Tailscale are up, run spec 0004 verify steps [1, 6, and 12](../specs/0004-design-system-dashboard-shell/verify.md) on the real hardware: add the QR to your authenticator app, write the dashboard files with `sudo scripts/dashboard-credentials.sh --write` (then `chown 10001`, `chmod 0400`), and on a real phone over Tailscale check the stop button and airplane mode. The laptop run on 2026-10-03 already proved the behavior behind each one.
 - [ ] Design it (spec): `/architect always on cloud deployment`
 
 ## Slice 3: Start the data clock

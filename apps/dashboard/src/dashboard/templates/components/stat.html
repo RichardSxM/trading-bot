@@ -1,0 +1,10 @@
+{# A label over a large value (DESIGN.md: Stat). state: default, stale, error, loading.
+   The value comes from the caller block; ``note`` is the line under it (an age, a reason). #}
+{% from "components/states.html" import loading %}
+{% macro stat(label, state="default", note=None) -%}
+<div class="stat stat--{{ state }}">
+  <span class="stat__label">{{ label }}</span>
+  {% if state == "loading" %}{{ loading("Loading " ~ label) }}{% else %}<span class="stat__value">{{ caller() }}</span>{% endif %}
+  {% if note %}<span class="stat__note">{{ note }}</span>{% endif %}
+</div>
+{%- endmacro %}

@@ -1,6 +1,10 @@
-# Runs on every commit. Install once on the host: `uv tool install pre-commit && pre-commit install`.
-# Ruff runs on the host; mypy needs NautilusTrader, so scripts/typecheck.sh hands it to the
-# Linux `tools` container (Docker must be running). Skip one hook in a pinch: SKIP=mypy git commit.
+# gitleaks and ruff run on every commit; mypy runs once before each push, because on a Mac it is
+# slow (it needs NautilusTrader, so scripts/typecheck.sh hands it to the Linux `tools` container,
+# and Docker must be running). CI runs the same mypy on every push and PR.
+# Install once on the host: `uv tool install pre-commit && pre-commit install` (both hook types).
+# Run mypy by hand: `pre-commit run --all-files --hook-stage pre-push`. Skip it in a pinch: SKIP=mypy git push.
+default_install_hook_types: [pre-commit, pre-push]
+default_stages: [pre-commit]
 repos:
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.30.1 # keep in step with GITLEAKS_VERSION in .github/workflows/ci.yml (spec 0003)
@@ -22,3 +26,4 @@ repos:
         language: system
         types: [python]
         pass_filenames: false
+        stages: [pre-push]

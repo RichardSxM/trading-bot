@@ -1,0 +1,6 @@
+{# Buttons (DESIGN.md: Button). kind: default, primary, quiet, danger, stop. ``glyph`` names an icon. #}
+{% from "components/icon.html" import icon %}
+{% macro button(label, kind="default", type="button", disabled=False, busy=False, glyph=None) -%}
+<button type="{{ type }}" class="button{% if kind != 'default' %} button--{{ kind }}{% endif %}{% if busy %} button--busy{% endif %}"
+  {%- if disabled %} disabled{% endif %}{% if busy %} aria-busy="true"{% endif %}>{% if glyph %}{{ icon(glyph) }}{% endif %}<span class="button__label">{{ label }}</span></button>
+{%- endmacro %}
