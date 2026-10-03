@@ -15,7 +15,8 @@ ALEMBIC_INI = Path(__file__).resolve().parents[1] / "alembic.ini"
 def test_alembic_has_one_head_the_data_model_on_top_of_the_baseline():
     scripts = ScriptDirectory.from_config(Config(str(ALEMBIC_INI)))
 
-    assert scripts.get_heads() == ["0002_data_model"]
+    assert scripts.get_heads() == ["0003_pause_commands"]
+    assert scripts.get_revision("0003_pause_commands").down_revision == "0002_data_model"
     assert scripts.get_revision("0002_data_model").down_revision == "0001_baseline"
     assert scripts.get_revision("0001_baseline").down_revision is None
 
