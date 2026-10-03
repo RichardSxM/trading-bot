@@ -38,8 +38,8 @@ Run these on the real VPS unless a step says laptop. Steps 1 to 6 belong to mile
 
 | Measure | Value | Date |
 |---|---|---|
-| Median TCP connect to `futures.kraken.com:443` | | |
-| chrony offset | | |
+| Median TCP connect to `futures.kraken.com:443` | 3.5 ms (20 tries) | 2026-10-03 |
+| chrony offset | 0.000017 s slow | 2026-10-03 |
 | Peak memory per service during the soak | | |
 
 ## Notes from the build (milestone 2)
@@ -51,3 +51,13 @@ Run these on the real VPS unless a step says laptop. Steps 1 to 6 belong to mile
 - **Step 11.** There is no boot failure flag in the trader yet, and `scripts/deploy.sh` only deploys commits on origin/main, so a throwaway branch will not work. Deploying an older release will not work either: the run hands off to that release's own `kfs-deploy`. You can test it later with a change that carries a test switch, or with a broken commit on main followed by a revert.
 - **Step 12, before feature 6.** `packages/core/tests/test_node_control.py` covers it with a fake strategy (`test_on_stop_pauses_in_memory_keeps_the_state_and_cancels_only_entry_orders`). On the laptop, `docker compose stop trader` logged `shutdown_graceful` about 12 s after SIGTERM (10 s post stop wait plus the Kraken disconnect).
 - **Recording actor drain (AC-9).** There is no recording actor yet. Its 5 s drain arrives with feature 6.
+
+## Notes from the build (milestone 3)
+
+- **Step 13, use `kill -9`, not `docker kill`.** Docker treats `docker kill` as a manual stop, so `unless-stopped` leaves the container down (postgres and redis stayed down for 5 minutes on 2026-10-03). A crash is the process dying on its own, so kill the main process from the host instead: `sudo kill -9 $(sudo docker inspect -f '{{.State.Pid}}' kfs-<svc>-1)`. Done that way on 2026-10-03, every service was back and all six were healthy within 7 to 8 s (backup 33 s), each `RestartCount` 1, the `control_commands` rows unchanged, and Redis kept its keys. A pause (source `deploy`) survived a `kill -9` of the trader: it came back `REDUCING` and still paused.
+- **Step 14.** Each freeze turned unhealthy after about 50 s, not 30 s (the health check's interval times its retries). `autoheal_restart` followed within 30 s, and the trader was healthy again about 90 s after each freeze. The fourth freeze logged `autoheal_gave_up` once, and the trader stayed unhealthy until restarted by hand.
+- **Step 15.** All six container PIDs were the same after `systemctl restart docker`. The backup showed `health: starting` for a few seconds as its check reset.
+- **Step 16.** A plain reboot: SSH back after about 2 minutes, all six healthy 47 s after boot, `/srv/kfs` on `/dev/sdb`, and the dashboard answered. `kfs-safe-reboot`: paused (source `deploy`), flat after 5 s, rebooted, and `kfs-post-boot` lifted the pause about 60 s after boot (`trader unpaused`). A pause you set first (source `dashboard`): `trader already paused, leaving that pause in place`, `paused_by_us false`, no marker written, and after boot it stayed paused. While the reboot runs, the top bar reads `paused · by deploy`.
+- **Step 17.** Without the fstab line, only the recorder was down: `catalog_volume_missing` on every try, nothing written to the system disk folder, and the rest healthy with the trader `ACTIVE`. In its restart loop the recorder also counts as unhealthy, so autoheal restarted it 3 times and then logged `autoheal_gave_up`, a useful CRITICAL for a missing disk. Once the disk is back, delete `kfs-recorder-1` from `/var/lib/kfs/autoheal.json`, or autoheal leaves the recorder alone for the rest of that hour.
+- **Clock check at boot.** After one reboot the trader refused to start once (`clock offset -434.0 ms exceeds limit 250.0 ms`) because chrony had not synced yet. That is the check failing closed as designed, and the restart policy brought the trader back 8 s later. If this gets noisy, Docker could wait for `time-sync.target` at boot.
+- **Autoheal and deploys.** Autoheal skips its run while a deploy holds `/run/lock/kfs-deploy.lock`, so the deploy's health gate and rollback stay in charge of the containers they just started.
