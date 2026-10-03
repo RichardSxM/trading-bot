@@ -87,16 +87,18 @@ async def login(
     context = app_context(request)
     key = lockout_key(request, context.trusted_peers)
     target = safe_next(next)
-    now = context.clock()
-    if context.lockout.is_locked(key, now):
-        _log_failure("locked", key)
-        return _login_page(request, context, target, error=LOCKED, status_code=429)
-
-    # Both factors are evaluated on every attempt, so the answer never reveals which one failed.
-    password_ok = await asyncio.to_thread(context.passwords.verify, password)
-    reason: Reason | None = None
+    # One attempt at a time: a burst cannot run many 64 MiB password checks at once, and each
+    # attempt sees the failures the ones before it recorded.
     async with context.totp.lock:
+        now = context.clock()
+        if context.lockout.is_locked(key, now):
+            _log_failure("locked", key)
+            return _login_page(request, context, target, error=LOCKED, status_code=429)
+
+        # Both factors are evaluated on every attempt, so the answer never reveals which one failed.
+        password_ok = await asyncio.to_thread(context.passwords.verify, password)
         step = context.totp.matched_step(code.strip(), now)
+        reason: Reason | None = None
         if not password_ok:
             reason = "bad_password"
         elif step is None:
@@ -106,12 +108,12 @@ async def login(
         else:
             context.totp.accept(step)
 
-    if reason is not None:
-        context.lockout.record_failure(key, now)
-        _log_failure(reason, key)
-        return _login_page(request, context, target, error=WRONG)
+        if reason is not None:
+            context.lockout.record_failure(key, now)
+            _log_failure(reason, key)
+            return _login_page(request, context, target, error=WRONG)
 
-    context.lockout.record_success(key)
+        context.lockout.record_success(key)
     session = context.codec.new(now)
     log.info("login ok", extra={"fields": {"code": "login_ok", "client": key}})
     response = RedirectResponse(target, status_code=303)

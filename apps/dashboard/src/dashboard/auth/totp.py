@@ -42,7 +42,10 @@ class TotpGuard:
 
     @property
     def lock(self) -> asyncio.Lock:
-        """Held around the replay check and ``accept``, so two logins cannot both use one step."""
+        """Held around a whole login attempt (lockout, password, replay check, ``accept``).
+
+        Two logins cannot both use one step, and only one slow password check runs at a time.
+        """
         return self._lock
 
     def accept(self, step: int) -> None:

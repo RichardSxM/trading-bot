@@ -2,6 +2,9 @@
 
 import logging
 import re
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from fastapi.testclient import TestClient
@@ -141,6 +144,35 @@ def test_five_failures_lock_the_client_even_with_correct_credentials_while_a_ses
         client.cookies.clear()
         clock.now += 15 * 60
         assert log_in(client, clock).status_code == 303
+
+
+def test_a_burst_of_logins_runs_one_password_check_at_a_time_and_stops_at_the_lockout(redis, clock, monkeypatch):
+    app = make_app(redis, clock)
+    running, peak, checks = 0, 0, 0
+    counter = threading.Lock()
+
+    def slow_verify(password):
+        nonlocal running, peak, checks
+        with counter:
+            running += 1
+            checks += 1
+            peak = max(peak, running)
+        time.sleep(0.05)
+        with counter:
+            running -= 1
+        return False
+
+    monkeypatch.setattr(app.state.context.passwords, "verify", slow_verify)
+    with TestClient(app, follow_redirects=False) as client, ThreadPoolExecutor(10) as pool:
+        statuses = list(
+            pool.map(
+                lambda _: client.post("/login", data={"password": "nope", "code": "000000"}).status_code, range(10)
+            )
+        )
+
+    assert peak == 1
+    assert checks == 5
+    assert sorted(statuses) == [200] * 5 + [429] * 5
 
 
 def test_the_lockout_key_behind_tailscale_serve_is_the_tailscale_login():
