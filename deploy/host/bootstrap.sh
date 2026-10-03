@@ -95,7 +95,7 @@ step_system() {
     fi
 }
 
-# 2. The kfs admin user: a console password, not in the docker group, sudo only for kfs-*.
+# 2. The kfs admin user: a console password, sudo with it, passwordless only for kfs-*, not in docker.
 step_user() {
     local first second status
     if id kfs >/dev/null 2>&1; then ok "user kfs"; else
@@ -116,6 +116,11 @@ step_user() {
         printf 'kfs:%s\n' "$first" | chpasswd
         unset first second
         changed "kfs password"
+    fi
+    # The sudo group gives kfs full sudo with its password; the rule below adds kfs-* without one.
+    if id -nG kfs | tr ' ' '\n' | grep -qx sudo; then ok "kfs in the sudo group"; else
+        usermod -aG sudo kfs
+        changed "kfs in the sudo group"
     fi
     if id -nG kfs | tr ' ' '\n' | grep -qx docker; then
         gpasswd -d kfs docker >/dev/null

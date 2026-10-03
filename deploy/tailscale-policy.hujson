@@ -16,11 +16,12 @@
 	},
 
 	"grants": [
-		// Your devices to the dashboard. Nothing grants anything to or from tag:kfs beyond this.
+		// Your devices to the dashboard (443) and to Tailscale SSH (22; the ssh rule below still
+		// decides who logs in as whom). Nothing grants anything to or from tag:kfs beyond this.
 		{
 			"src": ["you@example.com"],
 			"dst": ["tag:kfs"],
-			"ip":  ["tcp:443"],
+			"ip":  ["tcp:443", "tcp:22"],
 		},
 	],
 
@@ -39,8 +40,8 @@
 	"tests": [
 		{
 			"src":    "you@example.com",
-			"accept": ["tag:kfs:443"],
-			"deny":   ["tag:kfs:22", "tag:kfs:8000"],
+			"accept": ["tag:kfs:443", "tag:kfs:22"],
+			"deny":   ["tag:kfs:8000", "tag:kfs:5432", "tag:kfs:6379"],
 		},
 	],
 }
