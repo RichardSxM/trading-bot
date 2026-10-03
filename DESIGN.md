@@ -225,7 +225,8 @@ The signature is the heartbeat: a tape of the trader's data age, one tick a seco
 - IBM Plex Sans at 13 to 14 px for words, IBM Plex Mono with tabular figures for every figure.
 - One icon set (Lucide) at one stroke (1.5).
 - Color only for state; the stop is crimson and always at the top right of the pane.
-- Every live value carries its age or a `link lost` marker.
+- Every live value carries its age or a `link lost` or `no data` marker.
+- Calm until something is wrong, then unmissable: one alert bar under the top bar says what broke and what to do.
 
 ## Colors
 
@@ -237,7 +238,7 @@ A near black, slightly cool graphite ramp with a small, strict set of signal col
 ### Secondary
 - **Ledger Green** (profit): positive P&L, the `live` link dot, healthy dots and outline badges. Never for buttons or decoration.
 - **Ledger Red** (loss): negative P&L, failures, `lost`, `Stop NOT sent`, the error state.
-- **Amber Watch** (warn): stale ages above the amber threshold, `reconnecting`, the `link lost` marker, the session ending cue.
+- **Amber Watch** (warn): stale ages above the amber threshold, `reconnecting`, the `link lost` marker, the `no data` link state, warning alerts, the session ending cue.
 
 ### Tertiary
 - **Live Red** (live): the LIVE badge, the 2 px top border of the top bar in live, and the pressed stop. Means real money.
@@ -298,7 +299,7 @@ These rules are implemented by the `num`, `pnl`, and `ts` template filters; temp
 
 **Laptop (900 px and wider).** A 232 px sidebar on Night holds the mark, the four nav items, and at its foot the session cue and Log out; it is sticky at full height. Beside it the content pane sits inset by 8 px on the top, right, and bottom, with a 1 px Hairline border and 4 px corners, so the sidebar's darker tone frames it. The pane runs edge to edge: there is no centered maximum width.
 
-**The top bar** lives inside the pane, sticky, at least 60 px tall, on Desk with a Hairline rule below. From left: the env badge and the page title, then the status strip (link, trader age, last command) whose items are divided by 1 px Hairline rules with 12 px either side, then the stop alone at the right edge behind its own 1 px rule. In live the bar gains a 2 px Live Red top border. While the link is reconnecting or lost, the age and command dim to half and an amber `link lost` marker joins the strip.
+**The top bar** lives inside the pane, sticky, at least 60 px tall, on Desk with a Hairline rule below. From left: the env badge and the page title, then the status strip (link, trader age, last command) whose items are divided by 1 px Hairline rules with 12 px either side, then the stop alone at the right edge behind its own 1 px rule. In live the bar gains a 2 px Live Red top border. While the link is reconnecting or lost, the age and command dim to half and an amber `link lost` marker joins the strip. While something is wrong, the alert bar runs full width along the bar's bottom edge, inside the sticky bar, so it never scrolls away.
 
 **Regions.** A page is a board: a grid with 1 px gaps laid over the Hairline color, so every region (on Desk, 24 px padding) is separated by a seam rather than a box. From 1100 px the board has two columns, a wide one and a side column of 320 to 400 px; wide regions span both. Overview leads with the heartbeat tape across the full width, then Activity beside Position and P&L. A region head is a Label 600 title with a Caption meta line beside it, then 16 px of space.
 
@@ -318,7 +319,7 @@ No shadows anywhere. Depth is tonal and runs in three steps: Night (sidebar, tab
 
 ## Shapes
 
-Corners are nearly square: 2 px for badges, notices, and focus outlines; 4 px for buttons, inputs, nav items, the pane, and the brand tile. Nothing is pill shaped; status and link dots are 8 px circles. Borders are 1 px; the only thicker lines are the 2 px Live Red top border in live and the 2 px focus outline. Icons are Lucide, drawn on a 24 px grid with a 1.5 stroke and round caps and joins, at 16 px (20 px in the tab bar, 18 px in the stop). The brand mark is a Lamp tile with an Edge outline and a Paper heartbeat trace.
+Corners are nearly square: 2 px for badges, notices, and focus outlines; 4 px for buttons, inputs, nav items, the pane, and the brand tile. Nothing is pill shaped; status and link dots are 8 px circles. Borders are 1 px; the only thicker lines are the 2 px Live Red top border in live, the 2 px state colored top rule of the alert bar, and the 2 px focus outline. Icons are Lucide, drawn on a 24 px grid with a 1.5 stroke and round caps and joins, at 16 px (20 px in the tab bar, 18 px in the stop). The brand mark is a Lamp tile with an Edge outline and a Paper heartbeat trace.
 
 ## Components
 
@@ -388,8 +389,16 @@ A 16 px icon 12 px from a Label, 36 px tall, 4 px corners, in Pencil. Hover lays
 - **States:** `default`, `current`
 
 ### Link status (`link`)
-The first item of the status strip: an 8 px dot, a Margin `link` label, and a word. It starts as `snapshot` (an Edge ring, nothing live without JavaScript), then `connecting` in Signal Indigo, `live` with a Ledger Green dot and Paper word, `reconnecting` in Amber Watch after 5 s without an event, and `lost` in Ledger Red after 15 s. On every event received the dot beats once: a 1 px ring grows from the dot to 2.75 times its size and fades over 700 ms.
-- **States:** `static`, `connecting`, `live`, `reconnecting`, `lost`
+The first item of the status strip: an 8 px dot, a Margin `link` label, and a word. `link` means only the browser's live connection to the dashboard. It starts as `snapshot` (an Edge ring, nothing live without JavaScript), then `connecting` in Signal Indigo, `live` with a Ledger Green dot and Paper word, `reconnecting` in Amber Watch after 5 s without an event, and `lost` in Ledger Red after 15 s. While the link is live but the dashboard cannot read Redis, it reads `no data` in Amber Watch (state `degraded`): a green dot never sits beside dead values. On every event received the dot beats once: a 1 px ring grows from the dot to 2.75 times its size and fades over 700 ms.
+- **States:** `static`, `connecting`, `live`, `degraded`, `reconnecting`, `lost`
+
+### Command state (`command`)
+The third item of the status strip: a Margin `command` label, the latest command and its outcome in the AC-12 words, and its age as a Margin `· 12s ago` (since it was sent, answered, or expired). Signal Indigo while waiting, Paper when confirmed, Amber Watch when unknown, Ledger Red when failed or expired, Pencil for `none`, and dimmed `no data` when Redis is unreadable.
+- **States:** `none`, `pending`, `ok`, `warn`, `bad`, `lost`
+
+### Alert bar (`alert`)
+The one place the console raises its voice. A full width line along the bottom of the sticky top bar, on Lamp with a 2 px top rule in Ledger Red (or Amber Watch for a warning), an 18 px Lucide `octagon-alert` (or `triangle-alert`) in the same color, a Label 600 title in that color, and Paper text that says what broke and what to do. It shows only the most severe problem: a stop that did not take effect first, then a silent trader, then a stop the trader has not answered within `DASHBOARD_ACK_WARN_S` (10 s) while its heartbeat is not red (the command state turns Amber Watch with it, and the bar names the send and expiry times), then a dashboard that cannot read Redis. Every stop alert ends with a Pencil line naming the way out when the bot will not stop: close positions on Kraken Futures directly (a text link to the venue for this environment). It is empty, and takes no space, while all is well. Times are absolute through `ts`, never a ticking count, and the bar is a `role="alert"` region, so a screen reader hears each problem once.
+- **States:** `stop_unhandled`, `stop_failed`, `stop_late`, `stop_unknown`, `trader_silent`, `stop_unacknowledged`, `no_data`
 
 ### Icon (`icon`)
 Lucide, drawn inline on a 24 px grid with a 1.5 stroke in the text color around it, 16 px by default. Decorative unless given a label.
@@ -400,8 +409,8 @@ The heartbeat tape, the signature of the console. A 56 px canvas across the full
 - **States:** `default`
 
 ### Activity feed (`activity`)
-Overview's answer to "what just happened": the newest 20 commands, newest first, as plain rows split by Hairlines, no table head. Each row holds the UTC time (`ts`), the command in Paper at 500 weight, and its outcome at the right edge in the top bar's command colors (Signal Indigo while waiting, Paper when confirmed, Ledger Red when failed or expired, Amber Watch when unknown). A final outcome never hides here. On a phone the time drops under the command. An entry that does not parse is one Amber Watch `unknown entry` row. It dims with the top bar while the link is not live.
-- **States:** `empty`, `filled`, `error`
+Overview's answer to "what just happened": the newest 20 commands, newest first, as plain rows split by Hairlines, no table head. A run of consecutive commands that read the same (command, outcome) is one row: the command carries a Pencil Mono count (`stop ×16`) and the time a Margin Caption `from` line with the oldest time, so repeats never bury the signal. Each row holds the UTC time (`ts`), the command in Paper at 500 weight, and its outcome at the right edge in the top bar's command colors (Signal Indigo while waiting, Paper when confirmed, Ledger Red when failed or expired, Amber Watch when unknown). A final outcome never hides here. On a phone the time drops under the command. An entry that does not parse is one Amber Watch `unknown entry` row. It dims with the top bar while the link is not live.
+- **States:** `empty`, `filled`, `collapsed`, `error`
 
 ## Do's and Don'ts
 
