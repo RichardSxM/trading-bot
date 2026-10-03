@@ -1,0 +1,248 @@
+#!/usr/bin/env bash
+# The VPS half of a deploy (spec 0005 AC-4, AC-12). Linked as /usr/local/sbin/kfs-deploy;
+# scripts/deploy.sh on the laptop drives it over Tailscale SSH:
+#
+#   sudo kfs-deploy receive <sha>    # unpack a release bundle (tar on stdin) into /opt/kfs/releases/<sha>
+#   sudo kfs-deploy run <sha>        # preflight, pull, switch, up, health gate, deploy log
+#   sudo kfs-deploy link-host        # relink /usr/local/sbin/kfs-* and units (bootstrap uses it)
+#
+# Exit codes of `run`: 0 deployed, 1 unhealthy, 3 another deploy holds the lock, 4 refused
+# before anything changed (preflight or pull).
+#
+# Milestone 1 of spec 0005: no drain and no rollback yet. Milestone 2 adds the pause, the
+# wait for flat, and the rollback (AC-8 to AC-11).
+set -euo pipefail
+
+KFS_PROCESS=kfs-deploy
+HOST_DIR=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+# shellcheck source=deploy/host/lib.sh
+. "$HOST_DIR/lib.sh"
+
+RELEASES="$KFS_ROOT/releases"
+DEPLOY_LOG="$KFS_LOG_DIR/deploys.jsonl"
+LOCK=/run/lock/kfs-deploy.lock
+HEALTH_TIMEOUT_S=180
+MIN_FREE_BYTES=5000000000
+KEEP_RELEASES=3
+
+die() {
+    local code=$1
+    shift
+    kfs_log ERROR "$*" >&2
+    exit "$code"
+}
+
+usage() {
+    sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' >&2
+    exit 64
+}
+
+[ "$(id -u)" -eq 0 ] || die 1 "run as root (sudo kfs-deploy ...)"
+
+receive() {
+    local sha=$1 tmp
+    kfs_is_sha "$sha" || die 64 "not a full commit sha: $sha"
+    mkdir -p "$RELEASES"
+    tmp=$(mktemp -d "$RELEASES/.incoming.XXXXXX")
+    if ! tar -x -C "$tmp" --no-same-owner; then
+        rm -rf "$tmp"
+        die 4 "release bundle did not unpack"
+    fi
+    if [ ! -f "$tmp/compose.yaml" ] || [ ! -x "$tmp/deploy/host/kfs-deploy" ]; then
+        rm -rf "$tmp"
+        die 4 "release bundle lacks compose.yaml or deploy/host/kfs-deploy"
+    fi
+    chmod 0755 "$tmp"
+    rm -rf "${RELEASES:?}/$sha"
+    mv "$tmp" "$RELEASES/$sha"
+    kfs_log INFO "release received" sha "$sha"
+}
+
+# Compose with the new release's kfs-compose, bundle, and image tag.
+compose_new() {
+    KFS_RELEASE=$SHA "$RELEASES/$SHA/deploy/host/kfs-compose" "$@"
+}
+
+# Compose for the running stack (after the switch it is the new release).
+compose_current() {
+    "$KFS_ROOT/current/deploy/host/kfs-compose" "$@"
+}
+
+record() {
+    local outcome=$1
+    mkdir -p "$KFS_LOG_DIR"
+    jq -nc --arg sha "$SHA" --arg previous_sha "$PREVIOUS_SHA" --arg started_at "$STARTED_AT" \
+        --arg finished_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg outcome "$outcome" \
+        '{sha: $sha, previous_sha: (if $previous_sha == "" then null else $previous_sha end),
+          started_at: $started_at, finished_at: $finished_at, outcome: $outcome,
+          paused_by_deploy: false, waited_for_flat_s: 0}' >>"$DEPLOY_LOG"
+    printf 'deploy %s: %s (previous %s) in %ss\n' "$outcome" "${SHA:0:12}" "${PREVIOUS_SHA:0:12}" "$((SECONDS - START_S))"
+}
+
+refuse() {
+    kfs_log ERROR "preflight refused" reason "$1"
+    record preflight_refused
+    exit 4
+}
+
+preflight() {
+    local path avail name images img
+    for path in / /srv/kfs; do
+        avail=$(df -B1 --output=avail "$path" | tail -n 1 | tr -d ' ')
+        [ "$avail" -ge "$MIN_FREE_BYTES" ] || refuse "under 5 GB free on $path"
+    done
+    while read -r name; do
+        [ -s "$KFS_SECRETS_DIR/$name" ] || refuse "secret file $name missing or empty"
+    done < <(kfs_secret_names "$RELEASES/$SHA")
+    [ -s "$KFS_SECRETS_DIR/ghcr_token" ] || refuse "secret file ghcr_token missing"
+    # Every image this release runs that is tagged with the commit, i.e. built by CI.
+    images=$(compose_new config --images | grep ":$SHA\$" || true)
+    [ -n "$images" ] || refuse "no image tagged $SHA in the Compose config (check KFS_IMAGE_PREFIX)"
+    for img in $images; do
+        # Uses the VPS's own GHCR login, so a failed login also lands here.
+        docker manifest inspect "$img" >/dev/null 2>&1 || refuse "image $img missing, or ghcr.io login failed"
+    done
+    kfs_log INFO "preflight passed" sha "$SHA" images "$(echo "$images" | wc -l | tr -d ' ')"
+}
+
+switch_release() {
+    ln -sfn "releases/$SHA" "$KFS_ROOT/current.new"
+    mv -T "$KFS_ROOT/current.new" "$KFS_ROOT/current"
+    kfs_link_host | while read -r line; do kfs_log INFO "host link" change "$line"; done
+    kfs_log INFO "current switched" sha "$SHA" previous_sha "$PREVIOUS_SHA"
+}
+
+# 0 when every service is healthy (migrate: exited 0); prints the ones that are not.
+services_healthy() {
+    local ps expected bad
+    ps=$(compose_current ps -a --format json | jq -sc 'if length == 1 and (.[0] | type) == "array" then .[0] else . end')
+    expected=$(compose_current config --services)
+    bad=$(jq -r --arg expected "$expected" '
+        ($expected | split("\n") | map(select(. != ""))) as $want
+        | (map({key: .Service, value: .}) | from_entries) as $by
+        | $want[]
+        | . as $s
+        | $by[$s] as $c
+        | if $c == null then "\($s): no container"
+          elif $s == "migrate" then (if $c.State == "exited" and $c.ExitCode == 0 then empty else "\($s): \($c.State) exit \($c.ExitCode)" end)
+          elif ($c.Health // "") != "" then (if $c.Health == "healthy" then empty else "\($s): \($c.Health)" end)
+          elif $c.State == "running" then empty
+          else "\($s): \($c.State)" end' <<<"$ps")
+    if [ -n "$bad" ]; then
+        echo "$bad" | paste -sd ' ' -
+        return 1
+    fi
+}
+
+# 0 when the trader heartbeat is fresh and carries this commit.
+heartbeat_matches() {
+    local line commit
+    line=$(compose_new run --rm --no-deps -T dashboard python -m dashboard.control_cli heartbeat 2>/dev/null) || {
+        echo "trader heartbeat: ${line:-unreadable}"
+        return 1
+    }
+    commit=$(jq -r '.data.git_commit // ""' <<<"$line")
+    if [ "$commit" != "$SHA" ]; then
+        echo "trader heartbeat git_commit ${commit:-none}"
+        return 1
+    fi
+}
+
+health_gate() {
+    local deadline=$((SECONDS + HEALTH_TIMEOUT_S)) why=""
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        if why=$(services_healthy) && why=$(heartbeat_matches); then
+            kfs_log INFO "health gate passed" sha "$SHA" after_s "$((SECONDS - START_S))"
+            return 0
+        fi
+        sleep 2
+    done
+    kfs_log ERROR "health gate failed" sha "$SHA" reason "$why"
+    return 1
+}
+
+# Keep the current release and the two before it (from the deploy log), folders and images.
+prune() {
+    local keep name repos repo tag
+    keep=$(
+        {
+            echo "$SHA"
+            [ -n "$PREVIOUS_SHA" ] && echo "$PREVIOUS_SHA"
+            jq -r 'select(.outcome == "deployed") | .sha' "$DEPLOY_LOG" 2>/dev/null | tac
+        } | awk 'NF && !seen[$0]++' | head -n "$KEEP_RELEASES"
+    )
+    # Explicit ifs: under set -e a loop whose last command failed would end the script.
+    for dir in "$RELEASES"/*; do
+        name=$(basename "$dir")
+        if kfs_is_sha "$name" && ! grep -qx "$name" <<<"$keep"; then
+            rm -rf "${RELEASES:?}/$name"
+            kfs_log INFO "release pruned" sha "$name"
+        fi
+    done
+    repos=$(compose_current config --images | grep ":$SHA\$" | sed 's/:[^:]*$//' || true)
+    for repo in $repos; do
+        while read -r tag; do
+            if kfs_is_sha "$tag" && ! grep -qx "$tag" <<<"$keep"; then
+                if docker image rm "$repo:$tag" >/dev/null 2>&1; then
+                    kfs_log INFO "image pruned" image "$repo:$tag"
+                else
+                    kfs_log WARNING "image prune failed" image "$repo:$tag"
+                fi
+            fi
+        done < <(docker image ls "$repo" --format '{{.Tag}}')
+    done
+}
+
+run() {
+    SHA=$1
+    shift
+    [ $# -eq 0 ] || die 64 "unknown option $1 (--wait and --now arrive with spec 0005 milestone 2)"
+    kfs_is_sha "$SHA" || die 64 "not a full commit sha: $SHA"
+    local bundle="$RELEASES/$SHA/deploy/host/kfs-deploy"
+    [ -x "$bundle" ] || die 4 "no release bundle for $SHA (run receive first)"
+    # Run the new release's own copy, so a changed deploy script takes effect at once.
+    if [ "$(readlink -f "$0")" != "$(readlink -f "$bundle")" ]; then
+        exec "$bundle" run "$SHA"
+    fi
+
+    exec 9>"$LOCK"
+    flock -n 9 || die 3 "deploy in progress"
+
+    START_S=$SECONDS
+    STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    PREVIOUS_SHA=$(kfs_current_sha)
+    kfs_log INFO "deploy started" sha "$SHA" previous_sha "$PREVIOUS_SHA"
+
+    preflight
+    if ! compose_new pull --quiet; then
+        refuse "image pull failed"
+    fi
+    kfs_log INFO "images pulled" sha "$SHA"
+
+    switch_release
+    if compose_current up -d --no-build --pull never --remove-orphans && health_gate; then
+        record deployed
+        prune
+        exit 0
+    fi
+    # Milestone 2 replaces this with the automatic rollback (AC-10).
+    compose_current ps -a >&2 || true
+    record unhealthy
+    exit 1
+}
+
+case "${1:-}" in
+    receive)
+        [ $# -eq 2 ] || usage
+        receive "$2"
+        ;;
+    run)
+        [ $# -ge 2 ] || usage
+        shift
+        run "$@"
+        ;;
+    link-host)
+        kfs_link_host
+        ;;
+    *) usage ;;
+esac

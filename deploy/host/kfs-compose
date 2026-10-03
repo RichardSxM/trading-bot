@@ -1,0 +1,50 @@
+#!/bin/sh
+# The only way to run Compose on the VPS (spec 0005 AC-5). Linked as /usr/local/sbin/kfs-compose.
+#
+#   sudo kfs-compose ps
+#   sudo kfs-compose logs -f trader
+#
+# Always project `kfs`, the release folder as project folder, /etc/kfs/kfs.env as env file,
+# compose.yaml plus compose.vps.yaml, and compose.live.yaml exactly when TRADING_ENV=live.
+# KFS_RELEASE (default: the release /opt/kfs/current points to) picks both the release folder
+# and the image tag; kfs-deploy sets it to the new release before the switch.
+set -eu
+
+KFS_ROOT=${KFS_ROOT:-/opt/kfs}
+ENV_FILE=${KFS_ENV_FILE:-/etc/kfs/kfs.env}
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "kfs-compose: run as root (sudo kfs-compose ...)" >&2
+    exit 1
+fi
+
+if [ -z "${KFS_RELEASE:-}" ]; then
+    current=$(readlink -f "$KFS_ROOT/current") || {
+        echo "kfs-compose: $KFS_ROOT/current points nowhere" >&2
+        exit 1
+    }
+    KFS_RELEASE=$(basename "$current")
+fi
+
+dir="$KFS_ROOT/releases/$KFS_RELEASE"
+if [ ! -f "$dir/compose.yaml" ]; then
+    echo "kfs-compose: no release bundle at $dir" >&2
+    exit 1
+fi
+if [ ! -f "$ENV_FILE" ]; then
+    echo "kfs-compose: missing $ENV_FILE" >&2
+    exit 1
+fi
+
+# The last TRADING_ENV line wins, as in Compose's own env file parsing. Never sourced.
+trading_env=$(sed -n 's/^[[:space:]]*TRADING_ENV[[:space:]]*=[[:space:]]*["'\'']\{0,1\}\([a-z]*\).*/\1/p' "$ENV_FILE" | tail -n 1)
+# Order matters: later files override earlier ones.
+if [ "$trading_env" = live ]; then
+    set -- -f "$dir/compose.yaml" -f "$dir/compose.vps.yaml" -f "$dir/compose.live.yaml" "$@"
+else
+    set -- -f "$dir/compose.yaml" -f "$dir/compose.vps.yaml" "$@"
+fi
+
+KFS_TAG=$KFS_RELEASE
+export KFS_TAG
+exec docker compose -p kfs --project-directory "$dir" --env-file "$ENV_FILE" "$@"

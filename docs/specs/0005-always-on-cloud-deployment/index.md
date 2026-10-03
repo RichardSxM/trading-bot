@@ -1,7 +1,7 @@
 # 0005. Run the stack around the clock on the London VPS, deployed by one safe command
 
 **Date**: 2026-10-03
-**Status**: Proposed
+**Status**: In Progress
 
 ## Summary
 
