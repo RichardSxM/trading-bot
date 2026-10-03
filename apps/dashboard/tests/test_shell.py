@@ -312,7 +312,7 @@ def test_the_event_stream_carries_the_security_headers(logged_in, monkeypatch):
     assert response.headers["content-type"].startswith("text/event-stream")
     assert response.headers["content-security-policy"] == CSP
     assert response.headers["x-accel-buffering"] == "no"
-    assert set(seen) == {"topbar-age", "topbar-command", "topbar-alert", "overview-activity"}
+    assert set(seen) == {"topbar-age", "topbar-command", "topbar-alert", "overview-activity", "topbar-pause"}
     assert "event: topbar-age\n" in response.text
 
 

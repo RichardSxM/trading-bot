@@ -9,7 +9,16 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from redis.exceptions import ConnectionError as RedisConnectionError
 
-from dashboard.live.poller import ACTIVITY_EVENT, AGE_EVENT, ALERT_EVENT, COMMAND_EVENT, QUEUE_SIZE, Poller, supervise
+from dashboard.live.poller import (
+    ACTIVITY_EVENT,
+    AGE_EVENT,
+    ALERT_EVENT,
+    COMMAND_EVENT,
+    PAUSE_EVENT,
+    QUEUE_SIZE,
+    Poller,
+    supervise,
+)
 from dashboard.live.state import (
     BAD_SNAPSHOT,
     COMMAND_NO_DATA,
@@ -121,6 +130,8 @@ def _poller(source, now=None, streams=None, read_timeout_s=1.0):
         render_command=_render,
         render_alert=_render_alert,
         render_activity=_render_rows,
+        read_trader_state=Source(None),
+        render_pause=_render,
         hide_after_s=900,
         ack_warn_s=10,
         read_timeout_s=read_timeout_s,
@@ -146,9 +157,16 @@ def test_tick_publishes_only_when_the_html_changes():
         (COMMAND_EVENT, "none:none"),
         (ALERT_EVENT, "none"),
         (ACTIVITY_EVENT, ""),
+        (PAUSE_EVENT, "lost:no data"),
         (AGE_EVENT, "ok:1s"),
     ]
-    assert cached == {AGE_EVENT: "ok:1s", COMMAND_EVENT: "none:none", ALERT_EVENT: "none", ACTIVITY_EVENT: ""}
+    assert cached == {
+        AGE_EVENT: "ok:1s",
+        COMMAND_EVENT: "none:none",
+        ALERT_EVENT: "none",
+        ACTIVITY_EVENT: "",
+        PAUSE_EVENT: "lost:no data",
+    }
 
 
 def test_a_slow_subscriber_loses_the_oldest_updates_not_the_newest():
@@ -181,8 +199,15 @@ def test_a_redis_error_renders_no_data_and_the_next_tick_recovers():
         COMMAND_EVENT: _render(COMMAND_NO_DATA),
         ALERT_EVENT: "warn:no_data",
         ACTIVITY_EVENT: "lost",
+        PAUSE_EVENT: "lost:no data",
     }
-    assert second == {AGE_EVENT: "ok:0s", COMMAND_EVENT: "none:none", ALERT_EVENT: "none", ACTIVITY_EVENT: ""}
+    assert second == {
+        AGE_EVENT: "ok:0s",
+        COMMAND_EVENT: "none:none",
+        ALERT_EVENT: "none",
+        ACTIVITY_EVENT: "",
+        PAUSE_EVENT: "lost:no data",
+    }
 
 
 def test_a_redis_that_does_not_answer_renders_no_data_within_the_read_deadline():
@@ -201,6 +226,7 @@ def test_a_redis_that_does_not_answer_renders_no_data_within_the_read_deadline()
         COMMAND_EVENT: _render(COMMAND_NO_DATA),
         ALERT_EVENT: "warn:no_data",
         ACTIVITY_EVENT: "lost",
+        PAUSE_EVENT: "lost:no data",
     }
     assert elapsed < 0.5
 
@@ -327,6 +353,7 @@ def test_no_command_and_no_result_yet():
         since=T0,
         age="5m ago",
         expires_at=COMMAND.expires_at,
+        cmd="stop",
     )
 
 
@@ -340,6 +367,7 @@ def test_no_result_after_expiry_is_not_handled_and_a_late_result_still_counts():
         since=COMMAND.expires_at,
         age="1s ago",
         expires_at=COMMAND.expires_at,
+        cmd="stop",
     )
     assert not view.final  # the poller keeps reading results
     late = command_state(COMMAND_FIELDS, _result("executed", at=after), after, 900)
@@ -425,6 +453,7 @@ def test_a_command_read_error_renders_every_partial_no_data():
         COMMAND_EVENT: _render(COMMAND_NO_DATA),
         ALERT_EVENT: "warn:no_data",
         ACTIVITY_EVENT: "lost",
+        PAUSE_EVENT: "lost:no data",
     }
 
 
@@ -561,6 +590,8 @@ def test_clock_skew_warns_again_once_a_minute_has_passed(caplog):
         render_command=_render,
         render_alert=_render_alert,
         render_activity=_render_rows,
+        read_trader_state=Source(None),
+        render_pause=_render,
         hide_after_s=900,
         ack_warn_s=10,
         read_timeout_s=1.0,

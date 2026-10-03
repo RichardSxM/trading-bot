@@ -5,7 +5,7 @@
 {% if groups is none -%}
 {{ error_state("Activity unavailable: no data from Redis", "The dashboard can't read Redis; this list updates once it can.") }}
 {%- elif not groups -%}
-{{ empty_state("Stop commands appear here as they happen. Fills and alerts join this feed later.", glyph="radio") }}
+{{ empty_state("Stop, pause, and resume commands appear here as they happen. Fills and alerts join this feed later.", glyph="radio") }}
 {%- else -%}
 <ol class="activity">
   {%- for group in groups %}{% set row = group.row %}

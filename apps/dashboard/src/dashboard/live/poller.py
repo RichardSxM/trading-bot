@@ -1,8 +1,9 @@
 """The one Redis poller per dashboard process (spec 0004, Live poller).
 
-While at least one SSE subscriber exists it reads the trader heartbeat and the newest control
-commands (plus their results until each is final) every ``DASHBOARD_POLL_MS``, renders the top
-bar partials, its alert bar (AC-21), and Overview's Activity (AC-20), and publishes each to every
+While at least one SSE subscriber exists it reads the trader heartbeat, ``trader_state`` (the
+pause, spec 0005 AC-13), and the newest control commands (plus their results until each is
+final) every ``DASHBOARD_POLL_MS``, renders the top bar partials, its alert bar (AC-21), and
+Overview's Activity (AC-20), and publishes each to every
 subscriber only when its HTML changed. With no subscriber it idles. A Redis error renders every
 partial ``no data`` and the next tick tries again.
 """
@@ -20,16 +21,19 @@ from redis.exceptions import RedisError
 from dashboard.live.state import (
     COMMAND_NO_DATA,
     NO_DATA,
+    PAUSE_NO_DATA,
     ActivityRow,
     AgeView,
     AlertView,
     CommandView,
     Entry,
+    PauseView,
     activity_row,
     alert_state,
     command_state,
     find_result,
     heartbeat_view,
+    pause_view,
 )
 from trading_core.control.messages import ControlMessage, Fields, field, to_fields
 
@@ -39,6 +43,7 @@ AGE_EVENT: Final = "topbar-age"
 COMMAND_EVENT: Final = "topbar-command"
 ALERT_EVENT: Final = "topbar-alert"
 ACTIVITY_EVENT: Final = "overview-activity"
+PAUSE_EVENT: Final = "topbar-pause"
 ACTIVITY_SIZE: Final = 20
 REDIS_ERRORS: Final = (RedisError, OSError, TimeoutError)
 QUEUE_SIZE: Final = 8
@@ -64,6 +69,8 @@ class Poller:
         render_command: Callable[[CommandView], str],
         render_alert: Callable[[AlertView | None], str],
         render_activity: Callable[[Sequence[ActivityRow] | None], str],
+        read_trader_state: Callable[[], Awaitable[str | bytes | None]],
+        render_pause: Callable[[PauseView], str],
         hide_after_s: float,
         ack_warn_s: float,
         read_timeout_s: float,
@@ -78,6 +85,8 @@ class Poller:
         self._render_command = render_command
         self._render_alert = render_alert
         self._render_activity = render_activity
+        self._read_trader_state = read_trader_state
+        self._render_pause = render_pause
         self._hide_after_s = hide_after_s
         self._ack_warn_s = ack_warn_s
         self._interval_s = interval_s
@@ -118,7 +127,7 @@ class Poller:
         within it instead of waiting out redis-py's retries on every read (AC-13).
         """
         try:
-            raw, (command, rows) = await asyncio.wait_for(self._read_all(), timeout=self._read_timeout_s)
+            raw, state, (command, rows) = await asyncio.wait_for(self._read_all(), timeout=self._read_timeout_s)
         except REDIS_ERRORS as exc:
             log.warning(
                 "redis read failed", extra={"fields": {"code": "redis_read_failed", "error": type(exc).__name__}}
@@ -134,6 +143,7 @@ class Poller:
             COMMAND_EVENT: self._render_command(_tinted(command, alert)),
             ALERT_EVENT: self._render_alert(alert),
             ACTIVITY_EVENT: self._render_activity(rows),
+            PAUSE_EVENT: self._render_pause(pause_view(state)),
         }
 
     def no_data(self) -> dict[str, str]:
@@ -144,10 +154,13 @@ class Poller:
             COMMAND_EVENT: self._render_command(COMMAND_NO_DATA),
             ALERT_EVENT: self._render_alert(self._alert(NO_DATA, COMMAND_NO_DATA)),
             ACTIVITY_EVENT: self._render_activity(None),
+            PAUSE_EVENT: self._render_pause(PAUSE_NO_DATA),
         }
 
-    async def _read_all(self) -> tuple[str | bytes | None, tuple[CommandView, list[ActivityRow]]]:
-        return await self._read_heartbeat(), await self._commands()
+    async def _read_all(
+        self,
+    ) -> tuple[str | bytes | None, str | bytes | None, tuple[CommandView, list[ActivityRow]]]:
+        return await self._read_heartbeat(), await self._read_trader_state(), await self._commands()
 
     async def command_view(self) -> CommandView:
         """The latest command and its outcome; reads results only until one is final (AC-12)."""

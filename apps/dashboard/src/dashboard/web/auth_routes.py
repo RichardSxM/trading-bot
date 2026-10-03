@@ -20,6 +20,11 @@ router = APIRouter()
 WRONG: Final = "Password or code is wrong"
 LOCKED: Final = "Too many attempts. Try again in 15 minutes."
 STOP_LOST: Final = "Your stop was NOT sent. Log in and tap stop again."
+# A Pause or Resume tap whose session had expired (spec 0005 AC-13); keyed by the `lost` query value.
+LOST_NOTICES: Final = {
+    "pause": "Your pause was NOT sent. Log in and tap Pause again.",
+    "resume": "Your resume was NOT sent. Log in and tap Resume again.",
+}
 
 Reason = Literal["bad_password", "bad_code", "replayed_code", "locked"]
 
@@ -53,6 +58,7 @@ def _login_page(
     *,
     error: str | None = None,
     stop_lost: bool = False,
+    lost: str | None = None,
     status_code: int = 200,
 ) -> Response:
     return context.templates.TemplateResponse(
@@ -64,17 +70,20 @@ def _login_page(
             "next": next_path,
             "error": error,
             "stop_lost": stop_lost,
+            "lost_notice": LOST_NOTICES.get(lost or ""),
         },
         status_code=status_code,
     )
 
 
 @router.get("/login")
-async def login_form(request: Request, next: str = "/", stop_lost: str | None = None) -> Response:
+async def login_form(
+    request: Request, next: str = "/", stop_lost: str | None = None, lost: str | None = None
+) -> Response:
     context = app_context(request)
     if current_session(request) is not None:
         return RedirectResponse("/", status_code=303)
-    return _login_page(request, context, safe_next(next), stop_lost=stop_lost is not None)
+    return _login_page(request, context, safe_next(next), stop_lost=stop_lost is not None, lost=lost)
 
 
 @router.post("/login")
