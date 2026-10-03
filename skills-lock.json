@@ -7,17 +7,35 @@
       "skillPath": "skills/alembic/SKILL.md",
       "computedHash": "01ba48472e12fdf50a82d244df0c509f4ea06caeb8fa6e2fe2a15c150adaec91"
     },
+    "debian-linux-triage": {
+      "source": "github/awesome-copilot",
+      "sourceType": "github",
+      "skillPath": "skills/debian-linux-triage/SKILL.md",
+      "computedHash": "88092e8dbcdbe6d3682b6bc8b1be15cf1f3945203d111ff4a7ce39e58f94498a"
+    },
     "docker-compose-skill": {
       "source": "scientiacapital/skills",
       "sourceType": "github",
       "skillPath": "active/docker-compose-skill/SKILL.md",
       "computedHash": "5018e45622dcb04e5ebd69c396b8003aa0e71c728487908380c090eaaeb07eba"
     },
+    "docker-patterns": {
+      "source": "affaan-m/ecc",
+      "sourceType": "github",
+      "skillPath": "skills/docker-patterns/SKILL.md",
+      "computedHash": "af6deba271429bcb5198a7e56a4f71f948509e06037e6a3210d0ad5f516eeb29"
+    },
     "fastapi": {
       "source": "terminalskills/skills",
       "sourceType": "github",
       "skillPath": "skills/fastapi/SKILL.md",
       "computedHash": "11617cac264628622ba75d5cd05a122f0f79a1b6e9e5fb9cd09d1823d81b434f"
+    },
+    "github-actions-templates": {
+      "source": "wshobson/agents",
+      "sourceType": "github",
+      "skillPath": "plugins/cicd-automation/skills/github-actions-templates/SKILL.md",
+      "computedHash": "26d9b7d4392712d3ff500ff535c8f68c03820111e22af74fd579f58f605b2166"
     },
     "htmx": {
       "source": "damusix/skills",
