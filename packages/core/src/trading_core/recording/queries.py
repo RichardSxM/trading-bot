@@ -174,3 +174,8 @@ def journal_rows(session: Session, env: Env, start: datetime, end: datetime) -> 
     rows = [r for f, currency, multiplier, _, rate in fills for r in _fill_rows(f, currency, multiplier, rate)]
     rows += [_funding_row(payment, rate) for payment, rate in payments]
     return sorted(rows, key=lambda r: (r.at, r.source_id, _KIND_ORDER[r.kind]))
+
+
+def control_command_known(session: Session, command_id: UUID) -> bool:
+    """True when the trader already recorded the control command ``command_id`` (spec 0005 AC-6)."""
+    return session.get(models.ControlCommand, command_id) is not None

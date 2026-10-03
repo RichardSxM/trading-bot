@@ -1,6 +1,6 @@
 import asyncio
 from datetime import date
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 import pytest
 from pydantic import SecretStr
@@ -16,7 +16,6 @@ SECRETS = {
     "kraken_api_key": SecretStr("k" * 32),
     "kraken_api_secret": SecretStr("s" * 32),
 }
-REDIS_SECRET = SECRETS["redis_password"]
 
 
 def _settings(env: TradingEnv) -> TraderSettings:
@@ -162,6 +161,20 @@ class _FakeRedis:
         self.writes.append((name, value, ex))
 
 
+class ControlActor:
+    """Stands in for the control actor, which needs a real node and Redis."""
+
+
+def _fake_control_parts(node, settings, secrets):
+    from trader.main import ControlParts
+
+    return ControlParts(
+        actor=cast(Any, ControlActor()),
+        read_state=lambda: {"paused": False},
+        shutdown_counts=lambda: {"cancelled": 0, "unacknowledged_cancels": 0, "positions_kept": 0, "stops_kept": 0},
+    )
+
+
 @pytest.fixture
 def fake_main(monkeypatch):
     import trader.main as trader_main
@@ -171,6 +184,7 @@ def fake_main(monkeypatch):
     monkeypatch.setattr(trader_main, "boot", lambda kind, **kw: Boot(_settings("demo"), SECRETS))
     monkeypatch.setattr(trader_main, "TradingNode", _FakeNode)
     monkeypatch.setattr(trader_main, "snapshot_client", lambda settings, password: _FakeRedis())
+    monkeypatch.setattr(trader_main, "control_parts", _fake_control_parts)
     return trader_main
 
 
@@ -192,6 +206,8 @@ def test_main_builds_and_runs_the_node_with_a_heartbeat(fake_main, monkeypatch):
     (node,) = _FakeNode.instances
     assert node.config.trader_id.value == "TRADER-DEMO"
     assert ("add_actor", "HeartbeatActor") in node.calls
+    # The control actor comes first, so a pause is in place before any strategy runs (spec 0005 AC-6).
+    assert next(c for c in node.calls if c[0] == "add_actor") == ("add_actor", "ControlActor")
     assert ("factory", "KRAKEN") in node.calls
     assert node.calls[-3:] == ["build", "run", "dispose"]
 
@@ -303,7 +319,7 @@ def test_live_run_adds_the_key_age_actor_and_exec_factory_and_a_failed_check_exi
     fake_main.TradingNode = NoAccountNode
     try:
         code = fake_main.run_node(
-            build_config(_settings("live"), SECRETS), _settings("live"), 0.1, REDIS_SECRET, fail_backoff_s=0
+            build_config(_settings("live"), SECRETS), _settings("live"), 0.1, SECRETS, fail_backoff_s=0
         )
     finally:
         fake_main.TradingNode = original
@@ -317,7 +333,7 @@ def test_live_run_adds_the_key_age_actor_and_exec_factory_and_a_failed_check_exi
 
 
 def test_demo_run_has_no_key_actors_and_exits_0(fake_main):
-    code = fake_main.run_node(build_config(_settings("demo"), SECRETS), _settings("demo"), 2.0, REDIS_SECRET)
+    code = fake_main.run_node(build_config(_settings("demo"), SECRETS), _settings("demo"), 2.0, SECRETS)
 
     (node,) = _FakeNode.instances
     assert code == 0
@@ -381,7 +397,7 @@ def test_an_account_reloaded_from_a_previous_run_still_fails_the_check(fake_main
     fake_main.TradingNode = StaleAccountNode
     try:
         code = fake_main.run_node(
-            build_config(_settings("live"), SECRETS), _settings("live"), 0.1, REDIS_SECRET, fail_backoff_s=0
+            build_config(_settings("live"), SECRETS), _settings("live"), 0.1, SECRETS, fail_backoff_s=0
         )
     finally:
         fake_main.TradingNode = original
@@ -403,7 +419,7 @@ def test_a_crashing_key_check_stops_the_node(fake_main):
     fake_main.TradingNode = BrokenCacheNode
     try:
         code = fake_main.run_node(
-            build_config(_settings("live"), SECRETS), _settings("live"), 5.0, REDIS_SECRET, fail_backoff_s=0
+            build_config(_settings("live"), SECRETS), _settings("live"), 5.0, SECRETS, fail_backoff_s=0
         )
     finally:
         fake_main.TradingNode = original
@@ -433,10 +449,11 @@ def test_every_env_writes_the_heartbeat_snapshot_while_the_node_runs(fake_main, 
             self.get_event_loop().run_until_complete(asyncio.sleep(0.05))
 
     monkeypatch.setattr(fake_main, "TradingNode", RunningNode)
-    fake_main.run_node(build_config(_settings(env), SECRETS), _settings(env), 5.0, REDIS_SECRET, fail_backoff_s=0)
+    fake_main.run_node(build_config(_settings(env), SECRETS), _settings(env), 5.0, SECRETS, fail_backoff_s=0)
 
-    key, value, ex = redis.writes[0]
+    key, value, ex = next(w for w in redis.writes if w[0].endswith(":heartbeat"))
     assert (key, ex) == (f"{env}:snapshot:heartbeat", 30)
+    assert any(w[0] == f"{env}:snapshot:trader_state" and w[2] == 30 for w in redis.writes)
     assert json.loads(value)["data"] == {
         "process": "trader",
         "git_commit": "unknown",
@@ -467,7 +484,7 @@ def test_a_crashed_heartbeat_writer_logs_critical_and_the_node_keeps_running(fak
     monkeypatch.setattr(fake_main, "TradingNode", Node)
     with caplog.at_level(logging.CRITICAL):
         code = fake_main.run_node(
-            build_config(_settings("demo"), SECRETS), _settings("demo"), 5.0, REDIS_SECRET, fail_backoff_s=0
+            build_config(_settings("demo"), SECRETS), _settings("demo"), 5.0, SECRETS, fail_backoff_s=0
         )
 
     assert code == 0
@@ -494,5 +511,62 @@ def test_a_disconnected_data_client_reads_as_false(fake_main, monkeypatch):
             self.get_event_loop().run_until_complete(asyncio.sleep(0.05))
 
     monkeypatch.setattr(fake_main, "TradingNode", Node)
-    fake_main.run_node(build_config(_settings("demo"), SECRETS), _settings("demo"), 5.0, REDIS_SECRET, fail_backoff_s=0)
-    assert json.loads(redis.writes[0][1])["data"]["data_connected"] is False
+    fake_main.run_node(build_config(_settings("demo"), SECRETS), _settings("demo"), 5.0, SECRETS, fail_backoff_s=0)
+    heartbeat = next(w for w in redis.writes if w[0].endswith(":heartbeat"))
+    assert json.loads(heartbeat[1])["data"]["data_connected"] is False
+
+
+# spec 0005: the control side and the graceful stop (AC-6, AC-7, AC-9)
+
+
+def test_a_stop_gives_entry_cancels_ten_seconds_to_be_acknowledged(monkeypatch):
+    monkeypatch.delenv("TRADER_ID", raising=False)
+    assert build_config(_settings("demo"), SECRETS).timeout_post_stop == 10.0
+
+
+def test_sigterm_stops_the_node_and_a_clean_stop_logs_shutdown_graceful(fake_main, monkeypatch, caplog):
+    import logging
+    import os
+    import signal
+
+    class Node(_FakeNode):
+        def run(self):
+            self.calls.append("run")
+            loop = self.get_event_loop()
+            loop.call_later(0.05, os.kill, os.getpid(), signal.SIGTERM)
+            loop.run_until_complete(asyncio.sleep(0.2))
+
+    monkeypatch.setattr(fake_main, "TradingNode", Node)
+    with caplog.at_level(logging.INFO):
+        code = fake_main.run_node(
+            build_config(_settings("demo"), SECRETS), _settings("demo"), 5.0, SECRETS, fail_backoff_s=0
+        )
+
+    assert code == 0
+    assert "stop" in _FakeNode.instances[0].calls
+    [line] = [r for r in caplog.records if getattr(r, "fields", {}).get("code") == "shutdown_graceful"]
+    assert line.fields == {
+        "code": "shutdown_graceful",
+        "cancelled": 0,
+        "unacknowledged_cancels": 0,
+        "positions_kept": 0,
+        "stops_kept": 0,
+    }
+
+
+def test_both_snapshots_are_written_with_the_trader_state_from_the_control_side(fake_main, monkeypatch):
+    import json
+
+    redis = _FakeRedis()
+    monkeypatch.setattr(fake_main, "snapshot_client", lambda settings, password: redis)
+
+    class Node(_FakeNode):
+        def run(self):
+            self.get_event_loop().run_until_complete(asyncio.sleep(0.05))
+
+    monkeypatch.setattr(fake_main, "TradingNode", Node)
+    fake_main.run_node(build_config(_settings("demo"), SECRETS), _settings("demo"), 5.0, SECRETS, fail_backoff_s=0)
+
+    state = next(w for w in redis.writes if w[0] == "demo:snapshot:trader_state")
+    assert state[2] == 30
+    assert json.loads(state[1])["data"] == {"paused": False}

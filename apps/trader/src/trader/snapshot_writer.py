@@ -31,16 +31,21 @@ class SnapshotClient(Protocol):
 async def write_heartbeats(
     client: SnapshotClient,
     key: str,
-    read_state: Callable[[], Mapping[str, object]],
+    read_state: Callable[[], Mapping[str, object] | None],
     interval_s: float = WRITE_INTERVAL_S,
     clock_ns: Callable[[], int] = time.time_ns,
     monotonic: Callable[[], float] = time.monotonic,
 ) -> None:
-    """Write ``read_state()`` as a snapshot to ``key`` every ``interval_s`` until cancelled."""
+    """Write ``read_state()`` as a snapshot to ``key`` every ``interval_s`` until cancelled.
+
+    A None state is not known yet, so nothing is written that round.
+    """
     last_warning: float | None = None
     while True:
+        state = read_state()
         try:
-            await client.set(key, encode(clock_ns(), read_state()), ex=HEARTBEAT_TTL_S)
+            if state is not None:
+                await client.set(key, encode(clock_ns(), state), ex=HEARTBEAT_TTL_S)
         except (RedisError, OSError) as exc:
             now = monotonic()
             if last_warning is None or now - last_warning >= WARN_EVERY_S:
