@@ -1,7 +1,10 @@
 """Recorder entry point: a Nautilus node with data clients only and an in memory cache."""
 
+import logging
 import os
+import sys
 from collections.abc import Mapping
+from pathlib import Path
 
 from nautilus_trader.adapters.kraken import KRAKEN, KrakenLiveDataClientFactory
 from nautilus_trader.config import (
@@ -16,6 +19,7 @@ from nautilus_trader.model.identifiers import TraderId
 from pydantic import SecretStr
 
 from recorder.actor import RecordingActor, RecordingConfig
+from recorder.volume import CatalogVolumeMissing, check_catalog_volume
 from trading_core import env_guard
 from trading_core.boot import boot
 from trading_core.naming import node_id
@@ -23,11 +27,15 @@ from trading_core.node.heartbeat import HeartbeatActor, HeartbeatConfig
 from trading_core.node.kraken import futures_data_client
 from trading_core.settings import Settings
 
+log = logging.getLogger(__name__)
+
 
 class RecorderSettings(Settings):
     # Pinned from the adapter's instrument provider (Kraken's live public data).
     recorder_instruments: str = "PF_XBTUSD.KRAKEN,PF_ETHUSD.KRAKEN"
     catalog_path: str = "/data/catalog"
+    # True on the VPS (compose.vps.yaml): refuse to start unless the extra disk is mounted.
+    catalog_require_marker: bool = False
 
     @property
     def instrument_list(self) -> list[str]:
@@ -53,6 +61,15 @@ def guard(settings: RecorderSettings, secrets: Mapping[str, SecretStr]) -> None:
 def main() -> None:
     # The recorder holds no secret at all (spec 0003).
     settings = boot("node", settings_cls=RecorderSettings, guard=guard).settings
+    # Before the node exists, so a missing disk gets nothing written (spec 0005 AC-18).
+    try:
+        check_catalog_volume(Path(settings.catalog_path), required=settings.catalog_require_marker)
+    except CatalogVolumeMissing as exc:
+        log.critical(
+            "catalog volume missing, refusing to start",
+            extra={"fields": {"code": "catalog_volume_missing", "path": str(exc.path)}},
+        )
+        sys.exit(1)
     node = TradingNode(config=build_config(settings))
     node.trader.add_actor(
         HeartbeatActor(HeartbeatConfig(path=os.environ.get("HEARTBEAT_FILE", "/run/heartbeat/alive")))

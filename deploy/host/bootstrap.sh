@@ -286,6 +286,13 @@ step_docker() {
         systemctl restart docker
         changed "docker daemon.json"
     else ok "docker daemon.json"; fi
+    # With nofail the data disk is not ordered before local-fs.target, so Docker could start
+    # first and bind an empty /srv/kfs on the system disk. Ordering only: a missing disk still
+    # lets Docker start, and the recorder alone refuses (AC-18).
+    if put_file /etc/systemd/system/docker.service.d/10-kfs-data-disk.conf 0644 root:root "$(printf '[Unit]\nAfter=srv-kfs.mount')"; then
+        systemctl daemon-reload
+        changed "docker waits for the data disk"
+    else ok "docker waits for the data disk"; fi
     systemctl is-enabled --quiet docker || systemctl enable --now docker >/dev/null 2>&1
 }
 

@@ -26,7 +26,6 @@ RELEASES="$KFS_ROOT/releases"
 DEPLOY_LOG="$KFS_LOG_DIR/deploys.jsonl"
 LOCK=/run/lock/kfs-deploy.lock
 HEALTH_TIMEOUT_S=180
-PAUSE_RESULT_S=30
 MIN_FREE_BYTES=5000000000
 KEEP_RELEASES=3
 
@@ -78,7 +77,7 @@ record() {
     mkdir -p "$KFS_LOG_DIR"
     jq -nc --arg sha "$SHA" --arg previous_sha "$PREVIOUS_SHA" --arg started_at "$STARTED_AT" \
         --arg finished_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg outcome "$outcome" \
-        --arg paused "$PAUSED_BY_DEPLOY" --argjson waited "$WAITED_S" \
+        --arg paused "$KFS_PAUSED_BY_US" --argjson waited "$KFS_WAITED_S" \
         '{sha: $sha, previous_sha: (if $previous_sha == "" then null else $previous_sha end),
           started_at: $started_at, finished_at: $finished_at, outcome: $outcome,
           paused_by_deploy: ($paused == "true"), waited_for_flat_s: $waited}' >>"$DEPLOY_LOG"
@@ -116,23 +115,6 @@ preflight() {
     kfs_log INFO "preflight passed" sha "$SHA" images "$(echo "$images" | wc -l | tr -d ' ')"
 }
 
-# The dashboard image's control CLI from the new release (it exists there even when the
-# running release predates it). One JSON line on stdout; its exit code is the CLI's.
-control() {
-    compose_new run --rm --no-deps -T dashboard python -m dashboard.control_cli "$@"
-}
-
-# Unpause only a pause this deploy sent (AC-11). Best effort: a failure is logged, and the
-# trader stays paused, which is safe and shows on the dashboard as `paused · by deploy`.
-unpause_if_ours() {
-    [ "$PAUSED_BY_DEPLOY" = true ] || return 0
-    if control unpause --source deploy --wait-result "$PAUSE_RESULT_S" >/dev/null; then
-        kfs_log INFO "trader unpaused" sha "$SHA"
-    else
-        kfs_log ERROR "unpause failed, the trader stays paused; press Resume on the dashboard" sha "$SHA"
-    fi
-}
-
 abort() {
     local outcome=$1 reason=$2
     kfs_log ERROR "deploy aborted" outcome "$outcome" reason "$reason"
@@ -140,51 +122,18 @@ abort() {
     exit 2
 }
 
-# Pause entries and wait until the trader holds no position and no entry order (AC-8).
+# Pause entries and wait until the trader holds no position and no entry order (AC-8). The
+# control CLI comes from the new release (KFS_CONTROL_RELEASE), which has it even when the
+# running release predates it.
 drain() {
-    local state paused rc start
-    if state=$(control state); then
-        paused=$(jq -r '.data.paused // false' <<<"$state")
-    elif [ "$NOW" = true ]; then
-        kfs_log WARNING "trader_state unreadable; --now sends the pause anyway"
-        paused=false
-    else
-        # Includes a running release from before spec 0005, which publishes none (fail closed).
-        abort aborted_no_trader_state "trader_state missing or stale; deploy with --now to skip the drain"
-    fi
-    if [ "$paused" = true ]; then
-        kfs_log INFO "trader already paused, leaving that pause in place"
-    elif control pause --source deploy --wait-result "$PAUSE_RESULT_S" >/dev/null; then
-        PAUSED_BY_DEPLOY=true
-        kfs_log INFO "trader paused" source deploy
-    elif [ "$NOW" = true ]; then
-        # It may still execute later; unpause after the deploy all the same.
-        PAUSED_BY_DEPLOY=true
-        kfs_log WARNING "pause not confirmed; --now goes on"
-    else
-        PAUSED_BY_DEPLOY=true
-        unpause_if_ours
-        abort aborted_pause_failed "the trader did not confirm the pause within ${PAUSE_RESULT_S}s"
-    fi
-    if [ "$NOW" = true ]; then
-        kfs_log WARNING "--now: not waiting for flat"
-        return 0
-    fi
-    start=$SECONDS
-    rc=0
-    control wait-flat --timeout "$WAIT" >/dev/null || rc=$?
-    WAITED_S=$((SECONDS - start))
+    local rc=0
+    kfs_pause_and_wait "$NOW" "$WAIT" || rc=$?
     case $rc in
-        0) kfs_log INFO "trader flat" waited_s "$WAITED_S" ;;
-        3) abort aborted_pause_lifted "the pause was lifted during the wait (Resume pressed)" ;;
-        2)
-            unpause_if_ours
-            abort aborted_not_flat "not flat within $WAIT"
-            ;;
-        *)
-            unpause_if_ours
-            abort aborted_no_trader_state "trader_state missing or stale during the wait"
-            ;;
+        0) ;;
+        "$KFS_DRAIN_PAUSE_FAILED") abort aborted_pause_failed "$KFS_DRAIN_REASON" ;;
+        "$KFS_DRAIN_PAUSE_LIFTED") abort aborted_pause_lifted "$KFS_DRAIN_REASON" ;;
+        "$KFS_DRAIN_NOT_FLAT") abort aborted_not_flat "$KFS_DRAIN_REASON" ;;
+        *) abort aborted_no_trader_state "$KFS_DRAIN_REASON" ;;
     esac
 }
 
@@ -196,33 +145,11 @@ switch_release() {
     kfs_log INFO "current switched" sha "$target"
 }
 
-# 0 when every service is healthy (migrate: exited 0); prints the ones that are not.
-services_healthy() {
-    local ps expected bad
-    ps=$(compose_current ps -a --format json | jq -sc 'if length == 1 and (.[0] | type) == "array" then .[0] else . end')
-    expected=$(compose_current config --services)
-    bad=$(jq -r --arg expected "$expected" '
-        ($expected | split("\n") | map(select(. != ""))) as $want
-        | (map({key: .Service, value: .}) | from_entries) as $by
-        | $want[]
-        | . as $s
-        | $by[$s] as $c
-        | if $c == null then "\($s): no container"
-          elif $s == "migrate" then (if $c.State == "exited" and $c.ExitCode == 0 then empty else "\($s): \($c.State) exit \($c.ExitCode)" end)
-          elif ($c.Health // "") != "" then (if $c.Health == "healthy" then empty else "\($s): \($c.Health)" end)
-          elif $c.State == "running" then empty
-          else "\($s): \($c.State)" end' <<<"$ps")
-    if [ -n "$bad" ]; then
-        echo "$bad" | paste -sd ' ' -
-        return 1
-    fi
-}
-
 # 0 when the trader's snapshot (`trader_state`, or `heartbeat` with --heartbeat for a release
 # from before spec 0005) is fresh and carries commit $1.
 trader_matches() {
     local expect=$1 snapshot=${2:-state} line commit
-    line=$(control "$snapshot" 2>/dev/null) || {
+    line=$(kfs_control "$snapshot" 2>/dev/null) || {
         echo "trader $snapshot: ${line:-unreadable}"
         return 1
     }
@@ -237,7 +164,7 @@ trader_matches() {
 health_gate() {
     local expect=$1 snapshot=${2:-state} deadline=$((SECONDS + HEALTH_TIMEOUT_S)) why=""
     while [ "$SECONDS" -lt "$deadline" ]; do
-        if why=$(services_healthy) && why=$(trader_matches "$expect" "$snapshot"); then
+        if why=$(kfs_services_healthy) && why=$(trader_matches "$expect" "$snapshot"); then
             kfs_log INFO "health gate passed" sha "$expect" after_s "$((SECONDS - START_S))"
             return 0
         fi
@@ -261,7 +188,7 @@ rollback() {
     if compose_current up -d --no-build --pull never --remove-orphans &&
         { health_gate "$PREVIOUS_SHA" state || health_gate "$PREVIOUS_SHA" heartbeat; }; then
         record rolled_back
-        unpause_if_ours
+        kfs_unpause_if_ours
         exit 1
     fi
     # Stays paused (if this deploy paused): nothing healthy is trading now.
@@ -340,8 +267,7 @@ run() {
     START_S=$SECONDS
     STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     PREVIOUS_SHA=$(kfs_current_sha)
-    PAUSED_BY_DEPLOY=false
-    WAITED_S=0
+    KFS_CONTROL_RELEASE=$SHA
     kfs_log INFO "deploy started" sha "$SHA" previous_sha "$PREVIOUS_SHA" wait "$WAIT" now "$NOW"
 
     preflight
@@ -357,7 +283,7 @@ run() {
 
     switch_release "$SHA"
     if compose_current up -d --no-build --pull never --remove-orphans && health_gate "$SHA"; then
-        unpause_if_ours
+        kfs_unpause_if_ours
         record deployed
         prune
         exit 0

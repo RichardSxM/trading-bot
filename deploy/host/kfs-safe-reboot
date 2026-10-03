@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# A planned reboot that never strands an order (spec 0005 AC-17). Linked as
+# /usr/local/sbin/kfs-safe-reboot.
+#
+#   sudo kfs-safe-reboot [--wait 15m] [--now]
+#                         # pause (source deploy) and wait for flat as a deploy does, then reboot
+#   kfs-safe-reboot post-boot
+#                         # run by kfs-post-boot.service: after a safe reboot, wait for health
+#                         # and lift the pause the reboot sent
+#
+# The reboot writes /var/lib/kfs/resume-after-boot only when it sent the pause itself, so a
+# pause you set before stays in place after boot. Exit codes: 2 not rebooted (not flat, pause
+# lifted, pause failed, no trader_state), 3 a deploy is running. Containers are not stopped by
+# hand (that would keep `unless-stopped` ones down after boot): shutdown sends each one SIGTERM,
+# and the trader cancels its entry orders and keeps its positions and stops (AC-9).
+set -euo pipefail
+
+KFS_PROCESS=kfs-safe-reboot
+HOST_DIR=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+# shellcheck source=deploy/host/lib.sh
+. "$HOST_DIR/lib.sh"
+
+MARKER="$KFS_STATE_DIR/resume-after-boot"
+LOCK=/run/lock/kfs-deploy.lock
+BOOT_HEALTH_S=300
+
+die() {
+    local code=$1
+    shift
+    kfs_log ERROR "$*" >&2
+    exit "$code"
+}
+
+usage() {
+    sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//' >&2
+    exit 64
+}
+
+[ "$(id -u)" -eq 0 ] || die 1 "run as root (sudo kfs-safe-reboot ...)"
+
+reboot_safely() {
+    local wait=15m now=false rc=0
+    while [ $# -gt 0 ]; do
+        case $1 in
+            --wait)
+                [ $# -ge 2 ] || usage
+                [[ $2 =~ ^[0-9]+[smh]?$ ]] || die 64 "--wait needs a duration such as 90s, 15m, or 1h"
+                wait=$2
+                shift 2
+                ;;
+            --now)
+                now=true
+                shift
+                ;;
+            *) die 64 "unknown option $1" ;;
+        esac
+    done
+
+    # The deploy's lock, held until the reboot: never reboot in the middle of a deploy.
+    exec 9>"$LOCK"
+    flock -n 9 || die 3 "deploy in progress"
+
+    kfs_log INFO "safe reboot started" wait "$wait" now "$now"
+    kfs_pause_and_wait "$now" "$wait" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        kfs_log ERROR "safe reboot aborted, nothing rebooted" reason "$KFS_DRAIN_REASON"
+        exit 2
+    fi
+    if [ "$KFS_PAUSED_BY_US" = true ]; then
+        install -d -m 0700 "$KFS_STATE_DIR"
+        date -u +%Y-%m-%dT%H:%M:%SZ >"$MARKER"
+    else
+        rm -f "$MARKER"
+    fi
+    kfs_log WARNING "safe_reboot" paused_by_us "$KFS_PAUSED_BY_US" waited_for_flat_s "$KFS_WAITED_S"
+    systemctl reboot
+}
+
+post_boot() {
+    local deadline=$((SECONDS + BOOT_HEALTH_S)) why="" state source
+    if [ ! -e "$MARKER" ]; then
+        kfs_log INFO "no safe reboot marker, nothing to resume"
+        return 0
+    fi
+    # Deleted whatever happens below: a later boot must never lift a pause on its own.
+    rm -f "$MARKER"
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        if why=$(kfs_services_healthy) && state=$(kfs_control state 2>/dev/null); then
+            break
+        fi
+        why=${why:-trader_state missing or stale}
+        state=""
+        sleep 5
+    done
+    if [ -z "$state" ]; then
+        kfs_log CRITICAL "not healthy after boot, the trader stays paused; press Resume once it is healthy" reason "$why"
+        return 1
+    fi
+    source=$(jq -r '.data.pause_source // ""' <<<"$state")
+    if [ "$(jq -r '.data.paused // false' <<<"$state")" != true ] || [ "$source" != deploy ]; then
+        kfs_log INFO "the reboot's pause is gone or replaced, leaving it" pause_source "$source"
+        return 0
+    fi
+    KFS_PAUSED_BY_US=true
+    kfs_unpause_if_ours
+}
+
+case "${1:-}" in
+    post-boot)
+        [ $# -eq 1 ] || usage
+        post_boot
+        ;;
+    -h | --help) usage ;;
+    *) reboot_safely "$@" ;;
+esac

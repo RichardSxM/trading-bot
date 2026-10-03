@@ -1,0 +1,15 @@
+# After a kfs-safe-reboot: waits for health, then lifts the pause the reboot sent (spec 0005
+# AC-17). Does nothing when no /var/lib/kfs/resume-after-boot marker exists.
+[Unit]
+Description=kfs post boot: resume the trader after a safe reboot
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=10min
+ExecStart=/usr/local/sbin/kfs-safe-reboot post-boot
+
+[Install]
+WantedBy=multi-user.target
