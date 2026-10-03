@@ -17,7 +17,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 4 | API keys & secrets | Foundation | in-progress |
 | 5 | Design system & dashboard shell | Foundation | done |
 | 6 | Core paper trading loop | Slice 1 | planned |
-| 7 | Always on cloud deployment | Slice 2 | planned |
+| 7 | Always on cloud deployment | Slice 2 | in-progress |
 | 8 | Order book recorder | Slice 3 | planned |
 | 9 | Kill switch & loss limits | Slice 4 | planned |
 | 10 | Leverage & liquidation guard | Slice 4 | planned |
@@ -106,11 +106,22 @@ The thinnest real thread (this is the walking skeleton): live BTC perp data from
 
 ## Slice 2: Always on
 
-### 7. Always on cloud deployment · needs a decision
+### 7. Always on cloud deployment · in-progress
 Run the bot 24/7 on a hosted server near Kraken, with automatic restart, logs, and a safe way to deploy updates.
 **Done when:** the paper loop runs unattended for 72 hours, survives a forced restart, and a deploy never leaves an order unmanaged.
-**Carried over from feature 5:** once the VPS and Tailscale are up, run spec 0004 verify steps [1, 6, and 12](../specs/0004-design-system-dashboard-shell/verify.md) on the real hardware: add the QR to your authenticator app, write the dashboard files with `sudo scripts/dashboard-credentials.sh --write` (then `chown 10001`, `chmod 0400`), and on a real phone over Tailscale check the stop button and airplane mode. The laptop run on 2026-10-03 already proved the behavior behind each one.
-- [ ] Design it (spec): `/architect always on cloud deployment`
+**Carried over from feature 5:** once the VPS and Tailscale are up, run spec 0004 verify steps [1, 6, and 12](../specs/0004-design-system-dashboard-shell/verify.md) on the real hardware: add the QR to your authenticator app, write the dashboard files with `sudo scripts/dashboard-credentials.sh --write` (then `chown 10001`, `chmod 0400`), and on a real phone over Tailscale check the stop button and airplane mode. The laptop run on 2026-10-03 already proved the behavior behind each one. (Now spec 0005 AC-23; `place-secrets.sh` writes the files.)
+spec [0005](../specs/0005-always-on-cloud-deployment/index.md)
+- [x] Design it (spec): `/architect always on cloud deployment`
+- [ ] Build it: `/develop always on cloud deployment`
+  - [ ] Thin thread to the VPS: compose image vars and `kfs-compose`, CI images to GHCR, bootstrap, secret placement, deploy v1 with health gate, tailnet policy, 0004 carryover on the box (AC-1 to AC-5, AC-22, AC-23)
+  - [ ] Safe deploy: pause and unpause commands, `KfsStrategy` gate, trader control consumer and `trader_state`, graceful shutdown, wait for flat, rollback, dashboard Pause and Resume (AC-6 to AC-13)
+  - [ ] Self healing: autoheal timer, safe reboot, missing disk guard, the four restart drills (AC-14 to AC-18)
+  - [ ] Backups: append only key gate, backup image and nightly loop, restore drill with prune (AC-19 to AC-21)
+  - [ ] Soak, after feature 6: `kfs-soak`, a deploy during an open demo position, the 72 h run (AC-8, AC-9, AC-24)
+- [ ] Verify it: `/check verify always on cloud deployment`
+- [ ] Test it: `/test always on cloud deployment`
+- [ ] Review it (fresh model): `/check review always on cloud deployment`
+- [ ] Document it: `/document always on cloud deployment`
 
 ## Slice 3: Start the data clock
 
