@@ -54,6 +54,30 @@ x-node-healthcheck: &node-healthcheck
   start_period: 90s
 
 services:
+  clock:
+    # Laptop only: keeps the Docker Desktop VM clock synced, since it drifts while the Mac
+    # sleeps and the nodes then fail their startup clock check. Started only with the
+    # `laptop` profile (COMPOSE_PROFILES=laptop in the laptop's .env); the VPS never sets it,
+    # and the container refuses to run on anything but the Docker Desktop VM anyway.
+    profiles: ["laptop"]
+    build:
+      context: .
+      dockerfile: docker/clock/Dockerfile
+    image: kfs/clock:local
+    restart: unless-stopped
+    logging: *logging
+    # Only the right to set the clock, nothing more.
+    cap_add:
+      - SYS_TIME
+    healthcheck:
+      # Healthy once synced with under 0.1 s left to correct.
+      test: ["CMD", "chronyc", "-n", "waitsync", "1", "0.1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    mem_limit: 32m
+
   postgres:
     image: postgres:16-bookworm
     restart: unless-stopped
@@ -125,6 +149,10 @@ services:
       - postgres_dashboard_password
       - postgres_backup_password
     depends_on:
+      # Only where the laptop profile runs it (the clock service); ignored on the VPS.
+      clock:
+        condition: service_healthy
+        required: false
       postgres:
         condition: service_healthy
     mem_limit: 256m
@@ -175,6 +203,9 @@ services:
       # Records the trader could not write before it stopped; replayed at the next start (spec 0006 AC-13).
       - trader-spool:/data/spool
     depends_on:
+      clock:
+        condition: service_healthy
+        required: false
       redis:
         condition: service_healthy
       postgres:
@@ -209,6 +240,10 @@ services:
       CATALOG_REQUIRE_MARKER: ${CATALOG_REQUIRE_MARKER:-false}
     volumes:
       - catalog:/data/catalog
+    depends_on:
+      clock:
+        condition: service_healthy
+        required: false
     healthcheck: *node-healthcheck
     mem_limit: 768m
 
@@ -253,6 +288,9 @@ services:
     volumes:
       - catalog:/data/catalog:ro
     depends_on:
+      clock:
+        condition: service_healthy
+        required: false
       redis:
         condition: service_healthy
       postgres:
