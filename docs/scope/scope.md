@@ -182,6 +182,7 @@ Push alerts to your phone for fills, limit hits, errors, and a missing heartbeat
 ### 13. Candle backtest lab · needs a decision
 Test hour level strategies on Kraken candle history with realistic fees, funding, and slippage.
 **Done when:** a strategy can be backtested over any date range, results include fees and funding, and the same strategy code runs unchanged in the backtest and the paper loop.
+**Carried over from research (2026-10-04):** guard against look ahead. A swing high or low is only known some bars after it happens (it needs the bars that follow it), so a signal must fire on the bar where the swing is confirmed, never on the swing bar itself. Public price action scripts often get this wrong, and it makes a backtest look far better than live.
 - [ ] Design it (spec): `/architect candle backtest lab`
 
 ### 14. Scalping simulator · needs a decision
@@ -192,6 +193,10 @@ Replay recorded order book data to test scalping honestly: maker and taker fees,
 ### 15. Strategy scoring & promotion gate · needs a decision
 Score every strategy on return after costs, max drawdown, and a risk adjusted ratio (win rate shown, never ranked on), with out of sample testing to catch overfitting. Only strategies that pass move to paper, and only paper winners can go live.
 **Done when:** the dashboard ranks strategies on those metrics, the gate blocks any strategy that fails out of sample or paper thresholds, and promotions are logged.
+**Carried over from research (2026-10-04), for the design to weigh:**
+- **Fee hurdle:** short horizon Bitcoin strategies that beat buy and hold on paper were not reliably profitable once fees were counted (Ahmad et al. 2021, PeerJ Computer Science 7:e337). The gate should require the average trade to clear the round trip cost (taker fee twice, about 0.1 %, plus funding) by a clear margin.
+- **Buy and hold benchmark:** most standard indicator rules did not beat simply holding the coin (Ahmed et al. 2020, Finance Research Letters 35:101495). Score every candidate next to holding BTC over the same period, and fail it if it does not beat that.
+- **Overfitting test:** a backtest can look good only because it fits noise. Consider the probability of backtest overfitting test (Gort et al. 2022, arXiv 2209.05559) alongside the out of sample windows.
 - [ ] Design it (spec): `/architect strategy scoring & promotion gate`
 
 ## Slice 7: First strategies
@@ -204,6 +209,28 @@ A small set of well known scalping ideas (for example order book imbalance, shor
 ### 17. Hour level strategy candidates · needs a decision
 The fallback set: trend following and mean reversion on 1h to 4h candles, tested in the candle lab.
 **Done when:** each candidate has a scored result over several years of candles, and the gate's verdict is recorded.
+**Carried over from research (2026-10-04), a candidate to weigh:** Al Brooks style price action on 1h candles.
+- **Context:** the 20 period EMA, with a trend or range tag from how many of the last 15 closes sit above it.
+- **Entry:** the second pullback entry in a trend, called H2 when buying and L2 when selling (the second bar that breaks the prior bar's high or low during a pullback).
+- **Reversal:** a three push wedge.
+The trend or range tag could also serve as a regime filter for other candidates.
+**Also from research (2026-10-04, altFINS chart patterns):**
+- **Candidates:** breakouts from chart patterns that can be detected by rule: double tops and bottoms, channels, triangles, flags, and horizontal support and resistance. The rule is to trade only in the trend's direction and to require above average volume on the breakout bar.
+- **Exit template:** close at the pattern's target, after N candles, or when price moves one standard deviation against the trade, whichever comes first.
+- **Skip:** harmonic and Fibonacci patterns (Gartley, butterfly, ABCD). They have many free ratios to tune, which invites overfitting.
+- altFINS's published success rates (for example 82 % for double bottoms) do not define "success", ignore fees, and say nothing about the size of losses. Our own gate measures these instead.
+**Also from research (2026-10-04, RSI strategies):**
+- **RSI pullback in a trend:** buy when price is above its 50 period average and RSI(14) dips into 30 to 40, then crosses back up. Sell short in the mirror case (RSI 60 to 70 in a downtrend).
+- **Short period RSI mean reversion:** RSI with a period of 2 to 6 (the Connors style) is a well known test. Try it on 1h, and on 15 minute candles for feature 16 only if it clears the fee hurdle.
+- **Layered RSI:** use RSI(21) above or below 50 as the bias, RSI(14) for the signal and RSI(7) for timing. Several periods mean several free parameters, so test it for overfitting.
+- **Divergence** (price makes a new low while RSI does not) needs confirmed swings. The look ahead warning in feature 13 applies.
+- **Ignore** the article's accuracy claims (62 %, 78 %, 91 %). They have no method and no fees. The article itself ranks crypto as the weakest market for RSI.
+**The engineer's plan (2026-10-04): combine price action, RSI, and MACD into one strategy.** Build it in layers, each with one job:
+- **Context:** price action (the 20 EMA trend or range tag, swings) decides whether to trade and in which direction.
+- **Setup:** an RSI pullback (RSI(14) dipping into 30 to 40 in an uptrend) says the price is cheap within the trend.
+- **Trigger:** a MACD (12, 26, 9) signal line cross, or the histogram turning, in the trend's direction times the entry.
+
+Two cautions. RSI and MACD are both built from recent price momentum, so they often agree simply because they measure the same thing; one should not be counted as confirming the other. Each layer also adds settings to tune, so the backtest should add one layer at a time and keep it only if it improves the out of sample result after fees, with the overfitting test from feature 15 applied to the final combination.
 - [ ] Design it (spec): `/architect hour level strategy candidates`
 
 ## Slice 8: Records
