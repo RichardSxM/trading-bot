@@ -155,6 +155,7 @@ Record the perp market's own context next to prices: funding rate, open interest
 One action closes all positions, cancels all orders, and stops trading; automatic halt after a daily or total loss threshold.
 **Done when:** the dashboard stop button and an automatic loss limit each flatten everything in demo within seconds, and trading stays halted until you resume it.
 **Carried over from spec 0005:** build `stop`, `resume`, and `flatten` on the existing ControlActor, decide how stop and pause combine, and reword spec 0004 verify step 21 (stop answers `not_implemented` until then).
+**Carried over from an article (2026-10-04, monkeytrade scalping guide, forex focused), for the design to weigh:** besides the daily loss limit (the article suggests 2 to 3 % of the account), a losing streak stop: halt new entries for the day after three losses in a row, shown as one more `entries_blocked` reason (spec 0006).
 - [ ] Design it (spec): `/architect kill switch & loss limits`
 
 ### 10. Leverage & liquidation guard · needs a decision
@@ -216,6 +217,10 @@ A small set of well known scalping ideas (for example order book imbalance, shor
 **Also from an article (2026-10-04, quantum-algo scalping guide, promotional, its 75 % win rate at 2.3:1 claim is unverified and ignored):**
 - **Session filter:** scalp only in the busy hours (for BTC perps roughly the Europe and US overlap), when spreads are tightest. Check which hours actually have the tightest spread and most volume on our own recorded data before fixing a window.
 - **VWAP bounce:** with the trend set by the 9 and 21 EMA on 1 minute candles, enter when price pulls back to the day's VWAP and holds. Simple, few settings, a good early candidate against the fee hurdle.
+**Also from an article (2026-10-04, monkeytrade scalping guide, forex focused, its pip sizes do not carry over and its 55 to 65 % win rate claim is unverified):**
+- **Spread cap:** skip an entry when the spread is wider than a limit. Set the limit from our recorded order book data, not the article's forex number; with targets this small a wide spread alone erases the edge.
+- **Time stop:** exit when price has not moved within 3 to 5 candles. It is the same kind of exit as the placeholder's timed exit (spec 0006).
+- **EMA pullback:** on 1 minute candles, 8 EMA above 21 EMA, price pulls back to the 8 EMA with RSI(7) between 30 and 50, enter on a close back above the 8 EMA; stop past the 21 EMA, target 1.5 to 2 times the risk. A natural pair to compare with the VWAP bounce.
 - [ ] Design it (spec): `/architect scalping strategy candidates`
 
 ### 17. Hour level strategy candidates · needs a decision
