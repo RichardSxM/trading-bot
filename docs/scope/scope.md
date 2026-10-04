@@ -16,7 +16,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 3 | Data model | Foundation | done |
 | 4 | API keys & secrets | Foundation | in-progress |
 | 5 | Design system & dashboard shell | Foundation | done |
-| 6 | Core paper trading loop | Slice 1 | planned |
+| 6 | Core paper trading loop | Slice 1 | in-progress |
 | 7 | Always on cloud deployment | Slice 2 | in-progress |
 | 8 | Order book recorder | Slice 3 | planned |
 | 9 | Kill switch & loss limits | Slice 4 | planned |
@@ -66,7 +66,7 @@ spec [0002](../specs/0002-data-model/index.md) · code in [packages/core/src/tra
 - [x] Document it: `/document data model`
 
 ### 4. API keys & secrets · in-progress
-Keep Kraken API keys safe: least privilege keys (trade only, never withdraw), separate demo and live keys, never in the repo or logs.
+Keep Kraken API keys safe: least privilege keys (trade only, never withdraw), live keys only on the VPS (demo needs no keys since Kraken closed its futures demo), never in the repo or logs.
 **Done when:** the bot loads keys from a secret store, live keys cannot withdraw funds, and a leaked log or repo contains no secret.
 spec [0003](../specs/0003-api-keys-secrets/index.md) · code in [packages/core/src/trading_core/secrets.py](../../packages/core/src/trading_core/secrets.py), [compose.yaml](../../compose.yaml), [compose.live.yaml](../../compose.live.yaml), [scripts/](../../scripts/), [docker/](../../docker/)
 - [x] Design it (spec): `/architect API keys & secrets`
@@ -99,10 +99,20 @@ code in [apps/dashboard/src/dashboard/](../../apps/dashboard/src/dashboard/), [a
 
 ## Slice 1: Core paper trading loop
 
-### 6. Core paper trading loop · needs a decision
-The thinnest real thread (this is the walking skeleton): live BTC perp data from Kraken's futures demo environment → one deliberately simple placeholder strategy → a risk check with fixed size and leverage caps → an order placed together with an exchange side stop → fills recorded → position and P&L shown on the dashboard.
-**Done when:** on the demo environment the bot opens and closes a real position by itself, every entry has an exchange side stop, fills and fees land in the database, and the dashboard shows the live position and P&L.
-- [ ] Design it (spec): `/architect core paper trading loop`
+### 6. Core paper trading loop · in-progress
+The thinnest real thread (this is the walking skeleton): live BTC perp prices from Kraken's public feed → one deliberately simple placeholder strategy → a risk check with fixed size and leverage caps → an entry with its stop placed as soon as it fills → fills recorded → position and P&L shown on the dashboard. Kraken closed its futures demo on 14 July 2026, so demo orders and stops rest in NautilusTrader's sandbox (a simulated exchange inside the trader), not on Kraken.
+**Done when:** in demo (real prices, sandbox fills), left alone for 2 hours, the bot opens and closes at least 6 positions by itself, every entry has its stop accepted within 5 seconds, fills and fees land in the database, and the dashboard shows the live position and P&L matching it.
+spec [0006](../specs/0006-core-paper-trading-loop/index.md)
+- [x] Design it (spec): `/architect core paper trading loop`
+- [ ] Build it: `/develop core paper trading loop`
+  - [ ] Gate: sandbox on `PF_XBTUSD` fills an entry and a reduce only stop; key purge allowed (AC-1)
+  - [ ] Thin thread: settings, sandbox client, pure risk check, `placeholder_timed`, recording actor and writer, live position card (AC-2 to AC-6, AC-8 to AC-11, AC-16, AC-17, AC-20)
+  - [ ] Failure paths: stop acceptance and exit loop, stale feed, writer errors, spill and replay, abandoned close, blocked badge (AC-7, AC-8a, AC-12 to AC-15, AC-18)
+  - [ ] Trades page and the 2 hour run (AC-19, AC-21)
+- [ ] Verify it: `/check verify core paper trading loop`
+- [ ] Test it: `/test core paper trading loop`
+- [ ] Review it (fresh model): `/check review core paper trading loop`
+- [ ] Document it: `/document core paper trading loop`
 
 ## Slice 2: Always on
 
@@ -128,23 +138,30 @@ spec [0005](../specs/0005-always-on-cloud-deployment/index.md) · code in [deplo
 ### 8. Order book recorder · needs a decision
 Record BTC and ETH perp order book updates and trades continuously, because scalping can only be tested on this data and it takes weeks to collect.
 **Done when:** the recorder runs 24/7, detects and logs gaps, and stored data can be replayed in order at a known size cost per day.
+**Carried over from spec 0005:** local catalog retention on the 50 GB disk (B2 holds the history), and which catalog paths the nightly backup should skip while an hour is still open.
 - [ ] Design it (spec): `/architect order book recorder`
 
 ## Slice 4: Safety guards (all required before live)
 
 ### 9. Kill switch & loss limits · needs a decision
 One action closes all positions, cancels all orders, and stops trading; automatic halt after a daily or total loss threshold.
-**Done when:** the dashboard stop button and an automatic loss limit each flatten everything on the demo environment within seconds, and trading stays halted until you resume it.
+**Done when:** the dashboard stop button and an automatic loss limit each flatten everything in demo within seconds, and trading stays halted until you resume it.
+**Carried over from spec 0005:** build `stop`, `resume`, and `flatten` on the existing ControlActor, decide how stop and pause combine, and reword spec 0004 verify step 21 (stop answers `not_implemented` until then).
 - [ ] Design it (spec): `/architect kill switch & loss limits`
 
 ### 10. Leverage & liquidation guard · needs a decision
 Hard caps on position size, total exposure, and leverage (2x at first), plus a minimum distance between entry and liquidation price; funding costs counted in every decision.
 **Done when:** any order that breaks a cap or sits too close to liquidation is rejected and logged, and funding payments show in P&L.
+**Carried over from spec 0006:** feature 6 shipped fixed caps in a pure `check_entry` (extend it, don't fork it) and left funding out of P&L, labeled "before funding". This feature decides how funding reaches `funding_payments` and `positions.realized_pnl` in demo (spec 0002's open Follow-up).
 - [ ] Design it (spec): `/architect leverage & liquidation guard`
 
 ### 11. Restart & outage safety · needs a decision
 After a crash, restart, or dropped connection, the bot rebuilds its view from the exchange's real positions and orders before doing anything else, and never sends a duplicate order.
 **Done when:** killing the bot or the network mid trade, then restarting, leaves positions and stops correct with no duplicates, and a stale data feed pauses new entries.
+**Carried over from specs 0005 and 0006:**
+- **Demo restart:** spec 0006 settled it. The sandbox cannot restore a position, so a demo restart closes it as abandoned with a critical event.
+- **Stale feed:** a stale feed already blocks entries.
+- **What this feature still owes:** reconciliation with Kraken's real positions and orders for live, and how to test it before go live.
 - [ ] Design it (spec): `/architect restart & outage safety`
 
 ## Slice 5: Stay informed
@@ -152,6 +169,12 @@ After a crash, restart, or dropped connection, the bot rebuilds its view from th
 ### 12. Phone alerts & health checks · needs a decision
 Push alerts to your phone for fills, limit hits, errors, and a missing heartbeat, so you know within a minute when something is wrong.
 **Done when:** each alert type reaches your phone within a minute, and a stopped bot triggers an alert on its own.
+**Carried over from specs 0005 and 0006:** alert on:
+- the deploy and host events: `autoheal_gave_up`, `backup_failed`, an unhealthy backup, `rollback_failed`, disk under 5 GB
+- a restore drill older than 35 days
+- a newest `kfs-vps` B2 snapshot older than 26 h, checked from outside the VPS
+- the trader's critical risk events: `stop_not_accepted`, `exit_failed`, an abandoned position, `record_conflict`
+- an entry block that lasts longer than an hour
 - [ ] Design it (spec): `/architect phone alerts & health checks`
 
 ## Slice 6: The strategy lab
@@ -193,8 +216,13 @@ Export every fill, fee, and funding payment as CSV for your own analysis and you
 ## Slice 9: Live
 
 ### 19. Go live with small capital · needs a decision
-Switch one promoted strategy from the demo environment to your live Kraken futures account with under €1k and max 2x leverage.
+Switch one promoted strategy from paper trading in demo to your live Kraken futures account with under €1k and max 2x leverage.
 **Done when:** live trading only starts if the strategy passed the gate and features 9 to 12 are done, capital and leverage caps are enforced, and demo and live can never be confused.
+**Carried over from specs 0001 and 0006:**
+- **Dead man's switch:** confirm Kraken's switch (cancel all orders after a timeout) and use it. It moved here because demo sends nothing to Kraken.
+- **The live canary step:** with the smallest size, place and cancel a far off order, then open and close a position with a stop. Every state must match Kraken's records.
+- **Stops:** choose the live stop trigger type (mark or last price), and decide whether a partial entry needs a resized stop.
+- **Fees and funding:** check the current fee tier, and record funding from Kraken's account log.
 - [ ] Design it (spec): `/architect go live with small capital`
 
 ## Deferred
