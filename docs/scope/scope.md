@@ -16,7 +16,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 3 | Data model | Foundation | done |
 | 4 | API keys & secrets | Foundation | in-progress |
 | 5 | Design system & dashboard shell | Foundation | done |
-| 6 | Core paper trading loop | Slice 1 | planned |
+| 6 | Core paper trading loop | Slice 1 | in-progress |
 | 7 | Always on cloud deployment | Slice 2 | in-progress |
 | 8 | Order book recorder | Slice 3 | planned |
 | 9 | Kill switch & loss limits | Slice 4 | planned |
@@ -99,10 +99,20 @@ code in [apps/dashboard/src/dashboard/](../../apps/dashboard/src/dashboard/), [a
 
 ## Slice 1: Core paper trading loop
 
-### 6. Core paper trading loop · needs a decision
+### 6. Core paper trading loop · in-progress
 The thinnest real thread (this is the walking skeleton): live BTC perp data from Kraken's futures demo environment → one deliberately simple placeholder strategy → a risk check with fixed size and leverage caps → an order placed together with an exchange side stop → fills recorded → position and P&L shown on the dashboard.
 **Done when:** on the demo environment the bot opens and closes a real position by itself, every entry has an exchange side stop, fills and fees land in the database, and the dashboard shows the live position and P&L.
-- [ ] Design it (spec): `/architect core paper trading loop`
+spec [0006](../specs/0006-core-paper-trading-loop/index.md)
+- [x] Design it (spec): `/architect core paper trading loop`
+- [ ] Build it: `/develop core paper trading loop`
+  - [ ] Gate: sandbox on `PF_XBTUSD` fills an entry and a reduce only stop; key purge allowed (AC-1)
+  - [ ] Thin thread: settings, sandbox client, pure risk check, `placeholder_timed`, recording actor and writer, live position card (AC-2 to AC-6, AC-8 to AC-11, AC-16, AC-17, AC-20)
+  - [ ] Failure paths: stop acceptance and exit loop, stale feed, writer errors, spill and replay, abandoned close, blocked badge (AC-7, AC-8a, AC-12 to AC-15, AC-18)
+  - [ ] Trades page and the 2 hour run (AC-19, AC-21)
+- [ ] Verify it: `/check verify core paper trading loop`
+- [ ] Test it: `/test core paper trading loop`
+- [ ] Review it (fresh model): `/check review core paper trading loop`
+- [ ] Document it: `/document core paper trading loop`
 
 ## Slice 2: Always on
 
