@@ -355,7 +355,7 @@ Tracer Bullet: the gate first, then the thinnest real thread from quote to dashb
 - [ ] Spec 0005 AC-24 now allows a position without an accepted stop for up to `STOP_ACCEPT_TIMEOUT_S` after its entry fill, and while the exit loop runs (amended in this change). `kfs-soak` must apply that carve out, and count `fill_seen` lines rather than `OrderFilled`.
 - [ ] Spec 0001's dead man's switch gate moves to feature 19: demo sends no order to Kraken, so it only matters live.
 - [ ] Feature 19: choose the live stop trigger type (mark or last price), and decide whether partial entries need a resized stop on Kraken.
-- [ ] Funding: feature 17 (hour level strategies hold across funding times) or feature 19 (the Kraken account log) decides how funding reaches `funding_payments` and `positions.realized_pnl`, per spec 0002's open Follow-up.
+- [ ] Funding: feature 10 (its Done when already puts funding in P&L) decides how funding reaches `funding_payments` and `positions.realized_pnl` in demo; feature 19 records it from Kraken's account log in live (spec 0002's open Follow-up). Both are on the scope as carried over notes.
 - [ ] Spec 0005 milestone 5 (the soak) can start once AC-21 passes; its deploy during a position uses this strategy's 10 minute hold.
 - [ ] Check Kraken's current futures fee tier before trusting the default fees.
 
