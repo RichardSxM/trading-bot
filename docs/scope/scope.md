@@ -252,6 +252,12 @@ A simple MACD only baseline to beat first (from the TradingView script "MACD Agg
 Two cautions. RSI and MACD are both built from recent price momentum, so they often agree simply because they measure the same thing; one should not be counted as confirming the other. Each layer also adds settings to tune, so the backtest should add one layer at a time and keep it only if it improves the out of sample result after fees, with the overfitting test from feature 15 applied to the final combination.
 
 **Also from an article (2026-10-04, cryptoanalysislab market structure guide, course marketing, no rules or results):** a liquidity sweep candidate. Price runs past the prior day's high or low, closes back inside, then breaks the last swing in the other direction; the stop goes beyond the swept level. The article gives no swing definition, so we pick a fixed bar count and the look ahead warning in feature 13 applies.
+
+**Also from Fidelity's chart pattern webinar (2026-10-04, by Charles Kirkpatrick, CMT, drawing on his textbook *Technical Analysis: The Complete Resource*):**
+- **Breakout confirmation:** a pattern counts only once price breaks out, and many breakouts are false. Every breakout candidate should use one confirmation filter (two closes beyond the level, a minimum percent, or a wait of N bars) and the backtest should compare that filter with none.
+- **Failed breakout reversal:** when a breakout fails and price comes back through the level, reverse (a stop and reverse at the far side of the breakout bar). This is the same idea as the liquidity sweep candidate above, so test them as one candidate.
+- **Volatility contraction:** an NR4 bar (narrower range than the three before it) or an inside bar, then enter on a break of its high or low. Few settings and fully rule based, so a good early candidate, and a possible 15 minute variant for feature 16.
+- **Skip single candle patterns:** the source rates the hammer, hanging man, harami and doji at average or below, often breaking either way at random.
 - [ ] Design it (spec): `/architect hour level strategy candidates`
 
 ## Slice 8: Records
