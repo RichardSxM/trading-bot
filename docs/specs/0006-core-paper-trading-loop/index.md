@@ -1,7 +1,7 @@
 # 0006. Run one timed placeholder strategy end to end on real prices and the sandbox, recorded and shown live
 
 **Date**: 2026-10-04
-**Status**: Proposed
+**Status**: In Progress
 
 ## Summary
 
@@ -306,7 +306,7 @@ New Redis keys (the trader writes them with `EX 30` through `trading_core.snapsh
 Tracer Bullet: the gate first, then the thinnest real thread from quote to dashboard, then thicken each segment. No migration in any slice.
 
 **Milestone 1: gate**
-1. Spike (a throwaway script or test, not merged as product code) proving the four AC-1 checks. Record in `verify.md` how fees are applied. Fail means stop and return to `/architect`. Satisfies **AC-1**.
+1. [x] Spike (a throwaway script or test, not merged as product code) proving the four AC-1 checks. Record in `verify.md` how fees are applied. Fail means stop and return to `/architect`. Satisfies **AC-1**.
 
 **Milestone 2: thin thread (entry to dashboard)**
 2. Settings and their validation; `sandbox_exec_client`; the env guard allowlist entry `SANDBOX` for demo; the demo key purge; the `trader-spool` volume in `compose.yaml`. Satisfies **AC-2**, **AC-10**, **AC-15** (purge part).

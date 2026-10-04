@@ -105,7 +105,7 @@ The thinnest real thread (this is the walking skeleton): live BTC perp prices fr
 spec [0006](../specs/0006-core-paper-trading-loop/index.md)
 - [x] Design it (spec): `/architect core paper trading loop`
 - [ ] Build it: `/develop core paper trading loop`
-  - [ ] Gate: sandbox on `PF_XBTUSD` fills an entry and a reduce only stop; key purge allowed (AC-1)
+  - [x] Gate: sandbox on `PF_XBTUSD` fills an entry and a reduce only stop; key purge allowed (AC-1)
   - [ ] Thin thread: settings, sandbox client, pure risk check, `placeholder_timed`, recording actor and writer, live position card (AC-2 to AC-6, AC-8 to AC-11, AC-16, AC-17, AC-20)
   - [ ] Failure paths: stop acceptance and exit loop, stale feed, writer errors, spill and replay, abandoned close, blocked badge (AC-7, AC-8a, AC-12 to AC-15, AC-18)
   - [ ] Trades page and the 2 hour run (AC-19, AC-21)

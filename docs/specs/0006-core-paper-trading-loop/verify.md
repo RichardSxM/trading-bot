@@ -9,6 +9,20 @@ Steps you may run to check the feature by hand, on the laptop in demo, after `do
    - the trader's Redis login can `SCAN` and `UNLINK` `trader-TRADER-DEMO:*`
 
    Write down here how fees reach the fills: through the sandbox config, or through the instrument.
+
+   You can run it with `docker compose run --rm -T -v "$PWD/scripts/spikes:/spike" trader python /spike/0006_gate.py`. It prints `SPIKE` lines and exits 0 when every check passes.
+
+   **Result, 2026-10-04 (all passed):**
+   - entry filled at 85252, inside bid 85251 and ask 85252
+   - the stop filled at its trigger, 85249
+   - the reduce only market order sent while flat was rejected: "REDUCE_ONLY MARKET SELL order would have increased position"
+   - `SCAN` found the probe key and `UNLINK` removed it
+
+   **How fees work:** they come **through the instrument**.
+   - `SandboxExecutionClientConfig` has no fee field. The sandbox always uses `MakerTakerFeeModel`, which reads `maker_fee` and `taker_fee` from the instrument in its matching engine.
+   - Kraken publishes `PF_XBTUSD` with both fees at 0. With the instrument patched to 0.0005 taker, a 0.002 BTC fill costs 0.09 USD, and the patch still holds 90 s later.
+   - The sandbox calls `update_instrument` on every instrument it receives. So the build patches the fees inside the sandbox client on every instrument it gets, so a refresh from Kraken cannot reset them to 0.
+   - Note: commission rounds to USD precision (0.01). Below about 20 USD of notional, a 0.05 % fee shows as 0.00.
 2. **Startup (AC-2, AC-11, AC-15).** `docker compose logs trader` should show the sandbox client, `placeholder_timed` running, and no env guard refusal. In Postgres, check for:
    - one `paper` `strategy_runs` row in `running`
    - a `strategy_versions` row whose config holds the settings
