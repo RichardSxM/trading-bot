@@ -316,10 +316,10 @@ Tracer Bullet: the gate first, then the thinnest real thread from quote to dashb
 6. [x] The trader publishes the `position` and `account` snapshots; the dashboard Overview gets its position card, P&L figures, and offline state. Satisfies **AC-16**, **AC-17**.
 
 **Milestone 3: failure paths**
-7. Stop acceptance and partial entry timers, the `stale_feed` timer, and `entries_blocked` and `recording_backlog` in `trader_state`. Satisfies **AC-7**, **AC-14**, **AC-16**.
-8. Writer error classes, dead letter, the spool codec, drain and spill after stop, and replay at start. Satisfies **AC-12**, **AC-13**.
-9. `close_abandoned` (integration tests on Postgres) and the full start sequence. Satisfies **AC-15**.
-10. The dashboard blocked badge and reasons. Satisfies **AC-18**.
+7. [x] Stop acceptance and partial entry timers, the `stale_feed` timer, and `entries_blocked` and `recording_backlog` in `trader_state`. Satisfies **AC-7**, **AC-14**, **AC-16**.
+8. [x] Writer error classes, dead letter, the spool codec, drain and spill after stop, and replay at start. Satisfies **AC-12**, **AC-13**.
+9. [x] `close_abandoned` (integration tests on Postgres) and the full start sequence. Satisfies **AC-15**.
+10. [x] The dashboard blocked badge and reasons. Satisfies **AC-18**.
 
 **Milestone 4: trades page and the run**
 11. The Trades page: round trips with exit reason, and fills, each paginated. Satisfies **AC-19**.

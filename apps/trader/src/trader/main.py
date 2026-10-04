@@ -54,12 +54,19 @@ from trading_core.control.pause import pause_key
 from trading_core.control.records import PostgresCommandRecorder
 from trading_core.env_guard import ALLOWED_EXEC_CLIENTS, SANDBOX, ExecClientAllowlist
 from trading_core.naming import node_id
-from trading_core.node.control import ControlActor, PauseController, shutdown_counts, trader_state
+from trading_core.node.control import (
+    ControlActor,
+    PaperStatus,
+    PauseController,
+    RiskEngine,
+    shutdown_counts,
+    trader_state,
+)
 from trading_core.node.heartbeat import HeartbeatActor, HeartbeatConfig
 from trading_core.node.key_actors import KeyAgeActor, KeyAgeConfig
 from trading_core.node.key_check import watch_key_check
 from trading_core.node.kraken import BTC_PERP, futures_data_client, futures_exec_client
-from trading_core.node.paper_snapshots import account_snapshot, position_snapshot
+from trading_core.node.paper_snapshots import account_snapshot, paper_status, position_snapshot
 from trading_core.node.placeholder import STRATEGY_NAME, PlaceholderConfig, PlaceholderTimed
 from trading_core.node.recording import RecordingActor
 from trading_core.node.sandbox import FeeSandboxExecClientFactory, sandbox_exec_client
@@ -216,10 +223,10 @@ def snapshot_client(settings: Settings, password: SecretStr) -> Redis:
 
 @dataclass(frozen=True)
 class ControlParts:
-    """What ``run_node`` needs from the control side: the actor, the ``trader_state`` reader, the stop counts."""
+    """What ``run_node`` needs from the control side: the actor, the gate, the risk engine, the stop counts."""
 
     actor: ControlActor
-    read_state: Callable[[], Mapping[str, object] | None]
+    risk_engine: RiskEngine
     shutdown_counts: Callable[[], Mapping[str, int]]
     gate: PauseGate = field(default_factory=PauseGate)
 
@@ -260,7 +267,7 @@ def control_parts(node: TradingNode, settings: Settings, secrets: Mapping[str, S
 
     return ControlParts(
         actor=ControlActor(controller, read_pause_key, consumer.run),
-        read_state=lambda: trader_state(gate, risk_engine, node.cache, settings.git_commit),
+        risk_engine=risk_engine,
         shutdown_counts=lambda: shutdown_counts(gate, node.cache),
         gate=gate,
     )
@@ -290,13 +297,15 @@ def run_config(settings: PaperLoopSettings) -> JsonObject:
 
 
 def start_paper_loop(settings: TraderSettings, secrets: Mapping[str, SecretStr], trader_id: str) -> PaperLoop:
-    """The start sequence after the purge (spec 0006 AC-15): replay the spool, then start the paper run.
+    """The start sequence after the purge (spec 0006 AC-15): replay the spool, start the paper run, and
+    close what earlier runs left open (``close_abandoned``, in the same transaction), before trading.
 
     Raises when Postgres is unreachable, so ``main`` exits 1 and Docker restarts the trader.
     """
     engine = create_engine(settings.database_url(secrets[POSTGRES_PASSWORD]), pool_size=1, pool_pre_ping=True)
     sessions = sessionmaker(engine)
     blocks = EntryBlocks()
+    env = Env(settings.trading_env)
     replayed = replay_spool(settings.spool_dir, sessions, blocks)
     with sessions.begin() as session:
         version_id = repository.ensure_strategy_version(
@@ -304,13 +313,14 @@ def start_paper_loop(settings: TraderSettings, secrets: Mapping[str, SecretStr],
         )
         run_id = repository.start_run(
             session,
-            env=Env(settings.trading_env),
+            env=env,
             mode=RunMode.PAPER,
             version_id=version_id,
             trader_id=trader_id,
             run_config=run_config(settings),
             started_ns=time.time_ns(),
         )
+        abandoned = repository.close_abandoned(session, env, trader_id, run_id, time.time_ns())
     writer = RecordingWriter(
         sessions,
         blocks,
@@ -319,6 +329,11 @@ def start_paper_loop(settings: TraderSettings, secrets: Mapping[str, SecretStr],
         deadletter=deadletter_path(settings.spool_dir, run_id),
     )
     writer.start()
+    if abandoned:
+        log.critical(
+            "positions left open by an earlier run closed as abandoned",
+            extra={"fields": {"code": "positions_abandoned", "position_ids": [str(p) for p in abandoned]}},
+        )
     log.info(
         "paper run started",
         extra={"fields": {"code": "paper_run_started", "run_id": str(run_id), "spool_replayed": replayed}},
@@ -405,9 +420,13 @@ def run_node(
     node.trader.add_actor(
         HeartbeatActor(HeartbeatConfig(path=os.environ.get("HEARTBEAT_FILE", "/run/heartbeat/alive")))
     )
+    paper_state: Callable[[], PaperStatus] | None = None
     snapshot_readers: list[tuple[str, Callable[[], Mapping[str, object] | None]]] = [
         ("heartbeat", lambda: heartbeat_state(node, settings)),
-        ("trader_state", control.read_state),
+        (
+            "trader_state",
+            lambda: trader_state(control.gate, control.risk_engine, node.cache, settings.git_commit, paper_state),
+        ),
     ]
     if paper is not None:
         instrument_id = InstrumentId.from_str(BTC_PERP)
@@ -420,6 +439,11 @@ def run_node(
         )
         strategy = PlaceholderTimed(placeholder_config(settings, paper.run_id), control.gate, paper.blocks, record)
         node.trader.add_strategy(strategy)
+        writer, blocks = paper.writer, paper.blocks
+
+        def paper_state() -> PaperStatus:
+            return paper_status(control.gate, blocks, writer.backlog, strategy)
+
         usd = Currency.from_str("USD")
         snapshot_readers += [
             ("position", lambda: position_snapshot(node.cache, instrument_id, strategy)),
@@ -474,8 +498,8 @@ def run_node(
         loop.create_task(write_heartbeats(snapshots, snapshot_key(settings.trading_env, name), read_state))
         for name, read_state in snapshot_readers
     ]
-    for writer in writers:
-        writer.add_done_callback(log_writer_crash)
+    for task in writers:
+        task.add_done_callback(log_writer_crash)
     stop_signals = (signal.SIGTERM, signal.SIGINT)
     for signum in stop_signals:
         loop.add_signal_handler(signum, node.stop)
@@ -488,8 +512,8 @@ def run_node(
     finally:
         for signum in stop_signals:
             loop.remove_signal_handler(signum)
-        for writer in writers:
-            writer.cancel()
+        for task in writers:
+            task.cancel()
         # Let the cancelled writers finish on the stopped loop, so none is destroyed while pending.
         if not loop.is_closed() and not loop.is_running():
             loop.run_until_complete(asyncio.gather(*writers, return_exceptions=True))

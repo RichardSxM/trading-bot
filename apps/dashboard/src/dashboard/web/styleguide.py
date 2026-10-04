@@ -18,11 +18,14 @@ from dashboard.live.state import (
     AgeView,
     AlertKind,
     AlertView,
+    BlockedReason,
+    BlockedView,
     CommandView,
     collapse,
 )
 from dashboard.ui.format import num, pnl, ts
 from dashboard.ui.tokens import color_tokens, contrast_ratio, read_tokens
+from trading_core.strategy.blocks import PLAIN_WORDS, BlockReason
 
 # The text color each swatch is read against: surfaces carry text, alarms carry white or night.
 SWATCH_TEXT: Final = {
@@ -104,6 +107,17 @@ POSITION_SAMPLES: Final[dict[str, PositionView]] = {
     "bad": PositionView("bad", pnl=SAMPLE_PNL),
     "lost": LOST,
     "pnl_unavailable": PositionView("flat", age=_FRESH, mark=Decimal("64288.5"), pnl=None),
+}
+
+
+def _blocked(*reasons: BlockReason) -> BlockedView:
+    return BlockedView(tuple(BlockedReason(reason.value, PLAIN_WORDS[reason]) for reason in reasons))
+
+
+BLOCKED_SAMPLES: Final[dict[str, BlockedView]] = {
+    "none": _blocked(),
+    "one": _blocked(BlockReason.STALE_FEED),
+    "several": _blocked(BlockReason.PAUSED, BlockReason.RECORDING_UNHEALTHY, BlockReason.STOP_NOT_ACCEPTED),
 }
 WINTER_TIME: Final = datetime(2026, 1, 15, 9, 30, 0, tzinfo=UTC)
 # Sample heartbeat ages for the tape, one a second; -1 is a second without a live link.
@@ -188,6 +202,7 @@ def styleguide_context() -> dict[str, object]:
         "activity_run": collapse(ACTIVITY_RUN),
         "command_samples": COMMAND_SAMPLES,
         "position_samples": POSITION_SAMPLES,
+        "blocked_samples": BLOCKED_SAMPLES,
         "kraken_url": "https://demo-futures.kraken.com/",  # the sample alerts link to the demo venue
         "alert_samples": [
             AlertView(

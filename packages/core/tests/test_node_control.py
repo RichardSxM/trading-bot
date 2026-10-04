@@ -27,6 +27,7 @@ from trading_core.control.messages import pause_command, stop_command, unpause_c
 from trading_core.control.pause import PauseState, decode, encode
 from trading_core.node.control import (
     ControlActor,
+    PaperStatus,
     PauseController,
     load_pause,
     shutdown_counts,
@@ -319,7 +320,45 @@ def test_trader_state_reports_the_pause_and_the_counts():
         "open_entry_orders": 3,
         "protective_stops": 2,
         "git_commit": "a" * 40,
+        "entries_blocked": ["paused"],
+        "recording_backlog": 0,
+        "exiting": False,
+        "position_opened_ns": None,
     }
+
+
+def test_trader_state_carries_the_paper_status_when_the_paper_loop_runs():
+    """covers: spec 0006 AC-16 (entries_blocked, recording_backlog, exiting, position_opened_ns)"""
+    gate = PauseGate()
+    gate.unpause()
+    status = PaperStatus(
+        entries_blocked=["stale_feed"], recording_backlog=3, exiting=True, position_opened_ns=1_700_000_000
+    )
+
+    state = trader_state(gate, FakeRiskEngine(), FakeCache(), "x", lambda: status)
+
+    assert state is not None
+    assert (state["entries_blocked"], state["recording_backlog"], state["exiting"], state["position_opened_ns"]) == (
+        ["stale_feed"],
+        3,
+        True,
+        1_700_000_000,
+    )
+
+
+def test_trader_state_without_the_paper_loop_reports_nothing_blocked_while_running():
+    gate = PauseGate()
+    gate.unpause()
+
+    state = trader_state(gate, FakeRiskEngine(), FakeCache(), "x")
+
+    assert state is not None
+    assert (state["entries_blocked"], state["recording_backlog"], state["exiting"], state["position_opened_ns"]) == (
+        [],
+        0,
+        False,
+        None,
+    )
 
 
 def test_trader_state_while_running_has_no_pause_fields():

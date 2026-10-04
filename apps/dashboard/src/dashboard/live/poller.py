@@ -3,7 +3,7 @@
 While at least one SSE subscriber exists it reads the trader heartbeat, ``trader_state`` (the
 pause, spec 0005 AC-13), and the newest control commands (plus their results until each is
 final) every ``DASHBOARD_POLL_MS``, renders the top bar partials, its alert bar (AC-21), and
-Overview's Activity (AC-20), and publishes each to every
+Overview's Activity (AC-20), why entries are blocked (spec 0006 AC-18), and publishes each to every
 subscriber only when its HTML changed. With no subscriber it idles. A Redis error renders every
 partial ``no data`` and the next tick tries again.
 
@@ -27,15 +27,18 @@ from dashboard.live.position import LOST, PositionView, position_view
 from dashboard.live.state import (
     COMMAND_NO_DATA,
     NO_DATA,
+    NOT_BLOCKED,
     PAUSE_NO_DATA,
     ActivityRow,
     AgeView,
     AlertView,
+    BlockedView,
     CommandView,
     Entry,
     PauseView,
     activity_row,
     alert_state,
+    blocked_view,
     command_state,
     find_result,
     heartbeat_view,
@@ -51,6 +54,8 @@ ALERT_EVENT: Final = "topbar-alert"
 ACTIVITY_EVENT: Final = "overview-activity"
 PAUSE_EVENT: Final = "topbar-pause"
 POSITION_EVENT: Final = "overview-position"
+BLOCKED_EVENT: Final = "topbar-blocked"
+BLOCKED_REASONS_EVENT: Final = "overview-blocked"
 PNL_REFRESH_S: Final = 5.0
 PNL_TIMEOUT_S: Final = 2.0
 PNL_WARN_EVERY_S: Final = 60.0
@@ -90,6 +95,8 @@ class Poller:
         read_account: Callable[[], Awaitable[str | bytes | None]] | None = None,
         read_pnl: Callable[[], Awaitable[PnlFigures]] | None = None,
         render_position: Callable[[PositionView], str] | None = None,
+        render_blocked: Callable[[BlockedView], str] | None = None,
+        render_blocked_reasons: Callable[[BlockedView], str] | None = None,
         pnl_refresh_s: float = PNL_REFRESH_S,
         pnl_timeout_s: float = PNL_TIMEOUT_S,
     ) -> None:
@@ -98,6 +105,8 @@ class Poller:
         self._read_account = read_account
         self._read_pnl = read_pnl
         self._render_position = render_position
+        self._render_blocked = render_blocked
+        self._render_blocked_reasons = render_blocked_reasons
         self._pnl_refresh_s = pnl_refresh_s
         self._pnl_timeout_s = pnl_timeout_s
         self._pnl: PnlFigures | None = None
@@ -171,6 +180,7 @@ class Poller:
             ALERT_EVENT: self._render_alert(alert),
             ACTIVITY_EVENT: self._render_activity(rows),
             PAUSE_EVENT: self._render_pause(pause_view(state)),
+            **self._blocked(blocked_view(state)),
         }
         if self._render_position is not None:
             await self._refresh_pnl()
@@ -188,9 +198,18 @@ class Poller:
             ALERT_EVENT: self._render_alert(self._alert(NO_DATA, COMMAND_NO_DATA)),
             ACTIVITY_EVENT: self._render_activity(None),
             PAUSE_EVENT: self._render_pause(PAUSE_NO_DATA),
+            **self._blocked(NOT_BLOCKED),
         }
         if self._render_position is not None:
             partials[POSITION_EVENT] = self._render_position(dataclasses.replace(LOST, pnl=self._pnl))
+        return partials
+
+    def _blocked(self, view: BlockedView) -> dict[str, str]:
+        partials: dict[str, str] = {}
+        if self._render_blocked is not None:
+            partials[BLOCKED_EVENT] = self._render_blocked(view)
+        if self._render_blocked_reasons is not None:
+            partials[BLOCKED_REASONS_EVENT] = self._render_blocked_reasons(view)
         return partials
 
     async def _read_snapshots(self) -> tuple[str | bytes | None, str | bytes | None]:

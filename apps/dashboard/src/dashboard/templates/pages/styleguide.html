@@ -146,6 +146,16 @@
   {%- endfor %}
 </section>
 
+<section class="sg-section" id="blocked" aria-labelledby="blocked-sample-h">
+  <h2 class="sg-h" id="blocked-sample-h">Entries blocked</h2>
+  {%- for state, view in blocked_samples.items() %}
+  <div data-sample="blocked:{{ state }}">
+    <div class="status-strip"><span class="topbar__blocked">{% include "partials/topbar_blocked.html" %}</span></div>
+    <div class="blocked-reasons">{% include "partials/overview_blocked.html" %}</div>
+  </div>
+  {%- endfor %}
+</section>
+
 <section class="sg-section" id="stats" aria-labelledby="stats-h">
   <h2 class="sg-h" id="stats-h">Stats and freshness</h2>
   <div class="sg-stats">

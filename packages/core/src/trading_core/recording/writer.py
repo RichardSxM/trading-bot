@@ -11,8 +11,10 @@ thread writes each item through the repository in order, one transaction per ite
 
 Entries are also blocked with ``recording_unhealthy`` while the oldest queued item is older
 than the backlog limit or the newest write attempt failed; the block clears once the queue is
-empty and the last write succeeded. A full queue counts as a failed write; its item goes to an
-overflow list, spilled with the rest on stop. Exits and stops never look at any of this.
+empty and the last write succeeded. A second thread checks this every second, so a write that
+hangs (no error, no answer) still blocks entries once the backlog is too old. A full queue counts
+as a failed write; its item goes to an overflow list, spilled with the rest on stop. Exits and
+stops never look at any of this.
 """
 
 import logging
@@ -42,6 +44,8 @@ TRANSIENT_ERRORS: Final = (OperationalError, InterfaceError, PoolTimeoutError, C
 """Errors that mean Postgres is unreachable or slow, not that the item is wrong."""
 
 DEADLETTER_PREFIX: Final = "deadletter-"
+HEALTH_CHECK_S: Final = 1.0
+"""How often the health thread checks the backlog age, independent of the worker."""
 _POLL_S: Final = 0.5
 
 type Sessions = Callable[[], Session]
@@ -143,10 +147,12 @@ class RecordingWriter:
         self._closing = threading.Event()
         self._abort = threading.Event()
         self._thread = threading.Thread(target=self._run, name="recording-writer", daemon=True)
+        self._health = threading.Thread(target=self._watch, name="recording-health", daemon=True)
 
     def start(self) -> None:
-        """Start the worker thread."""
+        """Start the worker thread and the health thread."""
         self._thread.start()
+        self._health.start()
 
     def put(self, item: WriteItem) -> None:
         """Queue ``item``; never blocks. A full queue counts as a failed write and keeps the item in memory."""
@@ -221,6 +227,10 @@ class RecordingWriter:
             if self._write(entry[1]):
                 with self._lock:
                     self._current = None
+            self._evaluate()
+
+    def _watch(self) -> None:
+        while not self._abort.wait(HEALTH_CHECK_S):
             self._evaluate()
 
     def _write(self, item: WriteItem) -> bool:

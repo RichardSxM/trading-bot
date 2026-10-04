@@ -25,7 +25,7 @@ from dashboard.auth.totp import TotpGuard
 from dashboard.data.pnl import PnlFigures, pnl_figures
 from dashboard.live.poller import ACTIVITY_SIZE, Poller, supervise
 from dashboard.live.position import PositionView
-from dashboard.live.state import ActivityRow, AgeView, AlertView, CommandView, PauseView, collapse
+from dashboard.live.state import ActivityRow, AgeView, AlertView, BlockedView, CommandView, PauseView, collapse
 from dashboard.settings import DashboardSettings, normalize_seed
 from dashboard.ui.format import num, pnl, ts
 from dashboard.web import auth_routes, control_routes, page_routes
@@ -117,6 +117,8 @@ def create_app(
     activity_template = templates.get_template("partials/overview_activity.html")
     pause_template = templates.get_template("partials/topbar_pause.html")
     position_template = templates.get_template("partials/overview_position.html")
+    blocked_template = templates.get_template("partials/topbar_blocked.html")
+    blocked_reasons_template = templates.get_template("partials/overview_blocked.html")
     position_key = snapshot_key(settings.trading_env, "position")
     account_key = snapshot_key(settings.trading_env, "account")
     heartbeat_key = snapshot_key(settings.trading_env, "heartbeat")
@@ -145,6 +147,12 @@ def create_app(
 
     def render_position(view: PositionView) -> str:
         return position_template.render(view=view)
+
+    def render_blocked(view: BlockedView) -> str:
+        return blocked_template.render(view=view)
+
+    def render_blocked_reasons(view: BlockedView) -> str:
+        return blocked_reasons_template.render(view=view)
 
     context = AppContext(
         settings=settings,
@@ -179,6 +187,8 @@ def create_app(
             read_account=lambda: client.get(account_key),
             read_pnl=lambda: asyncio.to_thread(pnl_reader),
             render_position=render_position,
+            render_blocked=render_blocked,
+            render_blocked_reasons=render_blocked_reasons,
         ),
         redis=client,
         clock=clock,

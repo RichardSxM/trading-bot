@@ -1,5 +1,7 @@
 """covers: spec 0006 AC-3 (the timed entry and its warmup), AC-4 (sizing), AC-5 (a refusal is recorded),
-AC-6 (the stop rests once the entry fills), AC-8 (the time exit), AC-9 (a stop fill ends the round trip).
+AC-6 (the stop rests once the entry fills), AC-7 (a stop not accepted closes the position and blocks),
+AC-8 (the time exit), AC-8a (the exit loop retries and reports), AC-9 (a stop fill ends the round trip,
+also while the exit is in flight), AC-14 (stale feed).
 
 Runs ``PlaceholderTimed`` in a BacktestEngine on synthetic quotes for a PF_XBTUSD shaped instrument
 (USD settled linear perpetual, tick 1, size step 0.0001). Needs the ``node`` extra.
@@ -16,6 +18,7 @@ import pytest
 pytest.importorskip("nautilus_trader")
 
 from nautilus_trader.backtest.engine import BacktestEngine, BacktestEngineConfig
+from nautilus_trader.backtest.models import LatencyModel
 from nautilus_trader.config import LoggingConfig
 from nautilus_trader.model.currencies import BTC, USD
 from nautilus_trader.model.data import QuoteTick
@@ -36,6 +39,7 @@ from trading_core.recording.enums import (
     PositionStatus,
     RiskEventKind,
     RiskVerdict,
+    Severity,
 )
 from trading_core.recording.rows import (
     AccountSnapshotRow,
@@ -48,7 +52,7 @@ from trading_core.recording.rows import (
     RiskEventRow,
 )
 from trading_core.recording.spool import WriteItem
-from trading_core.strategy.blocks import EntryBlocks
+from trading_core.strategy.blocks import BlockReason, EntryBlocks
 
 START = datetime(2026, 10, 4, 12, 0, tzinfo=UTC)
 INSTRUMENT_ID = InstrumentId.from_str("PF_XBTUSD.KRAKEN")
@@ -108,7 +112,13 @@ class Prices:
         return self.mid(t)
 
 
-def _run(prices, start_offset_min=0, **overrides):
+def _run(
+    prices,
+    start_offset_min=0,
+    latency_s=0,
+    strategy_cls=None,
+    **overrides,
+):
     engine = BacktestEngine(BacktestEngineConfig(logging=LoggingConfig(bypass_logging=True)))
     engine.add_venue(
         Venue("KRAKEN"),
@@ -116,6 +126,7 @@ def _run(prices, start_offset_min=0, **overrides):
         AccountType.MARGIN,
         starting_balances=[Money(1000, USD)],
         base_currency=USD,
+        latency_model=LatencyModel(base_latency_nanos=int(latency_s * 1_000_000_000)) if latency_s else None,
     )
     engine.add_instrument(INSTRUMENT)
     ticks = _quotes(prices)
@@ -141,7 +152,7 @@ def _run(prices, start_offset_min=0, **overrides):
         RecordingActor(env=Env.DEMO, run_id=run_id, instrument_id=INSTRUMENT_ID, record=records.append, blocks=blocks)
     )
     config = PlaceholderConfig(**values)  # type: ignore[arg-type]  # each value has its own type
-    strategy = PlaceholderTimed(config, PauseGate(), blocks, records.append)
+    strategy = (strategy_cls or PlaceholderTimed)(config, PauseGate(), blocks, records.append)
     engine.add_strategy(strategy)
 
     async def run():
@@ -314,3 +325,105 @@ def test_an_init_event_before_the_order_is_cached_still_records_the_order():
     assert list(facts.tags) == order.tags
     with pytest.raises(LookupError):  # any later event needs the cached order
         order_for(_EmptyCache(), TestEventStubs.order_submitted(order))
+
+
+# Failure paths (spec 0006 milestone 3) ---------------------------------------------------------
+
+RISING = Prices(40, lambda t: 85000 + int(t * 10))
+
+
+def _by_type(engine, order_type):
+    return [o for o in engine.cache.orders() if o.order_type == order_type]
+
+
+def test_a_rejected_stop_closes_the_position_at_once_and_blocks_entries_until_restart():
+    # A stop 0.0001 % away sits inside the spread, so the venue rejects it as already in the market.
+    engine, strategy, rows = _run(RISING, stop_pct=Decimal("0.0001"))
+
+    (event,) = [e for e in _risk_events(rows) if e.kind == RiskEventKind.ORDER_REJECTED]
+    (stop,) = _by_type(engine, OrderType.STOP_MARKET)
+    assert (event.severity, event.event_key) == (Severity.CRITICAL, f"stop_not_accepted:{stop.client_order_id}")
+    assert stop.status.name == "REJECTED"
+    entry, exit_order = _by_type(engine, OrderType.MARKET)
+    assert exit_order.is_reduce_only
+    assert exit_order.ts_last - entry.ts_last <= 5_000_000_000  # closed within the 5 s budget
+    assert engine.cache.positions_open() == []
+    assert strategy._blocks.active() == (BlockReason.STOP_NOT_ACCEPTED,)
+    # The 12:30 boundary is refused while the block holds, and nothing more is placed.
+    _, refused = _decisions(rows)
+    assert (refused.risk_verdict, refused.risk_reason) == (RiskVerdict.REJECTED, "blocked:stop_not_accepted")
+    assert len(engine.cache.orders()) == 3
+
+
+def test_a_stop_not_accepted_in_time_runs_the_exit_loop():
+    # Every venue message takes 6 s, so the stop cannot be ACCEPTED within the 5 s budget.
+    engine, strategy, rows = _run(Prices(29, lambda t: 85000 + int(t * 10)), latency_s=6)
+
+    (stop,) = _by_type(engine, OrderType.STOP_MARKET)
+    (event,) = [e for e in _risk_events(rows) if e.kind == RiskEventKind.ORDER_REJECTED]
+    assert (event.severity, event.event_key) == (Severity.CRITICAL, f"stop_not_accepted:{stop.client_order_id}")
+    assert strategy._blocks.active() == (BlockReason.STOP_NOT_ACCEPTED,)
+    assert [d.intent for d in _decisions(rows)] == [Intent.ENTER]  # closed by the loop, not by the time exit
+    assert engine.cache.positions_open() == []
+    assert stop.is_closed  # cancelled once flat
+
+
+def test_a_stop_fill_while_the_time_exit_is_in_flight_raises_nothing():
+    # Every venue message takes 20 s: the entry fills about 12:15:22, so the hold ends about 12:25:22
+    # and the exit reaches the venue about 12:25:42. The 12:25:30 quote drops 1 %, so the stop fills
+    # first and the exit arrives with the position already flat.
+    prices = Prices(29, lambda t: 85000 + int(t * 10) if t < 25.5 else 84000)
+    engine, strategy, rows = _run(prices, latency_s=20, stop_accept_timeout_s=Decimal(60))
+
+    assert [d.intent for d in _decisions(rows)] == [Intent.ENTER, Intent.EXIT]
+    (stop,) = _by_type(engine, OrderType.STOP_MARKET)
+    assert stop.filled_qty == stop.quantity
+    _, exit_order = _by_type(engine, OrderType.MARKET)
+    assert exit_order.is_reduce_only
+    assert exit_order.filled_qty == 0  # it was in flight, and never filled
+    assert _risk_events(rows) == []
+    assert strategy._blocks.active() == ()
+    assert engine.cache.positions_open() == []
+    assert strategy.phase == Phase.FLAT
+
+
+class _RefusedExits(PlaceholderTimed):
+    """Every exit order is refused before it reaches the venue, ``refusals`` times."""
+
+    refusals = 6
+
+    def _submit_exit(self, event=None):
+        if self._position() is not None and _RefusedExits.refusals > 0:
+            _RefusedExits.refusals -= 1
+            self.submit_count = getattr(self, "submit_count", 0) + 1
+            self._exit_refused("rejected: test")
+            return
+        super()._submit_exit(event)
+
+
+def test_the_exit_loop_retries_every_second_and_reports_the_fifth_failure_once(caplog):
+    _RefusedExits.refusals = 6
+    with caplog.at_level(logging.WARNING, logger="trading_core.node.placeholder"):
+        engine, strategy, rows = _run(Prices(29, lambda t: 85000 + int(t * 10)), strategy_cls=_RefusedExits)
+
+    (event,) = [e for e in _risk_events(rows) if e.kind == RiskEventKind.ORDER_REJECTED]
+    assert event.severity == Severity.CRITICAL
+    assert event.event_key.startswith("exit_failed:")
+    assert strategy._blocks.active() == (BlockReason.EXIT_FAILED,)
+    refused = [r for r in caplog.records if getattr(r, "fields", {}).get("code") == "exit_refused"]
+    assert [r.fields["failures"] for r in refused] == [1, 2, 3, 4, 5, 6]
+    # The 7th try reached the venue and closed the position; the stop stayed until then.
+    assert engine.cache.positions_open() == []
+    (stop,) = _by_type(engine, OrderType.STOP_MARKET)
+    assert stop.is_closed
+
+
+def test_an_exit_refused_once_flat_is_logged_and_ignored(caplog):
+    engine, strategy, _ = _run(Prices(29, lambda t: 85000 + int(t * 10)))
+    assert engine.cache.positions_open() == []
+
+    with caplog.at_level(logging.INFO, logger="trading_core.node.placeholder"):
+        strategy._exit_refused("rejected: late")
+
+    assert [r.fields["code"] for r in caplog.records if hasattr(r, "fields")] == ["exit_refused_flat"]
+    assert strategy._blocks.active() == ()

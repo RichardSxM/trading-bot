@@ -368,6 +368,12 @@ time[title] { text-decoration: underline dotted var(--edge); text-underline-offs
 .pause--lost { color: var(--muted); opacity: 0.6; }
 [data-link="reconnecting"] .topbar__pause, [data-link="lost"] .topbar__pause { opacity: 0.5; }
 
+/* Entries blocked (spec 0006 AC-18): a top bar cue like the pause one, only while a reason holds. */
+.status-strip > .topbar__blocked:empty { display: none; }
+.blocked { white-space: nowrap; color: var(--warn); font-weight: 600; transition: opacity var(--motion-state); }
+.blocked__label { color: var(--faint); font-weight: 400; margin-right: var(--space-4); }
+[data-link="reconnecting"] .topbar__blocked, [data-link="lost"] .topbar__blocked { opacity: 0.5; }
+
 /* Pause and Resume on System (spec 0005 AC-13): two forms side by side, the error above them. */
 .pause-area { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-12); }
 .pause-area__error { flex-basis: 100%; color: var(--loss); font-weight: 600; font-size: var(--type-caption-size); }
@@ -500,3 +506,15 @@ time[title] { text-decoration: underline dotted var(--edge); text-underline-offs
 .figures__warn { color: var(--warn); }
 .figures__title { margin: var(--space-8) 0 0; color: var(--faint); font-size: var(--type-caption-size); font-weight: var(--type-caption-weight); }
 .figures__unavailable { margin: 0; color: var(--muted); font-size: var(--type-label-size); }
+
+/* Why entries are blocked, above the position card (spec 0006 AC-18): Amber Watch title, plain rows. */
+.blocked-reasons:empty { display: none; }
+.blocked-reasons { margin-bottom: var(--space-16); }
+.blocked-reasons__title { margin: 0 0 var(--space-4); color: var(--warn); font-weight: 600; font-size: var(--type-label-size); }
+.blocked-reasons__list { margin: 0; padding: 0; list-style: none; }
+.blocked-reasons__item {
+  display: flex; justify-content: space-between; align-items: baseline; gap: var(--space-16);
+  padding: var(--space-8) 0; border-bottom: 1px solid var(--rule);
+}
+.blocked-reasons__item:last-child { border-bottom: 0; }
+.blocked-reasons__code { color: var(--muted); font-family: inherit; font-size: var(--type-caption-size); }

@@ -207,3 +207,30 @@ def test_a_dead_letter_file_is_never_replayed(sessions, run, tmp_path):
     assert replay_spool(tmp_path, sessions, EntryBlocks()) == 0
     assert deadletter_path(tmp_path, run.run_id).exists()
     assert _count(sessions, models.Order, run_id=run.run_id) == 0
+
+
+def test_a_replayed_item_that_conflicts_is_dead_lettered_and_blocks_record_conflict(sessions, run, tmp_path):
+    key = f"limit_hit:{uuid7()}"
+    stored = RiskEventRow(
+        env=Env.DEMO,
+        event_key=key,
+        kind=RiskEventKind.LIMIT_HIT,
+        severity=Severity.INFO,
+        message="entry refused: paused",
+        run_id=run.run_id,
+        occurred_ns=run.tick(),
+    )
+    _write(
+        sessions, [WriteItem(WriteCall.RECORD_RISK_EVENT, stored)], deadletter_path(tmp_path, run.run_id), EntryBlocks()
+    )
+    contradicting = replace(stored, message="entry refused: notional_cap")
+    items = [WriteItem(WriteCall.RECORD_RISK_EVENT, contradicting), *_round_trip(run)]
+    append(spool_path(tmp_path, run.run_id), items)
+
+    blocks = EntryBlocks()
+    assert replay_spool(tmp_path, sessions, blocks) == len(items)
+
+    assert blocks.active() == (BlockReason.RECORD_CONFLICT,)
+    assert [item.row for item in read(deadletter_path(tmp_path, run.run_id))] == [contradicting]
+    assert not spool_path(tmp_path, run.run_id).exists()
+    assert _count(sessions, models.Fill, run_id=run.run_id) == 1  # the rest of the file still landed

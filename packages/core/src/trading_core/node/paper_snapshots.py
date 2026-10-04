@@ -14,9 +14,12 @@ from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.objects import Currency
 from nautilus_trader.portfolio.portfolio import Portfolio
 
+from trading_core.node.control import PaperStatus
 from trading_core.node.placeholder import PlaceholderTimed
 from trading_core.node.recording import position_facts
+from trading_core.node.strategy import PauseGate
 from trading_core.recording.mappers import weighted_avg
+from trading_core.strategy.blocks import EntryBlocks, entries_blocked
 
 
 def _mid(cache: Cache, instrument_id: InstrumentId) -> Decimal | None:
@@ -69,6 +72,16 @@ def position_snapshot(
         "exit_due_ns": strategy.exit_due_ns,
         "currency": facts.currency,
     }
+
+
+def paper_status(gate: PauseGate, blocks: EntryBlocks, backlog: int, strategy: PlaceholderTimed) -> PaperStatus:
+    """The paper loop's ``trader_state`` fields: blocks plus pause, the recording backlog, the exit state."""
+    return PaperStatus(
+        entries_blocked=entries_blocked(blocks, gate.paused),
+        recording_backlog=backlog,
+        exiting=strategy.exiting,
+        position_opened_ns=strategy.position_opened_ns,
+    )
 
 
 def account_snapshot(

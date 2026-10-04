@@ -1,0 +1,12 @@
+{#- Why entries are blocked (spec 0006 AC-18), in the plain words of the Block reasons table.
+    Nothing while entries are open; restart to clear is part of the words where it applies. -#}
+{%- if view.reasons -%}
+<div class="blocked-reasons__box" role="status">
+  <p class="blocked-reasons__title">No new entries</p>
+  <ul class="blocked-reasons__list">
+    {%- for reason in view.reasons %}
+    <li class="blocked-reasons__item"><span class="blocked-reasons__words">{{ reason.words }}</span> <code class="blocked-reasons__code">{{ reason.code }}</code></li>
+    {%- endfor %}
+  </ul>
+</div>
+{%- endif -%}

@@ -416,6 +416,10 @@ Overview's answer to "what just happened": the newest 20 commands, newest first,
 Overview's Position and P&L region (spec 0006). An open position leads with its unrealized P&L as a Stat, then label and value rows split by Hairlines: side, size, average entry, the mark in a Stale wrapper, the stop with its status (Amber Watch `no stop` when there is none), the exit time, and equity. Flat shows `Flat` and the mark. Under every state a Caption title `Paper P&L, before funding` heads realized today (UTC), realized all time, and fees today. A missing or red aged position snapshot is the error state `Trader offline`, never `Flat`, so a dead trader never looks calm. A snapshot that does not parse and an unreadable Redis are error states too; a Postgres failure keeps the live part and says the figures are unavailable.
 - **States:** `open`, `flat`, `offline`, `bad`, `lost`, `pnl_unavailable`
 
+### Entries blocked (`blocked`)
+Why the trader takes no new entries (spec 0006 AC-18), from `trader_state.entries_blocked`. In the top bar a cue in the status strip, like the pause cue: a Margin `entries` label, then `blocked` in Amber Watch at 600 weight, with `· n reasons` when there is more than one and the plain words in its title. On Overview, above the position card, an Amber Watch title `No new entries` heads one row per reason split by Hairlines: the plain words of the spec's *Block reasons* table (those that only clear on a restart say so), with the code as a Pencil Caption at the right. Nothing renders while entries are open. A missing or unreadable `trader_state` shows nothing here, since the pause cue and the heartbeat age already say the state is unknown. Both dim with the top bar while the link is not live.
+- **States:** `none`, `one`, `several`
+
 ## Do's and Don'ts
 
 ### Do:
