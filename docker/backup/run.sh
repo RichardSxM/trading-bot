@@ -192,6 +192,8 @@ run_backup() {
     check_repo || true
     if step_downsample && step_dump_and_manifest && step_upload; then
         date -u +%s >"$LAST_SUCCESS"
+        # An upload proves the repository exists; a brief B2 error in check_repo must not stick.
+        rm -f "$RUN_DIR/repo_missing"
         log INFO "backup done" "$(jq -cn --argjson summary "$SUMMARY" --argjson manifest "$MANIFEST" \
             --argjson downsampled "${DOWNSAMPLED:-0}" --argjson duration_s "$((SECONDS - start))" \
             '$summary + {downsampled: $downsampled, duration_s: $duration_s, manifest: $manifest}')"

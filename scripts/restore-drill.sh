@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The monthly restore drill (spec 0005 AC-21), from the laptop.
 #
-#   scripts/restore-drill.sh [--self-test] [--local]
+#   scripts/restore-drill.sh [--self-test] [--local] [--allow-stale] [--force-prune]
 #
 # Restores the newest snapshot of host kfs-vps into a throwaway postgres:16 container,
 # runs pg_restore, and compares the row counts and the newest fill time with that snapshot's
@@ -9,26 +9,37 @@
 # PASS runs the retention: restic forget --keep-daily 14 --keep-weekly 8 --keep-monthly 24 --prune.
 # The VPS key cannot delete, so this is the only place retention runs.
 #
+# A compromised VPS can hide snapshots or add forged ones, so two checks guard the prune:
+# the newest snapshot must be under 36 h old (else FAIL: snapshots may be hidden, see the spec's
+# B2 recovery steps), and a dry run of the forget must remove at most 40 snapshots, none younger
+# than 15 days and none dated in the future (else the prune is refused).
+#
 # It asks for the restic password and the delete capable B2 key (password manager) without
 # echo. They live only in this script's environment and reach containers as `docker run -e NAME`,
 # never as a value in an argument and never on disk. The repository is $RESTIC_REPOSITORY, or
 # asked for (b2:<bucket>:kfs).
 #
-# --self-test  deletes one fills row from the restored copy before comparing (control_commands
-#              or funding_payments when fills is empty), so the drill must print FAIL naming that
-#              table. Skips the prune.
-# --local      uses the laptop's local repository in the backup-staging volume (no B2 key).
+# --self-test    deletes one fills row from the restored copy before comparing (control_commands
+#                or funding_payments when fills is empty), so the drill must print FAIL naming that
+#                table. Skips the prune.
+# --local        uses the laptop's local repository in the backup-staging volume (no B2 key).
+# --allow-stale  accepts a newest snapshot older than 36 h (you know why the backups stopped).
+# --force-prune  prunes although the dry run looked wrong (you read its list and it is fine).
 # Exit codes: 0 PASS, 1 FAIL or an error.
 set -euo pipefail
 
 SELF_TEST=0
 LOCAL=0
+ALLOW_STALE=0
+FORCE_PRUNE=0
 for arg in "$@"; do
     case $arg in
     --self-test) SELF_TEST=1 ;;
     --local) LOCAL=1 ;;
+    --allow-stale) ALLOW_STALE=1 ;;
+    --force-prune) FORCE_PRUNE=1 ;;
     *)
-        sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//' >&2
+        sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//' >&2
         exit 64
         ;;
     esac
@@ -56,6 +67,10 @@ ask() {
 }
 
 RESTIC_HOST=kfs-vps
+RETENTION=(--host "$RESTIC_HOST" --group-by host --keep-daily 14 --keep-weekly 8 --keep-monthly 24)
+STALE_H=36
+MAX_FORGET=40
+RECENT_DAYS=15
 SUFFIX=$$
 NET=kfs-drill-$SUFFIX
 VOL=kfs-drill-$SUFFIX
@@ -104,10 +119,26 @@ restic_run() {
         ${STAGING_MOUNT[@]+"${STAGING_MOUNT[@]}"} -v "$VOL:/restore" --entrypoint restic "$IMAGE" --no-cache "$@"
 }
 
-snapshot=$(restic_run snapshots latest --host "$RESTIC_HOST" --json | docker run --rm -i --entrypoint jq "$IMAGE" -r '.[0].short_id // empty') ||
+jq_run() {
+    docker run --rm -i --entrypoint jq "$IMAGE" "$@"
+}
+
+# epoch: restic's RFC 3339 time (nanoseconds, any UTC offset) to epoch seconds.
+JQ_EPOCH='def epoch: sub("\\.[0-9]+"; "") | capture("^(?<d>.{19})(?<z>.*)$")
+    | (.d + "Z" | fromdateiso8601) - (if .z == "Z" or .z == "" then 0
+      else .z | capture("^(?<s>[+-])(?<h>[0-9]{2}):(?<m>[0-9]{2})$")
+        | (if .s == "-" then -1 else 1 end) * ((.h | tonumber) * 3600 + (.m | tonumber) * 60) end)
+    | floor;'
+
+# The newest snapshot by its own time, not restic's order, so its age can be judged.
+snapshots=$(restic_run snapshots --host "$RESTIC_HOST" --json) ||
     die "could not list snapshots (wrong password, key, or repository?)"
-[ -n "$snapshot" ] || die "no snapshot for host $RESTIC_HOST yet"
-say "restoring snapshot $snapshot"
+newest=$(printf '%s' "$snapshots" | jq_run -r "$JQ_EPOCH"'
+    map(. + {epoch: (.time | epoch)}) | max_by(.epoch) // empty | "\(.short_id) \(.epoch) \(.time)"')
+[ -n "$newest" ] || die "no snapshot for host $RESTIC_HOST yet"
+read -r snapshot snap_epoch snap_time <<<"$newest"
+age_h=$((($(date -u +%s) - snap_epoch) / 3600))
+say "restoring snapshot $snapshot from $snap_time (${age_h} h old)"
 restic_run restore "$snapshot" --include /staging/dump --target /restore >&2
 
 say "starting a throwaway postgres:16"
@@ -138,7 +169,7 @@ docker run --rm --network "$NET" -v "$VOL:/restore:ro" -e PGHOST="$PG" -e PGUSER
     "$IMAGE" kfs-backup compare "$DUMP/manifest.json"
 result=$?
 set -e
-say "snapshot $snapshot"
+say "snapshot $snapshot from $snap_time (${age_h} h old)"
 
 if [ "$result" != 0 ]; then
     exit 1
@@ -147,5 +178,30 @@ if [ "$SELF_TEST" = 1 ]; then
     die "self-test: the comparison passed although a row was deleted"
 fi
 
-say "retention: 14 daily, 8 weekly, 24 monthly, then prune"
-restic_run forget --host "$RESTIC_HOST" --group-by host --keep-daily 14 --keep-weekly 8 --keep-monthly 24 --prune >&2
+# A missing recent snapshot means the backups stopped or were hidden; a future one is forged.
+if [ "$age_h" -lt -1 ] || { [ "$age_h" -ge "$STALE_H" ] && [ "$ALLOW_STALE" = 0 ]; }; then
+    echo "FAIL"
+    echo "  newest snapshot: $snap_time, ${age_h} h old (allowed: 0 to $STALE_H h)"
+    echo "  The restore matches its manifest, but newer snapshots may be hidden. See the B2 recovery"
+    echo "  steps in spec 0005. Prune skipped. --allow-stale accepts it when you know why."
+    exit 1
+fi
+
+say "retention dry run: 14 daily, 8 weekly, 24 monthly"
+plan=$(restic_run forget "${RETENTION[@]}" --dry-run --json) || die "the retention dry run failed"
+checks=$(printf '%s' "$plan" | jq_run -r --argjson now "$(date -u +%s)" --argjson days "$RECENT_DAYS" "$JQ_EPOCH"'
+    [.[] | .remove // [] | .[]] as $gone
+    | [.[] | (.keep // []) + (.remove // []) | .[]] as $all
+    | "\($gone | length) \([$gone[] | select((.time | epoch) > $now - $days * 86400)] | length) \([$all[] | select((.time | epoch) > $now + 3600)] | length)"') ||
+    die "could not read the retention dry run"
+read -r removed recent future <<<"$checks"
+say "the prune would remove $removed snapshots ($recent younger than $RECENT_DAYS days, $future dated in the future)"
+if [ "$FORCE_PRUNE" = 0 ] && { [ "$removed" -gt "$MAX_FORGET" ] || [ "$recent" -gt 0 ] || [ "$future" -gt 0 ]; }; then
+    say "prune refused: forged snapshots can push real ones out of retention. List them with"
+    say "  restic forget ${RETENTION[*]} --dry-run"
+    say "and rerun with --force-prune if the list is fine."
+    exit 1
+fi
+
+say "retention, then prune"
+restic_run forget "${RETENTION[@]}" --prune >&2
