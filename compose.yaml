@@ -249,26 +249,51 @@ services:
     mem_limit: 256m
 
   backup:
-    # Stub: checks and fingerprints its secret files, then idles (spec 0003). The real job
-    # (downsample, pg_dump, restic to Backblaze B2) arrives with spec 0005 milestone 4.
-    image: alpine:3.20
-    restart: unless-stopped
-    logging: *logging
+    # Nightly at BACKUP_AT_UTC: downsample_snapshots(), pg_dump, manifest, restic (spec 0005 AC-19).
+    # The laptop keeps a local restic repository in the staging volume; the VPS sets a B2 one.
+    # `kfs-backup once` in the running container runs one backup now.
+    <<: *app
+    build:
+      context: .
+      dockerfile: docker/backup/Dockerfile
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
+    image: ${KFS_IMAGE_PREFIX:-kfs/}backup:${KFS_TAG:-${IMAGE_TARGET:-runtime}}
+    command: ["kfs-backup", "loop"]
     environment:
+      <<: *app-db-env
+      POSTGRES_USER: backup_app
+      TRADING_ENV: ${TRADING_ENV:-}
+      KFS_TAG: ${KFS_TAG:-unknown}
+      # Unset means the laptop's local repository; set but empty (kfs.env) refuses to start.
+      RESTIC_REPOSITORY: ${RESTIC_REPOSITORY-/staging/restic-repo}
+      BACKUP_AT_UTC: ${BACKUP_AT_UTC:-02:30}
+      BACKUP_STALE_H: ${BACKUP_STALE_H:-26}
       TZ: UTC
-    command: ["sh", "/usr/local/bin/kfs-backup-stub"]
-    volumes:
-      - ./docker/backup/stub.sh:/usr/local/bin/kfs-backup-stub:ro
     secrets:
       - source: postgres_backup_password
         target: postgres_password
       - restic_password
       - b2_key_id
       - b2_application_key
+    # The catalog is added on the VPS only (compose.vps.yaml): the laptop's copy is not the record.
+    volumes:
+      - backup-staging:/staging
+    # The Postgres password file and the start marker the health check reads; reset on every start.
+    tmpfs:
+      - /run/kfs:uid=10001,gid=10001,mode=0700
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "true"]
+      test: ["CMD", "kfs-backup", "health"]
       interval: 30s
-    mem_limit: 128m
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    mem_limit: 384m
 
   dashboard-credentials:
     # Never started by `up`: run through scripts/dashboard-credentials.sh (spec 0004 AC-19).
@@ -332,3 +357,4 @@ volumes:
   pgdata:
   redisdata:
   catalog:
+  backup-staging:

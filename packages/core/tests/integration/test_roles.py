@@ -117,6 +117,25 @@ def test_backup_app_runs_the_downsample(role_engine):
         assert conn.execute(text("SELECT downsample_snapshots()")).scalar_one() >= 0
 
 
+def test_backup_app_can_read_every_table_pg_dump_locks(engine: Engine):
+    """covers: spec 0005 AC-19 (pg_dump as backup_app locks every table, alembic_version too)."""
+    with engine.connect() as conn:
+        unreadable = (
+            conn.execute(
+                text(
+                    "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace"
+                    " WHERE n.nspname = 'public' AND c.relkind = 'r'"
+                    " AND NOT has_table_privilege(:role, c.oid, 'SELECT')"
+                ),
+                {"role": BACKUP_ROLE},
+            )
+            .scalars()
+            .all()
+        )
+
+    assert unreadable == []
+
+
 def test_role_setup_runs_twice_without_error(database: str):
     passwords = role_passwords(migrate_secrets())
     for _ in range(2):
