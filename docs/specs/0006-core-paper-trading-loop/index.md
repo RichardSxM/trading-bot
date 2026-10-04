@@ -96,6 +96,8 @@ This is the walking skeleton: the first time the bot trades by itself. A deliber
 - **AC-18**: the dashboard shows a top bar badge whenever `entries_blocked` is not empty, and Overview lists the reasons in the plain words of the *Block reasons* table.
 - **AC-19**: the Trades page has two lists, each newest first and 50 per page.
   - **Closed round trips** (`page`): opened and closed times, side, size, average entry and exit, net realized P&L, fees, and exit reason (`stop`, `time`, `stop_failure`, or `abandoned`). They come from `paper` runs only, ordered by `closed_at` then `id`, descending.
+  - The side is the opening side (`long` or `short`), taken from the position's first fill, because `positions.side` is `flat` once closed.
+  - A round trip with no linked fill is still listed, with side and exit reason blank (unless it is `abandoned`, which comes from `risk_events`).
   - **Latest fills** (`fills_page`), ordered by `filled_at` then `id`, descending.
   - A page past the end shows an empty list with a link back to page 1. A page below 1 or not an integer returns 422.
 - **AC-20**: Pause from the dashboard stops new entries.
@@ -227,7 +229,8 @@ New Redis keys (the trader writes them with `EX 30` through `trading_core.snapsh
 | dashboard | realized today | `SUM(positions.realized_pnl)` joined to `strategy_runs` with `mode = 'paper'`, `status = closed`, `closed_at >= date_trunc('day', now() AT TIME ZONE 'UTC')`, env = `Settings.trading_env` |
 | dashboard | realized all time | the same without the date filter |
 | dashboard | fees today | `SUM(fills.fee)` joined to `paper` runs, where `filled_at` is today UTC |
-| Trades | exit reason | first: a `risk_events` row with key `abandoned:<position_id>` → `abandoned`. Otherwise, from the order of the position's last fill: `stop_market` → `stop`; `market` carrying an `exit` decision → `time`; `market` carrying the entry decision → `stop_failure` |
+| Trades | side | the position's earliest fill (`fills.position_id = positions.id`, ordered by `filled_ns` then `id`): `buy` → `long`, `sell` → `short`. Not `positions.side`, which is `flat` once closed. No linked fill → blank |
+| Trades | exit reason | first: a `risk_events` row with key `abandoned:<position_id>` → `abandoned`. Otherwise, from the order of the position's last fill: `stop_market` → `stop`; `market` carrying an `exit` decision → `time`; `market` carrying the entry decision → `stop_failure`. No linked fill and not abandoned → blank |
 | Trades | size, fees | `positions.peak_qty`, `positions.fees_total` |
 | P&L label | "before funding" | static: feature 6 records no funding (`funding_total` stays 0) |
 | AC-21 | fill count | `fill_seen` lines in `docker compose logs trader` over the window, against `fills` rows with `filled_at` in the window |
@@ -299,6 +302,7 @@ New Redis keys (the trader writes them with `EX 30` through `trading_core.snapsh
 - Key purge: an integration test against the Compose Redis shows that the demo purge deletes `trader-TRADER-DEMO:*` and leaves `demo:trader:pause`, `demo:control`, and the snapshots alone. Verifies **AC-15**.
 - Stale feed: cut the trader's network for 20 s; entries block and recover. Verifies **AC-14**, **AC-18**.
 - Pause: Pause during an open position. The stop and the time exit still work, and no new entry follows. Verifies **AC-20**.
+- Trades side: an integration test on Postgres seeds a long round trip, a short one, and a closed position with no linked fill, and gets side `long`, `short`, and blank. Verifies **AC-19**.
 - Auth: an unauthenticated `GET /trades` redirects to `/login`, and the dashboard cannot write any table (the existing role tests). Verifies **AC-19**.
 
 ## Build plan
@@ -322,7 +326,7 @@ Tracer Bullet: the gate first, then the thinnest real thread from quote to dashb
 10. [x] The dashboard blocked badge and reasons. Satisfies **AC-18**.
 
 **Milestone 4: trades page and the run**
-11. The Trades page: round trips with exit reason, and fills, each paginated. Satisfies **AC-19**.
+11. The Trades page: round trips with side from the earliest fill and exit reason, and fills, each paginated. Satisfies **AC-19**.
 12. The 2 hour laptop run and the drills in `verify.md`. Satisfies **AC-21** (and rechecks all of the above).
 
 ## Consequences
