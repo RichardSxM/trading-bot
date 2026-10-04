@@ -77,10 +77,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { app: core, package: trading-core, app_dir: packages/core }
-          - { app: trader, package: trader, app_dir: apps/trader }
-          - { app: recorder, package: recorder, app_dir: apps/recorder }
-          - { app: dashboard, package: dashboard, app_dir: apps/dashboard }
+          - { app: core, file: docker/Dockerfile, package: trading-core, app_dir: packages/core }
+          - { app: trader, file: docker/Dockerfile, package: trader, app_dir: apps/trader }
+          - { app: recorder, file: docker/Dockerfile, package: recorder, app_dir: apps/recorder }
+          - { app: dashboard, file: docker/Dockerfile, package: dashboard, app_dir: apps/dashboard }
+          # Its own Dockerfile (spec 0005 AC-19); it ignores PACKAGE and APP_DIR.
+          - { app: backup, file: docker/backup/Dockerfile, package: "", app_dir: "" }
     steps:
       - uses: actions/checkout@v5
 
@@ -96,7 +98,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: docker/Dockerfile
+          file: ${{ matrix.file }}
           target: runtime
           build-args: |
             PACKAGE=${{ matrix.package }}

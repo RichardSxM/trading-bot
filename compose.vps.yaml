@@ -33,3 +33,23 @@ services:
         read_only: true
         bind:
           create_host_path: true
+
+  # Read only: the catalog, the env file, and the deploy log go into the nightly snapshot
+  # (spec 0005 AC-19). The two files must exist (bootstrap and the first deploy make them);
+  # Docker would otherwise create a folder in their place.
+  backup:
+    volumes:
+      - type: bind
+        source: /srv/kfs/catalog
+        target: /data/catalog
+        read_only: true
+        bind:
+          create_host_path: true
+      - type: bind
+        source: /etc/kfs/kfs.env
+        target: /host/kfs.env
+        read_only: true
+      - type: bind
+        source: /var/log/kfs/deploys.jsonl
+        target: /host/deploys.jsonl
+        read_only: true

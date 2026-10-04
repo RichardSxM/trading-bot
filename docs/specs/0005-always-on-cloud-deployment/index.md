@@ -35,9 +35,9 @@ The bot moves from your laptop to the OVHcloud VPS in London and stays up by its
 - **AC-16**: `systemctl restart docker` leaves every container running (same trader PID before and after), and every service is healthy afterwards.
 - **AC-17**: After `reboot`, every service is healthy within 5 minutes, the dashboard answers on `https://kfs-vps.<tailnet>.ts.net`, and the catalog is on `/srv/kfs`. `sudo kfs-safe-reboot` pauses and waits for flat as a deploy does (same `--wait` and `--now`). It writes `/var/lib/kfs/resume-after-boot` only if it sent the pause, then reboots. After boot, `kfs-post-boot.service` waits for health, sends `unpause` only when that marker exists, and deletes it.
 - **AC-18**: If the extra disk is not mounted at boot, the recorder refuses to start with CRITICAL `catalog_volume_missing` and writes nothing. Postgres, Redis, the trader, the dashboard, and the backup keep running.
-- **AC-19**: Every night at `BACKUP_AT_UTC` (02:30), the backup service runs `SELECT downsample_snapshots()`, `pg_dump --format=custom` as `backup_app`, and writes a manifest (row counts of `orders`, `fills`, `funding_payments`, `control_commands`, and the newest fill time). It then runs `restic backup --host kfs-vps` (a fixed host name, so retention groups every night together) of the dump, the manifest, the catalog, `/etc/kfs/kfs.env`, and `/var/log/kfs/deploys.jsonl` to B2, never the secrets folder. It logs `backup done` with the restic snapshot id, bytes added, and the manifest, or ERROR `backup_failed` with the failed step and no retry until the next night. Its health check fails when the last success is more than 26 h old, after a first run grace of 26 h from container start.
-- **AC-20**: The VPS uses only the B2 key without `deleteFiles`. No retention or prune ever runs on the VPS. A test delete with that key is refused.
-- **AC-21**: `scripts/restore-drill.sh` on the laptop asks for the restic password and a delete capable B2 key without echo and never writes them to disk. It restores the newest snapshot into a throwaway `postgres:16` container, runs `pg_restore`, and compares row counts and the newest fill time with that snapshot's manifest. It prints `PASS` or `FAIL` with the differences, removes the container, then runs `restic forget --keep-daily 14 --keep-weekly 8 --keep-monthly 24 --prune` (only after a `PASS`). `--self-test` deletes one `fills` row from the restored copy before comparing, so the drill must report `FAIL` naming `fills`, and skips the prune.
+- **AC-19**: Every night at `BACKUP_AT_UTC` (02:30), the backup service runs `SELECT downsample_snapshots()`, `pg_dump --format=custom` as `backup_app`, and writes a manifest (row counts of `orders`, `fills`, `funding_payments`, `control_commands`, and the newest fill time). It then runs `restic backup --host kfs-vps` (a fixed host name, so retention groups every night together) of the dump, the manifest, the catalog, `/etc/kfs/kfs.env`, and `/var/log/kfs/deploys.jsonl` to B2, never the secrets folder. It logs `backup done` with the restic snapshot id, bytes added, and the manifest, or ERROR `backup_failed` with the failed step and no retry until the next night. Its health check passes for `BACKUP_STALE_H` (26 h) after any container start, then only while the last success is younger than that, and never while the restic repository is missing.
+- **AC-20**: The VPS uses only the B2 key without `deleteFiles` (`listBuckets`, `listFiles`, `readFiles`, `writeFiles`, this bucket only), so it can neither delete a file version nor change bucket settings. No retention or prune ever runs on the VPS. A hard delete of a file version with that key is refused. A `restic forget` with it is not refused: restic 0.16.4 never hard deletes on B2, it writes a hide marker (a newest version that makes the file look gone while the old versions stay). The bucket's only lifecycle rule purges a file 45 days after it was hidden, so anything hidden can be unhidden with the full key for 45 days.
+- **AC-21**: `scripts/restore-drill.sh` on the laptop asks for the restic password and a delete capable B2 key without echo and never writes them to disk. It restores the newest snapshot into a throwaway `postgres:16` container, runs `pg_restore`, and compares row counts and the newest fill time with that snapshot's manifest. It prints `PASS` or `FAIL` with the differences and the snapshot's time and age, removes the container, then runs `restic forget --keep-daily 14 --keep-weekly 8 --keep-monthly 24 --prune` (only after a `PASS`). It reports `FAIL` and skips the prune when the newest snapshot is older than 36 h or dated in the future (`--allow-stale` accepts an old one). Before the prune it runs the same forget with `--dry-run` and refuses to prune when it would remove more than 40 snapshots, any snapshot younger than 15 days, or when any snapshot is dated more than 1 h in the future (`--force-prune` overrides after you read the list). `--self-test` deletes one `fills` row from the restored copy before comparing, so the drill must report `FAIL` naming `fills`, and skips the prune.
 - **AC-22**: With `deploy/tailscale-policy.hujson` applied, only your user reaches `tag:kfs`, on tcp 443 and Tailscale SSH as `kfs`. A connection from `tag:kfs` to any other tailnet device fails. Another tailnet identity cannot reach the VPS.
 - **AC-23**: The spec 0004 verify steps 1, 6, and 12 pass on the VPS: the dashboard login files written by `place-secrets.sh` (AC-2, which replaces spec 0004's `sudo scripts/dashboard-credentials.sh --write` plus `chown`/`chmod` on the VPS); the QR added to your authenticator app; the shell and the stop button checked on a real phone over Tailscale, including airplane mode.
 - **AC-24** (after feature 6): `kfs-soak start` followed 72 h later by `kfs-soak report`, with no manual command in between, reports: every service healthy at the end, the longest `trader_state` gap under 2 minutes, every automatic restart listed (Docker `RestartCount` changes and `autoheal_restart` lines, allowed but counted), demo fills in Postgres equal to the `OrderFilled` lines `kfs-soak` counted while following the trader log live (rotation cannot lose them), and `protective_stops >= open_positions` in every sample. A deploy made during an open demo position waits for flat and leaves no order without its stop.
@@ -142,8 +142,21 @@ Build the VPS with one idempotent script, ship images built by CI through GHCR, 
 - Environment (from `compose.yaml`): `TRADING_ENV`, `KFS_TAG`, `RESTIC_REPOSITORY`, `BACKUP_AT_UTC`, `BACKUP_STALE_H`, `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`, `POSTGRES_USER=backup_app`, `TZ=UTC`. `run.sh` sets `RESTIC_PASSWORD_FILE=/run/secrets/restic_password` and `PGPASSFILE` built in tmpfs from `/run/secrets/postgres_password`, and passes `B2_ACCOUNT_ID`/`B2_ACCOUNT_KEY`, read from their files, only in the environment of each `restic` call.
 - Startup: the existing secret checks and fingerprints (spec 0003 AC-12), then `restic cat config` to check the repository. If it does not exist yet, log `restic_repo_missing` and keep running unhealthy; the repository is created once by hand (`verify.md`).
 - Loop: sleep until the next `BACKUP_AT_UTC`, create `/staging/running`, run the steps in order, and remove it at the end, success or not (a stale one from a killed run is removed at startup). Any failure logs `backup_failed` with `step` (`downsample`, `dump`, `manifest`, `upload`) and skips the rest until the next night.
-- Writes `/staging/last_success` (UTC epoch) after a clean run. `kfs-backup health` exits 1 when that file is older than `BACKUP_STALE_H` (26 h), or missing once 26 h have passed since the container started.
+- Writes `/staging/last_success` (UTC epoch) after a clean run. Startup writes `/run/kfs/started`. `kfs-backup health` exits 0 while `/run/kfs/started` is younger than `BACKUP_STALE_H` (26 h), a grace after every start, not just the first; after that, only while `last_success` is younger than 26 h. It exits 1 whenever the repository is missing (`/run/kfs/repo_missing`, set by a failed `restic cat config` at startup or at the start of a run, cleared by a successful one or by a successful upload). The grace means a container that restarts more often than every 26 h stays healthy even if every backup fails; the `backup_failed` log line and the outside snapshot age alert (feature 12) catch that case, not this health check.
 - Restic tags: `kfs`, `env:<TRADING_ENV>`, `sha:<KFS_TAG>`. The manifest file is `manifest.json` inside the snapshot.
+
+**B2 bucket** (one private bucket, repository under the `kfs/` prefix, no Object Lock):
+- Keys: `kfs-vps-append` on the VPS (`listBuckets`, `listFiles`, `readFiles`, `writeFiles`) and `kfs-laptop-full` in the password manager (those plus `readBuckets`, `deleteFiles`), both limited to this bucket. Neither has `writeBuckets`, so neither can change the lifecycle rule; only the account owner can.
+- Lifecycle: one rule, prefix empty, `daysFromHidingToDeleting` 45, `daysFromUploadingToHiding` unset (in the web UI: keep prior versions for 45 days). Restic's deletes are hides, so the drill's prune frees space 45 days after it runs, and a hide by a compromised VPS can be undone for 45 days. The same rule purges restic's hidden lock files, and any older version of a file that was uploaded again.
+- Recovering after a suspected VPS compromise, all with the full key in the B2 CLI:
+  0. Revoke `kfs-vps-append` (`b2 key delete <key id>`) and stop the backup container, so nothing changes while you work. Make a new VPS key afterwards and place it with `place-secrets.sh --rotate`.
+  1. Pick the time T: the start of the last drill that passed before the suspected compromise (or of the earliest backup you still trust). Everything the VPS did after T is suspect. Unhiding more than needed is safe: it only brings back snapshots an earlier prune had forgotten, and the next drill forgets them again.
+  2. List every version: `b2 ls --json --versions --recursive b2://<bucket>/kfs/ > versions.json`. Each line has `fileName`, `fileId`, `action` (`upload` or `hide`), and `uploadTimestamp` (ms).
+  3. Unhide every file outside `kfs/locks/` (so `config`, `keys/`, `snapshots/`, `index/`, and `data/` alike) whose newest version is a hide made after T: `jq -r --argjson t <T in ms> 'group_by(.fileName)[] | max_by(.uploadTimestamp) | select(.action == "hide" and .uploadTimestamp > $t and (.fileName | startswith("kfs/locks/") | not)) | .fileName' versions.json | while read -r f; do b2 file unhide "b2://<bucket>/$f"; done`.
+  4. The VPS key can also upload a new version over an existing name (restic never does this itself, every file name is its content's hash). For every file outside `kfs/locks/` with more than one `upload` version, delete the uploads made after T: `b2 rm b2id://<fileId>`.
+  5. `restic check --read-data` from the laptop, then a normal drill.
+
+  Unhiding a hidden snapshot was proven on 2026-10-04; the recovery of a VPS `forget --prune` is verify step 18.
 
 **Data model sketch**: one migration, `0003_pause_commands`: replace the check constraint on `control_commands.cmd` to allow `stop`, `resume`, `flatten`, `pause`, `unpause`. The downgrade restores the three value check (it fails if pause rows exist, which is correct). No new table, no new column: `source` lives in the stream entry and the Redis pause key, not in Postgres. New Redis keys: `{env}:trader:pause` (trader writes, no TTL, AOF persisted), `{env}:snapshot:trader_state` (trader writes, `EX 30`, dashboard reads under its existing `%R~*:snapshot:*` grant).
 
@@ -166,7 +179,7 @@ Build the VPS with one idempotent script, ship images built by CI through GHCR, 
 | `kfs-safe-reboot` | CLI on VPS | `--wait`, `--now` | reboot | sudo | exit 2 not flat |
 | `dashboard.control_cli` | CLI in container | subcommand, flags | JSON line, exit code | dashboard Redis login | 1 stale or failed, 2 timeout |
 | `kfs-soak` | CLI on VPS | `start` / `report` | `/var/lib/kfs/soak/<start>.jsonl`, report text | sudo | 1 no running soak |
-| `scripts/restore-drill.sh` | CLI on laptop | prompts | `PASS`/`FAIL` | restic password, B2 key typed in | 1 on FAIL |
+| `scripts/restore-drill.sh` | CLI on laptop | prompts, `--self-test`, `--allow-stale`, `--force-prune` | `PASS`/`FAIL`, snapshot age | restic password, B2 key typed in | 1 on FAIL, stale snapshot, or refused prune |
 
 **Value sourcing**:
 
@@ -195,6 +208,8 @@ Build the VPS with one idempotent script, ship images built by CI through GHCR, 
 | backup | restic repository | `RESTIC_REPOSITORY` in `/etc/kfs/kfs.env` |
 | backup | stale limit | `BACKUP_STALE_H`, default 26 |
 | restore drill | retention | fixed in the script: 14 daily, 8 weekly, 24 monthly |
+| restore drill | stale limit, prune guard | fixed in the script: newest snapshot under 36 h; dry run removes at most 40, none younger than 15 days, none dated over 1 h ahead |
+| restore drill | snapshot age | the newest `kfs-vps` snapshot's own `time` against the laptop's UTC clock |
 | soak | gaps, restarts, fills | `trader_state` samples every 10 s; `docker inspect .RestartCount`; journal `autoheal_restart`; `fills` rows vs `OrderFilled` log lines in the window |
 
 **Key invariants**:
@@ -205,14 +220,14 @@ Build the VPS with one idempotent script, ship images built by CI through GHCR, 
 - Migrations are expand only: a release's schema must still work with the previous release's code, because rollback never downgrades.
 - No secret appears in a release bundle, an image, a log line, a backup, or a process argument; `ghcr_token` reaches `docker login` through stdin.
 - No container gets the Docker socket.
-- The VPS never deletes from B2.
+- The VPS never hard deletes from B2; whatever it hides stays recoverable for 45 days.
 
 **Security model**:
 - Network: no public listener except Tailscale's UDP port. The admin shell is Tailscale SSH as `kfs`, and only your identity may use it. The OVHcloud KVM console with the `kfs` password is the way in when Tailscale breaks.
 - Privilege: `kfs` runs only `kfs-*` commands as root without a password; anything else (including `docker`) needs `sudo` with the `kfs` password. `kfs` is not in the `docker` group.
 - Registry: `ghcr_token` is a classic PAT with only `read:packages`, expiring within 1 year. The images contain no secret.
 - Tailnet: `tag:kfs` can initiate nothing. This contains a compromised VPS.
-- Backups: restic encrypts on the VPS before upload. The VPS key cannot delete, so a compromised VPS cannot wipe its own backups. The delete capable key exists only in the password manager and is typed in for the drill.
+- Backups: restic encrypts on the VPS before upload. The VPS key cannot delete a file version or change the lifecycle rule, so a compromised VPS cannot destroy its own backups. It can hide snapshots with `restic forget`, upload new versions over existing files, and, since it holds the restic password, add forged snapshots. You then have 45 days to notice and recover (see *B2 bucket*). The monthly drill notices: it fails when the newest snapshot is over 36 h old, and refuses a prune that would push recent or future dated snapshots out of retention. The delete capable key exists only in the password manager and is typed in for the drill.
 - Control: pause and unpause go through the dashboard login (password plus TOTP, CSRF) or the VPS shell. Both are inside Tailscale. A pause can only reduce risk; an unpause returns to the state before it.
 
 **Configuration required** (non secret, `/etc/kfs/kfs.env` on the VPS, `.env` on the laptop):
@@ -224,7 +239,7 @@ Build the VPS with one idempotent script, ship images built by CI through GHCR, 
 - `BACKUP_STALE_H`: health limit in hours, default 26.
 - `KFS_HOST` (laptop only, for `deploy.sh`): tailnet host name, default `kfs-vps`.
 - New secret: `ghcr_token` (VPS host only, used by `docker login`, mounted into no container). Add it to the spec 0003 inventory in `verify.md`.
-- Prerequisites outside code: the extra 50 GB disk attached in the OVHcloud panel; Tailscale MagicDNS and HTTPS certificates enabled; the tailnet policy pasted; a GHCR classic PAT; the restic repository initialised once; a second, delete capable B2 key kept in the password manager.
+- Prerequisites outside code: the extra 50 GB disk attached in the OVHcloud panel; Tailscale MagicDNS and HTTPS certificates enabled; the tailnet policy pasted; a GHCR classic PAT; the restic repository initialised once; the bucket lifecycle rule above; a second, delete capable B2 key kept in the password manager.
 
 **Critical test scenarios**:
 - Happy path: deploy a new main commit while flat; images pulled, trader drained and replaced, healthy, resumed, one deploy line, verifies **AC-4**, **AC-8**, **AC-11**.
@@ -235,7 +250,7 @@ Build the VPS with one idempotent script, ship images built by CI through GHCR, 
 - Unit tests in core: pause key encode and decode, `target_trading_state`, `source` parsing and its unknown value error, `pause_command` and `unpause_command` fields, verifies **AC-6**.
 - Trader tests: a paused trader denies a new entry and accepts a reduce only stop; a duplicate `id` gives `duplicate`; an expired command gives `expired`; a restart with the key present starts `REDUCING`; `stop` gives `failed`/`not_implemented`, verifies **AC-6**, **AC-9**.
 - Dashboard tests: Pause and Resume follow the stop button's CSRF and Redis down paths; the top bar shows the pause source; the ACL still denies `SET`, verifies **AC-13**.
-- Auth/permission: another tailnet identity cannot reach port 443 or SSH; the dashboard user cannot write `{env}:trader:pause`; the VPS B2 key cannot delete, verifies **AC-20**, **AC-22**.
+- Auth/permission: another tailnet identity cannot reach port 443 or SSH; the dashboard user cannot write `{env}:trader:pause`; the VPS B2 key cannot hard delete, and a hide it makes is undone with the full key, verifies **AC-20**, **AC-22**.
 
 ## Build plan
 
@@ -264,9 +279,9 @@ Tracer Bullet: the first milestone puts the real stack on the real box through t
 16. Run the restart drills on the VPS (kill each service, freeze the trader, restart Docker, reboot, unmount the extra disk), satisfies **AC-14**, **AC-15**, **AC-16**, **AC-17**, **AC-18**.
 
 **Milestone 4: backups**
-17. Gate first: on the VPS, run `restic init` with the full key from the laptop, then a `restic backup` with the key that lacks `deleteFiles`, and check that it finishes without stale lock errors (see Follow-up for the fallback), satisfies **AC-20**.
+17. Gate first: `restic init` with the full key from the laptop, then two `restic backup` runs with the key that lacks `deleteFiles`, and check that they finish without stale lock errors (see Follow-up for the fallback). Then check what `forget` and a hard delete do with that key, set the bucket lifecycle rule, and prove an unhide, satisfies **AC-20**.
 18. `docker/backup/Dockerfile` and `run.sh` (loop, downsample, dump, manifest, upload, health), the backup image added to CI, satisfies **AC-19**, **AC-3**.
-19. `scripts/restore-drill.sh` with the prune, run once for real, satisfies **AC-21**, **AC-20**.
+19. `scripts/restore-drill.sh` with the freshness check, the prune dry run guard, and the prune, run once for real, satisfies **AC-21**, **AC-20**.
 
 **Milestone 5: soak (after feature 6 is built)**
 20. `kfs-soak start|report`, satisfies **AC-24**.
@@ -279,7 +294,7 @@ Tracer Bullet: the first milestone puts the real stack on the real box through t
 - Every deployed image is the exact build CI tested, tagged by its commit, which spec 0002 already records on every strategy version.
 - A deploy cannot strand a resting entry order or interrupt a held position, and a failed release rolls itself back.
 - Pause is enforced in two layers, the shared `KfsStrategy` base and NautilusTrader's risk engine, so one slip in a strategy does not open a position during a deploy.
-- Restarts, hangs, Docker upgrades, and reboots heal without you; backups cannot be deleted from the VPS.
+- Restarts, hangs, Docker upgrades, and reboots heal without you; backups cannot be destroyed from the VPS.
 
 **Negative / tradeoffs**:
 - A deploy can wait up to 15 minutes, and a busy scalper may never be flat. `--now` exists, but then the restart relies on exchange side stops and feature 11.
@@ -291,7 +306,10 @@ Tracer Bullet: the first milestone puts the real stack on the real box through t
 - Passwordless `kfs-*` sudo means anyone with your Tailscale identity can deploy or reboot; Tailscale identity is the real lock.
 - Every strategy must subclass `KfsStrategy` and mark exits reduce only. A strategy that bypasses it is only held back by `REDUCING`, which lets a flat trader open a position.
 - Until feature 9, the dashboard's stop button now gets a `failed` answer (`not_implemented`) instead of no answer, so it shows "Stop failed". That is the truth, but it looks alarming.
-- Retention only runs when you run the monthly drill. If you skip drills, the B2 repository grows (slowly; it costs cents).
+- Retention only runs when you run the monthly drill, and its prune frees space only 45 days later (restic hides, the lifecycle rule purges). If you skip drills, the B2 repository grows (slowly; it costs cents).
+- A compromised VPS can still make every snapshot vanish from restic's view. Nothing is lost for 45 days, but only you notice it, through the drill or the feature 12 alerts. Skip drills and miss alerts for 45 days, and the hidden backups are gone. The margin over the 35 day drill alert is 10 days; raise the lifecycle rule if you expect to skip drills.
+- The backup health check gives a 26 h grace after every container start, so frequent restarts can hide failing backups from it; the outside snapshot age alert covers that.
+- The drill's prune guard refuses after a long gap without drills (more than 40 snapshots to forget) or after manual extra backups on one day in the last 15 days; you read the dry run and pass `--force-prune`.
 
 **Neutral**:
 - The laptop stack keeps its own project name and volumes; its demo record and the VPS demo record diverge. The VPS is the paper record that counts.
@@ -300,11 +318,12 @@ Tracer Bullet: the first milestone puts the real stack on the real box through t
 
 ## Follow-up
 
-- [ ] **Gate (milestone 4):** if `restic backup` with the key without `deleteFiles` fails on lock removal, choose between giving that key `deleteFiles` with B2 Object Lock on the bucket, or running `rclone serve restic --append-only` in front of B2. Bring it back to `/architect` rather than working around it.
+- [x] **Gate (milestone 4), 2026-10-04:** `restic backup` with the key without `deleteFiles` removes its locks fine (restic hides them). The surprise was that `forget` with that key succeeds as hides. AC-20, the bucket lifecycle rule, and the recovery steps were amended to match; Object Lock was not added (it fights the drill's prune for a one person bot).
+- [ ] If restic is upgraded (an Alpine bump), rerun verify step 18. A restic that hard deletes on B2 makes `forget` on the VPS fail outright (stronger) and the drill's prune free space at once; a change in lock handling could reopen the gate.
 - [ ] Feature 6's spec adopts this contract: every strategy subclasses `KfsStrategy` (pause gate, `on_stop` cancels entry orders and nothing else); every exit and protective stop is reduce only; the recording actor drains or spills on stop within 5 s.
 - [ ] Feature 9 builds `stop`, `resume`, and `flatten` on the ControlActor from this spec and decides how stop and pause combine in `target_trading_state`. It also rewords spec 0004 verify step 21, since stop now answers `failed`/`not_implemented` until then.
 - [ ] Feature 11: test that a crash with an open demo position rebuilds the sandbox position and its stop, or define what happens if it cannot.
-- [ ] Feature 12: alert on `autoheal_gave_up`, `backup_failed`, an unhealthy backup, a deploy `rollback_failed`, disk under 5 GB, and a restore drill older than 35 days.
+- [ ] Feature 12: alert on `autoheal_gave_up`, `backup_failed`, an unhealthy backup, a deploy `rollback_failed`, disk under 5 GB, a restore drill older than 35 days, and a newest `kfs-vps` snapshot in B2 older than 26 h (seen from outside the VPS, since a compromised VPS can hide snapshots and still report healthy).
 - [ ] Feature 8: local catalog retention on the 50 GB disk (B2 holds the history), and which catalog paths the backup should skip while an hour is still open.
 - [ ] Spec 0001: amend the Hosting row (2 vCore, 4 GB, 40 GB plus a 50 GB extra disk, Ubuntu 26.04) and the Backups row (append only VPS key, prune from the laptop). Spec 0003: add `ghcr_token` to the inventory and mark its two Follow-ups (secret placement, two file command) done by this spec.
 - [ ] Watch `docker stats` during the soak. If the trader gets near 1 GB or swap use stays high, revisit the memory limits or the plan size.
