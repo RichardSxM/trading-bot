@@ -484,3 +484,19 @@ time[title] { text-decoration: underline dotted var(--edge); text-underline-offs
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }
 }
+
+/* Position card (spec 0006 AC-17): a Stat, then label and value rows split by Hairlines; no box. */
+.position { display: grid; gap: var(--space-16); }
+.figures { display: grid; margin: 0; }
+.figures__row {
+  display: flex; justify-content: space-between; align-items: baseline; gap: var(--space-16);
+  padding: var(--space-8) 0; border-bottom: 1px solid var(--rule);
+}
+.figures__row:last-child { border-bottom: 0; }
+.figures__row dt { color: var(--muted); font-size: var(--type-label-size); }
+.figures__row dd { margin: 0; text-align: right; }
+.figures__unit, .figures__note { color: var(--faint); font-size: var(--type-caption-size); }
+.figures__side { text-transform: capitalize; font-weight: 500; }
+.figures__warn { color: var(--warn); }
+.figures__title { margin: var(--space-8) 0 0; color: var(--faint); font-size: var(--type-caption-size); font-weight: var(--type-caption-weight); }
+.figures__unavailable { margin: 0; color: var(--muted); font-size: var(--type-label-size); }

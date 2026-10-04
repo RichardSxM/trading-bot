@@ -1,6 +1,7 @@
 import asyncio
 import os
 import time
+from decimal import Decimal
 
 import pyotp
 import pytest
@@ -8,6 +9,7 @@ from argon2 import PasswordHasher
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
+from dashboard.data.pnl import PnlFigures
 from dashboard.settings import DashboardSettings
 from dashboard.web.app import create_app
 from trading_core.snapshot.envelope import encode
@@ -118,10 +120,18 @@ def redis(clock):
     return fake
 
 
-def make_app(redis, clock, env="demo", **settings):
+ZERO_PNL = PnlFigures(realized_today=Decimal(0), realized_all=Decimal(0), fees_today=Decimal(0))
+
+
+def make_app(redis, clock, env="demo", read_pnl=lambda: ZERO_PNL, **settings):
     settings.setdefault("dashboard_cookie_secure", False)
     return create_app(
-        DashboardSettings(trading_env=env, **settings), SECRETS, redis=redis, clock=clock, clock_ns=clock.ns
+        DashboardSettings(trading_env=env, **settings),
+        SECRETS,
+        redis=redis,
+        clock=clock,
+        clock_ns=clock.ns,
+        read_pnl=read_pnl,
     )
 
 

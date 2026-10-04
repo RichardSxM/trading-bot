@@ -7,12 +7,15 @@ from typing import Final
 
 from markupsafe import Markup
 
+from dashboard.data.pnl import PnlFigures
+from dashboard.live.position import LOST, PositionView
 from dashboard.live.state import (
     COMMAND_NO_DATA,
     NO_COMMAND,
     UNKNOWN_ENTRY,
     UNKNOWN_RESULT,
     ActivityRow,
+    AgeView,
     AlertKind,
     AlertView,
     CommandView,
@@ -76,6 +79,32 @@ ALERT_KINDS: Final[tuple[tuple[AlertKind, str], ...]] = (
     ("stop_unacknowledged", "warn"),
     ("no_data", "warn"),
 )
+# The position card in each state (spec 0006 AC-17), labelled sample data.
+SAMPLE_PNL: Final = PnlFigures(
+    realized_today=Decimal("-0.42"), realized_all=Decimal("3.18"), fees_today=Decimal("0.51")
+)
+_FRESH: Final = AgeView("1s", "ok")
+POSITION_SAMPLES: Final[dict[str, PositionView]] = {
+    "open": PositionView(
+        "open",
+        age=_FRESH,
+        side="long",
+        quantity=Decimal("0.0011"),
+        avg_entry=Decimal("64210.50"),
+        mark=Decimal("64288.5"),
+        stop_px=Decimal("64018"),
+        stop_status="accepted",
+        unrealized=Decimal("0.09"),
+        exit_due_ns=int(SAMPLE_TIME.timestamp()) * 1_000_000_000,
+        equity=Decimal("1003.27"),
+        pnl=SAMPLE_PNL,
+    ),
+    "flat": PositionView("flat", age=_FRESH, mark=Decimal("64288.5"), equity=Decimal("1003.18"), pnl=SAMPLE_PNL),
+    "offline": PositionView("offline", pnl=SAMPLE_PNL),
+    "bad": PositionView("bad", pnl=SAMPLE_PNL),
+    "lost": LOST,
+    "pnl_unavailable": PositionView("flat", age=_FRESH, mark=Decimal("64288.5"), pnl=None),
+}
 WINTER_TIME: Final = datetime(2026, 1, 15, 9, 30, 0, tzinfo=UTC)
 # Sample heartbeat ages for the tape, one a second; -1 is a second without a live link.
 PULSE_SAMPLE: Final = (
@@ -158,6 +187,7 @@ def styleguide_context() -> dict[str, object]:
         "activity_groups": collapse(ACTIVITY_SAMPLE),
         "activity_run": collapse(ACTIVITY_RUN),
         "command_samples": COMMAND_SAMPLES,
+        "position_samples": POSITION_SAMPLES,
         "kraken_url": "https://demo-futures.kraken.com/",  # the sample alerts link to the demo venue
         "alert_samples": [
             AlertView(

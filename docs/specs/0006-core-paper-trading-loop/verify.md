@@ -82,3 +82,11 @@ Steps you may run to check the feature by hand, on the laptop in demo, after `do
 ## Notes
 
 _Results and dates go here as steps are run._
+
+**2026-10-04, Milestone 2 on the laptop (demo).** These are build checks, not the full walk through; `/check verify` still owes every step.
+- Run `01a107db`: the 17:00 boundary skipped while warming up. At 17:15 it went short 0.0011 at 85311.00 with a stop at 85567 (accepted). The 0.05 USD fee reached the balance. The 17:25 time exit closed the position and the sandbox canceled the stop. A restart while flat finished the run as `completed`.
+- Running live found three bugs the unit tests missed. All are fixed:
+  - NautilusTrader 1.231 passes `portfolio` only to a factory named exactly `SandboxLiveExecClientFactory`, so `FeeSandboxExecClientFactory` takes that name. A test now builds a real node.
+  - On a live node, `OrderInitialized` arrives before the order is in the cache. `order_for` rebuilds the order from the event.
+  - The stale check counted from time zero before the first quote, which raised a false `stale_feed` at every start. It now counts from `on_start`.
+- Run `01a107f4` (after the fixes): the 17:45 entry recorded `order_initialized` ×2, `order_submitted` ×2, `order_accepted` and `order_filled`, with no `recording_failed` and no `stale_feed`.

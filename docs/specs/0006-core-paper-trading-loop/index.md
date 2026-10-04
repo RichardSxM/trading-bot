@@ -309,11 +309,11 @@ Tracer Bullet: the gate first, then the thinnest real thread from quote to dashb
 1. [x] Spike (a throwaway script or test, not merged as product code) proving the four AC-1 checks. Record in `verify.md` how fees are applied. Fail means stop and return to `/architect`. Satisfies **AC-1**.
 
 **Milestone 2: thin thread (entry to dashboard)**
-2. Settings and their validation; `sandbox_exec_client`; the env guard allowlist entry `SANDBOX` for demo; the demo key purge; the `trader-spool` volume in `compose.yaml`. Satisfies **AC-2**, **AC-10**, **AC-15** (purge part).
-3. Pure core: `risk/check.py`, `risk/sizing.py`, `strategy/placeholder.py`, `strategy/blocks.py`, with unit tests. Satisfies **AC-4**, **AC-5**.
-4. `PlaceholderTimed(KfsStrategy)`: boundary timer, bars, decision, entry, stop on complete fill, hold timer, exit loop, stop fill and `PositionClosed` cleanup, gate check before submit. Satisfies **AC-3**, **AC-4**, **AC-6**, **AC-8**, **AC-8a**, **AC-9**, **AC-20**.
-5. `RecordingActor`, `RecordingWriter`, and the mappers; the start writes (instrument, strategy version, `start_run`) and `finish_run` after stop. Satisfies **AC-11**.
-6. The trader publishes the `position` and `account` snapshots; the dashboard Overview gets its position card, P&L figures, and offline state. Satisfies **AC-16**, **AC-17**.
+2. [x] Settings and their validation; `sandbox_exec_client`; the env guard allowlist entry `SANDBOX` for demo; the demo key purge; the `trader-spool` volume in `compose.yaml`. Satisfies **AC-2**, **AC-10**, **AC-15** (purge part).
+3. [x] Pure core: `risk/check.py`, `risk/sizing.py`, `strategy/placeholder.py`, `strategy/blocks.py`, with unit tests. Satisfies **AC-4**, **AC-5**.
+4. [x] `PlaceholderTimed(KfsStrategy)`: boundary timer, bars, decision, entry, stop on complete fill, hold timer, exit loop, stop fill and `PositionClosed` cleanup, gate check before submit. Satisfies **AC-3**, **AC-4**, **AC-6**, **AC-8**, **AC-8a**, **AC-9**, **AC-20**.
+5. [x] `RecordingActor`, `RecordingWriter`, and the mappers; the start writes (instrument, strategy version, `start_run`) and `finish_run` after stop. Satisfies **AC-11**.
+6. [x] The trader publishes the `position` and `account` snapshots; the dashboard Overview gets its position card, P&L figures, and offline state. Satisfies **AC-16**, **AC-17**.
 
 **Milestone 3: failure paths**
 7. Stop acceptance and partial entry timers, the `stale_feed` timer, and `entries_blocked` and `recording_backlog` in `trader_state`. Satisfies **AC-7**, **AC-14**, **AC-16**.

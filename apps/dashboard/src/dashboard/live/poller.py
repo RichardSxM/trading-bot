@@ -6,6 +6,10 @@ final) every ``DASHBOARD_POLL_MS``, renders the top bar partials, its alert bar 
 Overview's Activity (AC-20), and publishes each to every
 subscriber only when its HTML changed. With no subscriber it idles. A Redis error renders every
 partial ``no data`` and the next tick tries again.
+
+With a position renderer (spec 0006 AC-17) it also reads the ``position`` and ``account``
+snapshots every tick, and the P&L figures from Postgres at most every ``pnl_refresh_s``, off
+the event loop. A Postgres error keeps the live card and shows the figures as unavailable.
 """
 
 import asyncio
@@ -18,6 +22,8 @@ from typing import Final, Protocol
 
 from redis.exceptions import RedisError
 
+from dashboard.data.pnl import PnlFigures
+from dashboard.live.position import LOST, PositionView, position_view
 from dashboard.live.state import (
     COMMAND_NO_DATA,
     NO_DATA,
@@ -44,6 +50,10 @@ COMMAND_EVENT: Final = "topbar-command"
 ALERT_EVENT: Final = "topbar-alert"
 ACTIVITY_EVENT: Final = "overview-activity"
 PAUSE_EVENT: Final = "topbar-pause"
+POSITION_EVENT: Final = "overview-position"
+PNL_REFRESH_S: Final = 5.0
+PNL_TIMEOUT_S: Final = 2.0
+PNL_WARN_EVERY_S: Final = 60.0
 ACTIVITY_SIZE: Final = 20
 REDIS_ERRORS: Final = (RedisError, OSError, TimeoutError)
 QUEUE_SIZE: Final = 8
@@ -76,8 +86,23 @@ class Poller:
         read_timeout_s: float,
         clock_ns: Callable[[], int] = time.time_ns,
         monotonic: Callable[[], float] = time.monotonic,
+        read_position: Callable[[], Awaitable[str | bytes | None]] | None = None,
+        read_account: Callable[[], Awaitable[str | bytes | None]] | None = None,
+        read_pnl: Callable[[], Awaitable[PnlFigures]] | None = None,
+        render_position: Callable[[PositionView], str] | None = None,
+        pnl_refresh_s: float = PNL_REFRESH_S,
+        pnl_timeout_s: float = PNL_TIMEOUT_S,
     ) -> None:
         self._read_heartbeat = read_heartbeat
+        self._read_position = read_position
+        self._read_account = read_account
+        self._read_pnl = read_pnl
+        self._render_position = render_position
+        self._pnl_refresh_s = pnl_refresh_s
+        self._pnl_timeout_s = pnl_timeout_s
+        self._pnl: PnlFigures | None = None
+        self._pnl_read_at: float | None = None
+        self._last_pnl_warning: float | None = None
         self._read_timeout_s = read_timeout_s
         self._render_age = render_age
         self._read_command = read_command
@@ -128,34 +153,70 @@ class Poller:
         """
         try:
             raw, state, (command, rows) = await asyncio.wait_for(self._read_all(), timeout=self._read_timeout_s)
+            snapshots = await asyncio.wait_for(self._read_snapshots(), timeout=self._read_timeout_s)
         except REDIS_ERRORS as exc:
             log.warning(
                 "redis read failed", extra={"fields": {"code": "redis_read_failed", "error": type(exc).__name__}}
             )
+            await self._refresh_pnl()
             return self.no_data()
         age = heartbeat_view(raw, self._clock_ns(), self._amber_s, self._red_s)
         if age.skewed:
             self._warn_skew()
         self._age = age
         alert = self._alert(age, command)
-        return {
+        partials = {
             AGE_EVENT: self._render_age(age),
             COMMAND_EVENT: self._render_command(_tinted(command, alert)),
             ALERT_EVENT: self._render_alert(alert),
             ACTIVITY_EVENT: self._render_activity(rows),
             PAUSE_EVENT: self._render_pause(pause_view(state)),
         }
+        if self._render_position is not None:
+            await self._refresh_pnl()
+            raw_position, raw_account = snapshots
+            view = position_view(raw_position, raw_account, self._pnl, self._clock_ns(), self._amber_s, self._red_s)
+            partials[POSITION_EVENT] = self._render_position(view)
+        return partials
 
     def no_data(self) -> dict[str, str]:
         """Every partial in its ``no data`` state (Redis unreadable), without reading Redis."""
         self._age = NO_DATA
-        return {
+        partials = {
             AGE_EVENT: self._render_age(NO_DATA),
             COMMAND_EVENT: self._render_command(COMMAND_NO_DATA),
             ALERT_EVENT: self._render_alert(self._alert(NO_DATA, COMMAND_NO_DATA)),
             ACTIVITY_EVENT: self._render_activity(None),
             PAUSE_EVENT: self._render_pause(PAUSE_NO_DATA),
         }
+        if self._render_position is not None:
+            partials[POSITION_EVENT] = self._render_position(dataclasses.replace(LOST, pnl=self._pnl))
+        return partials
+
+    async def _read_snapshots(self) -> tuple[str | bytes | None, str | bytes | None]:
+        if self._render_position is None or self._read_position is None or self._read_account is None:
+            return None, None
+        return await self._read_position(), await self._read_account()
+
+    async def _refresh_pnl(self) -> None:
+        """Read the P&L figures when the last read is older than ``pnl_refresh_s``; keep None on failure."""
+        if self._read_pnl is None:
+            return
+        now = self._monotonic()
+        if self._pnl_read_at is not None and now - self._pnl_read_at < self._pnl_refresh_s:
+            return
+        self._pnl_read_at = now
+        try:
+            self._pnl = await asyncio.wait_for(self._read_pnl(), timeout=self._pnl_timeout_s)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._pnl = None
+            if self._last_pnl_warning is None or now - self._last_pnl_warning >= PNL_WARN_EVERY_S:
+                self._last_pnl_warning = now
+                log.warning(
+                    "P&L read failed", extra={"fields": {"code": "pnl_read_failed", "error": type(exc).__name__}}
+                )
 
     async def _read_all(
         self,

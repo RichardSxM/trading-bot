@@ -7,6 +7,10 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
+
+# redis comes with the trader image, not the core one the migrate service runs integration tests in.
+pytest.importorskip("redis")
+
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import ResponseError
 

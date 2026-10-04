@@ -13,6 +13,9 @@ from nautilus_trader.adapters.kraken import (
 )
 from nautilus_trader.config import InstrumentProviderConfig
 
+# The BTC perpetual the paper loop trades (spec 0006).
+BTC_PERP = "PF_XBTUSD.KRAKEN"
+
 
 def futures_data_client() -> KrakenDataClientConfig:
     """Public market data only; it never carries API keys."""

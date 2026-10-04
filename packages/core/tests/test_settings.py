@@ -106,3 +106,80 @@ def test_git_commit_defaults_to_unknown_and_reads_the_environment(monkeypatch):
     monkeypatch.setenv("GIT_COMMIT", "abc123")
 
     assert Settings().git_commit == "abc123"
+
+
+# spec 0006: the paper loop settings, validated at start.
+
+
+def test_paper_loop_defaults_match_the_spec():
+    from decimal import Decimal
+
+    from trading_core.settings import PaperLoopSettings
+
+    s = PaperLoopSettings(trading_env="demo")
+
+    assert (s.placeholder_interval_min, s.placeholder_hold_min, s.placeholder_lookback_min) == (15, 10, 5)
+    assert s.placeholder_stop_pct == Decimal("0.3")
+    assert (s.placeholder_notional_usd, s.risk_max_order_notional_usd, s.risk_max_leverage) == (
+        Decimal(100),
+        Decimal(250),
+        Decimal(2),
+    )
+    assert (s.sandbox_maker_fee, s.sandbox_taker_fee) == (Decimal("0.0002"), Decimal("0.0005"))
+    assert (s.recording_queue_max, s.spool_dir) == (10_000, Path("/data/spool"))
+
+
+def test_paper_loop_reads_decimals_exactly_from_the_environment(monkeypatch):
+    from decimal import Decimal
+
+    from trading_core.settings import PaperLoopSettings
+
+    monkeypatch.setenv("PLACEHOLDER_STOP_PCT", "0.1")
+    monkeypatch.setenv("SANDBOX_TAKER_FEE", "0.00045")
+
+    s = PaperLoopSettings(trading_env="demo")
+
+    assert (s.placeholder_stop_pct, s.sandbox_taker_fee) == (Decimal("0.1"), Decimal("0.00045"))
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("PLACEHOLDER_INTERVAL_MIN", "7"),
+        ("PLACEHOLDER_INTERVAL_MIN", "0"),
+        ("PLACEHOLDER_HOLD_MIN", "15"),
+        ("PLACEHOLDER_HOLD_MIN", "0"),
+        ("PLACEHOLDER_LOOKBACK_MIN", "0"),
+        ("PLACEHOLDER_STOP_PCT", "0"),
+        ("PLACEHOLDER_STOP_PCT", "100"),
+        ("PLACEHOLDER_NOTIONAL_USD", "0"),
+        ("RISK_MAX_ORDER_NOTIONAL_USD", "-1"),
+        ("RISK_MAX_LEVERAGE", "0"),
+        ("RISK_STALE_QUOTE_S", "0"),
+        ("STOP_ACCEPT_TIMEOUT_S", "0"),
+        ("SANDBOX_STARTING_BALANCE_USD", "0"),
+        ("SANDBOX_MAKER_FEE", "-0.1"),
+        ("SANDBOX_TAKER_FEE", "1"),
+        ("RECORDING_MAX_BACKLOG_S", "0"),
+        ("RECORDING_QUEUE_MAX", "0"),
+        ("RECORDING_DRAIN_S", "0"),
+    ],
+)
+def test_paper_loop_refuses_a_bad_value(monkeypatch, name, value):
+    from trading_core.settings import PaperLoopSettings
+
+    monkeypatch.setenv(name, value)
+    with pytest.raises(ValidationError):
+        PaperLoopSettings(trading_env="demo")
+
+
+def test_strategy_config_holds_the_placeholder_and_risk_settings_only():
+    from trading_core.settings import PaperLoopSettings
+
+    config = PaperLoopSettings(trading_env="demo").strategy_config()
+
+    assert config["placeholder_interval_min"] == 15
+    assert config["placeholder_stop_pct"] == "0.3"
+    assert config["risk_max_order_notional_usd"] == "250"
+    assert all(name.startswith(("placeholder_", "risk_")) for name in config)
+    assert "sandbox_taker_fee" not in config

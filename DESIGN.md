@@ -412,6 +412,10 @@ The heartbeat tape, the signature of the console. A 56 px canvas across the full
 Overview's answer to "what just happened": the newest 20 commands, newest first, as plain rows split by Hairlines, no table head. A run of consecutive commands that read the same (command, outcome) is one row: the command carries a Pencil Mono count (`stop ×16`) and the time a Margin Caption `from` line with the oldest time, so repeats never bury the signal. Each row holds the UTC time (`ts`), the command in Paper at 500 weight, and its outcome at the right edge in the top bar's command colors (Signal Indigo while waiting, Paper when confirmed, Ledger Red when failed or expired, Amber Watch when unknown). A final outcome never hides here. On a phone the time drops under the command. An entry that does not parse is one Amber Watch `unknown entry` row. It dims with the top bar while the link is not live.
 - **States:** `empty`, `filled`, `collapsed`, `error`
 
+### Position card (`position`)
+Overview's Position and P&L region (spec 0006). An open position leads with its unrealized P&L as a Stat, then label and value rows split by Hairlines: side, size, average entry, the mark in a Stale wrapper, the stop with its status (Amber Watch `no stop` when there is none), the exit time, and equity. Flat shows `Flat` and the mark. Under every state a Caption title `Paper P&L, before funding` heads realized today (UTC), realized all time, and fees today. A missing or red aged position snapshot is the error state `Trader offline`, never `Flat`, so a dead trader never looks calm. A snapshot that does not parse and an unreadable Redis are error states too; a Postgres failure keeps the live part and says the figures are unavailable.
+- **States:** `open`, `flat`, `offline`, `bad`, `lost`, `pnl_unavailable`
+
 ## Do's and Don'ts
 
 ### Do:

@@ -139,6 +139,13 @@
   <div data-sample="activity:error">{% with groups=none %}{% include "partials/overview_activity.html" %}{% endwith %}</div>
 </section>
 
+<section class="sg-section" id="position" aria-labelledby="position-sample-h">
+  <h2 class="sg-h" id="position-sample-h">Position card</h2>
+  {%- for state, view in position_samples.items() %}
+  <div data-sample="position:{{ state }}">{% include "partials/overview_position.html" %}</div>
+  {%- endfor %}
+</section>
+
 <section class="sg-section" id="stats" aria-labelledby="stats-h">
   <h2 class="sg-h" id="stats-h">Stats and freshness</h2>
   <div class="sg-stats">
