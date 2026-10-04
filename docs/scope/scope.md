@@ -237,6 +237,8 @@ The trend or range tag could also serve as a regime filter for other candidates.
 - **Setup:** an RSI pullback (RSI(14) dipping into 30 to 40 in an uptrend) says the price is cheap within the trend.
 - **Trigger:** a MACD (12, 26, 9) signal line cross, or the histogram turning, in the trend's direction times the entry.
 
+A simple MACD only baseline to beat first (from the TradingView script "MACD Aggressive Scalp Simple", which has no stops and no published results): enter when the MACD (12, 26, 9) histogram crosses zero in the direction of the 50 period EMA, and exit when the histogram weakens. The layered strategy has to beat this baseline after fees to earn its extra settings. On short candles the histogram flips often, so check its trade count against the fee hurdle.
+
 Two cautions. RSI and MACD are both built from recent price momentum, so they often agree simply because they measure the same thing; one should not be counted as confirming the other. Each layer also adds settings to tune, so the backtest should add one layer at a time and keep it only if it improves the out of sample result after fees, with the overfitting test from feature 15 applied to the final combination.
 - [ ] Design it (spec): `/architect hour level strategy candidates`
 
