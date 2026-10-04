@@ -19,6 +19,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 6 | Core paper trading loop | Slice 1 | in-progress |
 | 7 | Always on cloud deployment | Slice 2 | in-progress |
 | 8 | Order book recorder | Slice 3 | planned |
+| 20 | Market context feed | Slice 3 | planned |
 | 9 | Kill switch & loss limits | Slice 4 | planned |
 | 10 | Leverage & liquidation guard | Slice 4 | planned |
 | 11 | Restart & outage safety | Slice 4 | planned |
@@ -140,6 +141,12 @@ Record BTC and ETH perp order book updates and trades continuously, because scal
 **Done when:** the recorder runs 24/7, detects and logs gaps, and stored data can be replayed in order at a known size cost per day.
 **Carried over from spec 0005:** local catalog retention on the 50 GB disk (B2 holds the history), and which catalog paths the nightly backup should skip while an hour is still open.
 - [ ] Design it (spec): `/architect order book recorder`
+
+### 20. Market context feed · needs a decision
+Record the perp market's own context next to prices: funding rate, open interest, mark versus index basis, and liquidations. Strategies can then use them as inputs and regime filters, in backtests and live alike. Much of this history cannot be downloaded later, so recording starts early.
+**Done when:** the context values are recorded continuously with gaps logged, a backtest can read them at the time each one was known (no look ahead), and a strategy can read the same values live.
+**Carried over from research (2026-10-04):** the idea came from the `tracking-crypto-derivatives` skill (ideas only, nothing installed). Optional extras for the design to weigh: a news or event blackout filter, the Fear & Greed index as a regime tag, and later Deribit options implied volatility and put/call ratio.
+- [ ] Design it (spec): `/architect market context feed`
 
 ## Slice 4: Safety guards (all required before live)
 
