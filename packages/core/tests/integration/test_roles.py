@@ -1,6 +1,6 @@
 """covers: spec 0002 AC-11 (what each app role may do) and AC-13 (role setup is idempotent)."""
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 
 import psycopg
 import pytest
@@ -120,7 +120,7 @@ def test_backup_app_runs_the_downsample(role_engine):
 def test_backup_app_can_read_every_table_pg_dump_locks(engine: Engine):
     """covers: spec 0005 AC-19 (pg_dump as backup_app locks every table, alembic_version too)."""
     with engine.connect() as conn:
-        unreadable = (
+        unreadable: Sequence[str] = (
             conn.execute(
                 text(
                     "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace"
