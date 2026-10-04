@@ -156,6 +156,7 @@ One action closes all positions, cancels all orders, and stops trading; automati
 **Done when:** the dashboard stop button and an automatic loss limit each flatten everything in demo within seconds, and trading stays halted until you resume it.
 **Carried over from spec 0005:** build `stop`, `resume`, and `flatten` on the existing ControlActor, decide how stop and pause combine, and reword spec 0004 verify step 21 (stop answers `not_implemented` until then).
 **Carried over from an article (2026-10-04, monkeytrade scalping guide, forex focused), for the design to weigh:** besides the daily loss limit (the article suggests 2 to 3 % of the account), a losing streak stop: halt new entries for the day after three losses in a row, shown as one more `entries_blocked` reason (spec 0006).
+**Also from an article (2026-10-04, NinjaTrader 1 minute scalping), for the design to weigh:** two guards against overtrading, each one more `entries_blocked` reason. A cap on trades per day, since a fast strategy always finds a signal and every trade pays fees. And a short cooldown after any loss (somewhere around 5 to 15 minutes, tuned in testing), a softer cousin of the losing streak stop.
 - [ ] Design it (spec): `/architect kill switch & loss limits`
 
 ### 10. Leverage & liquidation guard · needs a decision
@@ -222,6 +223,8 @@ A small set of well known scalping ideas (for example order book imbalance, shor
 - **Spread cap:** skip an entry when the spread is wider than a limit. Set the limit from our recorded order book data, not the article's forex number; with targets this small a wide spread alone erases the edge.
 - **Time stop:** exit when price has not moved within 3 to 5 candles. It is the same kind of exit as the placeholder's timed exit (spec 0006).
 - **EMA pullback:** on 1 minute candles, 8 EMA above 21 EMA, price pulls back to the 8 EMA with RSI(7) between 30 and 50, enter on a close back above the 8 EMA; stop past the 21 EMA, target 1.5 to 2 times the risk. A natural pair to compare with the VWAP bounce.
+**Also from an article (2026-10-04, NinjaTrader 1 minute scalping, CME focused; its 1 to 5 tick targets cannot clear Kraken's fees, see feature 15's fee hurdle):**
+- **Cumulative delta:** a running total of aggressive buying minus aggressive selling (a trade at the ask adds, one at the bid subtracts). When price keeps rising but delta flattens or falls, the move is losing its buyers. Try it two ways: as a filter that stops other candidates from chasing a fading move, and as a reversal candidate of its own. The recorder already stores trade ticks with their aggressor side, so delta comes from recorded data. It measures actual trades, unlike order book imbalance, which measures resting orders.
 - [ ] Design it (spec): `/architect scalping strategy candidates`
 
 ### 17. Hour level strategy candidates · needs a decision
