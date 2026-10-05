@@ -112,7 +112,7 @@ spec [0006](../specs/0006-core-paper-trading-loop/index.md)
   - [x] Trades page and the 2 hour run (AC-19, AC-21)
 - [x] Verify it: `/check verify core paper trading loop`
 - [x] Test it: `/test core paper trading loop`
-- [ ] Review it (fresh model): `/check review core paper trading loop`
+- [x] Review it (fresh model): `/check review core paper trading loop`
 - [ ] Document it: `/document core paper trading loop`
 
 ## Slice 2: Always on

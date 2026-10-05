@@ -1,7 +1,8 @@
 """covers: spec 0006 AC-3 (the timed entry and its warmup), AC-4 (sizing), AC-5 (a refusal is recorded),
 AC-6 (the stop rests once the entry fills), AC-7 (a stop not accepted closes the position and blocks),
 AC-8 (the time exit), AC-8a (the exit loop retries and reports), AC-9 (a stop fill ends the round trip,
-also while the exit is in flight), AC-14 (stale feed).
+also while the exit is in flight), AC-14 (stale feed). Also the review fixes: orders the venue cancels
+or expires, a failed entry submit, and the hold timer while the exit loop runs.
 
 Runs ``PlaceholderTimed`` in a BacktestEngine on synthetic quotes for a PF_XBTUSD shaped instrument
 (USD settled linear perpetual, tick 1, size step 0.0001). Needs the ``node`` extra.
@@ -20,9 +21,11 @@ pytest.importorskip("nautilus_trader")
 from nautilus_trader.backtest.engine import BacktestEngine, BacktestEngineConfig
 from nautilus_trader.backtest.models import LatencyModel
 from nautilus_trader.config import LoggingConfig
+from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.model.currencies import BTC, USD
 from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.enums import AccountType, OmsType, OrderType
+from nautilus_trader.model.events import OrderCanceled, OrderExpired
 from nautilus_trader.model.identifiers import InstrumentId, Symbol, Venue
 from nautilus_trader.model.instruments import CryptoPerpetual
 from nautilus_trader.model.objects import Money, Price, Quantity
@@ -41,6 +44,7 @@ from trading_core.recording.enums import (
     RiskVerdict,
     Severity,
 )
+from trading_core.recording.mappers import DECISION_TAG
 from trading_core.recording.rows import (
     AccountSnapshotRow,
     DecisionRow,
@@ -474,3 +478,160 @@ def test_an_exit_refused_once_flat_is_logged_and_ignored(caplog):
 
     assert [r.fields["code"] for r in caplog.records if hasattr(r, "fields")] == ["exit_refused_flat"]
     assert strategy._blocks.active() == ()
+
+
+def _ended(strategy, client_order_id, cls=OrderCanceled):
+    """An ``OrderCanceled`` or ``OrderExpired`` as the venue would send it, delivered to the strategy."""
+    now = strategy.clock.timestamp_ns()
+    event = cls(strategy.trader_id, strategy.id, INSTRUMENT_ID, client_order_id, None, None, UUID4(), now, now)
+    if cls is OrderCanceled:
+        strategy.on_order_canceled(event)
+    else:
+        strategy.on_order_expired(event)
+
+
+class _EndedEntry(PlaceholderTimed):
+    """The venue ends the first entry (``cls``) before it fills; it never reaches the venue."""
+
+    cls = OrderCanceled
+
+    def submit_order(self, order, *args, **kwargs):
+        if order.client_order_id == self._entry_id and not getattr(self, "ended_once", False):
+            self.ended_once = True
+            _ended(self, order.client_order_id, type(self).cls)
+            return
+        super().submit_order(order, *args, **kwargs)
+
+
+@pytest.mark.parametrize("cls", [OrderCanceled, OrderExpired])
+def test_an_entry_canceled_before_any_fill_goes_back_to_flat_and_the_next_boundary_trades(cls):
+    # covers: AC-3 (the next boundary still enters)
+    _EndedEntry.cls = cls
+    engine, strategy, rows = _run(RISING, strategy_cls=_EndedEntry)
+
+    first, second = _decisions(rows)
+    (event,) = _risk_events(rows)
+    assert (event.kind, event.severity, event.decision_id) == (
+        RiskEventKind.ORDER_REJECTED,
+        Severity.WARNING,
+        first.id,
+    )
+    assert event.event_key.startswith("entry_canceled:")
+    assert second.risk_verdict == RiskVerdict.APPROVED
+    entry = _by_type(engine, OrderType.MARKET)[0]
+    assert entry.is_closed
+    assert entry.filled_qty == entry.quantity  # the 12:30 entry filled
+    assert strategy._blocks.active() == ()
+
+
+class _PartialThenCanceled(PlaceholderTimed):
+    """The entry's fill is seen as a partial one, and the venue then cancels the rest."""
+
+    def on_order_filled(self, event):
+        if event.client_order_id == self._entry_id and self.phase == Phase.ENTERING:
+            _ended(self, event.client_order_id)
+            return
+        super().on_order_filled(event)
+
+
+def test_an_entry_canceled_after_a_partial_fill_closes_the_position():
+    # covers: AC-7 (a position never stays without a stop or an exit)
+    engine, strategy, rows = _run(Prices(29, lambda t: 85000 + int(t * 10)), strategy_cls=_PartialThenCanceled)
+
+    (event,) = _risk_events(rows)
+    assert (event.severity, event.event_key) == (
+        Severity.WARNING,
+        f"partial_entry:{_by_type(engine, OrderType.MARKET)[0].client_order_id}",
+    )
+    assert _by_type(engine, OrderType.STOP_MARKET) == []
+    _, exit_order = _by_type(engine, OrderType.MARKET)
+    assert exit_order.is_reduce_only
+    assert engine.cache.positions_open() == []
+    assert strategy.phase == Phase.FLAT
+
+
+class _CanceledStop(PlaceholderTimed):
+    """The venue cancels the stop instead of accepting it."""
+
+    def on_order_accepted(self, event):
+        if event.client_order_id == self._stop_id:
+            _ended(self, event.client_order_id)
+            return
+        super().on_order_accepted(event)
+
+
+def test_a_stop_canceled_by_the_venue_closes_the_position_and_blocks():
+    # covers: AC-7
+    engine, strategy, rows = _run(Prices(29, lambda t: 85000 + int(t * 10)), strategy_cls=_CanceledStop)
+
+    (stop,) = _by_type(engine, OrderType.STOP_MARKET)
+    (event,) = _risk_events(rows)
+    assert (event.severity, event.event_key) == (Severity.CRITICAL, f"stop_not_accepted:{stop.client_order_id}")
+    assert strategy._blocks.active() == (BlockReason.STOP_NOT_ACCEPTED,)
+    assert [d.intent for d in _decisions(rows)] == [Intent.ENTER]
+    assert engine.cache.positions_open() == []
+    assert strategy.phase == Phase.FLAT
+
+
+class _CanceledExit(PlaceholderTimed):
+    """The venue cancels the first exit order; it never reaches the venue."""
+
+    def submit_order(self, order, *args, **kwargs):
+        if order.client_order_id == self._exit_id and not getattr(self, "ended_once", False):
+            self.ended_once = True
+            _ended(self, order.client_order_id)
+            return
+        super().submit_order(order, *args, **kwargs)
+
+
+def test_an_exit_canceled_by_the_venue_is_retried(caplog):
+    # covers: AC-8a
+    with caplog.at_level(logging.WARNING, logger="trading_core.node.placeholder"):
+        engine, strategy, rows = _run(Prices(29, lambda t: 85000 + int(t * 10)), strategy_cls=_CanceledExit)
+
+    refused = [r for r in caplog.records if getattr(r, "fields", {}).get("code") == "exit_refused"]
+    assert [(r.fields["why"], r.fields["failures"]) for r in refused] == [("canceled", 1)]
+    assert [d.intent for d in _decisions(rows)] == [Intent.ENTER, Intent.EXIT]
+    assert engine.cache.positions_open() == []
+    assert strategy.phase == Phase.FLAT
+
+
+class _FailedSubmit(PlaceholderTimed):
+    """Submitting the first entry raises."""
+
+    def submit_order(self, order, *args, **kwargs):
+        if order.client_order_id == self._entry_id and not getattr(self, "failed_once", False):
+            self.failed_once = True
+            raise RuntimeError("submit failed")
+        super().submit_order(order, *args, **kwargs)
+
+
+def test_a_failed_entry_submit_goes_back_to_flat_and_the_next_boundary_trades(caplog):
+    # covers: AC-3
+    with caplog.at_level(logging.ERROR, logger="trading_core.node.placeholder"):
+        engine, _, rows = _run(RISING, strategy_cls=_FailedSubmit)
+
+    first, second = _decisions(rows)
+    (event,) = _risk_events(rows)
+    assert (event.severity, event.event_key) == (Severity.WARNING, f"entry_submit_failed:{first.id}")
+    assert [r.fields["code"] for r in caplog.records if hasattr(r, "fields")] == ["entry_decision_failed"]
+    entry = _by_type(engine, OrderType.MARKET)[0]
+    assert entry.tags == [f"{DECISION_TAG}{second.id}"]
+    assert entry.filled_qty == entry.quantity
+
+
+def test_the_hold_timer_during_the_exit_loop_writes_no_decision(caplog):
+    # covers: AC-8 (the time exit leaves a running exit loop alone). The stop is rejected, then every
+    # exit is refused for 700 s, past the 10 minute hold.
+    _RefusedExits.refusals = 700
+    with caplog.at_level(logging.INFO, logger="trading_core.node.placeholder"):
+        engine, _, rows = _run(
+            Prices(29, lambda t: 85000 + int(t * 10)), strategy_cls=_RefusedExits, stop_pct=Decimal("0.0001")
+        )
+
+    (enter,) = _decisions(rows)
+    assert enter.intent == Intent.ENTER
+    assert "hold_over_exiting" in [r.fields["code"] for r in caplog.records if hasattr(r, "fields")]
+    _, exit_order = _by_type(engine, OrderType.MARKET)
+    assert exit_order.tags == [f"{DECISION_TAG}{enter.id}"]  # still a stop_failure exit
+    assert engine.cache.positions_open() == []

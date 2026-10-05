@@ -7,7 +7,9 @@ loop. Every rule lives in ``trading_core.risk`` and ``trading_core.strategy``; t
 holds the round trip state, its timers, and the order calls.
 
 Round trip: ``flat`` → ``entering`` (entry submitted) → ``protected`` (stop accepted) →
-``exiting`` (exit loop) → ``flat``. A stop fill goes straight to ``flat``.
+``exiting`` (exit loop) → ``flat``. A stop fill goes straight to ``flat``. An order the venue
+cancels or expires is handled like a refusal: an unfilled entry goes back to ``flat``, a partly
+filled entry, a lost stop, or a lost exit runs (or keeps running) the exit loop.
 """
 
 import functools
@@ -27,7 +29,9 @@ from nautilus_trader.model.enums import PositionSide as NautilusPositionSide
 from nautilus_trader.model.enums import TimeInForce, TriggerType
 from nautilus_trader.model.events import (
     OrderAccepted,
+    OrderCanceled,
     OrderDenied,
+    OrderExpired,
     OrderFilled,
     OrderRejected,
     PositionClosed,
@@ -260,7 +264,20 @@ class PlaceholderTimed(KfsStrategy):
         self.phase = Phase.ENTERING
         self._entry_decision = decision
         self._entry_id = order.client_order_id
-        self.submit_order(order)
+        try:
+            self.submit_order(order)
+        except Exception:
+            # Fail closed: no entry in flight, and the next boundary tries again.
+            self._risk_event(
+                f"entry_submit_failed:{decision}",
+                RiskEventKind.ORDER_REJECTED,
+                Severity.WARNING,
+                "entry submit failed",
+                decision,
+                {"client_order_id": str(order.client_order_id)},
+            )
+            self._back_to_flat()
+            raise
 
     def _entry_denied(self, decision: UUID, reason: str) -> None:
         self._risk_event(
@@ -302,6 +319,38 @@ class PlaceholderTimed(KfsStrategy):
         elif client_order_id == self._stop_id:
             self._stop_failed(f"stop {why}")
         elif client_order_id == self._exit_id:
+            self._exit_refused(why)
+
+    def on_order_canceled(self, event: OrderCanceled) -> None:
+        """An order the venue cancels: see ``_ended``."""
+        self._ended(event.client_order_id, "canceled")
+
+    def on_order_expired(self, event: OrderExpired) -> None:
+        """An order the venue expires: see ``_ended``."""
+        self._ended(event.client_order_id, "expired")
+
+    def _ended(self, client_order_id: ClientOrderId, why: str) -> None:
+        # Our own cancels never get here: a flat round trip has reset the ids, and the partial
+        # entry timeout is already ``exiting`` when its cancel arrives.
+        position = self._position()
+        if client_order_id == self._entry_id and self.phase == Phase.ENTERING:
+            if position is None:
+                self._risk_event(
+                    f"entry_canceled:{client_order_id}",
+                    RiskEventKind.ORDER_REJECTED,
+                    Severity.WARNING,
+                    f"entry {why} before any fill",
+                    self._entry_decision,
+                    {"client_order_id": str(client_order_id)},
+                )
+                self._back_to_flat()
+            else:
+                self._close_partial_entry(f"entry {why} after a partial fill; closing it")
+        elif position is None:
+            return
+        elif client_order_id == self._stop_id and self.phase in (Phase.ENTERING, Phase.PROTECTED):
+            self._stop_failed(f"stop {why}")
+        elif client_order_id == self._exit_id and self.phase == Phase.EXITING:
             self._exit_refused(why)
 
     def on_order_accepted(self, event: OrderAccepted) -> None:
@@ -390,15 +439,19 @@ class PlaceholderTimed(KfsStrategy):
         entry = None if self._entry_id is None else self.cache.order(self._entry_id)
         if entry is None or entry.status != NautilusOrderStatus.PARTIALLY_FILLED or self.phase != Phase.ENTERING:
             return
+        self._close_partial_entry("entry still partly filled after 5 s; closing it")
+        self.cancel_order(entry)  # after: its cancel arrives while ``exiting`` and is ignored
+
+    def _close_partial_entry(self, message: str) -> None:
+        self._cancel_timer(_PARTIAL)
         self._risk_event(
             f"partial_entry:{self._entry_id}",
             RiskEventKind.ORDER_REJECTED,
             Severity.WARNING,
-            "entry still partly filled after 5 s; closing it",
+            message,
             self._entry_decision,
             {"client_order_id": str(self._entry_id)},
         )
-        self.cancel_order(entry)
         self._start_exit_loop()
 
     # Exit -----------------------------------------------------------------------------------
@@ -406,6 +459,11 @@ class PlaceholderTimed(KfsStrategy):
     def _on_hold_over(self, event: object) -> None:
         position = self._position()
         if position is None or self.phase == Phase.FLAT:
+            return
+        if self.phase == Phase.EXITING:
+            # The exit loop already closes it under the entry decision (a stop failure or partial
+            # entry); a time decision here would carry no order.
+            log.info("hold over while the exit loop runs", extra={"fields": {"code": "hold_over_exiting"}})
             return
         decision = uuid.uuid7()
         now = self.clock.timestamp_ns()
