@@ -525,17 +525,21 @@ def test_an_entry_canceled_before_any_fill_goes_back_to_flat_and_the_next_bounda
 
 
 class _PartialThenCanceled(PlaceholderTimed):
-    """The entry's fill is seen as a partial one, and the venue then cancels the rest."""
+    """The entry's fill is seen as a partial one, and the venue then ends the rest (``cls``)."""
+
+    cls = OrderCanceled
 
     def on_order_filled(self, event):
         if event.client_order_id == self._entry_id and self.phase == Phase.ENTERING:
-            _ended(self, event.client_order_id)
+            _ended(self, event.client_order_id, type(self).cls)
             return
         super().on_order_filled(event)
 
 
-def test_an_entry_canceled_after_a_partial_fill_closes_the_position():
+@pytest.mark.parametrize("cls", [OrderCanceled, OrderExpired])
+def test_an_entry_canceled_after_a_partial_fill_closes_the_position(cls):
     # covers: AC-7 (a position never stays without a stop or an exit)
+    _PartialThenCanceled.cls = cls
     engine, strategy, rows = _run(Prices(29, lambda t: 85000 + int(t * 10)), strategy_cls=_PartialThenCanceled)
 
     (event,) = _risk_events(rows)
@@ -551,17 +555,21 @@ def test_an_entry_canceled_after_a_partial_fill_closes_the_position():
 
 
 class _CanceledStop(PlaceholderTimed):
-    """The venue cancels the stop instead of accepting it."""
+    """The venue ends the stop (``cls``) instead of accepting it."""
+
+    cls = OrderCanceled
 
     def on_order_accepted(self, event):
         if event.client_order_id == self._stop_id:
-            _ended(self, event.client_order_id)
+            _ended(self, event.client_order_id, type(self).cls)
             return
         super().on_order_accepted(event)
 
 
-def test_a_stop_canceled_by_the_venue_closes_the_position_and_blocks():
+@pytest.mark.parametrize("cls", [OrderCanceled, OrderExpired])
+def test_a_stop_canceled_by_the_venue_closes_the_position_and_blocks(cls):
     # covers: AC-7
+    _CanceledStop.cls = cls
     engine, strategy, rows = _run(Prices(29, lambda t: 85000 + int(t * 10)), strategy_cls=_CanceledStop)
 
     (stop,) = _by_type(engine, OrderType.STOP_MARKET)
@@ -574,23 +582,27 @@ def test_a_stop_canceled_by_the_venue_closes_the_position_and_blocks():
 
 
 class _CanceledExit(PlaceholderTimed):
-    """The venue cancels the first exit order; it never reaches the venue."""
+    """The venue ends the first exit order (``cls``); it never reaches the venue."""
+
+    cls = OrderCanceled
 
     def submit_order(self, order, *args, **kwargs):
         if order.client_order_id == self._exit_id and not getattr(self, "ended_once", False):
             self.ended_once = True
-            _ended(self, order.client_order_id)
+            _ended(self, order.client_order_id, type(self).cls)
             return
         super().submit_order(order, *args, **kwargs)
 
 
-def test_an_exit_canceled_by_the_venue_is_retried(caplog):
+@pytest.mark.parametrize(("cls", "why"), [(OrderCanceled, "canceled"), (OrderExpired, "expired")])
+def test_an_exit_canceled_by_the_venue_is_retried(caplog, cls, why):
     # covers: AC-8a
+    _CanceledExit.cls = cls
     with caplog.at_level(logging.WARNING, logger="trading_core.node.placeholder"):
         engine, strategy, rows = _run(Prices(29, lambda t: 85000 + int(t * 10)), strategy_cls=_CanceledExit)
 
     refused = [r for r in caplog.records if getattr(r, "fields", {}).get("code") == "exit_refused"]
-    assert [(r.fields["why"], r.fields["failures"]) for r in refused] == [("canceled", 1)]
+    assert [(r.fields["why"], r.fields["failures"]) for r in refused] == [(why, 1)]
     assert [d.intent for d in _decisions(rows)] == [Intent.ENTER, Intent.EXIT]
     assert engine.cache.positions_open() == []
     assert strategy.phase == Phase.FLAT
