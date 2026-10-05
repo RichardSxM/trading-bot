@@ -327,7 +327,7 @@ Tracer Bullet: the gate first, then the thinnest real thread from quote to dashb
 
 **Milestone 4: trades page and the run**
 11. [x] The Trades page: round trips with side from the earliest fill and exit reason, and fills, each paginated. Satisfies **AC-19**.
-12. The 2 hour laptop run and the drills in `verify.md`. Satisfies **AC-21** (and rechecks all of the above).
+12. [x] The 2 hour laptop run and the drills in `verify.md`. Satisfies **AC-21** (and rechecks all of the above).
 
 ## Consequences
 

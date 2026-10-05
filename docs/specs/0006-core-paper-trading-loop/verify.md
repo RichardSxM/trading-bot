@@ -79,6 +79,13 @@ Steps you may run to check the feature by hand, on the laptop in demo, after `do
     - The `fills` count with `filled_at` between T0 and T1 equals `docker compose logs --since T0 --until T1 trader | grep -c '"fill_seen"'`.
     - Once flat with `recording_backlog` 0, the dashboard's realized figures equal the Postgres sums to the cent.
 
+    **Result, 2026-10-05 (all passed):** window 00:30 to 02:30 UTC, inside one run untouched since 2026-10-04 20:31 UTC.
+    - 8 closed `paper` positions, from 8 entries.
+    - Every entry had its stop accepted; the late stop query returned no rows.
+    - 17 `fills` rows and 17 `fill_seen` lines.
+    - No risk events in the window.
+    - At 02:46 the dashboard's reader (as `dashboard_app`) gave realized today −1.93, all time −5.20, fees today 1.10, equal to the Postgres sums. A new entry had opened at 02:44, so this was not strictly flat; both read the same closed rows.
+
 ## Notes
 
 _Results and dates go here as steps are run._
