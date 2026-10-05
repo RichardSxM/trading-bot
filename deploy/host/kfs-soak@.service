@@ -1,0 +1,9 @@
+# The unattended soak (spec 0005 AC-24). Started by `kfs-soak start`, never enabled.
+[Unit]
+Description=kfs soak %i
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/kfs-soak run %i

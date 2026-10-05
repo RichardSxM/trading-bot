@@ -1,0 +1,311 @@
+#!/usr/bin/env bash
+# The unattended soak (spec 0005 AC-24). Linked as /usr/local/sbin/kfs-soak.
+#
+#   sudo kfs-soak start [--hours 72]
+#                       # start kfs-soak@<id>.service; exit 1 while another soak runs
+#   sudo kfs-soak report [<id>]
+#                       # the newest soak (or <id>); while it runs, a report so far
+#   kfs-soak run <id>   # the service's ExecStart, never by hand
+#
+# A soak lives in /var/lib/kfs/soak/<id>/ (<id> is its UTC start, 20261005T140000Z):
+# meta.json (window, env, commit, STOP_ACCEPT_TIMEOUT_S, restart counts at start),
+# samples.jsonl (one line every 10 s: trader_state, restart counts; health every minute,
+# memory every hour), fills_seen.txt (the trade_id of every `fill_seen` trader log line,
+# followed live so rotation cannot lose one, deduplicated so a reattach never counts twice),
+# end.json (written when the window closes).
+#
+# Exit codes: 1 no soak found or one already running, 2 the report says FAIL.
+set -euo pipefail
+
+KFS_PROCESS=kfs-soak
+HOST_DIR=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+# shellcheck source=deploy/host/lib.sh
+. "$HOST_DIR/lib.sh"
+
+SOAK_DIR="$KFS_STATE_DIR/soak"
+TRADER=kfs-trader-1
+SAMPLE_S=10
+HEALTH_EVERY=6     # samples, so once a minute
+MEMORY_EVERY=360   # samples, so once an hour
+MAX_GAP_S=120
+
+die() {
+    local code=$1
+    shift
+    kfs_log ERROR "$*" >&2
+    exit "$code"
+}
+
+usage() {
+    sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//' >&2
+    exit 64
+}
+
+[ "$(id -u)" -eq 0 ] || die 1 "run as root (sudo kfs-soak ...)"
+
+compose() {
+    "$HOST_DIR/kfs-compose" "$@"
+}
+
+# An env file value (the last line wins, never sourced), or the default.
+env_value() {
+    local name=$1 default=$2 value
+    value=$(sed -n "s/^[[:space:]]*${name}[[:space:]]*=[[:space:]]*[\"']\{0,1\}\([^\"' ]*\).*/\1/p" "$KFS_ENV_FILE" 2>/dev/null | tail -n 1)
+    printf '%s\n' "${value:-$default}"
+}
+
+running_soak() {
+    systemctl list-units --state=active --no-legend --plain 'kfs-soak@*.service' 2>/dev/null |
+        sed -n 's/^kfs-soak@\([^.]*\)\.service.*/\1/p' | head -n 1
+}
+
+# {"<container>": RestartCount} for every kfs container.
+restart_counts() {
+    local ids
+    ids=$(docker ps -aq --filter label=com.docker.compose.project=kfs)
+    [ -n "$ids" ] || {
+        echo '{}'
+        return 0
+    }
+    # shellcheck disable=SC2086 # one id per word
+    docker inspect -f '{{.Name}} {{.RestartCount}}' $ids |
+        jq -Rn '[inputs | split(" ") | {key: (.[0] | ltrimstr("/")), value: (.[1] | tonumber)}] | from_entries'
+}
+
+# {"<container>": MiB} from one `docker stats` read.
+memory_mib() {
+    docker stats --no-stream --format '{{json .}}' |
+        jq -sc 'map(select(.Name | startswith("kfs-"))
+            | {key: .Name, value: (.MemUsage | split(" / ")[0]
+                | capture("^(?<n>[0-9.]+)(?<u>[A-Za-z]+)$")
+                | (.n | tonumber) * ({"B": 1 / 1048576, "kB": 1 / 1024, "KiB": 1 / 1024, "MB": 1, "MiB": 1, "GB": 1024, "GiB": 1024}[.u] // 0)
+                | . * 10 | round / 10)})
+            | from_entries'
+}
+
+start() {
+    local hours=72 seconds id dir now
+    while [ $# -gt 0 ]; do
+        case $1 in
+            --hours)
+                [ $# -ge 2 ] || usage
+                [[ $2 =~ ^[0-9]+(\.[0-9]+)?$ ]] || die 64 "--hours needs a number such as 72 or 0.5"
+                hours=$2
+                shift 2
+                ;;
+            *) die 64 "unknown option $1" ;;
+        esac
+    done
+    seconds=$(awk -v h="$hours" 'BEGIN { printf "%d", h * 3600 }')
+    [ "$seconds" -ge 60 ] || die 64 "--hours must be at least one minute"
+    id=$(running_soak)
+    [ -z "$id" ] || die 1 "soak $id is still running; see kfs-soak report"
+
+    now=$(date -u +%s)
+    id=$(jq -nr --argjson t "$now" '$t | strftime("%Y%m%dT%H%M%SZ")')
+    dir="$SOAK_DIR/$id"
+    install -d -m 0700 "$SOAK_DIR" "$dir"
+    jq -n --arg id "$id" --argjson start "$now" --argjson end "$((now + seconds))" \
+        --arg env "$(kfs_trading_env)" --arg commit "$(kfs_current_sha)" \
+        --argjson stop_timeout_s "$(env_value STOP_ACCEPT_TIMEOUT_S 5)" \
+        --argjson restarts "$(restart_counts)" \
+        '{id: $id, start: $start, end: $end, started_at: ($start | todate), ends_at: ($end | todate),
+          env: $env, git_commit: $commit, stop_timeout_s: $stop_timeout_s, restarts_at_start: $restarts}' \
+        >"$dir/meta.json"
+    : >"$dir/samples.jsonl"
+    : >"$dir/fills_seen.txt"
+    systemctl start "kfs-soak@$id.service"
+    kfs_log INFO "soak started" id "$id" ends_at "$(jq -nr --argjson t "$((now + seconds))" '$t | todate')"
+}
+
+# Follow the trader log from the soak's start and record each new fill_seen trade_id. Docker
+# ends a follow when the container stops, so it attaches again from the last line it saw.
+follow_fills() {
+    local dir=$1 end=$2 since=$3 line ts json trade_id
+    while [ "$(date -u +%s)" -lt "$end" ]; do
+        while IFS= read -r line; do
+            ts=${line%% *}
+            json=${line#* }
+            since=$ts
+            case $json in *'"fill_seen"'*) ;; *) continue ;; esac
+            trade_id=$(jq -r 'select(.code == "fill_seen") | .trade_id // empty' <<<"$json" 2>/dev/null) || continue
+            [ -n "$trade_id" ] || continue
+            grep -qxF "$trade_id" "$dir/fills_seen.txt" || printf '%s\n' "$trade_id" >>"$dir/fills_seen.txt"
+        done < <(docker logs -f --timestamps --since "$since" --until "$end" "$TRADER" 2>/dev/null)
+        sleep 2
+    done
+}
+
+sample() {
+    local dir=$1 n=$2 now state ok=false health=null memory=null why
+    now=$(date -u +%s)
+    if state=$(compose exec -T dashboard python -m dashboard.control_cli state 2>/dev/null) ||
+        state=$(kfs_control state 2>/dev/null); then
+        ok=true
+    else
+        state=null
+        kfs_log WARNING "trader_state unreadable"
+    fi
+    if [ $((n % HEALTH_EVERY)) -eq 0 ]; then
+        if why=$(kfs_services_healthy 2>&1); then
+            health='{"healthy": true}'
+        else
+            health=$(jq -nc --arg why "$why" '{healthy: false, why: $why}')
+        fi
+    fi
+    if [ $((n % MEMORY_EVERY)) -eq 0 ]; then
+        memory=$(memory_mib) || memory=null
+    fi
+    jq -nc --argjson t "$now" --argjson ok "$ok" --argjson state "$state" \
+        --argjson restarts "$(restart_counts)" --argjson health "$health" --argjson memory "$memory" \
+        '{t: $t, ok: $ok, ts_ns: ($state.ts_ns // null),
+          state: ($state.data // null | if . == null then null else
+              {open_positions, protective_stops, open_entry_orders, exiting, position_opened_ns, trading_state, paused} end),
+          restarts: $restarts}
+         + (if $health == null then {} else {health: $health} end)
+         + (if $memory == null then {} else {memory: $memory} end)' >>"$dir/samples.jsonl"
+}
+
+run() {
+    local id=$1 dir="$SOAK_DIR/$1" end start n=0 next follower verdict
+    [ -f "$dir/meta.json" ] || die 1 "no soak $id"
+    start=$(jq -r .start "$dir/meta.json")
+    end=$(jq -r .end "$dir/meta.json")
+    follow_fills "$dir" "$end" "$start" &
+    follower=$!
+    trap 'kill "$follower" 2>/dev/null || true' EXIT
+    next=$(date -u +%s)
+    while [ "$next" -lt "$end" ]; do
+        sample "$dir" "$n" || kfs_log WARNING "sample failed" n "$n"
+        n=$((n + 1))
+        next=$((next + SAMPLE_S))
+        [ "$next" -le "$(date -u +%s)" ] || sleep $((next - $(date -u +%s)))
+    done
+    # Let the follower catch up to the end, then stop it.
+    sleep 5
+    kill "$follower" 2>/dev/null || true
+    wait "$follower" 2>/dev/null || true
+    sample "$dir" 0 || true
+    report_json "$dir" final >"$dir/end.json"
+    verdict=$(jq -r .verdict "$dir/end.json")
+    if [ "$verdict" = PASS ]; then
+        kfs_log INFO "soak done" id "$id" verdict "$verdict"
+    else
+        kfs_log ERROR "soak done" id "$id" verdict "$verdict" failed "$(jq -r '.failed | join(", ")' "$dir/end.json")"
+    fi
+}
+
+# The report as one JSON object. mode: final (the window closed) or live (so far).
+report_json() {
+    local dir=$1 mode=$2 meta to now healthy why sql pg fills autoheal
+    meta="$dir/meta.json"
+    now=$(date -u +%s)
+    to=$(jq -r --argjson now "$now" 'if .end < $now then .end else $now end' "$meta")
+    if why=$(kfs_services_healthy 2>&1); then
+        healthy=true
+        why=""
+    else
+        healthy=false
+    fi
+    # Every value is checked or computed here (env is [a-z]*, the times are epoch seconds), so
+    # the query is built in place: psql does not substitute variables inside -c.
+    sql="SELECT count(*) FROM fills WHERE env = '$(jq -r .env "$meta")' AND filled_at >= to_timestamp($(jq -r .start "$meta")) AND filled_at < to_timestamp($to)"
+    # shellcheck disable=SC2016 # expanded by the container's shell
+    pg=$(compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tA -c "$1"' sh "$sql" 2>/dev/null |
+        tr -d '[:space:]') || pg=""
+    [[ $pg =~ ^[0-9]+$ ]] || pg=""
+    fills=$(grep -c . "$dir/fills_seen.txt" || true)
+    autoheal=$(journalctl -u kfs-autoheal --since "@$(jq -r .start "$meta")" --until "@$to" -o cat 2>/dev/null |
+        jq -Rc 'fromjson? | select(.msg == "autoheal_restart") | {ts, container}' | jq -sc . || echo '[]')
+    jq -n --slurpfile meta "$meta" --slurpfile samples "$dir/samples.jsonl" \
+        --arg mode "$mode" --argjson now "$now" --argjson to "$to" \
+        --argjson healthy "$healthy" --arg why "$why" --arg pg "$pg" --argjson seen "$fills" \
+        --argjson autoheal "$autoheal" --argjson max_gap "$MAX_GAP_S" '
+        $meta[0] as $m
+        | $samples as $s
+        | ($s | map(select(.ok and .ts_ns != null)) | map(.ts_ns / 1e9) | unique) as $fresh
+        | ([$m.start] + $fresh + [$to]) as $edges
+        | ([range(1; $edges | length) | $edges[.] - $edges[. - 1]] | max // 0 | . * 10 | round / 10) as $gap
+        | ($s | map(select(.restarts != null)) | last.restarts // {}) as $last_restarts
+        | ($last_restarts | to_entries
+            | map({container: .key, restarts: (.value - ($m.restarts_at_start[.key] // 0))})
+            | map(select(.restarts > 0))) as $docker_restarts
+        | ($s | map(select(.ok and .state != null and .state.open_positions > 0))) as $holding
+        | ($holding | map(select(.state.exiting
+            or (.state.position_opened_ns != null and (.ts_ns - .state.position_opened_ns) < $m.stop_timeout_s * 1e9)))
+            | length) as $exempt
+        | ($holding | map(select((.state.exiting | not)
+            and (.state.position_opened_ns == null or (.ts_ns - .state.position_opened_ns) >= $m.stop_timeout_s * 1e9)
+            and .state.protective_stops < .state.open_positions)
+            | {at: (.t | todate), open_positions: .state.open_positions, protective_stops: .state.protective_stops})) as $uncovered
+        | ($s | map(.memory // empty) | map(to_entries) | add // []
+            | group_by(.key) | map({key: .[0].key, value: (map(.value) | max)}) | from_entries) as $peak
+        | ($pg | if . == "" then null else tonumber end) as $pg_fills
+        | {
+            id: $m.id, started_at: $m.started_at, ends_at: $m.ends_at, env: $m.env, git_commit: $m.git_commit,
+            running: ($mode == "live" and $now < $m.end),
+            hours_done: ((($to - $m.start) / 3600) * 10 | round / 10),
+            hours_total: ((($m.end - $m.start) / 3600) * 10 | round / 10),
+            samples: ($s | length),
+            healthy: {ok: $healthy, why: $why},
+            gap: {ok: ($gap < $max_gap), longest_s: $gap, limit_s: $max_gap},
+            restarts: {docker: $docker_restarts, autoheal: $autoheal,
+                       count: (($docker_restarts | map(.restarts) | add // 0) + ($autoheal | length))},
+            fills: {ok: ($pg_fills != null and $pg_fills == $seen), postgres: $pg_fills, fill_seen: $seen},
+            stops: {ok: ($uncovered | length == 0), samples_holding: ($holding | length), exempt: $exempt,
+                    uncovered: $uncovered},
+            peak_memory_mib: $peak
+          }
+        | .failed = ([
+            (if .healthy.ok then empty else "healthy" end),
+            (if .gap.ok then empty else "gap" end),
+            (if .fills.ok then empty else "fills" end),
+            (if .stops.ok then empty else "stops" end)])
+        | .verdict = (if (.failed | length) > 0 then "FAIL" elif .running then "RUNNING" else "PASS" end)'
+}
+
+report() {
+    local id=${1:-} dir json
+    if [ -z "$id" ]; then
+        # shellcheck disable=SC2012 # ids are UTC stamps, nothing to escape
+        id=$(ls -1 "$SOAK_DIR" 2>/dev/null | sort | tail -n 1)
+    fi
+    [ -n "$id" ] && [ -f "$SOAK_DIR/$id/meta.json" ] || die 1 "no soak found; start one with kfs-soak start"
+    dir="$SOAK_DIR/$id"
+    if [ -f "$dir/end.json" ]; then
+        json=$(cat "$dir/end.json")
+    else
+        json=$(report_json "$dir" live)
+    fi
+    jq -r '
+        def mark(ok): if ok then "ok  " else "FAIL" end;
+        "soak \(.id) · \(.env) · \(.git_commit[0:7]) · \(.started_at) to \(.ends_at)",
+        "  \(if .running then "running, \(.hours_done) h of \(.hours_total) h" else "done, \(.hours_done) h" end), \(.samples) samples",
+        "  \(mark(.healthy.ok))  healthy now\(if .healthy.ok then "" else ": \(.healthy.why)" end)",
+        "  \(mark(.gap.ok))  longest trader_state gap \(.gap.longest_s) s (limit \(.gap.limit_s) s)",
+        "  \(mark(.fills.ok))  fills: \(.fills.postgres // "unreadable") in Postgres, \(.fills.fill_seen) fill_seen",
+        "  \(mark(.stops.ok))  stops: \(.stops.uncovered | length) uncovered of \(.stops.samples_holding) samples holding a position (\(.stops.exempt) exempt)",
+        (.stops.uncovered[:10][] | "          uncovered at \(.at): \(.open_positions) open, \(.protective_stops) stops"),
+        "  info  automatic restarts: \(.restarts.count)",
+        (.restarts.docker[] | "          docker \(.container): +\(.restarts)"),
+        (.restarts.autoheal[] | "          autoheal_restart \(.container) at \(.ts)"),
+        "  info  peak memory MiB: \(.peak_memory_mib | to_entries | map("\(.key | ltrimstr("kfs-") | rtrimstr("-1")) \(.value)") | join(", ") | if . == "" then "none yet" else . end)",
+        "  \(.verdict)\(if (.failed | length) > 0 then ": \(.failed | join(", "))" else "" end)"' <<<"$json"
+    [ "$(jq -r .verdict <<<"$json")" != FAIL ] || exit 2
+}
+
+case "${1:-}" in
+    start)
+        shift
+        start "$@"
+        ;;
+    report)
+        [ $# -le 2 ] || usage
+        report "${2:-}"
+        ;;
+    run)
+        [ $# -eq 2 ] || usage
+        run "$2"
+        ;;
+    *) usage ;;
+esac
