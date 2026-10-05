@@ -25,6 +25,7 @@ from dashboard.live.state import (
 )
 from dashboard.ui.format import num, pnl, ts
 from dashboard.ui.tokens import color_tokens, contrast_ratio, read_tokens
+from dashboard.web.trades import FILL_COLUMNS, PagerView
 from trading_core.strategy.blocks import PLAIN_WORDS, BlockReason
 
 # The text color each swatch is read against: surfaces carry text, alarms carry white or night.
@@ -38,15 +39,6 @@ SWATCH_TEXT: Final = {
     "on-alarm": "stop",
     "demo": "bg",
 }
-# (heading, is_number) for the fills table: the Trades page heads and the styleguide sample.
-FILL_COLUMNS: Final = [
-    ("Time", False),
-    ("Market", False),
-    ("Side", False),
-    ("Size", True),
-    ("Price", True),
-    ("Fee", True),
-]
 TYPE_ROLES: Final = ("display", "headline", "title", "body-lg", "body", "label", "caption", "number", "number-lg")
 SAMPLE_TIME: Final = datetime(2026, 10, 2, 14, 3, 7, 512_000, tzinfo=UTC)
 # Sample Activity rows (labelled sample data on /styleguide only): one of each outcome color.
@@ -195,6 +187,11 @@ def styleguide_context() -> dict[str, object]:
         "sample_ns": int(SAMPLE_TIME.timestamp()) * 1_000_000_000,
         "fill_columns": FILL_COLUMNS,
         "fills": fills(),
+        "pager_samples": {
+            "first": PagerView(1, older="#page-2"),
+            "middle": PagerView(2, newer="#page-1", older="#page-3"),
+            "past_end": PagerView(9, first="#page-1"),
+        },
         "candles": candles(),
         "pulse_sample": PULSE_SAMPLE,
         "stale_s": (3, 10),

@@ -9,6 +9,7 @@
 {% from "components/stat.html" import stat %}
 {% from "components/states.html" import empty_state, loading, error_state %}
 {% from "components/table.html" import table %}
+{% from "components/pager.html" import pager %}
 {% block head %}<link rel="stylesheet" href="/static/css/styleguide.css">{% endblock %}
 {% block scripts %}
   <script defer src="/static/vendor/lightweight-charts.standalone.production.js"></script>
@@ -178,6 +179,11 @@
   <div class="sg-pair">
     <div data-sample="table:empty">{{ table("Sample fills, empty", fill_columns, [], "Fills and closed trades appear here.", empty_glyph="arrow-left-right") }}</div>
     <div data-sample="table:loading">{{ table("Sample fills, loading", fill_columns, [], "", loading=True) }}</div>
+  </div>
+  <div class="sg-pair">
+    <div data-sample="pager:first">{{ pager("Sample pages, first", pager_samples.first) }}</div>
+    <div data-sample="pager:middle">{{ pager("Sample pages, middle", pager_samples.middle) }}</div>
+    <div data-sample="pager:past_end">{{ pager("Sample pages, past the end", pager_samples.past_end) }}</div>
   </div>
 </section>
 

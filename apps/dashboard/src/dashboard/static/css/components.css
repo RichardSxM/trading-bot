@@ -169,6 +169,20 @@ time[title] { text-decoration: underline dotted var(--edge); text-underline-offs
 .table__empty td { padding: var(--space-32) var(--space-16); color: var(--muted); text-align: left; white-space: normal; }
 .table__empty tr:hover td, .table__empty:hover td { background: transparent; }
 
+/* ---------- Pager: newer and older pages of a table (spec 0006 AC-19) ---------- */
+.pager { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-8); margin-top: var(--space-12); border-top: 1px solid var(--rule); padding-top: var(--space-8); }
+.pager__at { color: var(--faint); font-size: var(--type-caption-size); font-weight: var(--type-caption-weight); font-variant-numeric: tabular-nums; }
+.pager__note { color: var(--muted); font-size: var(--type-label-size); }
+.pager__link {
+  display: inline-flex; align-items: center; gap: var(--space-4);
+  min-height: 44px; padding: 0 var(--space-12);
+  border-radius: var(--radius-4);
+  color: var(--muted); font-size: var(--type-label-size); font-weight: var(--type-label-weight);
+  text-decoration: none;
+  transition: background-color var(--motion-state), color var(--motion-state);
+}
+.pager__link:hover { background: var(--raised); color: var(--text); }
+
 /* ---------- Button ---------- */
 .button {
   position: relative;

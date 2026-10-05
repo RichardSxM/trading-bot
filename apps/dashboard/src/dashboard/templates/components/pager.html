@@ -1,0 +1,17 @@
+{# Pager links under a paged list (DESIGN.md: Pager). ``view`` is a PagerView; nothing renders
+   on a lone first page. #}
+{% from "components/icon.html" import icon %}
+{% macro pager(label, view) -%}
+{% if view.first or view.newer or view.older %}
+<nav class="pager" aria-label="{{ label }}">
+  {% if view.first %}
+  <span class="pager__note">Nothing on page {{ view.page }}.</span>
+  <a class="pager__link" href="{{ view.first }}">Back to page 1</a>
+  {% else %}
+  {% if view.newer %}<a class="pager__link" href="{{ view.newer }}" rel="prev">{{ icon("chevron-left") }}<span>Newer</span></a>{% endif %}
+  <span class="pager__at">Page {{ view.page }}</span>
+  {% if view.older %}<a class="pager__link" href="{{ view.older }}" rel="next"><span>Older</span>{{ icon("chevron-right") }}</a>{% endif %}
+  {% endif %}
+</nav>
+{% endif %}
+{%- endmacro %}

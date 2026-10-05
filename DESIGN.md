@@ -353,6 +353,10 @@ A Margin Caption label over a Number large value, with an optional Caption note 
 Dense rows at Label size, cells 8 px tall padding and 24 px side padding on a laptop (16 px on a phone), Hairline rules between rows, numbers right aligned in Mono. Heads are sentence case Caption in Margin with no fill of their own (they sit on Desk) and a Hairline rule below; they stick while the body scrolls. A hovered row turns Lamp. Empty and loading rows span every column, left aligned, in Pencil.
 - **States:** `default`, `empty`, `loading`
 
+### Pager (`pager`)
+Under a paged table (Trades, spec 0006 AC-19), above a Hairline: the page as a Margin Caption (`Page 2`) between quiet links, `Newer` with a chevron left and `Older` with a chevron right, in Pencil at Label size that turn Paper on a Lamp fill when hovered, each at least 44 px tall. `Older` shows only while the page is full. A page past the end shows one Pencil line (`Nothing on page 9.`) and a `Back to page 1` link. A lone first page renders no pager.
+- **States:** `first`, `middle`, `past_end`
+
 ### Button (`button`)
 - **Shape:** 4 px corners, at least 44 × 44 px, 16 px side padding, Label type, an optional 16 px icon 8 px from the label.
 - **Default:** Lamp fill, Edge border, Paper text; hover turns the border Pencil; pressed drops to Desk. **Focus:** 2 px Signal Indigo outline, 2 px offset.

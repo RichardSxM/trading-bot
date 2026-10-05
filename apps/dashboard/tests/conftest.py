@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 from dashboard.data.pnl import PnlFigures
+from dashboard.data.trades import TradesView
 from dashboard.settings import DashboardSettings
 from dashboard.web.app import create_app
 from trading_core.snapshot.envelope import encode
@@ -123,7 +124,12 @@ def redis(clock):
 ZERO_PNL = PnlFigures(realized_today=Decimal(0), realized_all=Decimal(0), fees_today=Decimal(0))
 
 
-def make_app(redis, clock, env="demo", read_pnl=lambda: ZERO_PNL, **settings):
+NO_TRADES = TradesView(round_trips=(), fills=())
+
+
+def make_app(
+    redis, clock, env="demo", read_pnl=lambda: ZERO_PNL, read_trades=lambda page, fills_page: NO_TRADES, **settings
+):
     settings.setdefault("dashboard_cookie_secure", False)
     return create_app(
         DashboardSettings(trading_env=env, **settings),
@@ -132,6 +138,7 @@ def make_app(redis, clock, env="demo", read_pnl=lambda: ZERO_PNL, **settings):
         clock=clock,
         clock_ns=clock.ns,
         read_pnl=read_pnl,
+        read_trades=read_trades,
     )
 
 

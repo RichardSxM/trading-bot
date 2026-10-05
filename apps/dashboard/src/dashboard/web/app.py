@@ -23,6 +23,7 @@ from dashboard.auth.proxy import default_gateway
 from dashboard.auth.session import SessionCodec
 from dashboard.auth.totp import TotpGuard
 from dashboard.data.pnl import PnlFigures, pnl_figures
+from dashboard.data.trades import TradesView, trades_view
 from dashboard.live.poller import ACTIVITY_SIZE, Poller, supervise
 from dashboard.live.position import PositionView
 from dashboard.live.state import ActivityRow, AgeView, AlertView, BlockedView, CommandView, PauseView, collapse
@@ -88,27 +89,32 @@ def create_app(
     clock: Callable[[], float] = time.time,
     clock_ns: Callable[[], int] = time.time_ns,
     read_pnl: Callable[[], PnlFigures] | None = None,
+    read_trades: Callable[[int, int], TradesView] | None = None,
 ) -> FastAPI:
-    """Build the dashboard app. Tests pass fake settings, secrets, a fake Redis, fake clocks, and a P&L reader.
+    """Build the dashboard app. Tests pass fake settings, secrets, a fake Redis, fake clocks, and Postgres readers.
 
-    ``read_pnl`` is blocking (it queries Postgres as ``dashboard_app``); the poller runs it in a thread.
+    ``read_pnl`` and ``read_trades`` are blocking (they query Postgres as ``dashboard_app``); the
+    poller and the Trades route run them in a thread.
     """
     client: LiveRedis = redis if redis is not None else redis_client(settings, secrets[REDIS_PASSWORD])
     engine = None
-    pnl_reader: Callable[[], PnlFigures]
-    if read_pnl is not None:
-        pnl_reader = read_pnl
-    else:
+    env = settings.trading_env
+    if read_pnl is None or read_trades is None:
+        # Two connections: a Trades page load never waits behind the poller's P&L read.
         engine = create_engine(
-            settings.database_url(secrets[POSTGRES_PASSWORD]), pool_size=1, max_overflow=0, pool_pre_ping=True
+            settings.database_url(secrets[POSTGRES_PASSWORD]), pool_size=2, max_overflow=0, pool_pre_ping=True
         )
         sessions = sessionmaker(engine)
-        env = settings.trading_env
 
         def postgres_pnl() -> PnlFigures:
             return pnl_figures(sessions, env, datetime.fromtimestamp(clock(), UTC))
 
-        pnl_reader = postgres_pnl
+        def postgres_trades(page: int, fills_page: int) -> TradesView:
+            return trades_view(sessions, env, page, fills_page)
+
+        read_pnl = read_pnl or postgres_pnl
+        read_trades = read_trades or postgres_trades
+    pnl_reader, trades_reader = read_pnl, read_trades
     templates = Jinja2Templates(directory=PACKAGE_DIR / "templates")
     templates.env.filters.update(num=num, pnl=pnl, ts=ts)
     age_template = templates.get_template("partials/topbar_age.html")
@@ -192,6 +198,7 @@ def create_app(
         ),
         redis=client,
         clock=clock,
+        read_trades=lambda page, fills_page: asyncio.to_thread(trades_reader, page, fills_page),
         trusted_peers=trusted_peers(),
     )
 

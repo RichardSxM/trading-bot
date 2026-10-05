@@ -42,7 +42,7 @@ def test_the_overview_page_shows_the_shell_and_its_empty_state(logged_in):
     ("path", "title", "empty"),
     [
         ("/", "Overview", "Stop, pause, and resume commands appear here as they happen."),
-        ("/trades", "Trades", "Fills and closed trades appear here."),
+        ("/trades", "Trades", "Each paper position appears here once it closes."),
         ("/strategies", "Strategies", "Backtests and strategy scores appear here."),
         ("/system", "System", "Command history and service health appear here."),
     ],
