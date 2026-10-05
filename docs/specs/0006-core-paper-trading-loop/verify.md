@@ -121,7 +121,7 @@ Failed, for `/debug`:
 
 Missing:
 
-- **Step 6 (AC-7, AC-8a runtime):** `SANDBOX_REJECT_STOP_ORDERS` is in the spec but not in the code, so the drill cannot run. One real `stop_not_accepted` event from 2026-10-04 19:45 exists (an older build).
+- **Step 6 (AC-7, AC-8a runtime):** `SANDBOX_REJECT_STOP_ORDERS` is in the spec but not in the code, so the drill cannot run. One real `stop_not_accepted` event from 2026-10-04 19:45 exists (an older build). (Built in 0deb296 and passed on 2026-10-05; see the last entry.)
 
 Notes for the next run:
 
@@ -140,4 +140,14 @@ Notes for the next run:
 - AC-3: entry decisions at 06:30:02.010, 06:45:02.002 and 07:00:02.010, each while flat, one per boundary, none early or doubled.
 - AC-8: the 06:30 entry filled at 06:30:02.023 (fill `ts_event`), and the `time` exit was decided at 06:40:02.025, 10 min plus 2 ms later. The stop was canceled at 06:40:02.038, after the close.
 - AC-11: every order row since the restart ends in the right state with its full event list: entries and the exit `filled` 0.0011 with one fill each; the 06:30 stop `canceled` (`initialized, submitted, accepted, pending_cancel, canceled`); the 06:45 stop `filled` 0.0011 from two partial fills at 06:47:40, with the position `closed` and `flat`; the 07:00 entry `filled` and its stop `accepted`. No warnings or errors in the trader log.
-- The spec as a whole still fails on AC-7 (step 6, `SANDBOX_REJECT_STOP_ORDERS` not built).
+- The spec as a whole still fails on AC-7 (step 6, `SANDBOX_REJECT_STOP_ORDERS` not built). Resolved below.
+
+**2026-10-05, `/check verify` step 6 (AC-7, AC-8a) on 0deb296 (laptop, demo), 08:29 to 09:16 UTC. PASS. With this, every step has passed and the spec passes as a whole.** The switch came in through `compose.yaml` (`SANDBOX_REJECT_STOP_ORDERS=true docker compose up -d trader`); `.env` was not touched.
+
+- Start: the WARNING `sandbox_reject_stop_orders` at 08:29:00, no env guard refusal, run `01a10b2e…`. The 08:30 boundary was skipped while warming up (1 bar), as expected.
+- 08:45 entry: short 0.0011 at 86240 (`O-…084502-DEMO-000-1`, filled 08:45:02.0775). Its reduce only GTC stop at 86499 was rejected with reason `SANDBOX_REJECT_STOP_ORDERS drill`, and the order row ends `rejected`.
+- Exit loop (AC-7, AC-8a): a reduce only GTC market buy for the full 0.0011 (`-000-3`) filled at 86242 at 08:45:02.1780, 100.5 ms after the entry fill. The position is `closed`, `flat`, realized −0.10 with fees 0.10.
+- One `critical` `order_rejected` risk event, keyed `stop_not_accepted:O-20261005-084502-DEMO-000-2`.
+- `trader_state` showed `entries_blocked: ["stop_not_accepted"]`. The 09:00 boundary was `rejected` `blocked:stop_not_accepted`, with an `info` `limit_hit` event and no order.
+- Trades page: the dashboard's own query (as `dashboard_app`) gives the 08:45 short with exit reason `stop_failure`, and you confirmed this on the rendered page.
+- Restored (switch off, run `01a10b4b…`): no drill WARNING, `entries_blocked` empty. The 09:15 entry was approved and filled, and its stop at 86215 was `accepted`.
