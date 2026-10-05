@@ -10,6 +10,7 @@ Round trip: ``flat`` → ``entering`` (entry submitted) → ``protected`` (stop 
 ``exiting`` (exit loop) → ``flat``. A stop fill goes straight to ``flat``.
 """
 
+import functools
 import logging
 import uuid
 from collections.abc import Callable
@@ -513,7 +514,15 @@ class PlaceholderTimed(KfsStrategy):
 
     def _alert(self, name: str, at_ns: int, callback: Callable[[object], None]) -> None:
         self._cancel_timer(name)
-        self.clock.set_time_alert_ns(name, at_ns, callback)
+        self.clock.set_time_alert_ns(name, at_ns, functools.partial(self._when_due, name, at_ns, callback))
+
+    def _when_due(self, name: str, at_ns: int, callback: Callable[[object], None], event: object) -> None:
+        # A live alert sleeps a fixed duration on the monotonic clock, which can run ahead of the
+        # wall clock (0.6 % in the Docker Desktop VM), so it may wake early: sleep the rest.
+        if self.clock.timestamp_ns() < at_ns:
+            self._alert(name, at_ns, callback)
+            return
+        callback(event)
 
     def _cancel_timer(self, name: str) -> None:
         if name in self.clock.timer_names:

@@ -115,6 +115,17 @@ def order_facts(order: Order) -> OrderFacts:
     )
 
 
+def order_last_event_ns(order: Order, event: OrderEvent) -> int:
+    """The newest event time ``order`` has seen, so its row's ``last_event_ns`` never moves backwards.
+
+    Events come from two clocks: the strategy stamps ``OrderInitialized`` and
+    ``OrderPendingCancel`` with the node's wall clock, the sandbox stamps the rest with the last
+    quote's time, which trails it. Taking ``event.ts_event`` alone made the guarded upsert drop
+    every later update as older.
+    """
+    return max([event.ts_event, *(e.ts_event for e in order.events)])
+
+
 def order_for(cache: Cache, event: OrderEvent) -> Order:
     """The order behind ``event``: from the cache, or from the event itself for ``OrderInitialized``.
 
@@ -232,7 +243,9 @@ class RecordingActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
         if not isinstance(event, OrderEvent):
             return
         order = order_for(self.cache, event)
-        row = order_row(order_facts(order), env=self._env, run_id=self._run_id, last_event_ns=event.ts_event)
+        row = order_row(
+            order_facts(order), env=self._env, run_id=self._run_id, last_event_ns=order_last_event_ns(order, event)
+        )
         self._put(WriteCall.UPSERT_ORDER, row)
         self._put(
             WriteCall.RECORD_ORDER_EVENT,

@@ -327,6 +327,53 @@ def test_an_init_event_before_the_order_is_cached_still_records_the_order():
         order_for(_EmptyCache(), TestEventStubs.order_submitted(order))
 
 
+def test_an_order_row_never_moves_back_when_the_sandbox_clock_trails_the_node_clock():
+    """The node stamps OrderInitialized; the sandbox stamps the rest earlier (seen 2026-10-05, AC-11)."""
+    from nautilus_trader.common.component import TestClock
+    from nautilus_trader.common.factories import OrderFactory
+    from nautilus_trader.model.enums import OrderSide as NautilusSide
+    from nautilus_trader.test_kit.stubs.events import TestEventStubs
+    from nautilus_trader.test_kit.stubs.identifiers import TestIdStubs
+
+    from trading_core.node.recording import order_facts, order_last_event_ns
+    from trading_core.recording.mappers import order_row
+
+    clock = TestClock()
+    clock.set_time(2000)
+    factory = OrderFactory(TestIdStubs.trader_id(), TestIdStubs.strategy_id(), clock)
+    order = factory.market(
+        INSTRUMENT_ID, NautilusSide.BUY, Quantity.from_str("0.0011"), tags=[f"decision:{uuid.uuid7()}"]
+    )
+    stamps = [order_last_event_ns(order, order.init_event)]
+    for event in (
+        TestEventStubs.order_submitted(order, ts_event=1000),
+        TestEventStubs.order_filled(order, INSTRUMENT, last_px=Price.from_str("85000"), ts_event=1000),
+    ):
+        order.apply(event)
+        stamps.append(order_last_event_ns(order, event))
+
+    assert stamps == [2000, 2000, 2000]  # equal is applied by the guarded upsert
+    row = order_row(order_facts(order), env=Env.DEMO, run_id=uuid.uuid7(), last_event_ns=stamps[-1])
+    assert (row.status, row.filled_qty) == (OrderStatus.FILLED, Decimal("0.0011"))
+
+
+def test_an_alert_that_wakes_before_its_time_sleeps_the_rest():
+    """A live alert sleeps on the monotonic clock, 0.6 % fast in the Docker VM (seen 2026-10-05, AC-3, AC-8)."""
+    _, strategy, _ = _run(Prices(1, lambda t: 85000))
+    calls = []
+    now = strategy.clock.timestamp_ns()
+
+    strategy._when_due("early", now + 5_000_000_000, calls.append, "event")
+
+    assert calls == []
+    assert "early" in strategy.clock.timer_names
+    assert strategy.clock.next_time_ns("early") == now + 5_000_000_000
+
+    strategy._when_due("due", now, calls.append, "event")
+
+    assert calls == ["event"]
+
+
 # Failure paths (spec 0006 milestone 3) ---------------------------------------------------------
 
 RISING = Prices(40, lambda t: 85000 + int(t * 10))
