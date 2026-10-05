@@ -16,7 +16,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 3 | Data model | Foundation | done |
 | 4 | API keys & secrets | Foundation | in-progress |
 | 5 | Design system & dashboard shell | Foundation | done |
-| 6 | Core paper trading loop | Slice 1 | in-progress |
+| 6 | Core paper trading loop | Slice 1 | done |
 | 7 | Always on cloud deployment | Slice 2 | in-progress |
 | 8 | Order book recorder | Slice 3 | planned |
 | 20 | Market context feed | Slice 3 | planned |
@@ -100,7 +100,7 @@ code in [apps/dashboard/src/dashboard/](../../apps/dashboard/src/dashboard/), [a
 
 ## Slice 1: Core paper trading loop
 
-### 6. Core paper trading loop · in-progress
+### 6. Core paper trading loop · done
 The thinnest real thread (this is the walking skeleton): live BTC perp prices from Kraken's public feed → one deliberately simple placeholder strategy → a risk check with fixed size and leverage caps → an entry with its stop placed as soon as it fills → fills recorded → position and P&L shown on the dashboard. Kraken closed its futures demo on 14 July 2026, so demo orders and stops rest in NautilusTrader's sandbox (a simulated exchange inside the trader), not on Kraken.
 **Done when:** in demo (real prices, sandbox fills), left alone for 2 hours, the bot opens and closes at least 6 positions by itself, every entry has its stop accepted within 5 seconds, fills and fees land in the database, and the dashboard shows the live position and P&L matching it.
 spec [0006](../specs/0006-core-paper-trading-loop/index.md)
@@ -113,7 +113,7 @@ spec [0006](../specs/0006-core-paper-trading-loop/index.md)
 - [x] Verify it: `/check verify core paper trading loop`
 - [x] Test it: `/test core paper trading loop`
 - [x] Review it (fresh model): `/check review core paper trading loop`
-- [ ] Document it: `/document core paper trading loop`
+- [x] Document it: `/document core paper trading loop`
 
 ## Slice 2: Always on
 

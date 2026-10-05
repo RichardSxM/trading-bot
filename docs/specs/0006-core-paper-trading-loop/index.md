@@ -1,7 +1,7 @@
 # 0006. Run one timed placeholder strategy end to end on real prices and the sandbox, recorded and shown live
 
 **Date**: 2026-10-04
-**Status**: In Progress
+**Status**: Accepted
 
 ## Summary
 
