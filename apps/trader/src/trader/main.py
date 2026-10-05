@@ -578,6 +578,11 @@ def warn_on_settings(settings: PaperLoopSettings) -> None:
                 }
             },
         )
+    if settings.sandbox_reject_stop_orders:
+        log.warning(
+            "the sandbox rejects every stop order, for the AC-7 drill only",
+            extra={"fields": {"code": "sandbox_reject_stop_orders"}},
+        )
 
 
 def main() -> None:

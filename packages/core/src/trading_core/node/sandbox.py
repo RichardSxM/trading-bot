@@ -5,6 +5,9 @@ NautilusTrader's sandbox does the matching. It fills on quotes only (``bar_execu
 ``trade_execution`` off). The sandbox config has no fee field, and Kraken publishes its
 instruments with zero fees, so this client sets the configured maker and taker fees on every
 instrument it receives (the AC-1 spike, recorded in the spec's ``verify.md``).
+
+For the AC-7 drill only, ``SANDBOX_REJECT_STOP_ORDERS`` makes it reject every stop order, so you
+can watch the strategy flatten and block entries when its stop does not rest.
 """
 
 import asyncio
@@ -16,6 +19,7 @@ from nautilus_trader.adapters.sandbox.execution import SandboxExecutionClient
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.component import LiveClock, MessageBus
 from nautilus_trader.core.data import Data
+from nautilus_trader.execution.messages import SubmitOrder
 from nautilus_trader.live.factories import LiveExecClientFactory
 from nautilus_trader.model.instruments import Instrument
 from nautilus_trader.portfolio.base import PortfolioFacade
@@ -24,13 +28,19 @@ from trading_core.settings import PaperLoopSettings
 
 # The sandbox simulates USD margin; Kraken's PF_ perpetuals settle in USD.
 SANDBOX_CURRENCY = "USD"
+DRILL_REJECT_REASON = "SANDBOX_REJECT_STOP_ORDERS drill"
 
 
 class FeeSandboxConfig(SandboxExecutionClientConfig, frozen=True, kw_only=True):
-    """The sandbox config plus the fees, as fractions of notional, set on every instrument it trades."""
+    """The sandbox config plus the fees, as fractions of notional, set on every instrument it trades.
+
+    ``reject_every_stop`` is the AC-7 drill switch. It differs from Nautilus' own
+    ``reject_stop_orders``, which rejects only a stop whose trigger is already in the market.
+    """
 
     maker_fee: Decimal
     taker_fee: Decimal
+    reject_every_stop: bool = False
 
 
 def with_fees(instrument: Instrument, maker_fee: Decimal, taker_fee: Decimal) -> Instrument:
@@ -58,12 +68,25 @@ class FeeSandboxExecutionClient(SandboxExecutionClient):
         super().__init__(loop=loop, portfolio=portfolio, msgbus=msgbus, cache=cache, clock=clock, config=config)
         self._maker_fee = config.maker_fee
         self._taker_fee = config.taker_fee
+        self._reject_every_stop = config.reject_every_stop
 
     def connect(self) -> None:
         """Connect, then reset the fees on every instrument the sandbox loaded from the cache."""
         super().connect()
         for instrument in self.exchange.cache.instruments(venue=self.venue):
             self.exchange.update_instrument(with_fees(instrument, self._maker_fee, self._taker_fee))
+
+    def submit_order(self, command: SubmitOrder) -> None:
+        """Submit to the simulated exchange; in the AC-7 drill a stop is submitted and rejected instead."""
+        order = command.order
+        if not (self._reject_every_stop and order.has_trigger_price):
+            super().submit_order(command)
+            return
+        ts = self.test_clock.timestamp_ns()  # the sandbox's own event clock, as on every other event
+        self.generate_order_submitted(command.strategy_id, command.instrument_id, order.client_order_id, ts)
+        self.generate_order_rejected(
+            command.strategy_id, command.instrument_id, order.client_order_id, DRILL_REJECT_REASON, ts
+        )
 
     def on_data(self, data: Data) -> None:
         """Feed market data to the simulated exchange; an instrument update keeps the configured fees."""
@@ -110,4 +133,5 @@ def sandbox_exec_client(settings: PaperLoopSettings) -> FeeSandboxConfig:
         trade_execution=False,
         maker_fee=settings.sandbox_maker_fee,
         taker_fee=settings.sandbox_taker_fee,
+        reject_every_stop=settings.sandbox_reject_stop_orders,
     )

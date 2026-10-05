@@ -89,6 +89,7 @@ class PaperLoopSettings(Settings):
     sandbox_starting_balance_usd: Decimal = Field(default=Decimal(1000), gt=0)
     sandbox_maker_fee: Decimal = Field(default=Decimal("0.0002"), ge=0, lt=1)
     sandbox_taker_fee: Decimal = Field(default=Decimal("0.0005"), ge=0, lt=1)
+    sandbox_reject_stop_orders: bool = False
 
     recording_max_backlog_s: Decimal = Field(default=Decimal(30), gt=0)
     recording_queue_max: int = Field(default=10_000, gt=0)
@@ -101,6 +102,12 @@ class PaperLoopSettings(Settings):
             raise ValueError("PLACEHOLDER_INTERVAL_MIN must divide 60")
         if self.placeholder_hold_min >= self.placeholder_interval_min:
             raise ValueError("PLACEHOLDER_HOLD_MIN must be below PLACEHOLDER_INTERVAL_MIN")
+        return self
+
+    @model_validator(mode="after")
+    def _sandbox_drill_in_demo_only(self) -> Self:
+        if self.sandbox_reject_stop_orders and self.trading_env != "demo":
+            raise ValueError("SANDBOX_REJECT_STOP_ORDERS is for the demo drill only")
         return self
 
     def strategy_config(self) -> dict[str, str | int]:

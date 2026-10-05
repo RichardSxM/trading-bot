@@ -703,6 +703,18 @@ def test_main_warns_when_the_placeholder_notional_is_over_the_cap(fake_main, mon
     assert any(getattr(r, "fields", {}).get("code") == "placeholder_notional_over_cap" for r in caplog.records)
 
 
+@pytest.mark.parametrize("drill", [True, False])
+def test_main_warns_only_while_the_stop_reject_drill_is_on(fake_main, monkeypatch, caplog, drill):
+    monkeypatch.setattr(fake_main, "redis_reachable", lambda host, port: True)
+    settings = _settings("demo").model_copy(update={"sandbox_reject_stop_orders": drill})
+    monkeypatch.setattr(fake_main, "boot", lambda kind, **kw: Boot(settings, SECRETS))
+
+    fake_main.main()
+
+    warned = [r for r in caplog.records if getattr(r, "fields", {}).get("code") == "sandbox_reject_stop_orders"]
+    assert [r.levelname for r in warned] == (["WARNING"] if drill else [])
+
+
 # spec 0006: the paper loop wiring (AC-2, AC-13, AC-15, AC-16)
 
 

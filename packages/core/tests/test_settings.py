@@ -173,6 +173,23 @@ def test_paper_loop_refuses_a_bad_value(monkeypatch, name, value):
         PaperLoopSettings(trading_env="demo")
 
 
+def test_the_stop_reject_drill_is_off_by_default_and_allowed_in_demo(monkeypatch):
+    from trading_core.settings import PaperLoopSettings
+
+    assert PaperLoopSettings(trading_env="demo").sandbox_reject_stop_orders is False
+
+    monkeypatch.setenv("SANDBOX_REJECT_STOP_ORDERS", "true")
+    assert PaperLoopSettings(trading_env="demo").sandbox_reject_stop_orders is True
+
+
+def test_the_stop_reject_drill_is_refused_outside_demo(monkeypatch):
+    from trading_core.settings import PaperLoopSettings
+
+    monkeypatch.setenv("SANDBOX_REJECT_STOP_ORDERS", "true")
+    with pytest.raises(ValidationError, match="SANDBOX_REJECT_STOP_ORDERS"):
+        PaperLoopSettings(trading_env="live")
+
+
 def test_strategy_config_holds_the_placeholder_and_risk_settings_only():
     from trading_core.settings import PaperLoopSettings
 
