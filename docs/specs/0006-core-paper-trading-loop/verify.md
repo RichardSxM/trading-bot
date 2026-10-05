@@ -134,3 +134,10 @@ Notes for the next run:
 - Timers: a Nautilus alert sleeps a fixed time on the monotonic clock. In the Docker Desktop VM that clock runs about 0.6 % faster than the wall clock, so alerts woke early. The cause was not the `clock` service. Now an alert that wakes early sleeps the rest (`_when_due`).
 - Order status: `OrderInitialized` arrives first, but it is stamped by the node clock. The sandbox stamps its later events with the last quote time, which is older, so the guarded upsert dropped them. Now the row's `last_event_ns` is the newest time the order has seen (`order_last_event_ns`).
 - Live check at 06:30 UTC: decided at 06:30:02.01, time exit at 06:40:02.025, orders `filled`, `canceled`, `filled`. The 25 older rows stay wrong.
+
+**2026-10-05, `/check verify` rerun of AC-3, AC-8 and AC-11 on 94e3e91 (laptop, demo), 06:16 to 07:00 UTC. Those three PASS.** The trader ran the fixed code (the running container has `_when_due` and `order_last_event_ns`).
+
+- AC-3: entry decisions at 06:30:02.010, 06:45:02.002 and 07:00:02.010, each while flat, one per boundary, none early or doubled.
+- AC-8: the 06:30 entry filled at 06:30:02.023 (fill `ts_event`), and the `time` exit was decided at 06:40:02.025, 10 min plus 2 ms later. The stop was canceled at 06:40:02.038, after the close.
+- AC-11: every order row since the restart ends in the right state with its full event list: entries and the exit `filled` 0.0011 with one fill each; the 06:30 stop `canceled` (`initialized, submitted, accepted, pending_cancel, canceled`); the 06:45 stop `filled` 0.0011 from two partial fills at 06:47:40, with the position `closed` and `flat`; the 07:00 entry `filled` and its stop `accepted`. No warnings or errors in the trader log.
+- The spec as a whole still fails on AC-7 (step 6, `SANDBOX_REJECT_STOP_ORDERS` not built).
