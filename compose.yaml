@@ -54,6 +54,30 @@ x-node-healthcheck: &node-healthcheck
   start_period: 90s
 
 services:
+  clock:
+    # Laptop only: keeps the Docker Desktop VM clock synced, since it drifts while the Mac
+    # sleeps and the nodes then fail their startup clock check. Started only with the
+    # `laptop` profile (COMPOSE_PROFILES=laptop in the laptop's .env); the VPS never sets it,
+    # and the container refuses to run on anything but the Docker Desktop VM anyway.
+    profiles: ["laptop"]
+    build:
+      context: .
+      dockerfile: docker/clock/Dockerfile
+    image: kfs/clock:local
+    restart: unless-stopped
+    logging: *logging
+    # Only the right to set the clock, nothing more.
+    cap_add:
+      - SYS_TIME
+    healthcheck:
+      # Healthy once synced with under 0.1 s left to correct.
+      test: ["CMD", "chronyc", "-n", "waitsync", "1", "0.1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    mem_limit: 32m
+
   postgres:
     image: postgres:16-bookworm
     restart: unless-stopped
@@ -125,6 +149,10 @@ services:
       - postgres_dashboard_password
       - postgres_backup_password
     depends_on:
+      # Only where the laptop profile runs it (the clock service); ignored on the VPS.
+      clock:
+        condition: service_healthy
+        required: false
       postgres:
         condition: service_healthy
     mem_limit: 256m
@@ -148,6 +176,24 @@ services:
       PROCESS_NAME: trader
       POSTGRES_USER: trader_app
       REDIS_USERNAME: trader
+      # The paper loop (spec 0006): placeholder strategy, risk caps, sandbox, recording.
+      PLACEHOLDER_INTERVAL_MIN: ${PLACEHOLDER_INTERVAL_MIN:-15}
+      PLACEHOLDER_HOLD_MIN: ${PLACEHOLDER_HOLD_MIN:-10}
+      PLACEHOLDER_LOOKBACK_MIN: ${PLACEHOLDER_LOOKBACK_MIN:-5}
+      PLACEHOLDER_STOP_PCT: ${PLACEHOLDER_STOP_PCT:-0.3}
+      PLACEHOLDER_NOTIONAL_USD: ${PLACEHOLDER_NOTIONAL_USD:-100}
+      RISK_MAX_ORDER_NOTIONAL_USD: ${RISK_MAX_ORDER_NOTIONAL_USD:-250}
+      RISK_MAX_LEVERAGE: ${RISK_MAX_LEVERAGE:-2}
+      RISK_STALE_QUOTE_S: ${RISK_STALE_QUOTE_S:-10}
+      STOP_ACCEPT_TIMEOUT_S: ${STOP_ACCEPT_TIMEOUT_S:-5}
+      SANDBOX_STARTING_BALANCE_USD: ${SANDBOX_STARTING_BALANCE_USD:-1000}
+      SANDBOX_MAKER_FEE: ${SANDBOX_MAKER_FEE:-0.0002}
+      SANDBOX_TAKER_FEE: ${SANDBOX_TAKER_FEE:-0.0005}
+      SANDBOX_REJECT_STOP_ORDERS: ${SANDBOX_REJECT_STOP_ORDERS:-false}
+      RECORDING_MAX_BACKLOG_S: ${RECORDING_MAX_BACKLOG_S:-30}
+      RECORDING_QUEUE_MAX: ${RECORDING_QUEUE_MAX:-10000}
+      RECORDING_DRAIN_S: ${RECORDING_DRAIN_S:-5}
+      SPOOL_DIR: /data/spool
     secrets:
       - source: postgres_trader_password
         target: postgres_password
@@ -155,7 +201,12 @@ services:
         target: redis_password
     volumes:
       - catalog:/data/catalog:ro
+      # Records the trader could not write before it stopped; replayed at the next start (spec 0006 AC-13).
+      - trader-spool:/data/spool
     depends_on:
+      clock:
+        condition: service_healthy
+        required: false
       redis:
         condition: service_healthy
       postgres:
@@ -190,6 +241,10 @@ services:
       CATALOG_REQUIRE_MARKER: ${CATALOG_REQUIRE_MARKER:-false}
     volumes:
       - catalog:/data/catalog
+    depends_on:
+      clock:
+        condition: service_healthy
+        required: false
     healthcheck: *node-healthcheck
     mem_limit: 768m
 
@@ -234,6 +289,9 @@ services:
     volumes:
       - catalog:/data/catalog:ro
     depends_on:
+      clock:
+        condition: service_healthy
+        required: false
       redis:
         condition: service_healthy
       postgres:
@@ -357,4 +415,5 @@ volumes:
   pgdata:
   redisdata:
   catalog:
+  trader-spool:
   backup-staging:

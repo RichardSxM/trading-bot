@@ -24,8 +24,8 @@ ENV TZ=UTC \
 COPY --from=uv /uv /usr/local/bin/uv
 # Non root user. Folders created here keep this owner when a named volume first mounts them.
 RUN useradd --system --uid 10001 --home-dir /app app \
-    && mkdir -p /app /data/catalog /run/heartbeat \
-    && chown app:app /app /data/catalog /run/heartbeat
+    && mkdir -p /app /data/catalog /data/spool /run/heartbeat \
+    && chown app:app /app /data/catalog /data/spool /run/heartbeat
 WORKDIR /app
 
 # Third party dependencies first, so code edits do not reinstall them.

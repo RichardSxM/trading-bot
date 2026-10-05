@@ -1,7 +1,7 @@
 # 0006. Run one timed placeholder strategy end to end on real prices and the sandbox, recorded and shown live
 
 **Date**: 2026-10-04
-**Status**: Proposed
+**Status**: Accepted
 
 ## Summary
 
@@ -96,6 +96,8 @@ This is the walking skeleton: the first time the bot trades by itself. A deliber
 - **AC-18**: the dashboard shows a top bar badge whenever `entries_blocked` is not empty, and Overview lists the reasons in the plain words of the *Block reasons* table.
 - **AC-19**: the Trades page has two lists, each newest first and 50 per page.
   - **Closed round trips** (`page`): opened and closed times, side, size, average entry and exit, net realized P&L, fees, and exit reason (`stop`, `time`, `stop_failure`, or `abandoned`). They come from `paper` runs only, ordered by `closed_at` then `id`, descending.
+  - The side is the opening side (`long` or `short`), taken from the position's first fill, because `positions.side` is `flat` once closed.
+  - A round trip with no linked fill is still listed, with side and exit reason blank (unless it is `abandoned`, which comes from `risk_events`).
   - **Latest fills** (`fills_page`), ordered by `filled_at` then `id`, descending.
   - A page past the end shows an empty list with a link back to page 1. A page below 1 or not an integer returns 422.
 - **AC-20**: Pause from the dashboard stops new entries.
@@ -182,8 +184,9 @@ New Redis keys (the trader writes them with `EX 30` through `trading_core.snapsh
 - Strategy round trip:
   - `flat → entering` (entry submitted) `→ protected` (stop accepted) `→ exiting` (exit loop running) `→ flat`.
   - From `entering` or `protected`, a stop fill goes to `flat`.
-  - From `entering`, a stop not accepted in time, or a partial entry after 5 s, goes to `exiting`.
-  - From `entering`, an entry that is rejected, denied, or gate denied goes back to `flat`.
+  - From `entering`, a stop not accepted in time, or a partial entry after 5 s or canceled or expired after a partial fill, goes to `exiting`.
+  - From `entering` or `protected`, a stop the venue cancels or expires goes to `exiting`.
+  - From `entering`, an entry that is rejected, denied, gate denied, canceled or expired before any fill, or whose submit raises goes back to `flat`.
 - Entry blocks: per the *Block reasons* table.
 - Runs and positions follow spec 0002, plus the abandoned close in AC-15.
 
@@ -215,6 +218,7 @@ New Redis keys (the trader writes them with `EX 30` through `trading_core.snapsh
 | stop | quantity | `position.quantity` at the entry's complete fill |
 | time exit | due time | the entry's first fill `ts_event` + `PLACEHOLDER_HOLD_MIN` |
 | exit loop | quantity | `position.quantity` at each submit |
+| fill | depth | each quote's prices, with each side's size raised to at least `DEEP_BOOK_SIZE` (1000 BTC) for the sandbox only, so a market order fills in full at the best price. Nautilus' live sandbox otherwise drops the rest of a market order larger than the quoted size, with no event |
 | fill | fee | the sandbox commission from `SANDBOX_MAKER_FEE` / `SANDBOX_TAKER_FEE` (set on the sandbox config, or on the instrument before start; the AC-1 spike records which works) |
 | decision, orders | `decision_id` | `uuid.uuid7()` made by the strategy, carried in the order tag `decision:<uuid>` |
 | stop | `parent_client_order_id` | the order tag `parent:<coid>` |
@@ -227,7 +231,8 @@ New Redis keys (the trader writes them with `EX 30` through `trading_core.snapsh
 | dashboard | realized today | `SUM(positions.realized_pnl)` joined to `strategy_runs` with `mode = 'paper'`, `status = closed`, `closed_at >= date_trunc('day', now() AT TIME ZONE 'UTC')`, env = `Settings.trading_env` |
 | dashboard | realized all time | the same without the date filter |
 | dashboard | fees today | `SUM(fills.fee)` joined to `paper` runs, where `filled_at` is today UTC |
-| Trades | exit reason | first: a `risk_events` row with key `abandoned:<position_id>` → `abandoned`. Otherwise, from the order of the position's last fill: `stop_market` → `stop`; `market` carrying an `exit` decision → `time`; `market` carrying the entry decision → `stop_failure` |
+| Trades | side | the position's earliest fill (`fills.position_id = positions.id`, ordered by `filled_ns` then `id`): `buy` → `long`, `sell` → `short`. Not `positions.side`, which is `flat` once closed. No linked fill → blank |
+| Trades | exit reason | first: a `risk_events` row with key `abandoned:<position_id>` → `abandoned`. Otherwise, from the order of the position's last fill: `stop_market` → `stop`; `market` carrying an `exit` decision → `time`; `market` carrying the entry decision → `stop_failure`. No linked fill and not abandoned → blank |
 | Trades | size, fees | `positions.peak_qty`, `positions.fees_total` |
 | P&L label | "before funding" | static: feature 6 records no funding (`funding_total` stays 0) |
 | AC-21 | fill count | `fill_seen` lines in `docker compose logs trader` over the window, against `fills` rows with `filled_at` in the window |
@@ -239,11 +244,17 @@ New Redis keys (the trader writes them with `EX 30` through `trading_core.snapsh
 | risk check refuses | no order; the decision is rejected | `limit_hit`, per AC-5 | `limit_hit:<decision_id>` |
 | entry denied by the gate or the RiskEngine | back to flat | `limit_hit`, `info` | `entry_denied:<decision_id>` |
 | entry rejected by the sandbox | back to flat; the next boundary tries again | `order_rejected`, `warning` | `order_rejected:<client_order_id>` |
+| entry canceled or expired by the venue before any fill | back to flat; the next boundary tries again | `order_rejected`, `warning` | `entry_canceled:<client_order_id>` |
+| entry canceled or expired by the venue after a partial fill | exit loop, as a partial entry | `order_rejected`, `warning` | `partial_entry:<client_order_id>` |
+| entry submit raises | back to flat; the next boundary tries again; the error is still logged | `order_rejected`, `warning` | `entry_submit_failed:<decision_id>` |
 | stale quotes | block `stale_feed`; clears on fresh quotes | `stale_feed`, `warning` | `stale_feed:<run_id>:<start_ns>` |
 | stop not accepted in time | exit loop, block `stop_not_accepted` | `order_rejected`, `critical` | `stop_not_accepted:<client_order_id>` |
+| stop canceled or expired by the venue | as a stop not accepted | `order_rejected`, `critical` | `stop_not_accepted:<client_order_id>` |
 | entry partly filled after 5 s | exit loop | `order_rejected`, `warning` | `partial_entry:<client_order_id>` |
 | exit loop fails 5 times | block `exit_failed`; keep retrying every 1 s; the stop stays | `order_rejected`, `critical` | `exit_failed:<position_id>` |
 | exit order refused while flat | INFO log only | none | n/a |
+| exit order canceled or expired by the venue | counts as a refusal: retried after 1 s, toward the 5 failure limit | none until the 5th, then as `exit loop fails 5 times` | n/a |
+| hold time ends while the exit loop runs | INFO `hold_over_exiting`; no `exit` decision, so the loop's orders keep the entry decision | none | n/a |
 | transient Postgres error or backlog | block `recording_unhealthy`; retry in order | none (Postgres is the problem); ERROR `recording_unhealthy` once per episode | n/a |
 | `RecordConflictError` | `report_conflict`, dead letter, block `record_conflict` | `record_conflict`, `critical` (by `report_conflict`) | spec 0002 |
 | other write or mapper error | dead letter, block `recording_failed` | none (it may be the database); ERROR `recording_failed` | n/a |
@@ -299,6 +310,7 @@ New Redis keys (the trader writes them with `EX 30` through `trading_core.snapsh
 - Key purge: an integration test against the Compose Redis shows that the demo purge deletes `trader-TRADER-DEMO:*` and leaves `demo:trader:pause`, `demo:control`, and the snapshots alone. Verifies **AC-15**.
 - Stale feed: cut the trader's network for 20 s; entries block and recover. Verifies **AC-14**, **AC-18**.
 - Pause: Pause during an open position. The stop and the time exit still work, and no new entry follows. Verifies **AC-20**.
+- Trades side: an integration test on Postgres seeds a long round trip, a short one, and a closed position with no linked fill, and gets side `long`, `short`, and blank. Verifies **AC-19**.
 - Auth: an unauthenticated `GET /trades` redirects to `/login`, and the dashboard cannot write any table (the existing role tests). Verifies **AC-19**.
 
 ## Build plan
@@ -306,24 +318,24 @@ New Redis keys (the trader writes them with `EX 30` through `trading_core.snapsh
 Tracer Bullet: the gate first, then the thinnest real thread from quote to dashboard, then thicken each segment. No migration in any slice.
 
 **Milestone 1: gate**
-1. Spike (a throwaway script or test, not merged as product code) proving the four AC-1 checks. Record in `verify.md` how fees are applied. Fail means stop and return to `/architect`. Satisfies **AC-1**.
+1. [x] Spike (a throwaway script or test, not merged as product code) proving the four AC-1 checks. Record in `verify.md` how fees are applied. Fail means stop and return to `/architect`. Satisfies **AC-1**.
 
 **Milestone 2: thin thread (entry to dashboard)**
-2. Settings and their validation; `sandbox_exec_client`; the env guard allowlist entry `SANDBOX` for demo; the demo key purge; the `trader-spool` volume in `compose.yaml`. Satisfies **AC-2**, **AC-10**, **AC-15** (purge part).
-3. Pure core: `risk/check.py`, `risk/sizing.py`, `strategy/placeholder.py`, `strategy/blocks.py`, with unit tests. Satisfies **AC-4**, **AC-5**.
-4. `PlaceholderTimed(KfsStrategy)`: boundary timer, bars, decision, entry, stop on complete fill, hold timer, exit loop, stop fill and `PositionClosed` cleanup, gate check before submit. Satisfies **AC-3**, **AC-4**, **AC-6**, **AC-8**, **AC-8a**, **AC-9**, **AC-20**.
-5. `RecordingActor`, `RecordingWriter`, and the mappers; the start writes (instrument, strategy version, `start_run`) and `finish_run` after stop. Satisfies **AC-11**.
-6. The trader publishes the `position` and `account` snapshots; the dashboard Overview gets its position card, P&L figures, and offline state. Satisfies **AC-16**, **AC-17**.
+2. [x] Settings and their validation; `sandbox_exec_client`; the env guard allowlist entry `SANDBOX` for demo; the demo key purge; the `trader-spool` volume in `compose.yaml`. Satisfies **AC-2**, **AC-10**, **AC-15** (purge part).
+3. [x] Pure core: `risk/check.py`, `risk/sizing.py`, `strategy/placeholder.py`, `strategy/blocks.py`, with unit tests. Satisfies **AC-4**, **AC-5**.
+4. [x] `PlaceholderTimed(KfsStrategy)`: boundary timer, bars, decision, entry, stop on complete fill, hold timer, exit loop, stop fill and `PositionClosed` cleanup, gate check before submit. Satisfies **AC-3**, **AC-4**, **AC-6**, **AC-8**, **AC-8a**, **AC-9**, **AC-20**.
+5. [x] `RecordingActor`, `RecordingWriter`, and the mappers; the start writes (instrument, strategy version, `start_run`) and `finish_run` after stop. Satisfies **AC-11**.
+6. [x] The trader publishes the `position` and `account` snapshots; the dashboard Overview gets its position card, P&L figures, and offline state. Satisfies **AC-16**, **AC-17**.
 
 **Milestone 3: failure paths**
-7. Stop acceptance and partial entry timers, the `stale_feed` timer, and `entries_blocked` and `recording_backlog` in `trader_state`. Satisfies **AC-7**, **AC-14**, **AC-16**.
-8. Writer error classes, dead letter, the spool codec, drain and spill after stop, and replay at start. Satisfies **AC-12**, **AC-13**.
-9. `close_abandoned` (integration tests on Postgres) and the full start sequence. Satisfies **AC-15**.
-10. The dashboard blocked badge and reasons. Satisfies **AC-18**.
+7. [x] Stop acceptance and partial entry timers, the `stale_feed` timer, and `entries_blocked` and `recording_backlog` in `trader_state`. Satisfies **AC-7**, **AC-14**, **AC-16**.
+8. [x] Writer error classes, dead letter, the spool codec, drain and spill after stop, and replay at start. Satisfies **AC-12**, **AC-13**.
+9. [x] `close_abandoned` (integration tests on Postgres) and the full start sequence. Satisfies **AC-15**.
+10. [x] The dashboard blocked badge and reasons. Satisfies **AC-18**.
 
 **Milestone 4: trades page and the run**
-11. The Trades page: round trips with exit reason, and fills, each paginated. Satisfies **AC-19**.
-12. The 2 hour laptop run and the drills in `verify.md`. Satisfies **AC-21** (and rechecks all of the above).
+11. [x] The Trades page: round trips with side from the earliest fill and exit reason, and fills, each paginated. Satisfies **AC-19**.
+12. [x] The 2 hour laptop run and the drills in `verify.md`. Satisfies **AC-21** (and rechecks all of the above).
 
 ## Consequences
 

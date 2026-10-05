@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from trading_core.db import Base
 from trading_core.recording import models
 from trading_core.recording.enums import (
+    CLOSED_ORDER_STATUSES,
     SIM_MODES,
     ControlOutcome,
     Env,
@@ -30,6 +31,8 @@ from trading_core.recording.enums import (
     OrderOrigin,
     OrderStatus,
     OrderType,
+    PositionSide,
+    PositionStatus,
     RiskEventKind,
     RunMode,
     RunStatus,
@@ -378,6 +381,86 @@ def finish_run(session: Session, run_id: UUID, status: RunStatus, ended_ns: int)
     ).first()
     if finished is None:
         raise InvalidTransitionError(f"run {run_id} is {run.status}, not running")
+
+
+def close_abandoned(session: Session, env: Env, trader_id: str, current_run_id: UUID, now_ns: int) -> list[UUID]:
+    """Close what earlier runs of this trader left open; returns the closed position ids (spec 0006 AC-15).
+
+    Demo only: the sandbox forgets its positions on a restart, so a position still ``open`` in any
+    other run of this env and ``trader_id`` (whatever that run's status) can never be closed by a
+    fill. It is closed flat at the newest snapshot's mark, with that snapshot's unrealized P&L
+    added to its realized P&L; without a snapshot the exit price stays NULL and the P&L unchanged.
+    Each gets one critical ``reconcile_mismatch`` risk event keyed ``abandoned:<position_id>``.
+    Every order those runs left open is ``canceled``. Calling it again changes nothing.
+    """
+    _check_env(env)
+    earlier_runs = select(models.StrategyRun.id).where(
+        models.StrategyRun.env == env,
+        models.StrategyRun.trader_id == trader_id,
+        models.StrategyRun.id != current_run_id,
+    )
+    positions = (
+        session.execute(
+            select(models.Position).where(
+                models.Position.env == env,
+                models.Position.status == PositionStatus.OPEN,
+                models.Position.run_id.in_(earlier_runs),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    closed: list[UUID] = []
+    for position in positions:
+        snapshot = session.execute(
+            select(models.PositionSnapshot)
+            .where(models.PositionSnapshot.position_id == position.id)
+            .order_by(models.PositionSnapshot.captured_ns.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        values: dict[str, object] = {
+            "status": PositionStatus.CLOSED,
+            "side": PositionSide.FLAT,
+            "quantity": Decimal(0),
+            "closed_at": ns_to_utc(now_ns),
+            "last_event_ns": now_ns,
+            "updated_at": func.now(),
+        }
+        if snapshot is not None:
+            values |= {
+                "avg_exit_px": snapshot.mark_px,
+                "realized_pnl": position.realized_pnl + snapshot.unrealized_pnl,
+            }
+        session.execute(update(models.Position).where(models.Position.id == position.id).values(values))
+        record_risk_event(
+            session,
+            RiskEventRow(
+                env=env,
+                event_key=f"abandoned:{position.id}",
+                kind=RiskEventKind.RECONCILE_MISMATCH,
+                severity=Severity.CRITICAL,
+                message="position left open by an earlier run closed as abandoned",
+                details={
+                    "position_id": str(position.id),
+                    "current_run_id": str(current_run_id),
+                    "mark_px": None if snapshot is None else snapshot.mark_px,
+                    "snapshot_ns": None if snapshot is None else snapshot.captured_ns,
+                },
+                run_id=position.run_id,
+                occurred_ns=now_ns,
+            ),
+        )
+        closed.append(position.id)
+    session.execute(
+        update(models.Order)
+        .where(
+            models.Order.env == env,
+            models.Order.run_id.in_(earlier_runs),
+            models.Order.status.not_in(sorted(CLOSED_ORDER_STATUSES)),
+        )
+        .values(status=OrderStatus.CANCELED, last_event_ns=now_ns, updated_at=func.now())
+    )
+    return closed
 
 
 # Decisions, orders, fills, positions ------------------------------------------------------

@@ -9,6 +9,20 @@ Steps you may run to check the feature by hand, on the laptop in demo, after `do
    - the trader's Redis login can `SCAN` and `UNLINK` `trader-TRADER-DEMO:*`
 
    Write down here how fees reach the fills: through the sandbox config, or through the instrument.
+
+   You can run it with `docker compose run --rm -T -v "$PWD/scripts/spikes:/spike" trader python /spike/0006_gate.py`. It prints `SPIKE` lines and exits 0 when every check passes.
+
+   **Result, 2026-10-04 (all passed):**
+   - entry filled at 85252, inside bid 85251 and ask 85252
+   - the stop filled at its trigger, 85249
+   - the reduce only market order sent while flat was rejected: "REDUCE_ONLY MARKET SELL order would have increased position"
+   - `SCAN` found the probe key and `UNLINK` removed it
+
+   **How fees work:** they come **through the instrument**.
+   - `SandboxExecutionClientConfig` has no fee field. The sandbox always uses `MakerTakerFeeModel`, which reads `maker_fee` and `taker_fee` from the instrument in its matching engine.
+   - Kraken publishes `PF_XBTUSD` with both fees at 0. With the instrument patched to 0.0005 taker, a 0.002 BTC fill costs 0.09 USD, and the patch still holds 90 s later.
+   - The sandbox calls `update_instrument` on every instrument it receives. So the build patches the fees inside the sandbox client on every instrument it gets, so a refresh from Kraken cannot reset them to 0.
+   - Note: commission rounds to USD precision (0.01). Below about 20 USD of notional, a 0.05 % fee shows as 0.00.
 2. **Startup (AC-2, AC-11, AC-15).** `docker compose logs trader` should show the sandbox client, `placeholder_timed` running, and no env guard refusal. In Postgres, check for:
    - one `paper` `strategy_runs` row in `running`
    - a `strategy_versions` row whose config holds the settings
@@ -65,6 +79,75 @@ Steps you may run to check the feature by hand, on the laptop in demo, after `do
     - The `fills` count with `filled_at` between T0 and T1 equals `docker compose logs --since T0 --until T1 trader | grep -c '"fill_seen"'`.
     - Once flat with `recording_backlog` 0, the dashboard's realized figures equal the Postgres sums to the cent.
 
+    **Result, 2026-10-05 (all passed):** window 00:30 to 02:30 UTC, inside one run untouched since 2026-10-04 20:31 UTC.
+    - 8 closed `paper` positions, from 8 entries.
+    - Every entry had its stop accepted; the late stop query returned no rows.
+    - 17 `fills` rows and 17 `fill_seen` lines.
+    - No risk events in the window.
+    - At 02:46 the dashboard's reader (as `dashboard_app`) gave realized today −1.93, all time −5.20, fees today 1.10, equal to the Postgres sums. A new entry had opened at 02:44, so this was not strictly flat; both read the same closed rows.
+
 ## Notes
 
 _Results and dates go here as steps are run._
+
+**2026-10-04, Milestone 2 on the laptop (demo).** These are build checks, not the full walk through; `/check verify` still owes every step.
+- Run `01a107db`: the 17:00 boundary skipped while warming up. At 17:15 it went short 0.0011 at 85311.00 with a stop at 85567 (accepted). The 0.05 USD fee reached the balance. The 17:25 time exit closed the position and the sandbox canceled the stop. A restart while flat finished the run as `completed`.
+- Running live found three bugs the unit tests missed. All are fixed:
+  - NautilusTrader 1.231 passes `portfolio` only to a factory named exactly `SandboxLiveExecClientFactory`, so `FeeSandboxExecClientFactory` takes that name. A test now builds a real node.
+  - On a live node, `OrderInitialized` arrives before the order is in the cache. `order_for` rebuilds the order from the event.
+  - The stale check counted from time zero before the first quote, which raised a false `stale_feed` at every start. It now counts from `on_start`.
+- Run `01a107f4` (after the fixes): the 17:45 entry recorded `order_initialized` ×2, `order_submitted` ×2, `order_accepted` and `order_filled`, with no `recording_failed` and no `stale_feed`.
+
+**2026-10-05, `/check verify` on the laptop (demo), 02:52 to 05:32 UTC. Verdict: FAIL.** Images rebuilt from 2836ec7 first (both containers were running older images). The dashboard was checked over HTTP with curl (no browser was connected), plus your own eyes for the open card and the badges.
+
+Passed, with evidence:
+
+- Step 1 (AC-1): the spike passed all five checks again, exit 0.
+- Step 2 (AC-2, AC-11, AC-15 purge): `SANDBOX` client built, `demo_cache_purged`, a `running` `paper` run, the strategy version config, the instrument row.
+- Step 3 (AC-4, AC-6, AC-8, AC-9, AC-10): 03:15 round trip, long 0.0011 at 86484, fee 0.05, stop 86224 (0.3 % rounded away) accepted 30 ms after the fill, `exit` decision `time`, reduce only close, stop canceled after `PositionClosed`, realized −0.20 net of 0.10 fees.
+- Step 4 (AC-16, AC-17, AC-19): all three snapshots with 30 s TTL and the four new `trader_state` fields. Realized today −2.29, all time −5.56, fees today 1.25, equal to the Postgres sums, labeled "before funding". "Trader offline" showed when the trader's Redis writes timed out (a real outage, see below). Trades page: newest first, sides from the first fill, reasons `time`, `stop`, `stop_failure`, `abandoned`; `page=0`, `page=x`, `fills_page=-1` give 422; `page=999` shows "Nothing on page 999. Back to page 1"; no cookie gives 303 to `/login`.
+- Step 5 (AC-5): with notional 300, the start WARNING, then `rejected` `notional_cap`, a `limit_hit` warning, no order.
+- Step 7 (AC-18, AC-20): paused while flat, the 04:00 boundary was `rejected` `paused` (`info`), no order. Paused during the 04:30 short, the stop stayed accepted and the time exit closed it at 04:39:53. You saw the top bar badge.
+- Step 8 (AC-12): Postgres stopped during a hold, `recording_unhealthy` with backlog 2 after about 17 s, cleared 7 s after Postgres came back, backlog 0. With Postgres down again, the time exit still closed the position.
+- Step 9 (AC-13): trader stopped while Postgres was down, 30 items spilled to `01a10a2c….jsonl`, replayed (30) at the next start, file gone, each fill present once. Fills 6 = `fill_seen` 6 for that run.
+- Step 10 (AC-15): `docker kill` during the 05:15 short. The old run `aborted`, the position `closed`, `flat`, exit at the last snapshot mark 85476.5, realized −0.05 + 0.01 = −0.04, orders `canceled`, one critical `reconcile_mismatch` `abandoned:01a10a7c…`. The 05:30 boundary traded.
+- Step 11 (AC-14): network cut for 22 s, `stale_feed` block and one warning event, cleared by itself 3 s after reconnect.
+- Step 12 (AC-21): rechecked in Postgres for 00:30 to 02:30: 8 closed, 8 of 8 stops accepted, the late stop query returns no rows, 17 fills, fees 0.80. The window's `fill_seen` lines were gone with the replaced container, so that half rests on the 2836ec7 record.
+
+Failed, for `/debug`:
+
+- **AC-3 and AC-8, timers fire early.** Every boundary decision since at least 2026-10-04 fired 1 to 10 s before the quarter hour, not 2 s after (for example 03:14:56.6, 03:44:56.9, 04:14:57.5). When flat the boundary fires twice (03:44:56.9 and 03:45:02.2 both decided), because the early fire re arms `next_boundary_ns` for the same quarter hour. The time exit also fires about 4 s early. Likely cause: the alert sleeps a fixed duration while the `clock` service steps the Docker VM clock; nothing checks the wall clock when the alert fires.
+- **AC-11, filled orders recorded with the wrong status.** On a live node `OrderInitialized` reaches the recording actor after `OrderSubmitted` and `OrderFilled`, with a later `ts_event`, so the order row ends as `initialized` with `filled_qty` 0 (and the stop as `pending_cancel`). The next start's `close_abandoned` then marks those orders `canceled`. In the paper runs, 25 of 69 filled market orders read `canceled`, and the current entries read `initialized`.
+
+Missing:
+
+- **Step 6 (AC-7, AC-8a runtime):** `SANDBOX_REJECT_STOP_ORDERS` is in the spec but not in the code, so the drill cannot run. One real `stop_not_accepted` event from 2026-10-04 19:45 exists (an older build). (Built in 0deb296 and passed on 2026-10-05; see the last entry.)
+
+Notes for the next run:
+
+- Step 10: `docker kill` counts as a manual stop, so `restart: unless-stopped` does not restart the trader; it was started by hand. Use `docker compose exec trader kill 1` (or similar) to imitate a crash.
+- The recorder sat at its 768 MiB limit and about 280 % CPU (`data_queue at capacity`), starving the VM until the trader's Redis writes timed out. It was stopped from 04:35 to 05:31 for the drills. The trader idles near 80 % CPU, worth a look.
+- The run that spilled ended `aborted`, not `completed`, because `finish_run` could not reach Postgres at stop.
+
+**2026-10-05, `/debug` on the two failures.** Both are fixed. They still need a fresh `/check verify` for AC-3, AC-8 and AC-11.
+
+- Timers: a Nautilus alert sleeps a fixed time on the monotonic clock. In the Docker Desktop VM that clock runs about 0.6 % faster than the wall clock, so alerts woke early. The cause was not the `clock` service. Now an alert that wakes early sleeps the rest (`_when_due`).
+- Order status: `OrderInitialized` arrives first, but it is stamped by the node clock. The sandbox stamps its later events with the last quote time, which is older, so the guarded upsert dropped them. Now the row's `last_event_ns` is the newest time the order has seen (`order_last_event_ns`).
+- Live check at 06:30 UTC: decided at 06:30:02.01, time exit at 06:40:02.025, orders `filled`, `canceled`, `filled`. The 25 older rows stay wrong.
+
+**2026-10-05, `/check verify` rerun of AC-3, AC-8 and AC-11 on 94e3e91 (laptop, demo), 06:16 to 07:00 UTC. Those three PASS.** The trader ran the fixed code (the running container has `_when_due` and `order_last_event_ns`).
+
+- AC-3: entry decisions at 06:30:02.010, 06:45:02.002 and 07:00:02.010, each while flat, one per boundary, none early or doubled.
+- AC-8: the 06:30 entry filled at 06:30:02.023 (fill `ts_event`), and the `time` exit was decided at 06:40:02.025, 10 min plus 2 ms later. The stop was canceled at 06:40:02.038, after the close.
+- AC-11: every order row since the restart ends in the right state with its full event list: entries and the exit `filled` 0.0011 with one fill each; the 06:30 stop `canceled` (`initialized, submitted, accepted, pending_cancel, canceled`); the 06:45 stop `filled` 0.0011 from two partial fills at 06:47:40, with the position `closed` and `flat`; the 07:00 entry `filled` and its stop `accepted`. No warnings or errors in the trader log.
+- The spec as a whole still fails on AC-7 (step 6, `SANDBOX_REJECT_STOP_ORDERS` not built). Resolved below.
+
+**2026-10-05, `/check verify` step 6 (AC-7, AC-8a) on 0deb296 (laptop, demo), 08:29 to 09:16 UTC. PASS. With this, every step has passed and the spec passes as a whole.** The switch came in through `compose.yaml` (`SANDBOX_REJECT_STOP_ORDERS=true docker compose up -d trader`); `.env` was not touched.
+
+- Start: the WARNING `sandbox_reject_stop_orders` at 08:29:00, no env guard refusal, run `01a10b2e…`. The 08:30 boundary was skipped while warming up (1 bar), as expected.
+- 08:45 entry: short 0.0011 at 86240 (`O-…084502-DEMO-000-1`, filled 08:45:02.0775). Its reduce only GTC stop at 86499 was rejected with reason `SANDBOX_REJECT_STOP_ORDERS drill`, and the order row ends `rejected`.
+- Exit loop (AC-7, AC-8a): a reduce only GTC market buy for the full 0.0011 (`-000-3`) filled at 86242 at 08:45:02.1780, 100.5 ms after the entry fill. The position is `closed`, `flat`, realized −0.10 with fees 0.10.
+- One `critical` `order_rejected` risk event, keyed `stop_not_accepted:O-20261005-084502-DEMO-000-2`.
+- `trader_state` showed `entries_blocked: ["stop_not_accepted"]`. The 09:00 boundary was `rejected` `blocked:stop_not_accepted`, with an `info` `limit_hit` event and no order.
+- Trades page: the dashboard's own query (as `dashboard_app`) gives the 08:45 short with exit reason `stop_failure`, and you confirmed this on the rendered page.
+- Restored (switch off, run `01a10b4b…`): no drill WARNING, `entries_blocked` empty. The 09:15 entry was approved and filled, and its stop at 86215 was `accepted`.

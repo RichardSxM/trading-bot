@@ -16,9 +16,10 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 3 | Data model | Foundation | done |
 | 4 | API keys & secrets | Foundation | in-progress |
 | 5 | Design system & dashboard shell | Foundation | done |
-| 6 | Core paper trading loop | Slice 1 | in-progress |
+| 6 | Core paper trading loop | Slice 1 | done |
 | 7 | Always on cloud deployment | Slice 2 | in-progress |
 | 8 | Order book recorder | Slice 3 | planned |
+| 20 | Market context feed | Slice 3 | planned |
 | 9 | Kill switch & loss limits | Slice 4 | planned |
 | 10 | Leverage & liquidation guard | Slice 4 | planned |
 | 11 | Restart & outage safety | Slice 4 | planned |
@@ -99,20 +100,20 @@ code in [apps/dashboard/src/dashboard/](../../apps/dashboard/src/dashboard/), [a
 
 ## Slice 1: Core paper trading loop
 
-### 6. Core paper trading loop · in-progress
+### 6. Core paper trading loop · done
 The thinnest real thread (this is the walking skeleton): live BTC perp prices from Kraken's public feed → one deliberately simple placeholder strategy → a risk check with fixed size and leverage caps → an entry with its stop placed as soon as it fills → fills recorded → position and P&L shown on the dashboard. Kraken closed its futures demo on 14 July 2026, so demo orders and stops rest in NautilusTrader's sandbox (a simulated exchange inside the trader), not on Kraken.
 **Done when:** in demo (real prices, sandbox fills), left alone for 2 hours, the bot opens and closes at least 6 positions by itself, every entry has its stop accepted within 5 seconds, fills and fees land in the database, and the dashboard shows the live position and P&L matching it.
 spec [0006](../specs/0006-core-paper-trading-loop/index.md)
 - [x] Design it (spec): `/architect core paper trading loop`
-- [ ] Build it: `/develop core paper trading loop`
-  - [ ] Gate: sandbox on `PF_XBTUSD` fills an entry and a reduce only stop; key purge allowed (AC-1)
-  - [ ] Thin thread: settings, sandbox client, pure risk check, `placeholder_timed`, recording actor and writer, live position card (AC-2 to AC-6, AC-8 to AC-11, AC-16, AC-17, AC-20)
-  - [ ] Failure paths: stop acceptance and exit loop, stale feed, writer errors, spill and replay, abandoned close, blocked badge (AC-7, AC-8a, AC-12 to AC-15, AC-18)
-  - [ ] Trades page and the 2 hour run (AC-19, AC-21)
-- [ ] Verify it: `/check verify core paper trading loop`
-- [ ] Test it: `/test core paper trading loop`
-- [ ] Review it (fresh model): `/check review core paper trading loop`
-- [ ] Document it: `/document core paper trading loop`
+- [x] Build it: `/develop core paper trading loop`
+  - [x] Gate: sandbox on `PF_XBTUSD` fills an entry and a reduce only stop; key purge allowed (AC-1)
+  - [x] Thin thread: settings, sandbox client, pure risk check, `placeholder_timed`, recording actor and writer, live position card (AC-2 to AC-6, AC-8 to AC-11, AC-16, AC-17, AC-20)
+  - [x] Failure paths: stop acceptance and exit loop, stale feed, writer errors, spill and replay, abandoned close, blocked badge (AC-7, AC-8a, AC-12 to AC-15, AC-18)
+  - [x] Trades page and the 2 hour run (AC-19, AC-21)
+- [x] Verify it: `/check verify core paper trading loop`
+- [x] Test it: `/test core paper trading loop`
+- [x] Review it (fresh model): `/check review core paper trading loop`
+- [x] Document it: `/document core paper trading loop`
 
 ## Slice 2: Always on
 
@@ -141,18 +142,28 @@ Record BTC and ETH perp order book updates and trades continuously, because scal
 **Carried over from spec 0005:** local catalog retention on the 50 GB disk (B2 holds the history), and which catalog paths the nightly backup should skip while an hour is still open.
 - [ ] Design it (spec): `/architect order book recorder`
 
+### 20. Market context feed · needs a decision
+Record the perp market's own context next to prices: funding rate, open interest, mark versus index basis, and liquidations. Strategies can then use them as inputs and regime filters, in backtests and live alike. Much of this history cannot be downloaded later, so recording starts early.
+**Done when:** the context values are recorded continuously with gaps logged, a backtest can read them at the time each one was known (no look ahead), and a strategy can read the same values live.
+**Carried over from research (2026-10-04):** the idea came from the `tracking-crypto-derivatives` skill (ideas only, nothing installed). Optional extras for the design to weigh: a news or event blackout filter, the Fear & Greed index as a regime tag, and later Deribit options implied volatility and put/call ratio.
+**Carried over from an article (2026-10-04, a OneBullEx post, promotional, rules of thumb only):** a funding rate above +0.05 % per period reads as crowded longs and reversal risk, below −0.02 % as crowded shorts. Rising open interest while price sits in a tight range reads as pressure building before a breakout. Treat both as hypotheses for the backtest to test on our own data, not as thresholds to hard code.
+- [ ] Design it (spec): `/architect market context feed`
+
 ## Slice 4: Safety guards (all required before live)
 
 ### 9. Kill switch & loss limits · needs a decision
 One action closes all positions, cancels all orders, and stops trading; automatic halt after a daily or total loss threshold.
 **Done when:** the dashboard stop button and an automatic loss limit each flatten everything in demo within seconds, and trading stays halted until you resume it.
 **Carried over from spec 0005:** build `stop`, `resume`, and `flatten` on the existing ControlActor, decide how stop and pause combine, and reword spec 0004 verify step 21 (stop answers `not_implemented` until then).
+**Carried over from an article (2026-10-04, monkeytrade scalping guide, forex focused), for the design to weigh:** besides the daily loss limit (the article suggests 2 to 3 % of the account), a losing streak stop: halt new entries for the day after three losses in a row, shown as one more `entries_blocked` reason (spec 0006).
+**Also from an article (2026-10-04, NinjaTrader 1 minute scalping), for the design to weigh:** two guards against overtrading, each one more `entries_blocked` reason. A cap on trades per day, since a fast strategy always finds a signal and every trade pays fees. And a short cooldown after any loss (somewhere around 5 to 15 minutes, tuned in testing), a softer cousin of the losing streak stop.
 - [ ] Design it (spec): `/architect kill switch & loss limits`
 
 ### 10. Leverage & liquidation guard · needs a decision
 Hard caps on position size, total exposure, and leverage (2x at first), plus a minimum distance between entry and liquidation price; funding costs counted in every decision.
 **Done when:** any order that breaks a cap or sits too close to liquidation is rejected and logged, and funding payments show in P&L.
 **Carried over from spec 0006:** feature 6 shipped fixed caps in a pure `check_entry` (extend it, don't fork it) and left funding out of P&L, labeled "before funding". This feature decides how funding reaches `funding_payments` and `positions.realized_pnl` in demo (spec 0002's open Follow-up).
+**Carried over from an article (2026-10-04, changelly strategies overview), for the design to weigh:** size each trade from its risk, not a fixed notional. Size = (account equity × risk per trade) ÷ (distance from entry to stop), with the article's 1 to 2 % as the usual ceiling for risk per trade. Every stopped out trade then costs about the same, whatever the stop distance. The hard caps above still apply on top, and the smaller size wins. Fees count toward the risk, since a tight stop on a small move can lose more to fees than to price.
 - [ ] Design it (spec): `/architect leverage & liquidation guard`
 
 ### 11. Restart & outage safety · needs a decision
@@ -182,6 +193,7 @@ Push alerts to your phone for fills, limit hits, errors, and a missing heartbeat
 ### 13. Candle backtest lab · needs a decision
 Test hour level strategies on Kraken candle history with realistic fees, funding, and slippage.
 **Done when:** a strategy can be backtested over any date range, results include fees and funding, and the same strategy code runs unchanged in the backtest and the paper loop.
+**Carried over from research (2026-10-04):** guard against look ahead. A swing high or low is only known some bars after it happens (it needs the bars that follow it), so a signal must fire on the bar where the swing is confirmed, never on the swing bar itself. Public price action scripts often get this wrong, and it makes a backtest look far better than live.
 - [ ] Design it (spec): `/architect candle backtest lab`
 
 ### 14. Scalping simulator · needs a decision
@@ -192,6 +204,10 @@ Replay recorded order book data to test scalping honestly: maker and taker fees,
 ### 15. Strategy scoring & promotion gate · needs a decision
 Score every strategy on return after costs, max drawdown, and a risk adjusted ratio (win rate shown, never ranked on), with out of sample testing to catch overfitting. Only strategies that pass move to paper, and only paper winners can go live.
 **Done when:** the dashboard ranks strategies on those metrics, the gate blocks any strategy that fails out of sample or paper thresholds, and promotions are logged.
+**Carried over from research (2026-10-04), for the design to weigh:**
+- **Fee hurdle:** short horizon Bitcoin strategies that beat buy and hold on paper were not reliably profitable once fees were counted (Ahmad et al. 2021, PeerJ Computer Science 7:e337). The gate should require the average trade to clear the round trip cost (taker fee twice, about 0.1 %, plus funding) by a clear margin.
+- **Buy and hold benchmark:** most standard indicator rules did not beat simply holding the coin (Ahmed et al. 2020, Finance Research Letters 35:101495). Score every candidate next to holding BTC over the same period, and fail it if it does not beat that.
+- **Overfitting test:** a backtest can look good only because it fits noise. Consider the probability of backtest overfitting test (Gort et al. 2022, arXiv 2209.05559) alongside the out of sample windows.
 - [ ] Design it (spec): `/architect strategy scoring & promotion gate`
 
 ## Slice 7: First strategies
@@ -199,11 +215,53 @@ Score every strategy on return after costs, max drawdown, and a risk adjusted ra
 ### 16. Scalping strategy candidates · needs a decision
 A small set of well known scalping ideas (for example order book imbalance, short term mean reversion) run through the simulator and the gate.
 **Done when:** each candidate has a scored result on recorded data, and the gate's verdict is recorded, pass or fail.
+**Carried over from an article (2026-10-04), for the design to weigh:** a regime gate. Scalping and mean reversion tend to work in calm, rangebound markets and get run over in strong trends. Consider pausing new entries when volatility or trend strength (from feature 20's context or the candles) crosses a level, added as one more reason in `entries_blocked` (spec 0006) so the dashboard shows it. Score each candidate with and without the gate. A standard measure of trend strength is ADX(14) (the average directional index): above about 25 is the common reading for a trending market, the case the gate would block. Treat 25 as a starting point to tune on recorded data, not a fixed rule.
+**Also from an article (2026-10-04, quantum-algo scalping guide, promotional, its 75 % win rate at 2.3:1 claim is unverified and ignored):**
+- **Session filter:** scalp only in the busy hours (for BTC perps roughly the Europe and US overlap), when spreads are tightest. Check which hours actually have the tightest spread and most volume on our own recorded data before fixing a window.
+- **VWAP bounce:** with the trend set by the 9 and 21 EMA on 1 minute candles, enter when price pulls back to the day's VWAP and holds. Simple, few settings, a good early candidate against the fee hurdle.
+**Also from an article (2026-10-04, monkeytrade scalping guide, forex focused, its pip sizes do not carry over and its 55 to 65 % win rate claim is unverified):**
+- **Spread cap:** skip an entry when the spread is wider than a limit. Set the limit from our recorded order book data, not the article's forex number; with targets this small a wide spread alone erases the edge.
+- **Time stop:** exit when price has not moved within 3 to 5 candles. It is the same kind of exit as the placeholder's timed exit (spec 0006).
+- **EMA pullback:** on 1 minute candles, 8 EMA above 21 EMA, price pulls back to the 8 EMA with RSI(7) between 30 and 50, enter on a close back above the 8 EMA; stop past the 21 EMA, target 1.5 to 2 times the risk. A natural pair to compare with the VWAP bounce.
+**Also from an article (2026-10-04, NinjaTrader 1 minute scalping, CME focused; its 1 to 5 tick targets cannot clear Kraken's fees, see feature 15's fee hurdle):**
+- **Cumulative delta:** a running total of aggressive buying minus aggressive selling (a trade at the ask adds, one at the bid subtracts). When price keeps rising but delta flattens or falls, the move is losing its buyers. Try it two ways: as a filter that stops other candidates from chasing a fading move, and as a reversal candidate of its own. The recorder already stores trade ticks with their aggressor side, so delta comes from recorded data. It measures actual trades, unlike order book imbalance, which measures resting orders.
 - [ ] Design it (spec): `/architect scalping strategy candidates`
 
 ### 17. Hour level strategy candidates · needs a decision
 The fallback set: trend following and mean reversion on 1h to 4h candles, tested in the candle lab.
 **Done when:** each candidate has a scored result over several years of candles, and the gate's verdict is recorded.
+**Carried over from research (2026-10-04), a candidate to weigh:** Al Brooks style price action on 1h candles.
+- **Context:** the 20 period EMA, with a trend or range tag from how many of the last 15 closes sit above it.
+- **Entry:** the second pullback entry in a trend, called H2 when buying and L2 when selling (the second bar that breaks the prior bar's high or low during a pullback).
+- **Reversal:** a three push wedge.
+The trend or range tag could also serve as a regime filter for other candidates.
+**Also from research (2026-10-04, altFINS chart patterns):**
+- **Candidates:** breakouts from chart patterns that can be detected by rule: double tops and bottoms, channels, triangles, flags, and horizontal support and resistance. The rule is to trade only in the trend's direction and to require above average volume on the breakout bar.
+- **Exit template:** close at the pattern's target, after N candles, or when price moves one standard deviation against the trade, whichever comes first.
+- **Skip:** harmonic and Fibonacci patterns (Gartley, butterfly, ABCD). They have many free ratios to tune, which invites overfitting.
+- altFINS's published success rates (for example 82 % for double bottoms) do not define "success", ignore fees, and say nothing about the size of losses. Our own gate measures these instead.
+**Also from research (2026-10-04, RSI strategies):**
+- **RSI pullback in a trend:** buy when price is above its 50 period average and RSI(14) dips into 30 to 40, then crosses back up. Sell short in the mirror case (RSI 60 to 70 in a downtrend).
+- **Short period RSI mean reversion:** RSI with a period of 2 to 6 (the Connors style) is a well known test. Try it on 1h, and on 15 minute candles for feature 16 only if it clears the fee hurdle.
+- **Layered RSI:** use RSI(21) above or below 50 as the bias, RSI(14) for the signal and RSI(7) for timing. Several periods mean several free parameters, so test it for overfitting.
+- **Divergence** (price makes a new low while RSI does not) needs confirmed swings. The look ahead warning in feature 13 applies.
+- **Ignore** the article's accuracy claims (62 %, 78 %, 91 %). They have no method and no fees. The article itself ranks crypto as the weakest market for RSI.
+**The engineer's plan (2026-10-04): combine price action, RSI, and MACD into one strategy.** Build it in layers, each with one job:
+- **Context:** price action (the 20 EMA trend or range tag, swings) decides whether to trade and in which direction.
+- **Setup:** an RSI pullback (RSI(14) dipping into 30 to 40 in an uptrend) says the price is cheap within the trend.
+- **Trigger:** a MACD (12, 26, 9) signal line cross, or the histogram turning, in the trend's direction times the entry.
+
+A simple MACD only baseline to beat first (from the TradingView script "MACD Aggressive Scalp Simple", which has no stops and no published results): enter when the MACD (12, 26, 9) histogram crosses zero in the direction of the 50 period EMA, and exit when the histogram weakens. The layered strategy has to beat this baseline after fees to earn its extra settings. On short candles the histogram flips often, so check its trade count against the fee hurdle.
+
+Two cautions. RSI and MACD are both built from recent price momentum, so they often agree simply because they measure the same thing; one should not be counted as confirming the other. Each layer also adds settings to tune, so the backtest should add one layer at a time and keep it only if it improves the out of sample result after fees, with the overfitting test from feature 15 applied to the final combination.
+
+**Also from an article (2026-10-04, cryptoanalysislab market structure guide, course marketing, no rules or results):** a liquidity sweep candidate. Price runs past the prior day's high or low, closes back inside, then breaks the last swing in the other direction; the stop goes beyond the swept level. The article gives no swing definition, so we pick a fixed bar count and the look ahead warning in feature 13 applies.
+
+**Also from Fidelity's chart pattern webinar (2026-10-04, by Charles Kirkpatrick, CMT, drawing on his textbook *Technical Analysis: The Complete Resource*):**
+- **Breakout confirmation:** a pattern counts only once price breaks out, and many breakouts are false. Every breakout candidate should use one confirmation filter (two closes beyond the level, a minimum percent, or a wait of N bars) and the backtest should compare that filter with none.
+- **Failed breakout reversal:** when a breakout fails and price comes back through the level, reverse (a stop and reverse at the far side of the breakout bar). This is the same idea as the liquidity sweep candidate above, so test them as one candidate.
+- **Volatility contraction:** an NR4 bar (narrower range than the three before it) or an inside bar, then enter on a break of its high or low. Few settings and fully rule based, so a good early candidate, and a possible 15 minute variant for feature 16.
+- **Skip single candle patterns:** the source rates the hammer, hanging man, harami and doji at average or below, often breaking either way at random.
 - [ ] Design it (spec): `/architect hour level strategy candidates`
 
 ## Slice 8: Records

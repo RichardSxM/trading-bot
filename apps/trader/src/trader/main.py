@@ -1,9 +1,13 @@
-"""Trader entry point. Runs a node with no strategy yet: public Kraken data, and in live the Kraken
-execution client with its startup key check (spec 0003; allowed by the env guard from feature 19).
+"""Trader entry point. Runs a node on public Kraken data.
+
+In demo it runs the paper loop (spec 0006): the ``placeholder_timed`` strategy on the sandbox
+execution client, the recording actor writing to Postgres off the event loop, and the
+``position`` and ``account`` snapshots. In live it runs the Kraken execution client with its
+startup key check (spec 0003; allowed by the env guard from feature 19) and no strategy yet.
 
 Every env runs the control actor (pause and unpause, spec 0005) and writes the heartbeat and
 ``trader_state`` snapshots. SIGTERM stops the node gracefully: entry orders are cancelled,
-positions and stops are kept.
+positions and stops are kept, and in demo the recording queue is drained or spilled.
 """
 
 import asyncio
@@ -12,14 +16,14 @@ import os
 import signal
 import sys
 import time
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator, Mapping
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
-from typing import Final, Self
+from typing import Final, Protocol, Self
+from uuid import UUID
 
 from nautilus_trader.adapters.kraken import (
     KRAKEN,
-    KrakenExecClientConfig,
     KrakenLiveDataClientFactory,
     KrakenLiveExecClientFactory,
 )
@@ -27,16 +31,20 @@ from nautilus_trader.cache.cache import Cache
 from nautilus_trader.config import (
     CacheConfig,
     DatabaseConfig,
+    LiveExecClientConfig,
     LiveExecEngineConfig,
+    LiveRiskEngineConfig,
     LoggingConfig,
     TradingNodeConfig,
 )
 from nautilus_trader.live.node import TradingNode
-from nautilus_trader.model.identifiers import TraderId, Venue
+from nautilus_trader.model.identifiers import InstrumentId, TraderId, Venue
+from nautilus_trader.model.objects import Currency
 from pydantic import Field, SecretStr, field_validator, model_validator
 from redis import Redis as SyncRedis
 from redis.asyncio import Redis
 from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
 
 from trader.snapshot_writer import log_writer_crash, write_heartbeats
 from trading_core import env_guard
@@ -44,15 +52,29 @@ from trading_core.boot import boot
 from trading_core.control.consumer import ControlConsumer
 from trading_core.control.pause import pause_key
 from trading_core.control.records import PostgresCommandRecorder
-from trading_core.env_guard import ALLOWED_EXEC_CLIENTS, ExecClientAllowlist
+from trading_core.env_guard import ALLOWED_EXEC_CLIENTS, SANDBOX, ExecClientAllowlist
 from trading_core.naming import node_id
-from trading_core.node.control import ControlActor, PauseController, shutdown_counts, trader_state
+from trading_core.node.control import (
+    ControlActor,
+    PaperStatus,
+    PauseController,
+    RiskEngine,
+    shutdown_counts,
+    trader_state,
+)
 from trading_core.node.heartbeat import HeartbeatActor, HeartbeatConfig
 from trading_core.node.key_actors import KeyAgeActor, KeyAgeConfig
 from trading_core.node.key_check import watch_key_check
-from trading_core.node.kraken import futures_data_client, futures_exec_client
+from trading_core.node.kraken import BTC_PERP, futures_data_client, futures_exec_client
+from trading_core.node.paper_snapshots import account_snapshot, paper_status, position_snapshot
+from trading_core.node.placeholder import STRATEGY_NAME, PlaceholderConfig, PlaceholderTimed
+from trading_core.node.recording import RecordingActor
+from trading_core.node.sandbox import FeeSandboxExecClientFactory, sandbox_exec_client
 from trading_core.node.strategy import PauseGate
-from trading_core.recording.enums import Env
+from trading_core.recording import repository
+from trading_core.recording.enums import Env, RunMode, RunStatus, StrategyKind
+from trading_core.recording.rows import JsonObject
+from trading_core.recording.writer import RecordingWriter, deadletter_path, replay_spool, spool_path
 from trading_core.redis_check import redis_reachable
 from trading_core.secrets import (
     KRAKEN_API_KEY,
@@ -60,8 +82,9 @@ from trading_core.secrets import (
     POSTGRES_PASSWORD,
     REDIS_PASSWORD,
 )
-from trading_core.settings import Settings
+from trading_core.settings import PaperLoopSettings, Settings
 from trading_core.snapshot.envelope import snapshot_key
+from trading_core.strategy.blocks import EntryBlocks
 
 log = logging.getLogger("trader")
 
@@ -71,13 +94,17 @@ KEY_CHECK_FAIL_BACKOFF_S: Final = 300.0
 
 # How long a stop waits for entry order cancels to be acknowledged (spec 0005 AC-9).
 POST_STOP_S: Final = 10.0
+# The stop and the recording drain after it must fit inside Compose's 30 s stop grace (spec 0006).
+STOP_BUDGET_S: Final = 25
+# Keys deleted per UNLINK by the demo cache purge.
+PURGE_BATCH: Final = 500
 # The control reader blocks 1 s per read, so its socket timeout sits above that.
 CONTROL_SOCKET_TIMEOUT_S: Final = 3.0
 
 KrakenUrls = tuple[str, str]
 
 
-class TraderSettings(Settings):
+class TraderSettings(PaperLoopSettings):
     # UTC date the live Kraken key was created; required in live (spec 0003 AC-9).
     kraken_key_rotated_on: date | None = None
     # How long a live start waits for an authenticated Kraken account (spec 0003 AC-8).
@@ -99,6 +126,12 @@ class TraderSettings(Settings):
             raise ValueError("KRAKEN_KEY_ROTATED_ON is in the future")
         return self
 
+    @model_validator(mode="after")
+    def _stop_fits_the_grace(self) -> Self:
+        if POST_STOP_S + float(self.recording_drain_s) > STOP_BUDGET_S:
+            raise ValueError(f"POST_STOP_S ({POST_STOP_S}) plus RECORDING_DRAIN_S must be at most {STOP_BUDGET_S}")
+        return self
+
 
 def trader_secrets(settings: Settings) -> tuple[str, ...]:
     """The secret files the trader loads: its database and Redis passwords, plus the Kraken key in live."""
@@ -107,14 +140,18 @@ def trader_secrets(settings: Settings) -> tuple[str, ...]:
 
 
 def build_config(
-    settings: Settings, secrets: Mapping[str, SecretStr], kraken_urls: KrakenUrls | None = None
+    settings: TraderSettings, secrets: Mapping[str, SecretStr], kraken_urls: KrakenUrls | None = None
 ) -> TradingNodeConfig:
-    """The node config. In live it adds the Kraken execution client with the keys from the secret files.
+    """The node config: the sandbox execution client in demo (spec 0006), Kraken's in live.
 
+    In live it adds the Kraken execution client with the keys from the secret files.
     ``kraken_urls`` (http, ws) overrides the Kraken endpoints; only the canary leak test sets it.
+    The RiskEngine refuses any order over ``RISK_MAX_ORDER_NOTIONAL_USD`` in every env.
     """
     env = settings.trading_env
-    exec_clients: dict[str, KrakenExecClientConfig] = {}
+    exec_clients: dict[str, LiveExecClientConfig] = {}
+    if env == "demo":
+        exec_clients[SANDBOX] = sandbox_exec_client(settings)
     if env == "live":
         http, ws = kraken_urls or (None, None)
         exec_clients[KRAKEN] = futures_exec_client(
@@ -143,6 +180,10 @@ def build_config(
         ),
         # Reconciliation with Kraken arrives with feature 11.
         exec_engine=LiveExecEngineConfig(reconciliation=False),
+        risk_engine=LiveRiskEngineConfig(
+            # Nautilus parses each value with Decimal(value), so the exact cap goes in as a string.
+            max_notional_per_order={BTC_PERP: str(settings.risk_max_order_notional_usd)},  # type: ignore[dict-item]
+        ),
         data_clients={KRAKEN: futures_data_client()},
         exec_clients=exec_clients,
         # Cancels sent by the strategies on stop get this long to be acknowledged (spec 0005 AC-9).
@@ -151,7 +192,7 @@ def build_config(
 
 
 def guard(
-    settings: Settings, secrets: Mapping[str, SecretStr], allowlist: ExecClientAllowlist = ALLOWED_EXEC_CLIENTS
+    settings: TraderSettings, secrets: Mapping[str, SecretStr], allowlist: ExecClientAllowlist = ALLOWED_EXEC_CLIENTS
 ) -> None:
     env_guard.check_exec_clients(
         build_config(settings, secrets).exec_clients, process="trader", env=settings.trading_env, allowlist=allowlist
@@ -182,11 +223,12 @@ def snapshot_client(settings: Settings, password: SecretStr) -> Redis:
 
 @dataclass(frozen=True)
 class ControlParts:
-    """What ``run_node`` needs from the control side: the actor, the ``trader_state`` reader, the stop counts."""
+    """What ``run_node`` needs from the control side: the actor, the gate, the risk engine, the stop counts."""
 
     actor: ControlActor
-    read_state: Callable[[], Mapping[str, object] | None]
+    risk_engine: RiskEngine
     shutdown_counts: Callable[[], Mapping[str, int]]
+    gate: PauseGate = field(default_factory=PauseGate)
 
 
 def control_parts(node: TradingNode, settings: Settings, secrets: Mapping[str, SecretStr]) -> ControlParts:
@@ -225,8 +267,118 @@ def control_parts(node: TradingNode, settings: Settings, secrets: Mapping[str, S
 
     return ControlParts(
         actor=ControlActor(controller, read_pause_key, consumer.run),
-        read_state=lambda: trader_state(gate, risk_engine, node.cache, settings.git_commit),
+        risk_engine=risk_engine,
         shutdown_counts=lambda: shutdown_counts(gate, node.cache),
+        gate=gate,
+    )
+
+
+@dataclass(frozen=True)
+class PaperLoop:
+    """The demo paper loop's recording side (spec 0006): its run, the entry blocks, and the writer."""
+
+    run_id: UUID
+    blocks: EntryBlocks
+    writer: RecordingWriter
+    sessions: Callable[[], Session]
+
+
+def run_config(settings: PaperLoopSettings) -> JsonObject:
+    """``strategy_runs.run_config`` for a paper run: the sandbox balance and fees, and how fills happen."""
+    return {
+        "starting_balance_usd": settings.sandbox_starting_balance_usd,
+        "maker_fee": settings.sandbox_maker_fee,
+        "taker_fee": settings.sandbox_taker_fee,
+        "oms_type": "NETTING",
+        "account_type": "MARGIN",
+        "leverage": settings.risk_max_leverage,
+        "fill_source": "quotes",
+    }
+
+
+def start_paper_loop(settings: TraderSettings, secrets: Mapping[str, SecretStr], trader_id: str) -> PaperLoop:
+    """The start sequence after the purge (spec 0006 AC-15): replay the spool, start the paper run, and
+    close what earlier runs left open (``close_abandoned``, in the same transaction), before trading.
+
+    Raises when Postgres is unreachable, so ``main`` exits 1 and Docker restarts the trader.
+    """
+    engine = create_engine(settings.database_url(secrets[POSTGRES_PASSWORD]), pool_size=1, pool_pre_ping=True)
+    sessions = sessionmaker(engine)
+    blocks = EntryBlocks()
+    env = Env(settings.trading_env)
+    replayed = replay_spool(settings.spool_dir, sessions, blocks)
+    with sessions.begin() as session:
+        version_id = repository.ensure_strategy_version(
+            session, STRATEGY_NAME, StrategyKind.SCALPING, None, settings.strategy_config()
+        )
+        run_id = repository.start_run(
+            session,
+            env=env,
+            mode=RunMode.PAPER,
+            version_id=version_id,
+            trader_id=trader_id,
+            run_config=run_config(settings),
+            started_ns=time.time_ns(),
+        )
+        abandoned = repository.close_abandoned(session, env, trader_id, run_id, time.time_ns())
+    writer = RecordingWriter(
+        sessions,
+        blocks,
+        queue_max=settings.recording_queue_max,
+        max_backlog_s=float(settings.recording_max_backlog_s),
+        deadletter=deadletter_path(settings.spool_dir, run_id),
+    )
+    writer.start()
+    if abandoned:
+        log.critical(
+            "positions left open by an earlier run closed as abandoned",
+            extra={"fields": {"code": "positions_abandoned", "position_ids": [str(p) for p in abandoned]}},
+        )
+    log.info(
+        "paper run started",
+        extra={"fields": {"code": "paper_run_started", "run_id": str(run_id), "spool_replayed": replayed}},
+    )
+    return PaperLoop(run_id=run_id, blocks=blocks, writer=writer, sessions=sessions)
+
+
+def finish_paper_loop(paper: PaperLoop, settings: PaperLoopSettings, positions_open: int) -> None:
+    """After the node stopped: drain the queue, spill what is left, and finish the run (spec 0006 AC-13).
+
+    The run is ``completed`` when no position is left open, else ``aborted``. A failed finish is
+    logged; the next start marks a still running run ``aborted`` anyway.
+    """
+    if not paper.writer.drain(float(settings.recording_drain_s)):
+        spilled = paper.writer.spill(spool_path(settings.spool_dir, paper.run_id))
+        log.warning(
+            "recording queue not drained, spilled to the spool",
+            extra={"fields": {"code": "recording_spilled", "run_id": str(paper.run_id), "items": spilled}},
+        )
+    status = RunStatus.COMPLETED if positions_open == 0 else RunStatus.ABORTED
+    try:
+        with paper.sessions() as session, session.begin():
+            repository.finish_run(session, paper.run_id, status, time.time_ns())
+    except Exception:
+        log.exception(
+            "paper run could not be finished",
+            extra={"fields": {"code": "paper_run_unfinished", "run_id": str(paper.run_id)}},
+        )
+
+
+def placeholder_config(settings: PaperLoopSettings, run_id: UUID) -> PlaceholderConfig:
+    """The strategy's config from the ``PLACEHOLDER_*`` and ``RISK_*`` settings, under ``run_id``."""
+    return PlaceholderConfig(
+        env=settings.trading_env,
+        run_id=str(run_id),
+        instrument_id=BTC_PERP,
+        interval_min=settings.placeholder_interval_min,
+        hold_min=settings.placeholder_hold_min,
+        lookback_min=settings.placeholder_lookback_min,
+        stop_pct=settings.placeholder_stop_pct,
+        notional_usd=settings.placeholder_notional_usd,
+        max_order_notional_usd=settings.risk_max_order_notional_usd,
+        max_leverage=settings.risk_max_leverage,
+        stale_quote_s=settings.risk_stale_quote_s,
+        stop_accept_timeout_s=settings.stop_accept_timeout_s,
     )
 
 
@@ -246,6 +398,7 @@ def run_node(
     key_check_timeout_s: float,
     secrets: Mapping[str, SecretStr],
     fail_backoff_s: float = KEY_CHECK_FAIL_BACKOFF_S,
+    paper: PaperLoop | None = None,
 ) -> int:
     """Build and run the node until it stops; return the process exit code.
 
@@ -256,6 +409,10 @@ def run_node(
     check. The check is a task on the node's event loop, not an actor: when the Kraken client
     cannot connect, Nautilus never starts the trader, so an actor would never run. A failed
     check stops the node and makes this return 1 after ``fail_backoff_s``.
+
+    With ``paper`` (demo) it registers the recording actor and the ``placeholder_timed``
+    strategy after the control actor, writes the ``position`` and ``account`` snapshots, and
+    after the stop drains the recording queue and finishes the run.
     """
     node = TradingNode(config=config)
     control = control_parts(node, settings, secrets)
@@ -263,6 +420,35 @@ def run_node(
     node.trader.add_actor(
         HeartbeatActor(HeartbeatConfig(path=os.environ.get("HEARTBEAT_FILE", "/run/heartbeat/alive")))
     )
+    paper_state: Callable[[], PaperStatus] | None = None
+    snapshot_readers: list[tuple[str, Callable[[], Mapping[str, object] | None]]] = [
+        ("heartbeat", lambda: heartbeat_state(node, settings)),
+        (
+            "trader_state",
+            lambda: trader_state(control.gate, control.risk_engine, node.cache, settings.git_commit, paper_state),
+        ),
+    ]
+    if paper is not None:
+        instrument_id = InstrumentId.from_str(BTC_PERP)
+        record = paper.writer.put
+        env = Env(settings.trading_env)
+        node.trader.add_actor(
+            RecordingActor(
+                env=env, run_id=paper.run_id, instrument_id=instrument_id, record=record, blocks=paper.blocks
+            )
+        )
+        strategy = PlaceholderTimed(placeholder_config(settings, paper.run_id), control.gate, paper.blocks, record)
+        node.trader.add_strategy(strategy)
+        writer, blocks = paper.writer, paper.blocks
+
+        def paper_state() -> PaperStatus:
+            return paper_status(control.gate, blocks, writer.backlog, strategy)
+
+        usd = Currency.from_str("USD")
+        snapshot_readers += [
+            ("position", lambda: position_snapshot(node.cache, instrument_id, strategy)),
+            ("account", lambda: account_snapshot(node.portfolio, node.cache, instrument_id, usd)),
+        ]
     failed: list[bool] = []
     if settings.trading_env == "live" and settings.kraken_key_rotated_on is not None:
         node.trader.add_actor(KeyAgeActor(KeyAgeConfig(rotated_on=settings.kraken_key_rotated_on)))
@@ -298,7 +484,9 @@ def run_node(
         key_check.add_done_callback(key_check_ended)
     if config.data_clients:
         node.add_data_client_factory(KRAKEN, KrakenLiveDataClientFactory)
-    if config.exec_clients:
+    if SANDBOX in config.exec_clients:
+        node.add_exec_client_factory(SANDBOX, FeeSandboxExecClientFactory)
+    if KRAKEN in config.exec_clients:
         node.add_exec_client_factory(KRAKEN, KrakenLiveExecClientFactory)
     node.build()
     loop = node.get_event_loop()
@@ -308,13 +496,10 @@ def run_node(
     # Kept in locals so the tasks live as long as the node runs; a crash is logged, trading goes on.
     writers = [
         loop.create_task(write_heartbeats(snapshots, snapshot_key(settings.trading_env, name), read_state))
-        for name, read_state in (
-            ("heartbeat", lambda: heartbeat_state(node, settings)),
-            ("trader_state", control.read_state),
-        )
+        for name, read_state in snapshot_readers
     ]
-    for writer in writers:
-        writer.add_done_callback(log_writer_crash)
+    for task in writers:
+        task.add_done_callback(log_writer_crash)
     stop_signals = (signal.SIGTERM, signal.SIGINT)
     for signum in stop_signals:
         loop.add_signal_handler(signum, node.stop)
@@ -327,16 +512,77 @@ def run_node(
     finally:
         for signum in stop_signals:
             loop.remove_signal_handler(signum)
-        for writer in writers:
-            writer.cancel()
+        for task in writers:
+            task.cancel()
         # Let the cancelled writers finish on the stopped loop, so none is destroyed while pending.
         if not loop.is_closed() and not loop.is_running():
             loop.run_until_complete(asyncio.gather(*writers, return_exceptions=True))
+        if paper is not None:
+            finish_paper_loop(paper, settings, len(node.cache.positions_open()))
         node.dispose()
     if failed:
         time.sleep(fail_backoff_s)
         return 1
     return 0
+
+
+def cache_client(settings: Settings, password: SecretStr) -> SyncRedis:
+    """A redis-py client as the trader's ACL user, for the demo cache purge before the node exists."""
+    return SyncRedis(
+        host=settings.redis_host,
+        port=settings.redis_port,
+        username=settings.redis_username,
+        password=password.get_secret_value(),
+        socket_timeout=CONTROL_SOCKET_TIMEOUT_S,
+        socket_connect_timeout=CONTROL_SOCKET_TIMEOUT_S,
+    )
+
+
+class PurgeClient(Protocol):
+    """The two Redis calls the demo purge needs (the sync redis-py client satisfies it)."""
+
+    def scan_iter(self, match: str, count: int) -> Iterator[str | bytes]: ...
+
+    def unlink(self, *names: str | bytes) -> int: ...
+
+
+def purge_demo_cache(client: PurgeClient, trader_id: str) -> int:
+    """Delete this trader's own Nautilus cache keys, ``trader-<trader_id>:*``; returns how many (spec 0006 AC-15).
+
+    Demo only: sandbox orders and positions cannot be restored after a restart, so a reload
+    would resurrect a simulated position the new sandbox never had. Live never purges. It uses
+    SCAN and UNLINK and touches nothing outside the pattern, never a whole database.
+    """
+    deleted = 0
+    batch: list[str | bytes] = []
+    for key in client.scan_iter(match=f"trader-{trader_id}:*", count=1000):
+        batch.append(key)
+        if len(batch) >= PURGE_BATCH:
+            deleted += client.unlink(*batch)
+            batch.clear()
+    if batch:
+        deleted += client.unlink(*batch)
+    return deleted
+
+
+def warn_on_settings(settings: PaperLoopSettings) -> None:
+    """Log the start warnings for settings that are allowed but unusual (spec 0006)."""
+    if settings.placeholder_notional_usd > settings.risk_max_order_notional_usd:
+        log.warning(
+            "placeholder notional is above the order cap, every entry will be refused",
+            extra={
+                "fields": {
+                    "code": "placeholder_notional_over_cap",
+                    "notional": str(settings.placeholder_notional_usd),
+                    "cap": str(settings.risk_max_order_notional_usd),
+                }
+            },
+        )
+    if settings.sandbox_reject_stop_orders:
+        log.warning(
+            "the sandbox rejects every stop order, for the AC-7 drill only",
+            extra={"fields": {"code": "sandbox_reject_stop_orders"}},
+        )
 
 
 def main() -> None:
@@ -348,12 +594,31 @@ def main() -> None:
             extra={"fields": {"host": settings.redis_host, "port": settings.redis_port}},
         )
         sys.exit(1)
+    warn_on_settings(settings)
+    config = build_config(settings, started.secrets)
+    if settings.trading_env == "demo":
+        deleted = purge_demo_cache(cache_client(settings, started.secrets[REDIS_PASSWORD]), config.trader_id.value)
+        log.info(
+            "demo cache purged",
+            extra={"fields": {"code": "demo_cache_purged", "trader_id": config.trader_id.value, "deleted": deleted}},
+        )
+
+    paper = None
+    if settings.trading_env == "demo":
+        try:
+            paper = start_paper_loop(settings, started.secrets, config.trader_id.value)
+        except Exception:
+            log.critical(
+                "paper run could not start, exiting", exc_info=True, extra={"fields": {"code": "paper_start_failed"}}
+            )
+            sys.exit(1)
 
     code = run_node(
-        build_config(settings, started.secrets),
+        config,
         settings,
         settings.kraken_key_check_timeout_s,
         started.secrets,
+        paper=paper,
     )
     if code:
         sys.exit(code)

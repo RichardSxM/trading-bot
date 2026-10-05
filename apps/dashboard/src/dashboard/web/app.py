@@ -1,10 +1,11 @@
-"""``create_app``: the FastAPI app with its templates, auth, Redis client, and poller (spec 0004)."""
+"""``create_app``: the app with its templates, auth, Redis, Postgres reads, and poller (specs 0004, 0006)."""
 
 import asyncio
 import contextlib
 import logging
 import time
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
 
@@ -13,14 +14,19 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import SecretStr
 from redis.asyncio import Redis
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 from dashboard.auth.lockout import Lockout
 from dashboard.auth.password import PasswordChecker
 from dashboard.auth.proxy import default_gateway
 from dashboard.auth.session import SessionCodec
 from dashboard.auth.totp import TotpGuard
+from dashboard.data.pnl import PnlFigures, pnl_figures
+from dashboard.data.trades import TradesView, trades_view
 from dashboard.live.poller import ACTIVITY_SIZE, Poller, supervise
-from dashboard.live.state import ActivityRow, AgeView, AlertView, CommandView, PauseView, collapse
+from dashboard.live.position import PositionView
+from dashboard.live.state import ActivityRow, AgeView, AlertView, BlockedView, CommandView, PauseView, collapse
 from dashboard.settings import DashboardSettings, normalize_seed
 from dashboard.ui.format import num, pnl, ts
 from dashboard.web import auth_routes, control_routes, page_routes
@@ -32,6 +38,7 @@ from trading_core.secrets import (
     DASHBOARD_PASSWORD_HASH,
     DASHBOARD_SESSION_KEY,
     DASHBOARD_TOTP_SEED,
+    POSTGRES_PASSWORD,
     REDIS_PASSWORD,
     fingerprint,
 )
@@ -81,9 +88,33 @@ def create_app(
     redis: LiveRedis | None = None,
     clock: Callable[[], float] = time.time,
     clock_ns: Callable[[], int] = time.time_ns,
+    read_pnl: Callable[[], PnlFigures] | None = None,
+    read_trades: Callable[[int, int], TradesView] | None = None,
 ) -> FastAPI:
-    """Build the dashboard app. Tests pass fake settings, secrets, a fake Redis, and fake clocks."""
+    """Build the dashboard app. Tests pass fake settings, secrets, a fake Redis, fake clocks, and Postgres readers.
+
+    ``read_pnl`` and ``read_trades`` are blocking (they query Postgres as ``dashboard_app``); the
+    poller and the Trades route run them in a thread.
+    """
     client: LiveRedis = redis if redis is not None else redis_client(settings, secrets[REDIS_PASSWORD])
+    engine = None
+    env = settings.trading_env
+    if read_pnl is None or read_trades is None:
+        # Two connections: a Trades page load never waits behind the poller's P&L read.
+        engine = create_engine(
+            settings.database_url(secrets[POSTGRES_PASSWORD]), pool_size=2, max_overflow=0, pool_pre_ping=True
+        )
+        sessions = sessionmaker(engine)
+
+        def postgres_pnl() -> PnlFigures:
+            return pnl_figures(sessions, env, datetime.fromtimestamp(clock(), UTC))
+
+        def postgres_trades(page: int, fills_page: int) -> TradesView:
+            return trades_view(sessions, env, page, fills_page)
+
+        read_pnl = read_pnl or postgres_pnl
+        read_trades = read_trades or postgres_trades
+    pnl_reader, trades_reader = read_pnl, read_trades
     templates = Jinja2Templates(directory=PACKAGE_DIR / "templates")
     templates.env.filters.update(num=num, pnl=pnl, ts=ts)
     age_template = templates.get_template("partials/topbar_age.html")
@@ -91,6 +122,11 @@ def create_app(
     alert_template = templates.get_template("partials/topbar_alert.html")
     activity_template = templates.get_template("partials/overview_activity.html")
     pause_template = templates.get_template("partials/topbar_pause.html")
+    position_template = templates.get_template("partials/overview_position.html")
+    blocked_template = templates.get_template("partials/topbar_blocked.html")
+    blocked_reasons_template = templates.get_template("partials/overview_blocked.html")
+    position_key = snapshot_key(settings.trading_env, "position")
+    account_key = snapshot_key(settings.trading_env, "account")
     heartbeat_key = snapshot_key(settings.trading_env, "heartbeat")
     trader_state_key = snapshot_key(settings.trading_env, "trader_state")
     password_hash = secrets[DASHBOARD_PASSWORD_HASH].get_secret_value()
@@ -114,6 +150,15 @@ def create_app(
 
     def render_pause(view: PauseView) -> str:
         return pause_template.render(view=view)
+
+    def render_position(view: PositionView) -> str:
+        return position_template.render(view=view)
+
+    def render_blocked(view: BlockedView) -> str:
+        return blocked_template.render(view=view)
+
+    def render_blocked_reasons(view: BlockedView) -> str:
+        return blocked_reasons_template.render(view=view)
 
     context = AppContext(
         settings=settings,
@@ -144,9 +189,16 @@ def create_app(
             ack_warn_s=settings.dashboard_ack_warn_s,
             read_timeout_s=REDIS_TIMEOUT_S,
             clock_ns=clock_ns,
+            read_position=lambda: client.get(position_key),
+            read_account=lambda: client.get(account_key),
+            read_pnl=lambda: asyncio.to_thread(pnl_reader),
+            render_position=render_position,
+            render_blocked=render_blocked,
+            render_blocked_reasons=render_blocked_reasons,
         ),
         redis=client,
         clock=clock,
+        read_trades=lambda page, fills_page: asyncio.to_thread(trades_reader, page, fills_page),
         trusted_peers=trusted_peers(),
     )
 
@@ -160,6 +212,8 @@ def create_app(
             with contextlib.suppress(asyncio.CancelledError):
                 await poller_task
             await client.aclose()
+            if engine is not None:
+                engine.dispose()
 
     app = FastAPI(
         title="Kraken Futures Scalper",

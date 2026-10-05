@@ -17,11 +17,14 @@ NodeProcess = Literal["trader", "recorder"]
 
 ExecClientAllowlist = Mapping[tuple[NodeProcess, TradingEnv], frozenset[str]]
 
-# Execution clients each node may build, by environment. Feature 6 adds the sandbox to
-# ("trader", "demo"); feature 19 (go live) adds Kraken to ("trader", "live"). The recorder
-# never gets one, in any environment.
+# The simulated exchange inside the trader (spec 0006); the name its client is registered under.
+SANDBOX = "SANDBOX"
+
+# Execution clients each node may build, by environment. The demo trader gets only the sandbox
+# (spec 0006); feature 19 (go live) adds Kraken to ("trader", "live"). The recorder never gets
+# one, in any environment.
 ALLOWED_EXEC_CLIENTS: ExecClientAllowlist = {
-    ("trader", "demo"): frozenset(),
+    ("trader", "demo"): frozenset({SANDBOX}),
     ("trader", "live"): frozenset(),
     ("recorder", "demo"): frozenset(),
     ("recorder", "live"): frozenset(),

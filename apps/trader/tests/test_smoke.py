@@ -1,5 +1,6 @@
 import asyncio
 from datetime import date
+from decimal import Decimal
 from typing import Any, ClassVar, cast
 
 import pytest
@@ -8,7 +9,7 @@ from pydantic import SecretStr
 from trader.main import TraderSettings, build_config
 from trading_core.boot import Boot
 from trading_core.naming import NodeIdMismatch
-from trading_core.settings import Settings, TradingEnv
+from trading_core.settings import TradingEnv
 
 SECRETS = {
     "redis_password": SecretStr("r" * 32),
@@ -34,7 +35,8 @@ def test_demo_config_uses_env_tagged_id_and_stable_redis_cache(monkeypatch):
     assert config.cache.use_instance_id is False
     assert config.cache.flush_on_start is False
     assert "KRAKEN" in config.data_clients
-    assert config.exec_clients == {}
+    # Demo orders go only to the sandbox (spec 0006 AC-2).
+    assert list(config.exec_clients) == ["SANDBOX"]
 
 
 def test_explicit_trader_id_must_match_env(monkeypatch):
@@ -51,7 +53,7 @@ def test_data_client_reads_live_public_feeds_in_demo(monkeypatch):
     assert config.data_clients["KRAKEN"].environment == KrakenEnvironment.LIVE
 
 
-def test_config_guard_passes_a_demo_node_without_execution_clients(monkeypatch):
+def test_config_guard_passes_a_demo_node_with_only_the_sandbox(monkeypatch):
     # The Kraken key variables are refused by boot for every process (core test_env_guard).
     from trader.main import guard
 
@@ -71,7 +73,7 @@ def test_explicit_trader_id_with_matching_tag_is_used(monkeypatch):
 
 def test_cache_points_at_the_configured_redis(monkeypatch):
     monkeypatch.delenv("TRADER_ID", raising=False)
-    settings = Settings(trading_env="demo", redis_host="cache.internal", redis_port=6380)
+    settings = TraderSettings(trading_env="demo", redis_host="cache.internal", redis_port=6380)
 
     cache = build_config(settings, SECRETS).cache
     assert cache is not None
@@ -83,7 +85,7 @@ def test_cache_points_at_the_configured_redis(monkeypatch):
 
 def test_cache_logs_in_as_the_services_redis_user(monkeypatch):
     monkeypatch.delenv("TRADER_ID", raising=False)
-    settings = Settings(trading_env="demo", redis_username="trader")
+    settings = TraderSettings(trading_env="demo", redis_username="trader")
 
     cache = build_config(settings, SECRETS).cache
     assert cache is not None
@@ -112,6 +114,9 @@ class _FakeNode:
 
     def add_data_client_factory(self, name, factory):
         self.calls.append(("factory", name))
+
+    def add_strategy(self, strategy):
+        self.calls.append(("add_strategy", type(strategy).__name__))
 
     def add_exec_client_factory(self, name, factory):
         self.calls.append(("exec_factory", name))
@@ -170,7 +175,7 @@ def _fake_control_parts(node, settings, secrets):
 
     return ControlParts(
         actor=cast(Any, ControlActor()),
-        read_state=lambda: {"paused": False},
+        risk_engine=cast(Any, object()),
         shutdown_counts=lambda: {"cancelled": 0, "unacknowledged_cancels": 0, "positions_kept": 0, "stops_kept": 0},
     )
 
@@ -185,6 +190,9 @@ def fake_main(monkeypatch):
     monkeypatch.setattr(trader_main, "TradingNode", _FakeNode)
     monkeypatch.setattr(trader_main, "snapshot_client", lambda settings, password: _FakeRedis())
     monkeypatch.setattr(trader_main, "control_parts", _fake_control_parts)
+    monkeypatch.setattr(trader_main, "trader_state", lambda gate, risk, cache, commit, paper=None: {"paused": False})
+    monkeypatch.setattr(trader_main, "cache_client", lambda settings, password: _PurgeRedis())
+    monkeypatch.setattr(trader_main, "start_paper_loop", lambda settings, secrets, trader_id: None)
     return trader_main
 
 
@@ -570,3 +578,268 @@ def test_both_snapshots_are_written_with_the_trader_state_from_the_control_side(
     state = next(w for w in redis.writes if w[0] == "demo:snapshot:trader_state")
     assert state[2] == 30
     assert json.loads(state[1])["data"] == {"paused": False}
+
+
+# spec 0006: the sandbox, the risk cap, the stop budget, and the demo cache purge.
+
+
+def test_demo_config_registers_the_fee_sandbox_and_the_risk_engine_cap(monkeypatch):
+    from trading_core.node.sandbox import FeeSandboxConfig
+
+    monkeypatch.delenv("TRADER_ID", raising=False)
+    config = build_config(_settings("demo"), SECRETS)
+
+    assert isinstance(config.exec_clients["SANDBOX"], FeeSandboxConfig)
+    assert config.risk_engine is not None
+    assert {k: str(v) for k, v in config.risk_engine.max_notional_per_order.items()} == {"PF_XBTUSD.KRAKEN": "250"}
+
+
+def test_live_config_never_builds_the_sandbox(monkeypatch):
+    monkeypatch.delenv("TRADER_ID", raising=False)
+    assert "SANDBOX" not in build_config(_settings("live"), SECRETS).exec_clients
+
+
+def test_a_live_trader_with_a_sandbox_is_refused(monkeypatch):
+    from trader.main import guard
+    from trading_core.env_guard import ALLOWED_EXEC_CLIENTS, EnvGuardRefused
+
+    monkeypatch.delenv("TRADER_ID", raising=False)
+    monkeypatch.setattr("trader.main.build_config", lambda settings, secrets: _sandbox_config())
+    allowlist = dict(ALLOWED_EXEC_CLIENTS) | {("trader", "live"): frozenset({"KRAKEN"})}
+    with pytest.raises(EnvGuardRefused, match="SANDBOX"):
+        guard(_settings("live"), SECRETS, allowlist)
+
+
+def _sandbox_config():
+    from types import SimpleNamespace
+
+    return SimpleNamespace(exec_clients={"SANDBOX": object()})
+
+
+def test_the_stop_and_the_recording_drain_must_fit_the_stop_grace():
+    from pydantic import ValidationError
+
+    TraderSettings(trading_env="demo", recording_drain_s=Decimal(15))
+    with pytest.raises(ValidationError, match="RECORDING_DRAIN_S"):
+        TraderSettings(trading_env="demo", recording_drain_s=Decimal(16))
+
+
+class _PurgeRedis:
+    """Holds keys and answers SCAN (with a glob match) and UNLINK, like the Compose Redis would."""
+
+    def __init__(self, keys=()):
+        self.keys = set(keys)
+        self.unlinks = []
+
+    def scan_iter(self, match, count):
+        import fnmatch
+
+        return iter(sorted(k for k in self.keys if fnmatch.fnmatchcase(k, match)))
+
+    def unlink(self, *keys):
+        self.unlinks.append(keys)
+        found = self.keys & set(keys)
+        self.keys -= found
+        return len(found)
+
+
+def test_purge_deletes_only_this_traders_cache_keys():
+    from trader.main import purge_demo_cache
+
+    redis = _PurgeRedis(
+        {
+            "trader-TRADER-DEMO:orders:O-1",
+            "trader-TRADER-DEMO:positions:P-1",
+            "trader-TRADER-DEMO-2:orders:O-1",
+            "demo:trader:pause",
+            "demo:control",
+            "demo:snapshot:heartbeat",
+        }
+    )
+
+    assert purge_demo_cache(redis, "TRADER-DEMO") == 2
+    assert redis.keys == {
+        "trader-TRADER-DEMO-2:orders:O-1",
+        "demo:trader:pause",
+        "demo:control",
+        "demo:snapshot:heartbeat",
+    }
+
+
+def test_purge_unlinks_in_batches(monkeypatch):
+    import trader.main as trader_main
+
+    monkeypatch.setattr(trader_main, "PURGE_BATCH", 2)
+    redis = _PurgeRedis({f"trader-TRADER-DEMO:k{i}" for i in range(5)})
+
+    assert trader_main.purge_demo_cache(redis, "TRADER-DEMO") == 5
+    assert [len(batch) for batch in redis.unlinks] == [2, 2, 1]
+
+
+def test_main_purges_the_demo_cache_before_the_node_exists(fake_main, monkeypatch):
+    monkeypatch.setattr(fake_main, "redis_reachable", lambda host, port: True)
+    purged = []
+
+    def purge(client, trader_id):
+        assert _FakeNode.instances == []
+        purged.append(trader_id)
+        return 0
+
+    monkeypatch.setattr(fake_main, "purge_demo_cache", purge)
+
+    fake_main.main()
+
+    assert purged == ["TRADER-DEMO"]
+    assert ("exec_factory", "SANDBOX") in _FakeNode.instances[0].calls
+
+
+def test_main_warns_when_the_placeholder_notional_is_over_the_cap(fake_main, monkeypatch, caplog):
+    monkeypatch.setattr(fake_main, "redis_reachable", lambda host, port: True)
+    settings = _settings("demo").model_copy(update={"placeholder_notional_usd": 300})
+    monkeypatch.setattr(fake_main, "boot", lambda kind, **kw: Boot(settings, SECRETS))
+
+    fake_main.main()
+
+    assert any(getattr(r, "fields", {}).get("code") == "placeholder_notional_over_cap" for r in caplog.records)
+
+
+@pytest.mark.parametrize("drill", [True, False])
+def test_main_warns_only_while_the_stop_reject_drill_is_on(fake_main, monkeypatch, caplog, drill):
+    monkeypatch.setattr(fake_main, "redis_reachable", lambda host, port: True)
+    settings = _settings("demo").model_copy(update={"sandbox_reject_stop_orders": drill})
+    monkeypatch.setattr(fake_main, "boot", lambda kind, **kw: Boot(settings, SECRETS))
+
+    fake_main.main()
+
+    warned = [r for r in caplog.records if getattr(r, "fields", {}).get("code") == "sandbox_reject_stop_orders"]
+    assert [r.levelname for r in warned] == (["WARNING"] if drill else [])
+
+
+# spec 0006: the paper loop wiring (AC-2, AC-13, AC-15, AC-16)
+
+
+class _FakeWriter:
+    def __init__(self, drained=True):
+        self.drained = drained
+        self.items = []
+        self.spilled = []
+
+    def put(self, item):
+        self.items.append(item)
+
+    def drain(self, timeout_s):
+        self.timeout_s = timeout_s
+        return self.drained
+
+    def spill(self, path):
+        self.spilled.append(path)
+        return 3
+
+
+def _paper(writer=None):
+    import uuid
+
+    from trader.main import PaperLoop
+    from trading_core.strategy.blocks import EntryBlocks
+
+    return PaperLoop(
+        run_id=uuid.uuid7(), blocks=EntryBlocks(), writer=cast(Any, writer or _FakeWriter()), sessions=cast(Any, None)
+    )
+
+
+class _PaperNode(_FakeNode):
+    class cache:
+        @staticmethod
+        def positions_open(**kwargs):
+            return []
+
+    portfolio = None
+
+
+def test_demo_registers_recording_then_the_strategy_after_control_and_finishes_the_run(fake_main, monkeypatch):
+    finished = []
+    monkeypatch.setattr(fake_main, "TradingNode", _PaperNode)
+    monkeypatch.setattr(fake_main, "finish_paper_loop", lambda paper, settings, positions: finished.append(positions))
+    redis = _FakeRedis()
+    monkeypatch.setattr(fake_main, "snapshot_client", lambda settings, password: redis)
+
+    code = fake_main.run_node(build_config(_settings("demo"), SECRETS), _settings("demo"), 2.0, SECRETS, paper=_paper())
+
+    (node,) = _FakeNode.instances
+    registered = [c for c in node.calls if c[0] in ("add_actor", "add_strategy")]
+    assert registered[0] == ("add_actor", "ControlActor")
+    assert registered.index(("add_actor", "RecordingActor")) < registered.index(("add_strategy", "PlaceholderTimed"))
+    assert (code, finished) == (0, [0])
+    assert node.calls[-1] == "dispose"
+
+
+def test_main_exits_1_when_the_paper_run_cannot_start(fake_main, monkeypatch):
+    from sqlalchemy.exc import OperationalError
+
+    def unreachable(settings, secrets, trader_id):
+        raise OperationalError("connect", {}, Exception("postgres down"))
+
+    monkeypatch.setattr(fake_main, "redis_reachable", lambda host, port: True)
+    monkeypatch.setattr(fake_main, "start_paper_loop", unreachable)
+
+    with pytest.raises(SystemExit) as exit_info:
+        fake_main.main()
+
+    assert exit_info.value.code == 1
+    assert _FakeNode.instances == []
+
+
+def test_an_undrained_queue_is_spilled_under_the_run_id(monkeypatch, tmp_path):
+    from trader.main import finish_paper_loop
+
+    writer = _FakeWriter(drained=False)
+    paper = _paper(writer)
+
+    class Sessions:
+        def __call__(self):
+            raise ConnectionError("postgres down")
+
+    paper = type(paper)(run_id=paper.run_id, blocks=paper.blocks, writer=paper.writer, sessions=Sessions())
+    settings = TraderSettings(trading_env="demo", spool_dir=tmp_path, recording_drain_s=Decimal(7))
+
+    finish_paper_loop(paper, settings, positions_open=0)  # a failed finish is logged, not raised
+
+    assert writer.timeout_s == 7.0
+    assert writer.spilled == [tmp_path / f"{paper.run_id}.jsonl"]
+
+
+def test_run_config_records_balance_fees_and_fill_source():
+    from trader.main import run_config
+
+    config = run_config(_settings("demo"))
+
+    assert config["fill_source"] == "quotes"
+    assert (config["oms_type"], config["account_type"]) == ("NETTING", "MARGIN")
+    assert config["starting_balance_usd"] == Decimal(1000)
+
+
+def test_the_demo_config_builds_a_real_node_with_the_fee_sandbox(monkeypatch):
+    """A real TradingNode build (no connection): catches factory wiring the fake node cannot."""
+    import msgspec
+    from nautilus_trader.adapters.kraken import KRAKEN, KrakenLiveDataClientFactory
+    from nautilus_trader.config import CacheConfig
+    from nautilus_trader.live.node import TradingNode
+
+    from trading_core.node.sandbox import FeeSandboxExecClientFactory, FeeSandboxExecutionClient
+
+    monkeypatch.delenv("TRADER_ID", raising=False)
+    # Without the Redis cache database, so the build needs no Redis; the factories are the point.
+    config = msgspec.structs.replace(build_config(_settings("demo"), SECRETS), cache=CacheConfig())
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    node = TradingNode(config=config, loop=loop)
+    try:
+        node.add_data_client_factory(KRAKEN, KrakenLiveDataClientFactory)
+        node.add_exec_client_factory("SANDBOX", FeeSandboxExecClientFactory)
+        node.build()
+        clients = node.kernel.exec_engine._clients.values()
+        assert any(isinstance(c, FeeSandboxExecutionClient) for c in clients)
+    finally:
+        node.dispose()
+        asyncio.set_event_loop(None)
+        loop.close()

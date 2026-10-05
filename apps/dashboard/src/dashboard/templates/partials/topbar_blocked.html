@@ -1,0 +1,5 @@
+{#- Entries blocked (spec 0006 AC-18): a badge whenever trader_state lists a reason, nothing otherwise.
+    The reasons in plain words are on Overview; the title holds them for a hover here. -#}
+{%- if view.reasons -%}
+<span class="blocked" title="{{ view.reasons | map(attribute='words') | join('; ') }}"><span class="blocked__label">entries</span> blocked{% if view.reasons | length > 1 %} · {{ view.reasons | length }} reasons{% endif %}</span>
+{%- endif -%}

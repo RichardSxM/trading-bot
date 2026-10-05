@@ -353,6 +353,10 @@ A Margin Caption label over a Number large value, with an optional Caption note 
 Dense rows at Label size, cells 8 px tall padding and 24 px side padding on a laptop (16 px on a phone), Hairline rules between rows, numbers right aligned in Mono. Heads are sentence case Caption in Margin with no fill of their own (they sit on Desk) and a Hairline rule below; they stick while the body scrolls. A hovered row turns Lamp. Empty and loading rows span every column, left aligned, in Pencil.
 - **States:** `default`, `empty`, `loading`
 
+### Pager (`pager`)
+Under a paged table (Trades, spec 0006 AC-19), above a Hairline: the page as a Margin Caption (`Page 2`) between quiet links, `Newer` with a chevron left and `Older` with a chevron right, in Pencil at Label size that turn Paper on a Lamp fill when hovered, each at least 44 px tall. `Older` shows only while the page is full. A page past the end shows one Pencil line (`Nothing on page 9.`) and a `Back to page 1` link. A lone first page renders no pager.
+- **States:** `first`, `middle`, `past_end`
+
 ### Button (`button`)
 - **Shape:** 4 px corners, at least 44 × 44 px, 16 px side padding, Label type, an optional 16 px icon 8 px from the label.
 - **Default:** Lamp fill, Edge border, Paper text; hover turns the border Pencil; pressed drops to Desk. **Focus:** 2 px Signal Indigo outline, 2 px offset.
@@ -411,6 +415,14 @@ The heartbeat tape, the signature of the console. A 56 px canvas across the full
 ### Activity feed (`activity`)
 Overview's answer to "what just happened": the newest 20 commands, newest first, as plain rows split by Hairlines, no table head. A run of consecutive commands that read the same (command, outcome) is one row: the command carries a Pencil Mono count (`stop ×16`) and the time a Margin Caption `from` line with the oldest time, so repeats never bury the signal. Each row holds the UTC time (`ts`), the command in Paper at 500 weight, and its outcome at the right edge in the top bar's command colors (Signal Indigo while waiting, Paper when confirmed, Ledger Red when failed or expired, Amber Watch when unknown). A final outcome never hides here. On a phone the time drops under the command. An entry that does not parse is one Amber Watch `unknown entry` row. It dims with the top bar while the link is not live.
 - **States:** `empty`, `filled`, `collapsed`, `error`
+
+### Position card (`position`)
+Overview's Position and P&L region (spec 0006). An open position leads with its unrealized P&L as a Stat, then label and value rows split by Hairlines: side, size, average entry, the mark in a Stale wrapper, the stop with its status (Amber Watch `no stop` when there is none), the exit time, and equity. Flat shows `Flat` and the mark. Under every state a Caption title `Paper P&L, before funding` heads realized today (UTC), realized all time, and fees today. A missing or red aged position snapshot is the error state `Trader offline`, never `Flat`, so a dead trader never looks calm. A snapshot that does not parse and an unreadable Redis are error states too; a Postgres failure keeps the live part and says the figures are unavailable.
+- **States:** `open`, `flat`, `offline`, `bad`, `lost`, `pnl_unavailable`
+
+### Entries blocked (`blocked`)
+Why the trader takes no new entries (spec 0006 AC-18), from `trader_state.entries_blocked`. In the top bar a cue in the status strip, like the pause cue: a Margin `entries` label, then `blocked` in Amber Watch at 600 weight, with `· n reasons` when there is more than one and the plain words in its title. On Overview, above the position card, an Amber Watch title `No new entries` heads one row per reason split by Hairlines: the plain words of the spec's *Block reasons* table (those that only clear on a restart say so), with the code as a Pencil Caption at the right. Nothing renders while entries are open. A missing or unreadable `trader_state` shows nothing here, since the pause cue and the heartbeat age already say the state is unknown. Both dim with the top bar while the link is not live.
+- **States:** `none`, `one`, `several`
 
 ## Do's and Don'ts
 

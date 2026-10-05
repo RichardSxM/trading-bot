@@ -1,0 +1,43 @@
+{# Overview's position card (spec 0006 AC-17), from live.position.PositionView.
+   open: the position with its stop and exit time; flat: the mark only; offline: no snapshot, or
+   one past the red limit, never shown as flat; bad: a snapshot that does not parse; lost: Redis
+   unreadable. The P&L figures sit under it in every state; view.pnl is None when Postgres failed. #}
+{% from "components/states.html" import error_state %}
+{% from "components/stale.html" import stale %}
+{% from "components/stat.html" import stat %}
+<div class="position position--{{ view.status }}">
+{%- if view.status == "offline" %}
+  {{ error_state("Trader offline", "No fresh position from the trader; it is stopped or not answering. Nothing here is live until it is back.") }}
+{%- elif view.status == "lost" %}
+  {{ error_state("Position unavailable: no data from Redis", "The dashboard can't read Redis; this card updates once it can.") }}
+{%- elif view.status == "bad" %}
+  {{ error_state("Position snapshot unreadable", "The trader wrote a position the dashboard does not understand; check the trader logs.") }}
+{%- elif view.status == "flat" %}
+  {% call stat("Position", note=view.age.text ~ " old") %}Flat{% endcall %}
+  <dl class="figures">
+    <div class="figures__row"><dt>Mark</dt><dd>{% call stale(view.age.text, view.age.level) %}<span class="num">{{ view.mark|num }}</span>{% endcall %}</dd></div>
+    {% if view.equity is not none %}<div class="figures__row"><dt>Equity</dt><dd><span class="num">{{ view.equity|num }}</span> <span class="figures__unit">{{ view.currency }}</span></dd></div>{% endif %}
+  </dl>
+{%- else %}
+  {% call stat("Unrealized P&L, before funding", note=view.age.text ~ " old") %}{{ view.unrealized|pnl }}{% endcall %}
+  <dl class="figures">
+    <div class="figures__row"><dt>Side</dt><dd class="figures__side figures__side--{{ view.side }}">{{ view.side }}</dd></div>
+    <div class="figures__row"><dt>Size</dt><dd><span class="num">{{ view.quantity.copy_abs()|num }}</span> <span class="figures__unit">BTC</span></dd></div>
+    <div class="figures__row"><dt>Average entry</dt><dd><span class="num">{{ view.avg_entry|num }}</span></dd></div>
+    <div class="figures__row"><dt>Mark</dt><dd>{% call stale(view.age.text, view.age.level) %}<span class="num">{{ view.mark|num }}</span>{% endcall %}</dd></div>
+    <div class="figures__row"><dt>Stop</dt><dd>{% if view.stop_px is not none %}<span class="num">{{ view.stop_px|num }}</span>{% if view.stop_status %} <span class="figures__note">{{ view.stop_status|replace("_", " ") }}</span>{% endif %}{% else %}<span class="figures__warn">no stop</span>{% endif %}</dd></div>
+    {% if view.exit_due_ns is not none %}<div class="figures__row"><dt>Closes at</dt><dd>{{ view.exit_due_ns|ts }}</dd></div>{% endif %}
+    {% if view.equity is not none %}<div class="figures__row"><dt>Equity</dt><dd><span class="num">{{ view.equity|num }}</span> <span class="figures__unit">{{ view.currency }}</span></dd></div>{% endif %}
+  </dl>
+{%- endif %}
+  <h3 class="figures__title">Paper P&amp;L, before funding</h3>
+{%- if view.pnl is none %}
+  <p class="figures__unavailable">P&amp;L unavailable: Postgres did not answer. It retries every few seconds.</p>
+{%- else %}
+  <dl class="figures">
+    <div class="figures__row"><dt>Realized today (UTC)</dt><dd>{{ view.pnl.realized_today|pnl }}</dd></div>
+    <div class="figures__row"><dt>Realized all time</dt><dd>{{ view.pnl.realized_all|pnl }}</dd></div>
+    <div class="figures__row"><dt>Fees today (UTC)</dt><dd><span class="num">{{ view.pnl.fees_today|num }}</span></dd></div>
+  </dl>
+{%- endif %}
+</div>

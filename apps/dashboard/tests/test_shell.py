@@ -34,14 +34,15 @@ def test_the_overview_page_shows_the_shell_and_its_empty_state(logged_in):
     assert "<title>DEMO · Overview</title>" in page
     assert 'class="topbar"' in page
     assert 'sse-connect="/events"' in page
-    assert "Live position and P&amp;L appear here once the trader runs a strategy." in page
+    assert "Stop, pause, and resume commands appear here as they happen." in page
+    assert "Trader offline" in page  # no position snapshot: never shown as flat (spec 0006 AC-17)
 
 
 @pytest.mark.parametrize(
     ("path", "title", "empty"),
     [
-        ("/", "Overview", "Live position and P&amp;L appear here once the trader runs a strategy."),
-        ("/trades", "Trades", "Fills and closed trades appear here."),
+        ("/", "Overview", "Stop, pause, and resume commands appear here as they happen."),
+        ("/trades", "Trades", "Each paper position appears here once it closes."),
         ("/strategies", "Strategies", "Backtests and strategy scores appear here."),
         ("/system", "System", "Command history and service health appear here."),
     ],
@@ -312,7 +313,16 @@ def test_the_event_stream_carries_the_security_headers(logged_in, monkeypatch):
     assert response.headers["content-type"].startswith("text/event-stream")
     assert response.headers["content-security-policy"] == CSP
     assert response.headers["x-accel-buffering"] == "no"
-    assert set(seen) == {"topbar-age", "topbar-command", "topbar-alert", "overview-activity", "topbar-pause"}
+    assert set(seen) == {
+        "topbar-age",
+        "topbar-command",
+        "topbar-alert",
+        "overview-activity",
+        "topbar-pause",
+        "overview-position",
+        "topbar-blocked",
+        "overview-blocked",
+    }
     assert "event: topbar-age\n" in response.text
 
 

@@ -13,6 +13,7 @@ and ``flatten`` answer ``failed`` with ``not_implemented`` until feature 9.
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Iterable, Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Final, Protocol
 
@@ -204,17 +205,43 @@ def protective_stops(orders: Iterable[Order]) -> int:
     return len(seen)
 
 
+@dataclass(frozen=True)
+class PaperStatus:
+    """The paper loop's part of ``trader_state`` (spec 0006 AC-16)."""
+
+    entries_blocked: list[str]
+    recording_backlog: int
+    exiting: bool
+    position_opened_ns: int | None
+
+
 def trader_state(
-    gate: PauseGate, risk_engine: RiskEngine, cache: Cache, git_commit: str
+    gate: PauseGate,
+    risk_engine: RiskEngine,
+    cache: Cache,
+    git_commit: str,
+    paper: Callable[[], PaperStatus] | None = None,
 ) -> Mapping[str, object] | None:
     """The ``trader_state`` snapshot data (AC-7) from the gate, the risk engine, and the cache.
 
     None until the pause key was read at start, so the trader never reports running before it knows.
+    With ``paper`` (demo) it adds the paper loop's status; without one the same fields hold only
+    the pause, so the dashboard reads one shape in every env (spec 0006 AC-16).
     """
     if not gate.loaded:
         return None
     orders = [*cache.orders_open(), *cache.orders_inflight()]
     state = gate.state
+    status = (
+        paper()
+        if paper is not None
+        else PaperStatus(
+            entries_blocked=["paused"] if gate.paused else [],
+            recording_backlog=0,
+            exiting=False,
+            position_opened_ns=None,
+        )
+    )
     return {
         "trading_state": TradingState(risk_engine.trading_state).name,
         "paused": gate.paused,
@@ -224,6 +251,10 @@ def trader_state(
         "open_entry_orders": len(entry_orders(orders)),
         "protective_stops": protective_stops(orders),
         "git_commit": git_commit,
+        "entries_blocked": status.entries_blocked,
+        "recording_backlog": status.recording_backlog,
+        "exiting": status.exiting,
+        "position_opened_ns": status.position_opened_ns,
     }
 
 

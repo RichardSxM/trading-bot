@@ -12,6 +12,7 @@ from dashboard.auth.lockout import Lockout
 from dashboard.auth.password import PasswordChecker
 from dashboard.auth.session import SessionCodec
 from dashboard.auth.totp import TotpGuard
+from dashboard.data.trades import TradesView
 from dashboard.live.poller import Poller
 from dashboard.live.state import Entry
 from dashboard.settings import DashboardSettings
@@ -42,6 +43,7 @@ class LiveRedis(Protocol):
 class AppContext:
     """The dashboard's long lived objects; ``clock`` returns UTC seconds since the epoch.
 
+    ``read_trades(page, fills_page)`` reads the two Trades lists from Postgres in a thread.
     ``trusted_peers`` are the socket peers besides loopback whose client headers key the lockout.
     """
 
@@ -54,6 +56,7 @@ class AppContext:
     poller: Poller
     redis: LiveRedis
     clock: Callable[[], float]
+    read_trades: Callable[[int, int], Awaitable[TradesView]]
     trusted_peers: frozenset[str] = frozenset()
 
 

@@ -4,22 +4,26 @@ Overview, Trades, Strategies, and System sit in the nav; the styleguide is reach
 """
 
 import asyncio
+import logging
 import time
 from collections.abc import AsyncIterator, Callable, Mapping
-from typing import Final
+from typing import Annotated, Final
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import Response, StreamingResponse
 from markupsafe import Markup
+from sqlalchemy.exc import SQLAlchemyError
 
 from dashboard.auth.next_path import referer_page
 from dashboard.auth.session import Session
 from dashboard.live.poller import Event, Poller
 from dashboard.web.context import AppContext, app_context
 from dashboard.web.session import SessionDep, session_end_cue
-from dashboard.web.styleguide import FILL_COLUMNS, styleguide_context
+from dashboard.web.styleguide import styleguide_context
+from dashboard.web.trades import trades_context
 
 router = APIRouter()
+log = logging.getLogger(__name__)
 
 PING_EVERY_S: Final = 2.0
 # Path → (template, title) for every page inside the shell.
@@ -37,11 +41,21 @@ NAV: Final = (
     ("/strategies", "Strategies", "flask-conical"),
     ("/system", "System", "server-cog"),
 )
-# Template → the extra context it renders (sample data for the styleguide, column heads for Trades).
+TRADES: Final = "pages/trades.html"
+# Template → the extra context it renders (sample data for the styleguide; Trades reads Postgres).
 PAGE_DATA: Final[dict[str, Callable[[], Mapping[str, object]]]] = {
     "pages/styleguide.html": styleguide_context,
-    "pages/trades.html": lambda: {"fill_columns": FILL_COLUMNS},
 }
+
+
+async def trades_data(context: AppContext, page: int = 1, fills_page: int = 1) -> Mapping[str, object]:
+    """The Trades lists for these pages, or ``trades_error`` when Postgres cannot be read (logged)."""
+    try:
+        view = await context.read_trades(page, fills_page)
+    except SQLAlchemyError as exc:
+        log.warning("trades read failed", extra={"fields": {"code": "trades_read_failed", "error": type(exc).__name__}})
+        return {"trades_error": True}
+    return trades_context(view, page, fills_page)
 
 
 async def render_page(
@@ -55,15 +69,22 @@ async def render_page(
     errors: Mapping[str, str] | None = None,
     status_code: int = 200,
     live: Mapping[str, str] | None = None,
+    data: Mapping[str, object] | None = None,
 ) -> Response:
     """A page inside the shell, its live partials read from Redis right now.
 
     ``path`` marks the current nav item (the request path when None). ``errors`` renders a
     control area in its ``NOT sent`` state after a plain form post failed: ``stop_error`` for the
     stop, ``pause_error`` for Pause and Resume. ``live`` replaces the Redis read with these
-    partials (a failed send already proved Redis down).
+    partials (a failed send already proved Redis down). ``data`` is the page's own context; when
+    None, Trades reads its first pages and other pages take ``PAGE_DATA``.
     """
     partials = live if live is not None else await context.poller.render_now()
+    if data is None:
+        if template == TRADES:
+            data = await trades_data(context)
+        else:
+            data = PAGE_DATA[template]() if template in PAGE_DATA else {}
     return context.templates.TemplateResponse(
         request,
         template,
@@ -79,7 +100,7 @@ async def render_page(
             "pause_error": (errors or {}).get("pause_error"),
             # Rendered by our own autoescaping templates.
             "live": {name: Markup(html) for name, html in partials.items()},
-            **(PAGE_DATA[template]() if template in PAGE_DATA else {}),
+            **data,
         },
         status_code=status_code,
     )
@@ -117,9 +138,16 @@ async def overview(request: Request, session: SessionDep) -> Response:
 
 
 @router.get("/trades")
-async def trades(request: Request, session: SessionDep) -> Response:
+async def trades(
+    request: Request,
+    session: SessionDep,
+    page: Annotated[int, Query(ge=1)] = 1,
+    fills_page: Annotated[int, Query(ge=1)] = 1,
+) -> Response:
+    """Closed round trips (``page``) and latest fills (``fills_page``), 50 each; 422 below 1 or not an integer."""
     context = app_context(request)
-    return await render_page(request, context, session, *PAGES["/trades"])
+    data = await trades_data(context, page, fills_page)
+    return await render_page(request, context, session, *PAGES["/trades"], data=data)
 
 
 @router.get("/strategies")

@@ -1,10 +1,25 @@
 {% extends "shell.html" %}
 {% from "components/table.html" import table %}
+{% from "components/pager.html" import pager %}
+{% from "components/states.html" import error_state %}
 {% block page %}
 <div class="board">
-  <section class="region region--wide" aria-labelledby="fills-h">
-    <header class="region__head"><h2 class="region__title" id="fills-h">Fills</h2><span class="region__meta">times in UTC</span></header>
-    {{ table("Fills", fill_columns, [], "Fills and closed trades appear here.", empty_glyph="arrow-left-right") }}
+  {% if trades_error %}
+  <section class="region region--wide" aria-labelledby="trades-h">
+    <header class="region__head"><h2 class="region__title" id="trades-h">Trades</h2></header>
+    {{ error_state("Trades unavailable.", " The dashboard cannot read Postgres right now. Reload in a moment.") }}
   </section>
+  {% else %}
+  <section class="region region--wide" aria-labelledby="round-trips-h">
+    <header class="region__head"><h2 class="region__title" id="round-trips-h">Closed round trips</h2><span class="region__meta">paper · newest first · P&amp;L before funding · times in UTC</span></header>
+    {{ table("Closed round trips", round_trip_columns, round_trips, "Each paper position appears here once it closes.", empty_glyph="arrow-left-right") }}
+    {{ pager("Closed round trips pages", round_trip_pager) }}
+  </section>
+  <section class="region region--wide" aria-labelledby="fills-h">
+    <header class="region__head"><h2 class="region__title" id="fills-h">Latest fills</h2><span class="region__meta">paper · newest first · times in UTC</span></header>
+    {{ table("Latest fills", fill_columns, fills, "Fills appear here as the trader trades.", empty_glyph="arrow-left-right") }}
+    {{ pager("Latest fills pages", fill_pager) }}
+  </section>
+  {% endif %}
 </div>
 {% endblock %}

@@ -1,6 +1,7 @@
 """What the top bar, its alert bar, and Overview's Activity show for live values, as pure functions.
 
-Spec 0004 AC-9, AC-10, AC-12, AC-20, and AC-21; spec 0005 AC-13 (the pause in the top bar).
+Spec 0004 AC-9, AC-10, AC-12, AC-20, and AC-21; spec 0005 AC-13 (the pause in the top bar);
+spec 0006 AC-18 (why entries are blocked).
 """
 
 from collections.abc import Mapping, Sequence
@@ -19,6 +20,7 @@ from trading_core.control.messages import (
 )
 from trading_core.recording.enums import ControlOutcome
 from trading_core.snapshot.envelope import SnapshotFormatError, decode
+from trading_core.strategy.blocks import PLAIN_WORDS, BlockReason
 
 Level = Literal["ok", "warn", "bad", "lost"]
 CommandLevel = Literal["none", "pending", "ok", "warn", "bad", "lost"]
@@ -319,3 +321,46 @@ def pause_view(raw: str | bytes | None) -> PauseView:
         return RUNNING
     source = snapshot.data.get("pause_source")
     return PauseView(_PAUSED_BY.get(source, "paused") if isinstance(source, str) else "paused", "warn")
+
+
+@dataclass(frozen=True)
+class BlockedReason:
+    """One reason entries are blocked: its code and the plain words the dashboard shows."""
+
+    code: str
+    words: str
+
+
+@dataclass(frozen=True)
+class BlockedView:
+    """Why the trader takes no new entries (spec 0006 AC-18); no reasons means nothing to show."""
+
+    reasons: tuple[BlockedReason, ...]
+
+
+NOT_BLOCKED: Final = BlockedView(())
+
+
+def _words(code: str) -> str:
+    try:
+        return PLAIN_WORDS[BlockReason(code)]
+    except ValueError:
+        return code  # a reason this dashboard does not know yet still shows, as its code
+
+
+def blocked_view(raw: str | bytes | None) -> BlockedView:
+    """The block reasons in the raw ``{env}:snapshot:trader_state`` value, in its order.
+
+    A missing or unreadable snapshot shows nothing here: the pause cue and the heartbeat age
+    already say the trader's state is unknown.
+    """
+    if raw is None:
+        return NOT_BLOCKED
+    try:
+        snapshot = decode(raw)
+    except SnapshotFormatError:
+        return NOT_BLOCKED
+    codes = snapshot.data.get("entries_blocked")
+    if not isinstance(codes, list):
+        return NOT_BLOCKED
+    return BlockedView(tuple(BlockedReason(code, _words(code)) for code in codes if isinstance(code, str)))

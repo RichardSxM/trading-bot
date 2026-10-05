@@ -78,3 +78,8 @@ The cross check on the first draft (another model, on 2026-10-04) found gaps tha
 - **Recording errors are split** into transient (retry in order), conflict, and permanent (dead letter, block until restart), so one bad item can never wedge the queue.
 - **Dashboard sums count `paper` runs only**, because backtests share the demo env on the laptop. A missing snapshot shows "offline", never "flat".
 - **AC-21 counts our own `fill_seen` lines** rather than NautilusTrader's log, which may print one fill on several lines.
+
+Later update (2026-10-04, found by `/develop` at M4): the Trades side had no source, because `positions.side` is `flat` once a position closes. You chose **the side of the position's earliest fill** (`buy` is long, `sell` is short), which matches NautilusTrader's `position.entry`. A round trip with no linked fill is still listed with a blank side. The options you passed on:
+- Keeping `positions.side` on close would change what spec 0002 and AC-15 say the column means, and rows already in the demo database would stay `flat`.
+- The entry decision's side records what was intended, not what filled, and needs a longer join.
+- A new `entry_side` column needs a migration, and this spec promises none.
