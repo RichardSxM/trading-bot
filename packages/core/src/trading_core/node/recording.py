@@ -123,7 +123,8 @@ def order_last_event_ns(order: Order, event: OrderEvent) -> int:
     quote's time, which trails it. Taking ``event.ts_event`` alone made the guarded upsert drop
     every later update as older.
     """
-    return max([event.ts_event, *(e.ts_event for e in order.events)])
+    newest: int = max([event.ts_event, *(e.ts_event for e in order.events)])
+    return newest
 
 
 def order_for(cache: Cache, event: OrderEvent) -> Order:

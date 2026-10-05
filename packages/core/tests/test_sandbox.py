@@ -78,7 +78,7 @@ def _client(loop, reject_every_stop):
     clock = LiveClock()
     msgbus = MessageBus(TestIdStubs.trader_id(), clock)
     cache = Cache()
-    events = []
+    events: list[object] = []
     msgbus.register("ExecEngine.process", events.append)
     config = sandbox_exec_client(PaperLoopSettings(trading_env="demo", sandbox_reject_stop_orders=reject_every_stop))
     client = FeeSandboxExecutionClient(
@@ -89,7 +89,7 @@ def _client(loop, reject_every_stop):
         clock=clock,
         config=config,
     )
-    sent = []
+    sent: list[object] = []
     client._client = type("Exchange", (), {"submit_order": staticmethod(sent.append)})()
     return client, events, sent
 
@@ -175,7 +175,7 @@ def make_exchange():
         msgbus = MessageBus(TestIdStubs.trader_id(), clock)
         cache = Cache()
         cache.add_instrument(_instrument())
-        events = []
+        events: list[object] = []
         msgbus.register("ExecEngine.process", events.append)
         client = FeeSandboxExecutionClient(
             loop=loops[-1],

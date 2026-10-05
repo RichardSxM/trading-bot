@@ -104,7 +104,7 @@ class FeeSandboxExecutionClient(SandboxExecutionClient):
         """Submit to the simulated exchange; in the AC-7 drill a stop is submitted and rejected instead."""
         order = command.order
         if not (self._reject_every_stop and order.has_trigger_price):
-            super().submit_order(command)
+            super().submit_order(command)  # type: ignore[no-untyped-call]  # Nautilus' sandbox client is unannotated
             return
         ts = self.test_clock.timestamp_ns()  # the sandbox's own event clock, as on every other event
         self.generate_order_submitted(command.strategy_id, command.instrument_id, order.client_order_id, ts)

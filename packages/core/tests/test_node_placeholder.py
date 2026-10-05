@@ -364,7 +364,7 @@ def test_an_order_row_never_moves_back_when_the_sandbox_clock_trails_the_node_cl
 def test_an_alert_that_wakes_before_its_time_sleeps_the_rest():
     """A live alert sleeps on the monotonic clock, 0.6 % fast in the Docker VM (seen 2026-10-05, AC-3, AC-8)."""
     _, strategy, _ = _run(Prices(1, lambda t: 85000))
-    calls = []
+    calls: list[object] = []
     now = strategy.clock.timestamp_ns()
 
     strategy._when_due("early", now + 5_000_000_000, calls.append, "event")
