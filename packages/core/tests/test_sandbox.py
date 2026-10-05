@@ -149,3 +149,121 @@ def test_without_the_drill_a_stop_goes_to_the_exchange(make_client):
 
     assert [command.order for command in sent] == [stop]
     assert events == []
+
+
+@pytest.fixture
+def make_exchange():
+    """A sandbox client on its real simulated exchange; events are collected, never applied.
+
+    That is how a live node behaves: its execution engine queues events, so the order in the cache
+    still reads ``SUBMITTED`` while the exchange fills it.
+    """
+    import asyncio
+
+    loops = []
+
+    def make():
+        from nautilus_trader.cache.cache import Cache
+        from nautilus_trader.common.component import LiveClock, MessageBus
+        from nautilus_trader.portfolio.portfolio import Portfolio
+        from nautilus_trader.test_kit.stubs.identifiers import TestIdStubs
+
+        from trading_core.node.sandbox import FeeSandboxExecutionClient
+
+        loops.append(asyncio.new_event_loop())
+        clock = LiveClock()
+        msgbus = MessageBus(TestIdStubs.trader_id(), clock)
+        cache = Cache()
+        cache.add_instrument(_instrument())
+        events = []
+        msgbus.register("ExecEngine.process", events.append)
+        client = FeeSandboxExecutionClient(
+            loop=loops[-1],
+            portfolio=Portfolio(msgbus, cache, clock),
+            msgbus=msgbus,
+            cache=cache,
+            clock=clock,
+            config=sandbox_exec_client(PaperLoopSettings(trading_env="demo")),
+        )
+        client.connect()
+        return client, cache, events
+
+    yield make
+    for loop in loops:
+        loop.close()
+
+
+def _instrument():
+    from nautilus_trader.model.currencies import BTC, USD
+    from nautilus_trader.model.identifiers import InstrumentId, Symbol
+    from nautilus_trader.model.instruments import CryptoPerpetual
+    from nautilus_trader.model.objects import Price, Quantity
+
+    return CryptoPerpetual(
+        instrument_id=InstrumentId.from_str("PF_XBTUSD.KRAKEN"),
+        raw_symbol=Symbol("PF_XBTUSD"),
+        base_currency=BTC,
+        quote_currency=USD,
+        settlement_currency=USD,
+        is_inverse=False,
+        price_precision=0,
+        size_precision=4,
+        price_increment=Price.from_str("1"),
+        size_increment=Quantity.from_str("0.0001"),
+        margin_init=Decimal("0.02"),
+        margin_maint=Decimal("0.01"),
+        maker_fee=Decimal("0.0002"),
+        taker_fee=Decimal("0.0005"),
+        ts_event=0,
+        ts_init=0,
+    )
+
+
+def _thin_quote(bid_size="0.0002"):
+    from nautilus_trader.model.data import QuoteTick
+    from nautilus_trader.model.identifiers import InstrumentId
+    from nautilus_trader.model.objects import Price, Quantity
+
+    return QuoteTick(
+        instrument_id=InstrumentId.from_str("PF_XBTUSD.KRAKEN"),
+        bid_price=Price.from_str("86089"),
+        ask_price=Price.from_str("86090"),
+        bid_size=Quantity(Decimal(bid_size), 4),
+        ask_size=Quantity.from_str("0.0002"),
+        ts_event=1,
+        ts_init=1,
+    )
+
+
+def test_a_market_order_larger_than_the_top_of_book_fills_in_full(make_exchange):
+    """The 2026-10-05 11:00 UTC demo entry: 0.0002 of 0.0011 filled, the rest silently dropped."""
+    from nautilus_trader.model.events import OrderFilled
+
+    client, cache, events = make_exchange()
+    client.on_data(_thin_quote())
+    market, _ = _orders()
+    cache.add_order(market)
+
+    client.submit_order(_submit(market))
+
+    fills = [event for event in events if isinstance(event, OrderFilled)]
+    assert sum(fill.last_qty.as_decimal() for fill in fills) == Decimal("0.0011")
+    assert {fill.last_px.as_decimal() for fill in fills} == {Decimal(86090)}  # a buy, all at the best ask
+
+
+def test_deep_quote_raises_thin_sizes_and_keeps_prices_and_times():
+    from nautilus_trader.model.objects import Quantity
+
+    from trading_core.node.sandbox import DEEP_BOOK_SIZE, deep_quote
+
+    thin = _thin_quote()
+    deep = deep_quote(thin)
+
+    assert deep.bid_size == deep.ask_size == Quantity(DEEP_BOOK_SIZE, 4)
+    assert (deep.bid_price, deep.ask_price, deep.ts_event, deep.ts_init) == (
+        thin.bid_price,
+        thin.ask_price,
+        thin.ts_event,
+        thin.ts_init,
+    )
+    assert deep_quote(_thin_quote(bid_size="5000")).bid_size == Quantity.from_str("5000.0000")  # deeper is kept

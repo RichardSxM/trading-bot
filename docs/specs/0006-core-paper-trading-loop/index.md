@@ -184,8 +184,9 @@ New Redis keys (the trader writes them with `EX 30` through `trading_core.snapsh
 - Strategy round trip:
   - `flat → entering` (entry submitted) `→ protected` (stop accepted) `→ exiting` (exit loop running) `→ flat`.
   - From `entering` or `protected`, a stop fill goes to `flat`.
-  - From `entering`, a stop not accepted in time, or a partial entry after 5 s, goes to `exiting`.
-  - From `entering`, an entry that is rejected, denied, or gate denied goes back to `flat`.
+  - From `entering`, a stop not accepted in time, or a partial entry after 5 s or canceled or expired after a partial fill, goes to `exiting`.
+  - From `entering` or `protected`, a stop the venue cancels or expires goes to `exiting`.
+  - From `entering`, an entry that is rejected, denied, gate denied, canceled or expired before any fill, or whose submit raises goes back to `flat`.
 - Entry blocks: per the *Block reasons* table.
 - Runs and positions follow spec 0002, plus the abandoned close in AC-15.
 
@@ -217,6 +218,7 @@ New Redis keys (the trader writes them with `EX 30` through `trading_core.snapsh
 | stop | quantity | `position.quantity` at the entry's complete fill |
 | time exit | due time | the entry's first fill `ts_event` + `PLACEHOLDER_HOLD_MIN` |
 | exit loop | quantity | `position.quantity` at each submit |
+| fill | depth | each quote's prices, with each side's size raised to at least `DEEP_BOOK_SIZE` (1000 BTC) for the sandbox only, so a market order fills in full at the best price. Nautilus' live sandbox otherwise drops the rest of a market order larger than the quoted size, with no event |
 | fill | fee | the sandbox commission from `SANDBOX_MAKER_FEE` / `SANDBOX_TAKER_FEE` (set on the sandbox config, or on the instrument before start; the AC-1 spike records which works) |
 | decision, orders | `decision_id` | `uuid.uuid7()` made by the strategy, carried in the order tag `decision:<uuid>` |
 | stop | `parent_client_order_id` | the order tag `parent:<coid>` |
@@ -242,11 +244,17 @@ New Redis keys (the trader writes them with `EX 30` through `trading_core.snapsh
 | risk check refuses | no order; the decision is rejected | `limit_hit`, per AC-5 | `limit_hit:<decision_id>` |
 | entry denied by the gate or the RiskEngine | back to flat | `limit_hit`, `info` | `entry_denied:<decision_id>` |
 | entry rejected by the sandbox | back to flat; the next boundary tries again | `order_rejected`, `warning` | `order_rejected:<client_order_id>` |
+| entry canceled or expired by the venue before any fill | back to flat; the next boundary tries again | `order_rejected`, `warning` | `entry_canceled:<client_order_id>` |
+| entry canceled or expired by the venue after a partial fill | exit loop, as a partial entry | `order_rejected`, `warning` | `partial_entry:<client_order_id>` |
+| entry submit raises | back to flat; the next boundary tries again; the error is still logged | `order_rejected`, `warning` | `entry_submit_failed:<decision_id>` |
 | stale quotes | block `stale_feed`; clears on fresh quotes | `stale_feed`, `warning` | `stale_feed:<run_id>:<start_ns>` |
 | stop not accepted in time | exit loop, block `stop_not_accepted` | `order_rejected`, `critical` | `stop_not_accepted:<client_order_id>` |
+| stop canceled or expired by the venue | as a stop not accepted | `order_rejected`, `critical` | `stop_not_accepted:<client_order_id>` |
 | entry partly filled after 5 s | exit loop | `order_rejected`, `warning` | `partial_entry:<client_order_id>` |
 | exit loop fails 5 times | block `exit_failed`; keep retrying every 1 s; the stop stays | `order_rejected`, `critical` | `exit_failed:<position_id>` |
 | exit order refused while flat | INFO log only | none | n/a |
+| exit order canceled or expired by the venue | counts as a refusal: retried after 1 s, toward the 5 failure limit | none until the 5th, then as `exit loop fails 5 times` | n/a |
+| hold time ends while the exit loop runs | INFO `hold_over_exiting`; no `exit` decision, so the loop's orders keep the entry decision | none | n/a |
 | transient Postgres error or backlog | block `recording_unhealthy`; retry in order | none (Postgres is the problem); ERROR `recording_unhealthy` once per episode | n/a |
 | `RecordConflictError` | `report_conflict`, dead letter, block `record_conflict` | `record_conflict`, `critical` (by `report_conflict`) | spec 0002 |
 | other write or mapper error | dead letter, block `recording_failed` | none (it may be the database); ERROR `recording_failed` | n/a |

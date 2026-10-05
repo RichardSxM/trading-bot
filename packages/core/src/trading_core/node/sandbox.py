@@ -8,6 +8,13 @@ instrument it receives (the AC-1 spike, recorded in the spec's ``verify.md``).
 
 For the AC-7 drill only, ``SANDBOX_REJECT_STOP_ORDERS`` makes it reject every stop order, so you
 can watch the strategy flatten and block entries when its stop does not rest.
+
+The simulated exchange sees every quote with a deep top of book (``deep_quote``). A market order
+larger than the quoted size fills the quoted size, and Nautilus fills the rest one tick worse only
+if the cached order already reads open. In a live node the execution engine queues events, so the
+order still reads ``SUBMITTED`` and the rest is dropped without any event (seen on 2026-10-05: 0.0002
+of a 0.0011 entry filled, the rest left a ghost open order). The orders here are far smaller than
+Kraken's real top of book, so filling them in full at the best price is the faithful simulation.
 """
 
 import asyncio
@@ -21,7 +28,9 @@ from nautilus_trader.common.component import LiveClock, MessageBus
 from nautilus_trader.core.data import Data
 from nautilus_trader.execution.messages import SubmitOrder
 from nautilus_trader.live.factories import LiveExecClientFactory
+from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.instruments import Instrument
+from nautilus_trader.model.objects import Quantity
 from nautilus_trader.portfolio.base import PortfolioFacade
 
 from trading_core.settings import PaperLoopSettings
@@ -29,6 +38,8 @@ from trading_core.settings import PaperLoopSettings
 # The sandbox simulates USD margin; Kraken's PF_ perpetuals settle in USD.
 SANDBOX_CURRENCY = "USD"
 DRILL_REJECT_REASON = "SANDBOX_REJECT_STOP_ORDERS drill"
+# The least size, in base units, the simulated exchange sees on each side of every quote.
+DEEP_BOOK_SIZE = 1000
 
 
 class FeeSandboxConfig(SandboxExecutionClientConfig, frozen=True, kw_only=True):
@@ -51,6 +62,19 @@ def with_fees(instrument: Instrument, maker_fee: Decimal, taker_fee: Decimal) ->
     values["taker_fee"] = str(taker_fee)
     patched: Instrument = cls.from_dict(values)
     return patched
+
+
+def deep_quote(quote: QuoteTick) -> QuoteTick:
+    """``quote`` with each side's size raised to at least ``DEEP_BOOK_SIZE``, prices and times unchanged."""
+    return QuoteTick(
+        instrument_id=quote.instrument_id,
+        bid_price=quote.bid_price,
+        ask_price=quote.ask_price,
+        bid_size=max(quote.bid_size, Quantity(DEEP_BOOK_SIZE, quote.bid_size.precision)),
+        ask_size=max(quote.ask_size, Quantity(DEEP_BOOK_SIZE, quote.ask_size.precision)),
+        ts_event=quote.ts_event,
+        ts_init=quote.ts_init,
+    )
 
 
 class FeeSandboxExecutionClient(SandboxExecutionClient):
@@ -89,9 +113,11 @@ class FeeSandboxExecutionClient(SandboxExecutionClient):
         )
 
     def on_data(self, data: Data) -> None:
-        """Feed market data to the simulated exchange; an instrument update keeps the configured fees."""
+        """Feed market data to the simulated exchange: quotes as ``deep_quote``, instruments with the fees."""
         if isinstance(data, Instrument):
             data = with_fees(data, self._maker_fee, self._taker_fee)
+        elif isinstance(data, QuoteTick):
+            data = deep_quote(data)
         super().on_data(data)
 
 
