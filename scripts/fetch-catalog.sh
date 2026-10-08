@@ -12,6 +12,7 @@
 # --backlog restores the raw feather of the backlog instead (AC-9): from every snapshot tagged
 # `backlog`, the order_book_deltas, trade_tick, and crypto_perpetual files under live/, newest
 # snapshot per path, into <dir>/live/. It needs free space of the backlog's size plus 10 GB first.
+# It restores file by file, so a stopped run resumes where it stopped when run again.
 #
 # restic runs in the backup image, read only (--no-lock, --no-cache), as your user. The repository
 # is CATALOG_RESTIC_REPOSITORY (environment, else .env); the password and the read only B2 key are
@@ -22,7 +23,7 @@
 set -euo pipefail
 
 usage() {
-    sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//' >&2
     exit 64
 }
 
@@ -172,6 +173,30 @@ restore_lines() {
     rm -rf "$TMP"
 }
 
+# restore_each FILE: like restore_lines, but one restic call per file, each moved into the target
+# as soon as it is complete, and files already in place at the right size are skipped. So a fetch
+# stopped halfway (a B2 download cap, a lost network) resumes without downloading again. A file
+# is only ever in the target once restic finished it (restic sets the full size before the data
+# lands, so size alone could not tell).
+restore_each() {
+    local s p z dest done=0 skipped=0 total
+    total=$(wc -l <"$1" | tr -d ' ')
+    while IFS=' ' read -r s p z; do
+        dest=$TARGET${p#"$CATALOG"}
+        if [ -f "$dest" ] && [ "$(wc -c <"$dest" | tr -d ' ')" = "$z" ]; then
+            skipped=$((skipped + 1))
+            continue
+        fi
+        done=$((done + 1))
+        say "restoring $((done + skipped)) of $total: ${p#"$CATALOG"/} ($(human "$z"))"
+        restic_run restore "$s" --target /out/.fetch-tmp --include "$p" </dev/null >&2
+        mkdir -p "$(dirname "$dest")"
+        mv -f "$TMP$p" "$dest"
+    done <"$1"
+    rm -rf "$TMP"
+    say "$done files restored, $skipped already in place"
+}
+
 human() {
     awk -v b="$1" 'BEGIN { split("B KB MB GB TB", u); i = 1; while (b >= 1000 && i < 5) { b /= 1000; i++ }; printf "%.1f %s", b, u[i] }'
 }
@@ -185,7 +210,7 @@ if [ "$BACKLOG" = 1 ]; then
     : >"$lines"
     trap 'rm -rf "$TMP" "$lines"' EXIT
     for id in $ids; do
-        restic_run ls --json "$id" "$CATALOG/live" | jq_run -r --arg c "$CATALOG" --arg s "$id" '
+        restic_run ls --json --recursive "$id" "$CATALOG/live" | jq_run -r --arg c "$CATALOG" --arg s "$id" '
             select(.struct_type == "node" and .type == "file")
             | select(.path | test("^" + $c + "/live/[^/]+/((order_book_deltas|trade_tick)/[^/]+/[^/]+|crypto_perpetual_[0-9]+)\\.feather$"))
             | "\($s) \(.path) \(.size)"' >>"$lines"
@@ -197,8 +222,14 @@ if [ "$BACKLOG" = 1 ]; then
     free=$(($(df -Pk "$TARGET" | awk 'NR == 2 { print $4 }') * 1024))
     margin=$((10 * 1000 * 1000 * 1000))
     say "backlog: $(wc -l <"$lines" | tr -d ' ') files, $(human "$need"); free $(human "$free")"
-    [ "$free" -ge $((need + margin)) ] || die "not enough space: need $(human $((need + margin))) (the backlog plus 10 GB)"
-    restore_lines "$lines"
+    # Files already in place (an earlier, stopped fetch) need no space.
+    have=$(while IFS=' ' read -r s p z; do
+        dest=$TARGET${p#"$CATALOG"}
+        [ -f "$dest" ] && [ "$(wc -c <"$dest" | tr -d ' ')" = "$z" ] && echo "$z"
+    done <"$lines" | awk '{ s += $1 } END { printf "%d", s }')
+    need=$((need - have))
+    [ "$free" -ge $((need + margin)) ] || die "not enough space: need $(human $((need + margin))) (the rest of the backlog plus 10 GB)"
+    restore_each "$lines"
     rm -f "$lines"
     say "backlog restored into $TARGET/live"
     exit 0
