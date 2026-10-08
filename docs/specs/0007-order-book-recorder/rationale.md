@@ -84,10 +84,43 @@ The cross check offered a simpler snapshot design: a recorder actor writes the D
 
 Gaps come from three signals the data itself carries: a feed `CLEAR` in the middle of a run (a reconnect), time between runs (recorder down), and silences of 10 s or more. A Kraken sequence number check was left out. The adapter's carrying of Kraken's `seq` is unverified, and a reconnect already shows up as a fresh snapshot. Gaps go to a Parquet file in the catalog, so they are backed up with the data and read by the simulator next to it. Postgres was rejected because the recorder side has no database access by design.
 
+### Out of order rows from a full data queue (2026-10-08)
+
+**What happened.** During the Milestone 1 measurement, the laptop was busy with another test. The recorder logged Nautilus `data_queue at capacity`, and hour 08:00 had rows going backwards in `ts_init`. The first AC-12 kept that hour as feather.
+
+**Why it happens.** In Nautilus 1.231.0, `ThrottledEnqueuer.enqueue` (`live/enqueue.py`) handles a full queue by creating a task that awaits `queue.put(msg)`. When space frees, newer messages enqueued with `put_nowait` can take the slot before the waiting puts run. So messages are reordered, not dropped. The one exception is shutdown, where `cancel_pending_tasks()` drops the waiting puts. `ts_init` is stamped by the adapter before the queue, so it still holds the true arrival order. The default queue holds 100,000 messages. At about 230 to 600 book messages per second, a full queue means the recorder is roughly 3 to 7 minutes behind. The laptop data was gone by the time of this decision, so the incident's real lateness could not be measured.
+
+**Why the first AC-12 was not enough.**
+- A kept hour's feather sat in `live/`, which the catalog backup leaves out, so it was neither backed up nor bounded on disk.
+- The book carry stayed off until the next feed `CLEAR`, which only comes with a reconnect or a restart, possibly days later.
+- A late row for an hour already committed had no clean path at all.
+
+**Options weighed.**
+- **Repair plus prevent (chosen).** A 600 s reorder window in the compactor, a queue depth warning in the recorder, and a low cgroup CPU weight for the compactor. Repair is safe because `ts_init` keeps arrival order. Prevention cuts how often repair is needed, and the warning makes lag visible while it happens instead of an hour later. Con: the most code of the options, and every hour finishes 10 minutes later.
+- **Prevent only.** CPU priority and a bigger queue, with the first AC-12 kept. It is simple, but any overflow that still happens costs a whole hour and days of snapshots.
+- **Repair only.** It fixes the data but gives no live signal that the recorder is falling behind, and lag beyond 600 s becomes quarantine with no warning first.
+- **Accept as designed, plus an alert.** The VPS saw no overflow in 72 h, but that was before the compactor shared its 2 CPUs, and the costs above remain.
+- **A bigger queue** (for example 300,000). It only delays the overflow, and it costs maybe 100 to 300 MB of Python objects inside the recorder's 768 MB. The reorder window already covers a full default queue.
+- **A hard 0.5 CPU cap on the compactor.** It is a limit even when the box is idle. A 2 GB hour would take about 9 minutes, right at AC-2's 10 minute bound, and the backlog would drag. The cgroup weight gives the same priority under contention and keeps a full core when idle.
+- **Sorting the whole hour.** An hour is up to about 3M rows, which risks the 512 MB limit. It would also hide a real two run overlap.
+- **Keeping an unrepairable hour whole as feather in quarantine.** A committed hour still needs a late rows path, so that means two code paths and a much bigger quarantine. Late rows files are small Parquet, and the hour keeps everything else.
+- **Draining the queue before stopping.** It means reaching into Nautilus's shutdown order on a pinned version, and the disk guard's exit has only 20 s. A log line at stop makes the loss visible without that risk.
+- **Hourly resubscribe to bring the book back.** It adds logic to the one process whose data cannot be recovered, and a short gap every hour. Quarantine should be rare with the window in place.
+
+**Why `nice` was not enough.** Each Compose service runs in its own cgroup. Between cgroups, the kernel shares CPU by cgroup weight, so the compactor's `nice` only orders work inside its own container. `cpu_shares: 256` gives it a quarter of the default weight against the recorder and the trader.
+
+**Smaller calls.**
+- **600 s window:** it covers a full default queue even at quiet rates, and it costs 30 to 60 MB at peak. Runner up: 300 s, which covers a full queue only at busy rates.
+- **Quarantine belongs to its hour** for retention and fetch. Runner up: delete quarantine files on their own cutoff, which complicates later merges into the same file.
+- **Rerun determinism from the file's starting watermark,** kept in `done.json`. This keeps the "one pass, skip done hours" design. Runner up: resume from the oldest held row's position, which breaks when a later positioned row was already written.
+- **Invalidate only the late row's instrument.** Late rows are a per stream event now, not a sign that two recorders ran at once.
+- **`catalog_hour_reordered` is a WARNING:** no data is lost, but the recorder lagged.
+- **Cross check fixes (Sonnet 5.5, 2026-10-08), applied:** where a rerun starts and why its classification matches the first pass; gap state from written rows; later hours marked incomplete when their snapshot missed a late delta; run end flushes per run; [held, new] sort order with a no sort fast path; a definition for `rows_moved`; late fields in the manifest JSON; the actor's probe closure and clock; a 99% stop threshold; a row cap on the window for bursts; the cgroup v2 check. Accepted as limits rather than fixed: ties at the same nanosecond, clock steps back of more than 600 s (fails safe into quarantine), and identical late rows collapsing in the dedupe. A sequence tiebreak was left out because Kraken's `sequence` is unverified in the adapter.
+
 ## Smaller calls made while writing
 
 - **Rotation mode**: `SCHEDULED_DATES` with a 1 h interval at 00:00 UTC, so files line up with clock hours. Runner up: `INTERVAL`, which rotates relative to process start and would split each clock hour across two files.
-- **No sorting**: sources of one hour are appended in order of their first `ts_init`, and an overlap is an error (AC-12), not something to merge. One recorder writes at a time by design, so an overlap means something is wrong. Runner up: an external merge sort, which is more code for a case that should never happen.
+- **No sorting** (superseded 2026-10-08, see below): sources of one hour were appended in order of their first `ts_init`, and an overlap was an error. One recorder writes at a time, so an overlap was taken to mean something was wrong. The Milestone 1 run showed that one recorder alone can write rows out of order, so this was replaced by the reorder window.
 - **Compression**: zstd (Parquet's default level). It is better than snappy on these repetitive integer columns, and DuckDB and Nautilus both read it. Runner up: snappy, which is faster but larger.
 - **Instrument definitions**: one row in every hour, so any single hour or day (after retention, or in a laptop fetch) carries its own definition. Runner up: write only on change. It is smaller, but the definition disappears once its hour is retired.
 - **One pass in time order**: a feather stream has no index, so finding a file's last timestamp means reading all of it. The compactor reads each closed file once, from start to end, and closes hours as the stream passes them. Runner up: plan hour by hour, which would read the 25 GB backlog file about 45 times.

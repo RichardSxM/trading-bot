@@ -147,6 +147,7 @@ spec [0007](../specs/0007-order-book-recorder/index.md)
   - [x] Thin thread: hourly rotation, BTC delta conversion with the hour start snapshot, replay check, Parquet ratio measured (AC-1, AC-2, AC-3)
   - [x] Conversion and backlog: all types, closed file rule, `done.json`, space checked backlog, idempotent reruns, overlap (AC-2, AC-9, AC-11, AC-12)
   - [x] Gaps and manifest: reconnect, recorder down, silence, daily manifest (AC-4, AC-5)
+  - [ ] Out of order rows: 600 s reorder window, late rows to a backed up quarantine, recorder queue depth warning, compactor CPU weight (AC-12, AC-13, AC-14)
   - [ ] Disk safety and backup: retention gated on the backup, recorder health and hard floor, `catalog` snapshots kept by the drill (AC-6, AC-7, AC-8)
   - [ ] Laptop fetch and VPS deploy: `fetch-catalog.sh`, deploy, backlog converts (AC-10)
 - [ ] Verify it: `/check verify order book recorder`
