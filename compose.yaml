@@ -237,6 +237,7 @@ services:
       PROCESS_NAME: recorder
       CATALOG_PATH: /data/catalog
       RECORDER_INSTRUMENTS: ${RECORDER_INSTRUMENTS:-PF_XBTUSD.KRAKEN,PF_ETHUSD.KRAKEN}
+      RECORDER_QUEUE_WARN_PCT: ${RECORDER_QUEUE_WARN_PCT:-50}
       # true on the VPS (compose.vps.yaml): refuse to start without the extra disk's marker (spec 0005).
       CATALOG_REQUIRE_MARKER: ${CATALOG_REQUIRE_MARKER:-false}
     volumes:
@@ -253,7 +254,9 @@ services:
   compactor:
     <<: *app
     image: ${KFS_IMAGE_PREFIX:-kfs/}recorder:${KFS_TAG:-${IMAGE_TARGET:-runtime}}
-    command: ["nice", "-n", "10", "python", "-m", "recorder.compactor.main"]
+    # The lowest priority inside its container; cpu_shares is what yields the CPU to the
+    # recorder and the trader (spec 0007 AC-14).
+    command: ["nice", "-n", "19", "python", "-m", "recorder.compactor.main"]
     environment:
       <<: *base-env
       PROCESS_NAME: compactor
@@ -265,6 +268,8 @@ services:
       COMPACTOR_GRACE_S: ${COMPACTOR_GRACE_S:-300}
       COMPACTOR_INTERVAL_S: ${COMPACTOR_INTERVAL_S:-60}
       BOOK_SILENCE_GAP_S: ${BOOK_SILENCE_GAP_S:-10}
+      COMPACTOR_REORDER_WINDOW_S: ${COMPACTOR_REORDER_WINDOW_S:-600}
+      COMPACTOR_REORDER_MAX_ROWS: ${COMPACTOR_REORDER_MAX_ROWS:-2000000}
     volumes:
       - catalog:/data/catalog
     network_mode: none
@@ -277,6 +282,7 @@ services:
       start_period: 60s
     mem_limit: 512m
     cpus: 1.0
+    cpu_shares: 256  # a quarter of the default weight when the CPUs are busy
 
   dashboard:
     <<: *app

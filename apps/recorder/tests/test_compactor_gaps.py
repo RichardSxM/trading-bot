@@ -144,6 +144,8 @@ def test_a_gap_across_midnight_lies_in_its_start_day_and_each_manifest_counts_it
             "rows": sum(s["rows"] for s in day_two),
             "bytes": sum(s["bytes"] for s in day_two),
             "hours": 22,
+            "late_rows": 0,
+            "incomplete_hours": [],
         }
     ]
     assert two["total_bytes"] == two["streams"][0]["bytes"]

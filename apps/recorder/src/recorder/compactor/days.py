@@ -2,7 +2,8 @@
 
 Gaps go to ``gaps/<day>.parquet`` by the UTC day of their start, merged so a rerun gives the same
 rows. A day is closed once every hour of it is accounted for; its manifest then sums the per hour
-stats in ``done.json`` and the gap seconds that fall inside the day.
+stats and late rows in ``done.json`` and the gap seconds that fall inside the day. When late rows
+are found later for a closed day, its manifest is written again.
 """
 
 import json
@@ -62,7 +63,10 @@ def write_gaps(store: CatalogStore, gaps: Iterable[Gap]) -> None:
 
 
 def close_days(store: CatalogStore, done: DoneRecord) -> bool:
-    """Write the manifest of every day that has closed since the last pass. Returns whether any did."""
+    """Write the manifest of every day that has closed since the last pass. Returns whether any did.
+
+    A day already closed is written again when its ``incomplete`` entries changed its manifest.
+    """
     covered: dict[str, set[int]] = {}
     prefix = f"{DELTAS_TABLE}/"
     for key, hours in done.hours.items():
@@ -72,6 +76,7 @@ def close_days(store: CatalogStore, done: DoneRecord) -> bool:
     every_hour = [hour for hours in done.hours.values() for hour in hours]
     if not every_hour:
         return False
+    _rewrite_incomplete_days(store, done)
     closed = False
     for day in range(day_of(min(every_hour)), day_of(max(every_hour)) + 1, DAY_NS):
         name = day_name(day)
@@ -97,6 +102,19 @@ def close_days(store: CatalogStore, done: DoneRecord) -> bool:
     return closed
 
 
+def _rewrite_incomplete_days(store: CatalogStore, done: DoneRecord) -> None:
+    """Write a closed day's manifest again when its late counts changed (rare, so cheap)."""
+    days = {day_of(hour) for hours in done.incomplete.values() for hour in hours}
+    for day in sorted(days):
+        name = day_name(day)
+        if name not in done.days:
+            continue
+        text = json.dumps(_manifest(store, done, day), indent=1, sort_keys=True)
+        path = store.manifest_file(name)
+        if not path.exists() or path.read_text() != text:
+            atomic_write(path, partial(_write_text, text))
+
+
 def _write_text(text: str, path: Path) -> None:
     path.write_text(text)
 
@@ -105,10 +123,11 @@ def _manifest(store: CatalogStore, done: DoneRecord, day: int) -> dict[str, Any]
     """The manifest of one closed day (spec 0007 *Catalog layout*)."""
     end = day + DAY_NS
     streams = []
-    for key, hours in sorted(done.hours.items()):
+    for key in sorted(done.hours.keys() | done.incomplete.keys()):
         table, instrument = key.split("/", 1)
-        today = [stats for hour, stats in hours.items() if day <= hour < end]
-        if today:
+        today = [stats for hour, stats in done.hours.get(key, {}).items() if day <= hour < end]
+        late = {hour: rows for hour, rows in done.incomplete.get(key, {}).items() if day <= hour < end}
+        if today or late:
             streams.append(
                 {
                     "instrument_id": instrument,
@@ -116,6 +135,8 @@ def _manifest(store: CatalogStore, done: DoneRecord, day: int) -> dict[str, Any]
                     "rows": sum(s["rows"] for s in today),
                     "bytes": sum(s["bytes"] for s in today),
                     "hours": len(today),
+                    "late_rows": sum(late.values()),
+                    "incomplete_hours": sorted(late),
                 }
             )
     seconds: dict[tuple[str, str], float] = defaultdict(float)

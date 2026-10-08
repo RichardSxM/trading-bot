@@ -1,4 +1,5 @@
-"""covers: spec 0007 AC-9 (a 2 GB feather converts inside the 512 MB limit, read once).
+"""covers: spec 0007 AC-9 (a 2 GB feather converts inside the 512 MB limit, read once), AC-12 (with the
+reorder window full: the rows come at about the 2 GB/h peak rate, and 600 s of them are always held).
 
 Slow (several minutes, 2 GB of disk), so it runs only with ``KFS_SLOW_TESTS=1``:
 ``docker compose run --rm --no-deps -T -e KFS_SLOW_TESTS=1 recorder pytest -q tests/test_compactor_memory.py``

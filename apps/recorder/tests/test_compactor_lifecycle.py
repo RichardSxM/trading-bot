@@ -1,5 +1,5 @@
 """covers: spec 0007 AC-2 (all types, feather deletion, closed files), AC-9 (space gate), AC-11 (crash and
-rerun), AC-12 (overlap)."""
+rerun), AC-12 (overlapping runs give run_overlap late rows)."""
 
 import json
 import logging
@@ -123,7 +123,7 @@ def test_a_restart_inside_an_hour_appends_both_runs_and_the_next_hour_starts_fro
     assert stats[H0 + HOUR_NS]["snapshot_rows"] > 0
 
 
-def test_overlapping_runs_write_nothing_for_the_hour_and_keep_the_feather(tmp_path, caplog):
+def test_overlapping_runs_send_the_newer_runs_backward_rows_to_quarantine(tmp_path, caplog):
     store = CatalogStore(tmp_path)
     first = make_feed(H0 + 7 * SECOND_NS, H0 + 40 * MINUTE_NS)
     write_run(store.live, "a-dead", first.messages, rotate_at=[])
@@ -134,13 +134,22 @@ def test_overlapping_runs_write_nothing_for_the_hour_and_keep_the_feather(tmp_pa
     with caplog.at_level(logging.ERROR):
         _compactor(store).run_pass(_later())
 
-    assert [r for r in caplog.records if getattr(r, "fields", {}).get("code") == "catalog_hour_overlap"]
+    late = [r.fields for r in caplog.records if getattr(r, "fields", {}).get("code") == "catalog_late_rows"]
+    assert [(f["hour_ns"], f["cause"]) for f in late] == [(H0, "run_overlap")]
+    last_first = first.messages[-1][0].ts_init
+    overlapped = sum(len(m) for m in second.messages if m[0].ts_init < last_first)
+    quarantine = pq.read_table(str(store.quarantine_file(DELTAS_TABLE, INSTRUMENT, H0)))
+    assert quarantine.num_rows == overlapped == late[0]["rows"]
     done = store.load_done()
-    assert H0 in done.overlaps[DELTAS]
-    assert not store.data_file(DELTAS_TABLE, INSTRUMENT, H0).exists()
-    for rel in done.kept:
-        assert (tmp_path / rel).exists()
-    # The next hour still converts, but with no synthetic snapshot (no CLEAR came after the overlap).
+    assert done.incomplete[DELTAS] == {H0: overlapped}
+    # Nothing else is lost, and every hour is written in order.
+    written = 0
+    for hour, stats in done.hours[DELTAS].items():
+        ts = pq.read_table(str(store.data_file(DELTAS_TABLE, INSTRUMENT, hour))).column("ts_init").to_numpy()
+        assert (ts[1:] >= ts[:-1]).all()
+        written += stats["rows"] - stats["snapshot_rows"]
+    assert written + overlapped == sum(len(m) for m in first.messages + second.messages)
+    # The newer run's CLEAR was late, so the next hour has no synthetic snapshot.
     assert done.hours[DELTAS][H0 + HOUR_NS]["snapshot_rows"] == 0
     assert done.carry[INSTRUMENT] is None
 

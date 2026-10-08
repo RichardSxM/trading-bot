@@ -1,5 +1,5 @@
 """covers: spec 0007 AC-2 (hour bounds), the ready rule of *Lifecycle of one hour*, AC-9 (backlog space),
-AC-5 (day close)."""
+AC-5 (day close), AC-12 (watermark, late rows, cause, row cap)."""
 
 from decimal import Decimal
 
@@ -8,14 +8,18 @@ from trading_core.marketdata.hours import (
     GB,
     HOUR_NS,
     SECOND_NS,
+    WatermarkState,
     backlog_bytes_needed,
+    cap_watermark,
     day_closed,
     day_name,
     day_of,
+    end_run,
     hour_last_ns,
     hour_of,
     hour_ready,
     hours_inside,
+    scan_rows,
 )
 
 # 2026-10-08 06:00:00 UTC
@@ -36,22 +40,87 @@ def test_hour_last_ns_is_one_before_the_next_hour():
 
 
 def test_not_ready_before_the_grace_has_passed():
-    positions = {"deltas": H + HOUR_NS}
-    assert not hour_ready(H, now_ns=H + HOUR_NS + GRACE - 1, grace_ns=GRACE, positions=positions, run_ended=False)
-    assert hour_ready(H, now_ns=H + HOUR_NS + GRACE, grace_ns=GRACE, positions=positions, run_ended=False)
+    watermark = H + HOUR_NS
+    assert not hour_ready(H, now_ns=H + HOUR_NS + GRACE - 1, grace_ns=GRACE, watermark=watermark, run_ended=False)
+    assert hour_ready(H, now_ns=H + HOUR_NS + GRACE, grace_ns=GRACE, watermark=watermark, run_ended=False)
 
 
-def test_not_ready_until_every_stream_has_passed_the_end():
+def test_not_ready_until_the_watermark_has_passed_the_end():
     now = H + 2 * HOUR_NS
-    behind = {"deltas": H + HOUR_NS, "trades": H + HOUR_NS - 1}
-    assert not hour_ready(H, now_ns=now, grace_ns=GRACE, positions=behind, run_ended=False)
-    passed = {"deltas": H + HOUR_NS, "trades": H + HOUR_NS + 5}
-    assert hour_ready(H, now_ns=now, grace_ns=GRACE, positions=passed, run_ended=False)
+    assert not hour_ready(H, now_ns=now, grace_ns=GRACE, watermark=H + HOUR_NS - 1, run_ended=False)
+    assert not hour_ready(H, now_ns=now, grace_ns=GRACE, watermark=None, run_ended=False)
+    assert hour_ready(H, now_ns=now, grace_ns=GRACE, watermark=H + HOUR_NS, run_ended=False)
 
 
 def test_the_last_hour_of_an_ended_run_is_ready():
     now = H + 2 * HOUR_NS
-    assert hour_ready(H, now_ns=now, grace_ns=GRACE, positions={"deltas": H + 10}, run_ended=True)
+    assert hour_ready(H, now_ns=now, grace_ns=GRACE, watermark=H + 10, run_ended=True)
+
+
+WINDOW = 600 * SECOND_NS
+
+
+def _scan(ts, run="a", state=None, window=WINDOW):
+    return scan_rows([H + s * SECOND_NS for s in ts], run, state or WatermarkState(), window_ns=window)
+
+
+def test_rows_inside_the_window_are_not_late_and_the_watermark_trails_the_newest():
+    scan = _scan([0, 700, 200, 101])
+    assert scan.causes == [None, None, None, None]
+    assert scan.lateness_ns == [0, 0, 500 * SECOND_NS, 599 * SECOND_NS]
+    assert scan.state == WatermarkState(H + 100 * SECOND_NS, H + 700 * SECOND_NS, "a")
+
+
+def test_a_row_below_the_watermark_is_late_and_the_watermark_never_goes_down():
+    scan = _scan([0, 700, 99, 100, 650])
+    assert scan.causes == [None, None, "window", None, None]
+    assert scan.lateness_ns[2] == 601 * SECOND_NS
+    assert scan.state.watermark == H + 100 * SECOND_NS
+
+
+def test_a_row_of_a_newer_run_below_the_watermark_is_a_run_overlap():
+    first = _scan([0, 700])
+    second = _scan([50, 800, 150], run="b", state=first.state)
+    assert second.causes == ["run_overlap", None, "window"]
+
+
+def test_window_zero_makes_every_backwards_row_late():
+    scan = _scan([0, 5, 5, 4, 6], window=0)
+    assert scan.causes == [None, None, None, "window", None]
+
+
+def test_chunking_never_changes_the_classification():
+    ts = [0, 900, 400, 299, 300, 1_500, 905, 1_000]
+    whole = _scan(ts)
+    state, causes = WatermarkState(), []
+    for start in range(0, len(ts), 3):
+        part = _scan(ts[start : start + 3], state=state)
+        causes += part.causes
+        state = part.state
+    assert causes == whole.causes
+    assert state == whole.state
+
+
+def test_end_run_raises_the_watermark_to_the_newest_row():
+    state = _scan([0, 700]).state
+    assert end_run(state) == WatermarkState(H + 700 * SECOND_NS, H + 700 * SECOND_NS, "a")
+    assert end_run(WatermarkState()) == WatermarkState()
+
+
+def test_the_cap_raises_the_watermark_until_at_most_max_rows_are_held():
+    held = [10, 11, 11, 12, 13]
+    assert cap_watermark(held, 5, 5, max_rows=5) == 5
+    assert cap_watermark(held, 5, 5, max_rows=4) == 10
+    assert cap_watermark(held, 5, 5, max_rows=3) == 11  # both rows at 11 go together
+    assert cap_watermark(held, 5, None, max_rows=1) == 12
+    # Only the oldest excess rows need to be passed.
+    assert cap_watermark(held[:2], 5, 5, max_rows=3) == 11
+
+
+def test_watermark_state_round_trips():
+    state = WatermarkState(1, 2, "run")
+    assert WatermarkState.from_dict(state.to_dict()) == state
+    assert WatermarkState.from_dict({}) == WatermarkState()
 
 
 def test_backlog_needs_its_parquet_plus_the_floor():

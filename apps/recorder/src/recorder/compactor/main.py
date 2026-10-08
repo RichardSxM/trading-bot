@@ -21,7 +21,7 @@ from recorder.compactor.store import DELTAS_TABLE, INSTRUMENTS_TABLE, STREAM_TAB
 from recorder.volume import CatalogVolumeMissing, check_catalog_volume
 from trading_core.boot import boot
 from trading_core.marketdata.gaps import GapDetector, GapState
-from trading_core.marketdata.hours import GB, HOUR_NS, SECOND_NS, backlog_bytes_needed
+from trading_core.marketdata.hours import GB, SECOND_NS, backlog_bytes_needed
 from trading_core.settings import Settings
 
 log = logging.getLogger(__name__)
@@ -42,6 +42,10 @@ class CompactorSettings(Settings):
     compactor_interval_s: int = Field(default=60, gt=0)
     # Two book deltas of one instrument this far apart are a `silence` gap (spec 0007 AC-4).
     book_silence_gap_s: int = Field(default=10, gt=0)
+    # How late a row may be and still be put back in place; 0 means no reordering (AC-12).
+    compactor_reorder_window_s: int = Field(default=600, ge=0)
+    # The most rows one stream's reorder window may hold, which bounds memory in a burst (AC-12).
+    compactor_reorder_max_rows: int = Field(default=2_000_000, ge=1)
 
 
 @dataclass
@@ -117,6 +121,8 @@ class Compactor:
         ratio: Decimal = Decimal("0.042"),
         floor_bytes: int = 8 * GB,
         silence_ns: int = 10 * SECOND_NS,
+        window_ns: int = 600 * SECOND_NS,
+        max_rows: int = 2_000_000,
         beat: Beat | None = None,
     ) -> None:
         self._store = store
@@ -124,6 +130,8 @@ class Compactor:
         self._ratio = ratio
         self._floor_bytes = floor_bytes
         self._silence_ns = silence_ns
+        self._window_ns = window_ns
+        self._max_rows = max_rows
         self._beat = beat
         store.remove_tmp_files()  # a killed pass may have left some; nothing writes yet
         self.done = store.load_done()
@@ -131,7 +139,8 @@ class Compactor:
         self.definitions = InstrumentDefinitions(store)
 
     def run_pass(self, now_ns: int) -> None:
-        """Feed closed, settled files in time order, finish passed hours, then delete what is converted."""
+        """Feed closed, settled files in time order, finish hours the watermark passed, then delete
+        what is converted."""
         found = discover(self._store)
         current = current_run(found)
         stop_at = self._backlog_gate(found, current)
@@ -145,14 +154,12 @@ class Compactor:
                     break
                 if not is_closed(file, files, current) or now_ns - file.path.stat().st_mtime_ns < self._grace_ns:
                     break  # files are read strictly in order
-                stream.feed(file, self.done)
-            open_hour = stream.open
-            more_source = open_hour is not None and any(
-                self._store.relative(f.path) not in stream.fed and f.created_ns < open_hour.hour + HOUR_NS
-                for f in files
-            )
-            stream.finish_if_passed(now_ns=now_ns, grace_ns=self._grace_ns, more_source=more_source, done=self.done)
-        changed = self.definitions.write_hours(instruments, self.done, STREAM_TABLES)
+                stream.feed(file, self.done, now_ns)
+            stream.end_run_if_over(files, current, self.done, now_ns)
+        changed = False
+        for stream in self.streams.values():
+            changed = stream.end_pass(self.done) or changed
+        changed = self.definitions.write_hours(instruments, self.done, STREAM_TABLES) or changed
         if close_days(self._store, self.done) or changed:
             self._store.save_done(self.done)
         self._delete_converted(found, current, instruments)
@@ -177,19 +184,13 @@ class Compactor:
                 self.done,
                 carry=BookCarry(instrument) if deltas else None,
                 gaps=gaps,
-                on_overlap=self._on_overlap,
+                grace_ns=self._grace_ns,
+                window_ns=self._window_ns,
+                max_rows=self._max_rows,
                 beat=self._beat,
             )
             self.streams[(table, instrument)] = stream
         return stream
-
-    def _on_overlap(self, hour: int) -> None:
-        """AC-12: every carried book is invalid until each instrument's next feed ``CLEAR``."""
-        for stream in self.streams.values():
-            if stream.carry is not None:
-                stream.carry.invalidate()
-        self.done.carry = dict.fromkeys(self.done.carry)
-        self._store.save_done(self.done)
 
     def _backlog_gate(self, found: Found, current: str | None) -> int | None:
         """AC-9: dead runs not yet started need room for their Parquet plus the floor.
@@ -232,7 +233,7 @@ class Compactor:
 
     def _delete_converted(self, found: Found, current: str | None, instruments: set[str]) -> None:
         """Delete feather whose rows are all in finished hours, then empty dead run folders."""
-        for rel in sorted(self.done.files - self.done.kept):
+        for rel in sorted(self.done.files):
             (self._store.root / rel).unlink(missing_ok=True)
         changed = bool(self.done.files)
         self.done.files = set()
@@ -270,6 +271,8 @@ def main() -> None:
             ratio=settings.compactor_parquet_ratio,
             floor_bytes=int(settings.catalog_free_floor_gb * GB),
             silence_ns=settings.book_silence_gap_s * SECOND_NS,
+            window_ns=settings.compactor_reorder_window_s * SECOND_NS,
+            max_rows=settings.compactor_reorder_max_rows,
             beat=heartbeat,
         )
 

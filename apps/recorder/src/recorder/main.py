@@ -11,6 +11,7 @@ import pandas as pd  # type: ignore[import-untyped]  # no pandas-stubs; only Tim
 from nautilus_trader.adapters.kraken import KRAKEN, KrakenLiveDataClientFactory
 from nautilus_trader.config import (
     CacheConfig,
+    LiveDataEngineConfig,
     LiveExecEngineConfig,
     LoggingConfig,
     StreamingConfig,
@@ -21,9 +22,10 @@ from nautilus_trader.model.data import OrderBookDeltas, TradeTick
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.instruments import CryptoPerpetual
 from nautilus_trader.persistence.writer import RotationMode
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 
 from recorder.actor import RecordingActor, RecordingConfig
+from recorder.queue_depth import QueueDepthActor, QueueDepthConfig
 from recorder.volume import CatalogVolumeMissing, check_catalog_volume
 from trading_core import env_guard
 from trading_core.boot import boot
@@ -37,6 +39,8 @@ log = logging.getLogger(__name__)
 # What the stream records (spec 0007 AC-1). The data engine publishes book deltas as
 # OrderBookDeltas batches; their rows are OrderBookDelta.
 RECORDED_TYPES: list[type] = [OrderBookDeltas, TradeTick, CryptoPerpetual]
+# The data engine's queue capacity (the Nautilus default), watched by QueueDepthActor (AC-13).
+DATA_QUEUE_SIZE = 100_000
 
 
 class RecorderSettings(Settings):
@@ -45,6 +49,8 @@ class RecorderSettings(Settings):
     catalog_path: str = "/data/catalog"
     # True on the VPS (compose.vps.yaml): refuse to start unless the extra disk is mounted.
     catalog_require_marker: bool = False
+    # The data queue depth, in percent of its capacity, that logs `recorder_queue_high` (AC-13).
+    recorder_queue_warn_pct: int = Field(default=50, ge=1, le=99)
 
     @property
     def instrument_list(self) -> list[str]:
@@ -57,6 +63,7 @@ def build_config(settings: RecorderSettings) -> TradingNodeConfig:
         trader_id=TraderId(node_id("RECORDER", env, os.environ.get("RECORDER_ID"))),
         logging=LoggingConfig(log_level=settings.log_level, log_colors=False),
         cache=CacheConfig(),  # in memory only: the recorder holds no orders or positions
+        data_engine=LiveDataEngineConfig(qsize=DATA_QUEUE_SIZE),
         exec_engine=LiveExecEngineConfig(reconciliation=False),
         data_clients={KRAKEN: futures_data_client()},
         # A new feather file per stream after each UTC hour, which the compactor turns into
@@ -89,11 +96,20 @@ def main() -> None:
             extra={"fields": {"code": "catalog_volume_missing", "path": str(exc.path)}},
         )
         sys.exit(1)
-    node = TradingNode(config=build_config(settings))
+    config = build_config(settings)
+    node = TradingNode(config=config)
     node.trader.add_actor(
         HeartbeatActor(HeartbeatConfig(path=os.environ.get("HEARTBEAT_FILE", "/run/heartbeat/alive")))
     )
     node.trader.add_actor(RecordingActor(RecordingConfig(instrument_ids=settings.instrument_list)))
+    node.trader.add_actor(
+        QueueDepthActor(
+            QueueDepthConfig(warn_pct=settings.recorder_queue_warn_pct),
+            # Called only once the node is built and running.
+            probe=lambda: node.kernel.data_engine.data_qsize(),
+            capacity=config.data_engine.qsize,
+        )
+    )
     node.add_data_client_factory(KRAKEN, KrakenLiveDataClientFactory)
     node.build()
     try:

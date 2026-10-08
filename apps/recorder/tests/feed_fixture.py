@@ -74,6 +74,30 @@ def make_feed(start_ns: int, end_ns: int, seed: int = 7, step_ms: tuple[int, int
         feed.messages.append(message)
 
 
+def shuffle_within(messages, max_late_ns: int, seed: int = 1):
+    """The messages in an arrival order where each one is at most ``max_late_ns`` late.
+
+    Each message arrives at its ``ts_init`` plus a random delay up to ``max_late_ns``, like a full
+    data queue letting newer messages overtake waiting ones. Its ``ts_init`` is unchanged.
+    """
+    rng = random.Random(seed)
+    keyed = [(m[0].ts_init + rng.randint(0, max_late_ns), i, m) for i, m in enumerate(messages)]
+    return [m for _, _, m in sorted(keyed, key=lambda k: (k[0], k[1]))]
+
+
+def delay(messages, index: int, late_ns: int):
+    """The messages with one of them arriving after every message up to ``late_ns`` newer than it."""
+    moved = messages[index]
+    rest = messages[:index] + messages[index + 1 :]
+    at = sum(1 for m in rest if m[0].ts_init <= moved[0].ts_init + late_ns)
+    return [*rest[:at], moved, *rest[at:]]
+
+
+def message_at(messages, ts_ns: int) -> int:
+    """The index of the first message at or after ``ts_ns``."""
+    return next(i for i, m in enumerate(messages) if m[0].ts_init >= ts_ns)
+
+
 def _with_flags(delta, flags):
     return p3.OrderBookDelta(
         delta.instrument_id,

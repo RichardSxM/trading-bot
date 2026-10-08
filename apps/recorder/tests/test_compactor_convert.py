@@ -175,12 +175,18 @@ def test_a_rerun_changes_nothing(tmp_path):
     assert store.done_path.read_text() == done_before
 
 
-def test_the_open_hour_waits_while_the_current_run_may_hold_more_of_it(tmp_path):
+def test_the_open_hour_waits_until_the_watermark_has_passed_its_end(tmp_path):
     store = CatalogStore(tmp_path)
-    feed = make_feed(H0 + 7 * SECOND_NS, H0 + HOUR_NS + 10 * 60 * SECOND_NS)
-    # One run that is still current: its newest file is open, so only the first hour can finish.
-    write_run(store.live, "a-current", feed.messages, rotate_at=[H0 + HOUR_NS])
-    _compactor(store).run_pass(_later())
+    feed = make_feed(H0 + 7 * SECOND_NS, H0 + HOUR_NS + 30 * 60 * SECOND_NS)
+    # One run that is still current: its newest file is open and never read. The closed files end
+    # at H0 + 1 h 5 min, so the watermark (10 minutes behind) has not passed H0 + 1 h.
+    write_run(store.live, "a-current", feed.messages, rotate_at=[H0 + HOUR_NS, H0 + HOUR_NS + 5 * 60 * SECOND_NS])
+    compactor = _compactor(store)
+    compactor.run_pass(_later())
+    assert not store.done_path.exists() or not json.loads(store.done_path.read_text())["hours"]
+    # A newer file closes the one that runs to H0 + 1 h 30 min: the watermark passes H0 + 1 h.
+    write_run(store.live, "a-current", make_feed(H0 + 2 * HOUR_NS, H0 + 2 * HOUR_NS + SECOND_NS).messages, [])
+    compactor.run_pass(_later())
     done = json.loads(store.done_path.read_text())
     assert [int(h) for h in done["hours"][KEY]] == [H0]
 

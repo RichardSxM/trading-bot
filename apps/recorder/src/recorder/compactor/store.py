@@ -9,9 +9,13 @@ import os
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import Any, Final
 
+import pyarrow as pa
+import pyarrow.compute as pc
+import pyarrow.parquet as pq
 from nautilus_trader.model.data import OrderBookDelta, TradeTick
 from nautilus_trader.model.instruments import CryptoPerpetual
 from nautilus_trader.persistence.catalog.parquet import _timestamps_to_filename
@@ -43,8 +47,10 @@ class DoneRecord:
     - ``hours``: per stream key, the finished hours with their rows and bytes.
     - ``carry``: per instrument, the last hour whose book file is valid, or ``None``.
     - ``files``: converted feather files (relative to the catalog root), deleted at the pass end.
-    - ``overlaps``: per stream key, hours left unconverted because their rows overlapped (AC-12).
-    - ``kept``: feather files that hold an overlapped hour; never deleted.
+    - ``incomplete``: per stream key, the hours that miss late rows (AC-12), with the late row count
+      (the rows in the hour's quarantine file), or 0 for an hour whose snapshot missed a late delta.
+    - ``watermarks``: per feather file not yet finished, the stream's reorder window state when
+      reading of that file began; per stream key, the state at the end of its last run (AC-12).
     - ``instruments``: per instrument, the newest definition used for an hour (``to_dict`` form).
     - ``started_runs``: dead runs whose conversion began, so the space check (AC-9) runs once.
     - ``streams``: per instrument, the gap detector's state (``GapState.to_dict``), so detection
@@ -57,8 +63,8 @@ class DoneRecord:
     hours: dict[str, dict[int, dict[str, int]]] = field(default_factory=dict)
     carry: dict[str, int | None] = field(default_factory=dict)
     files: set[str] = field(default_factory=set)
-    overlaps: dict[str, set[int]] = field(default_factory=dict)
-    kept: set[str] = field(default_factory=set)
+    incomplete: dict[str, dict[int, int]] = field(default_factory=dict)
+    watermarks: dict[str, dict[str, object]] = field(default_factory=dict)
     instruments: dict[str, dict[str, Any]] = field(default_factory=dict)
     started_runs: set[str] = field(default_factory=set)
     streams: dict[str, dict[str, object]] = field(default_factory=dict)
@@ -76,8 +82,10 @@ class DoneRecord:
                 "hours": {k: {str(h): v for h, v in sorted(hours.items())} for k, hours in sorted(self.hours.items())},
                 "carry": dict(sorted(self.carry.items())),
                 "files": sorted(self.files),
-                "overlaps": {k: sorted(v) for k, v in sorted(self.overlaps.items())},
-                "kept": sorted(self.kept),
+                "incomplete": {
+                    k: {str(h): n for h, n in sorted(hours.items())} for k, hours in sorted(self.incomplete.items())
+                },
+                "watermarks": dict(sorted(self.watermarks.items())),
                 "instruments": dict(sorted(self.instruments.items())),
                 "started_runs": sorted(self.started_runs),
                 "streams": dict(sorted(self.streams.items())),
@@ -96,8 +104,8 @@ class DoneRecord:
             hours={k: {int(h): v for h, v in hours.items()} for k, hours in raw.get("hours", {}).items()},
             carry=dict(raw.get("carry", {})),
             files=set(raw.get("files", [])),
-            overlaps={k: set(v) for k, v in raw.get("overlaps", {}).items()},
-            kept=set(raw.get("kept", [])),
+            incomplete={k: {int(h): n for h, n in hours.items()} for k, hours in raw.get("incomplete", {}).items()},
+            watermarks=dict(raw.get("watermarks", {})),
             instruments=dict(raw.get("instruments", {})),
             started_runs=set(raw.get("started_runs", [])),
             streams=dict(raw.get("streams", {})),
@@ -112,6 +120,29 @@ def atomic_write(path: Path, write: Callable[[Path], object]) -> None:
     tmp = path.with_name(path.name + TMP_SUFFIX)
     write(tmp)
     os.replace(tmp, path)
+
+
+def merge_quarantine(path: Path, rows: Any) -> int:
+    """Merge late rows into an hour's quarantine file (spec 0007 AC-12). Returns its row count.
+
+    Read, union, keep the first of identical rows, stable sort by ``ts_init``, write atomically.
+    Merging the same rows again changes nothing, so a rerun gives the same file.
+    """
+    meta = rows.schema.metadata
+    tables = [rows.replace_schema_metadata(meta)]
+    if path.exists():
+        tables.insert(0, pq.read_table(str(path)).replace_schema_metadata(meta))
+    merged = pa.concat_tables(tables)
+    seen: set[tuple[object, ...]] = set()
+    keep: list[int] = []
+    for i, row in enumerate(zip(*(column.to_pylist() for column in merged.columns), strict=True)):
+        if row not in seen:
+            seen.add(row)
+            keep.append(i)
+    unique = merged.take(keep)
+    unique = unique.take(pc.sort_indices(unique, sort_keys=[("ts_init", "ascending")]))
+    atomic_write(path, partial(pq.write_table, unique, compression=COMPRESSION))
+    return int(unique.num_rows)
 
 
 class CatalogStore:
@@ -131,6 +162,10 @@ class CatalogStore:
         """``data/<table>/<instrument>/<interval>.parquet``, the name ``ParquetDataCatalog`` reads."""
         name: str = _timestamps_to_filename(hour, hour_last_ns(hour))
         return self.root / "data" / table / urisafe_identifier(instrument_id) / name
+
+    def quarantine_file(self, table: str, instrument_id: str, hour: int) -> Path:
+        """``quarantine/<table>/<instrument>/<interval>.parquet``, the late rows of that hour (AC-12)."""
+        return self.root / "quarantine" / self.data_file(table, instrument_id, hour).relative_to(self.root / "data")
 
     def book_file(self, instrument_id: str, hour: int) -> Path:
         """The carried book at the end of ``hour``, stored as the snapshot rows for the next hour."""
@@ -153,7 +188,8 @@ class CatalogStore:
 
     def remove_tmp_files(self) -> None:
         """Delete ``.tmp`` files a killed process left behind. Call only while nothing is writing."""
-        for folder in (self.root / "data", self.root / "gaps", self.root / "manifests", self.state):
+        folders = ("data", "quarantine", "gaps", "manifests")
+        for folder in (*(self.root / name for name in folders), self.state):
             for tmp in folder.rglob(f"*{TMP_SUFFIX}") if folder.exists() else ():
                 tmp.unlink(missing_ok=True)
 
