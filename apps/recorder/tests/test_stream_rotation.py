@@ -9,7 +9,8 @@ from nautilus_trader.persistence.writer import StreamingFeatherWriter
 from nautilus_trader.test_kit.providers import TestInstrumentProvider
 from nautilus_trader.test_kit.stubs.data import TestDataStubs
 
-from recorder.main import RecorderSettings, build_config
+from recorder.main import build_config
+from recorder.settings import RecorderSettings
 
 SECOND_NS = 1_000_000_000
 # 2026-10-08 06:00:00 UTC

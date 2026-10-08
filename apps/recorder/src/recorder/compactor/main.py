@@ -8,32 +8,39 @@ import logging
 import os
 import sys
 import time
-from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
 
 from pydantic import Field
 
-from recorder.compactor.convert import Beat, BookCarry, FeatherFile, HourStream
+from recorder.compactor.convert import Beat, BookCarry, HourStream
 from recorder.compactor.days import close_days
 from recorder.compactor.instruments import InstrumentDefinitions
-from recorder.compactor.store import DELTAS_TABLE, INSTRUMENTS_TABLE, STREAM_TABLES, CatalogStore
+from recorder.compactor.store import DELTAS_TABLE, INSTRUMENTS_TABLE, STREAM_TABLES, CatalogStore, read_backup_state
+from recorder.live_files import Found, current_run, discover, is_closed
 from recorder.volume import CatalogVolumeMissing, check_catalog_volume
 from trading_core.boot import boot
+from trading_core.marketdata.errors import BackupStateInvalid
 from trading_core.marketdata.gaps import GapDetector, GapState
 from trading_core.marketdata.hours import GB, SECOND_NS, backlog_bytes_needed
-from trading_core.settings import Settings
+from trading_core.marketdata.retention import parse_backup_state, plan_retention
+from trading_core.settings import CatalogDiskSettings
 
 log = logging.getLogger(__name__)
 
 HEARTBEAT_EVERY_S = 10.0
 
 
-class CompactorSettings(Settings):
+class CompactorSettings(CatalogDiskSettings):
+    """The compactor's catalog, conversion, and retention settings, plus the shared disk floors."""
+
     catalog_path: str = "/data/catalog"
     # True on the VPS (compose.vps.yaml): refuse to start unless the extra disk is mounted.
     catalog_require_marker: bool = False
-    catalog_free_floor_gb: Decimal = Field(default=Decimal(8), gt=0)
+    # Retention keeps the Parquet catalog (`data/`) under this size (spec 0007 AC-6).
+    catalog_cap_gb: Decimal = Field(default=Decimal(30), gt=0)
+    # The backup's catalog step writes it; retention deletes only hours older than its cutoff (AC-8).
+    backup_state_path: Path = Path("/state/catalog_backup.json")
     # Parquet bytes per feather byte, for the dead run space check (spec 0007 AC-9): measured 0.0275
     # in Milestone 1, times 1.5.
     compactor_parquet_ratio: Decimal = Field(default=Decimal("0.042"), gt=0)
@@ -46,53 +53,6 @@ class CompactorSettings(Settings):
     compactor_reorder_window_s: int = Field(default=600, ge=0)
     # The most rows one stream's reorder window may hold, which bounds memory in a burst (AC-12).
     compactor_reorder_max_rows: int = Field(default=2_000_000, ge=1)
-
-
-@dataclass
-class Found:
-    """The recorder's feather files: per (table, instrument) stream, instrument files, and per run."""
-
-    streams: dict[tuple[str, str], list[FeatherFile]] = field(default_factory=dict)
-    instruments: list[FeatherFile] = field(default_factory=list)
-    runs: dict[str, list[FeatherFile]] = field(default_factory=dict)
-
-
-def discover(store: CatalogStore) -> Found:
-    """Every feather file under ``live/``, each list oldest first."""
-    found = Found()
-    if not store.live.exists():
-        return found
-    for run in sorted(p for p in store.live.iterdir() if p.is_dir()):
-        for table in STREAM_TABLES:
-            for folder in (run / table).glob("*"):
-                for path in folder.glob("*.feather"):
-                    file = FeatherFile.parse(path, run.name)
-                    found.streams.setdefault((table, folder.name), []).append(file)
-                    found.runs.setdefault(run.name, []).append(file)
-        for path in run.glob(f"{INSTRUMENTS_TABLE}_*.feather"):
-            file = FeatherFile.parse(path, run.name)
-            found.instruments.append(file)
-            found.runs.setdefault(run.name, []).append(file)
-    for files in [*found.streams.values(), found.instruments, *found.runs.values()]:
-        files.sort()
-    return found
-
-
-def current_run(found: Found) -> str | None:
-    """The run the recorder writes now: the one with the newest file creation time in its names.
-
-    File names come from the recorder's clock and never change, unlike a folder's ctime, which a
-    deletion inside a dead run would move forward.
-    """
-    newest = [(files[-1].created_ns, run) for run, files in found.runs.items() if files]
-    return max(newest)[1] if newest else None
-
-
-def is_closed(file: FeatherFile, siblings: list[FeatherFile], current: str | None) -> bool:
-    """Closed when its run is no longer the current one, or its run has a newer file (it rotated)."""
-    if file.run != current:
-        return True
-    return any(other.run == file.run and other.created_ns > file.created_ns for other in siblings)
 
 
 class Heartbeat:
@@ -141,7 +101,7 @@ class Compactor:
     def run_pass(self, now_ns: int) -> None:
         """Feed closed, settled files in time order, finish hours the watermark passed, then delete
         what is converted."""
-        found = discover(self._store)
+        found = discover(self._store.live, STREAM_TABLES, INSTRUMENTS_TABLE)
         current = current_run(found)
         stop_at = self._backlog_gate(found, current)
         instruments = {instrument for _, instrument in found.streams}
@@ -250,6 +210,48 @@ class Compactor:
             self._store.save_done(self.done)
 
 
+def run_retention(store: CatalogStore, *, state_path: Path, cap_bytes: int, floor_bytes: int, now_ns: int) -> None:
+    """AC-6: delete the oldest whole hours, once backed up, while the catalog is over its cap or
+    free space under its floor. Without a valid backup state, nothing is deleted."""
+    cutoff_ns = None
+    try:
+        raw = read_backup_state(state_path)
+        if raw is not None:
+            cutoff_ns = parse_backup_state(raw, now_ns).cutoff_ns
+    except BackupStateInvalid as exc:
+        log.error(
+            "backup state invalid, retention deletes nothing",
+            extra={"fields": {"code": "backup_state_invalid", "path": str(state_path), "reason": exc.reason}},
+        )
+    hours, catalog_bytes = store.hour_inventory()
+    sizes = {hour.hour_ns: hour.total_bytes for hour in hours}
+    plan = plan_retention(
+        hours,
+        cutoff_ns,
+        catalog_bytes=catalog_bytes,
+        free_bytes=store.free_bytes(),
+        cap_bytes=cap_bytes,
+        floor_bytes=floor_bytes,
+    )
+    for hour in plan.delete:
+        store.delete_hour(hour)
+        log.info(
+            "catalog hour retired",
+            extra={"fields": {"code": "catalog_retention_deleted", "hour_ns": hour, "bytes": sizes[hour]}},
+        )
+    if plan.blocked:
+        log.error(
+            "catalog needs space but no hour is backed up yet",
+            extra={
+                "fields": {
+                    "code": "catalog_retention_blocked",
+                    "bytes_needed": plan.needed_bytes,
+                    "has_backup_state": cutoff_ns is not None,
+                }
+            },
+        )
+
+
 def main() -> None:
     settings = boot("worker", settings_cls=CompactorSettings).settings
     root = Path(settings.catalog_path)
@@ -287,6 +289,20 @@ def main() -> None:
             )
             compactor.abort()
             compactor = fresh()
+        # After every pass, also a failed one: retention frees space even while conversion is stuck.
+        try:
+            run_retention(
+                store,
+                state_path=settings.backup_state_path,
+                cap_bytes=int(settings.catalog_cap_gb * GB),
+                floor_bytes=int(settings.catalog_free_floor_gb * GB),
+                now_ns=time.time_ns(),
+            )
+        except Exception as exc:
+            log.exception(
+                "catalog retention failed",
+                extra={"fields": {"code": "compactor_pass_failed", "step": "retention", "error": type(exc).__name__}},
+            )
         heartbeat()
         time.sleep(settings.compactor_interval_s)
 

@@ -16,6 +16,9 @@ RUN_DIR=/run/kfs
 DUMP_DIR=$STAGING/dump
 RUNNING=$STAGING/running
 LAST_SUCCESS=$STAGING/last_success
+CATALOG=/data/catalog
+# The catalog snapshot's cutoff, read by the compactor's retention (spec 0007 AC-6, AC-8).
+CATALOG_STATE=/state/catalog_backup.json
 # A fixed host name, so restic retention groups every night together.
 RESTIC_HOST=kfs-vps
 BACKUP_AT_UTC=${BACKUP_AT_UTC:-02:30}
@@ -163,12 +166,13 @@ step_dump_and_manifest() {
     printf '%s\n' "$MANIFEST" >"$DUMP_DIR/manifest.json" 2>"$RUN_DIR/err" || return 1
 }
 
-# The dump, the manifest, the catalog, and the VPS env file and deploy log. The secrets folder
-# is never mounted into this container, so it can never be part of a snapshot.
+# The dump, the manifest, and the VPS env file and deploy log. The secrets folder is never
+# mounted into this container, so it can never be part of a snapshot. The catalog has its own
+# snapshot (step_catalog).
 step_upload() {
     local paths=("$DUMP_DIR") p
     STEP=upload
-    for p in /data/catalog /host/kfs.env /host/deploys.jsonl; do
+    for p in /host/kfs.env /host/deploys.jsonl; do
         [[ -e $p ]] && paths+=("$p")
     done
     restic_b2 backup --json --quiet --host "$RESTIC_HOST" \
@@ -179,7 +183,36 @@ step_upload() {
     [[ -n $SUMMARY ]] || { echo "restic printed no summary" >"$RUN_DIR/err"; return 1; }
 }
 
-# One run: every step in order, no retry. A failed step skips the rest until the next night.
+# The Parquet catalog in its own snapshot, tagged `catalog`, which the drill never forgets (spec
+# 0007 AC-8). Never the raw feather (`live/`), the compactor's state, or a half written `.tmp`.
+# Then the cutoff (when this step began) goes to the state file: every catalog file older than it
+# is in B2, so the compactor may delete it. The laptop mounts no catalog, so there it is skipped.
+step_catalog() {
+    local cutoff paths=() p snapshot
+    STEP=catalog
+    cutoff=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    for p in data quarantine gaps manifests; do
+        [[ -e $CATALOG/$p ]] && paths+=("$CATALOG/$p")
+    done
+    if ((${#paths[@]} == 0)); then
+        log INFO "catalog step skipped" "$(fields --arg reason "no catalog files under $CATALOG")"
+        return 0
+    fi
+    restic_b2 backup --json --quiet --host "$RESTIC_HOST" \
+        --tag kfs --tag catalog --tag "env:${TRADING_ENV:-}" --tag "sha:${KFS_TAG:-unknown}" \
+        --exclude "$CATALOG/live" --exclude "$CATALOG/.compactor" --exclude '*.tmp' \
+        "${paths[@]}" >"$RUN_DIR/restic.json" 2>"$RUN_DIR/err" || return 1
+    snapshot=$(jq -r 'select(.message_type == "summary") | .snapshot_id' \
+        "$RUN_DIR/restic.json" 2>"$RUN_DIR/err" | tail -n 1)
+    [[ -n $snapshot && $snapshot != null ]] || { echo "restic printed no summary" >"$RUN_DIR/err"; return 1; }
+    jq -cn --arg snapshot_id "$snapshot" --arg cutoff "$cutoff" '{snapshot_id: $snapshot_id, cutoff: $cutoff}' \
+        >"$CATALOG_STATE.tmp" 2>"$RUN_DIR/err" || return 1
+    mv -f "$CATALOG_STATE.tmp" "$CATALOG_STATE" 2>"$RUN_DIR/err" || return 1
+    log INFO "catalog backup done" "$(fields --arg snapshot_id "$snapshot" --arg cutoff "$cutoff")"
+}
+
+# One run: every step in order, no retry. A failed step skips the rest of the main chain until the
+# next night. The catalog step runs either way, so a database problem never stops retention.
 run_backup() {
     local start=$SECONDS
     if ! (set -o noclobber && : >"$RUNNING") 2>/dev/null; then
@@ -189,20 +222,26 @@ run_backup() {
     # However this process ends, a stale marker would block every deploy (AC-12).
     trap 'rm -f "$RUNNING"' EXIT
     log INFO "backup started"
+    local ok=0
     check_repo || true
     if step_downsample && step_dump_and_manifest && step_upload; then
+        # LAST_SUCCESS still means the main chain passed; the catalog step does not touch it.
         date -u +%s >"$LAST_SUCCESS"
         # An upload proves the repository exists; a brief B2 error in check_repo must not stick.
         rm -f "$RUN_DIR/repo_missing"
         log INFO "backup done" "$(jq -cn --argjson summary "$SUMMARY" --argjson manifest "$MANIFEST" \
             --argjson downsampled "${DOWNSAMPLED:-0}" --argjson duration_s "$((SECONDS - start))" \
             '$summary + {downsampled: $downsampled, duration_s: $duration_s, manifest: $manifest}')"
-        rm -f "$RUNNING"
-        return 0
+    else
+        log ERROR backup_failed "$(fields --arg step "$STEP" --arg error "$(last_error)")"
+        ok=1
     fi
-    log ERROR backup_failed "$(fields --arg step "$STEP" --arg error "$(last_error)")"
+    if ! step_catalog; then
+        log ERROR backup_failed "$(fields --arg step "$STEP" --arg error "$(last_error)")"
+        ok=1
+    fi
     rm -f "$RUNNING"
-    return 1
+    return "$ok"
 }
 
 seconds_until_next() {

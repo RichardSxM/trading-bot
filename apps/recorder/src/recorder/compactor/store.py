@@ -18,10 +18,13 @@ import pyarrow.compute as pc
 import pyarrow.parquet as pq
 from nautilus_trader.model.data import OrderBookDelta, TradeTick
 from nautilus_trader.model.instruments import CryptoPerpetual
-from nautilus_trader.persistence.catalog.parquet import _timestamps_to_filename
+from nautilus_trader.persistence.catalog.parquet import _parse_filename_timestamps, _timestamps_to_filename
 from nautilus_trader.persistence.funcs import class_to_filename, urisafe_identifier
 
+from recorder.disk import free_bytes
+from trading_core.marketdata.errors import BackupStateInvalid
 from trading_core.marketdata.hours import hour_last_ns
+from trading_core.marketdata.retention import HourFiles
 
 # Catalog folders, `class_to_filename(cls)`. For deltas and trades the recorder's stream folder
 # under `live/<run>/` has the same name; instruments are `live/<run>/crypto_perpetual_<ns>.feather`.
@@ -195,14 +198,40 @@ class CatalogStore:
 
     def free_bytes(self) -> int:
         """Free space on the catalog's file system, as a non root process can use it."""
-        stat = os.statvfs(self.root)
-        return stat.f_bavail * stat.f_frsize
+        return free_bytes(self.root)
 
     def remove_run_if_empty(self, run: str) -> None:
         """Delete a finished run folder once no feather file is left in it."""
         folder = self.live / run
         if folder.is_dir() and not any(folder.rglob("*.feather")):
             shutil.rmtree(folder)
+
+    def hour_inventory(self) -> tuple[list[HourFiles], int]:
+        """Every catalog hour on disk (``data/`` and its ``quarantine/`` files), and the bytes under
+        ``data/`` (spec 0007 AC-6). Files whose name is not one whole hour are not ours to retire."""
+        found: dict[int, list[int]] = {}  # hour -> [data bytes, total bytes, newest mtime]
+        catalog_bytes = 0
+        for folder in ("data", "quarantine"):
+            for path in (self.root / folder).glob("*/*/*.parquet"):
+                interval = _parse_filename_timestamps(path.name)
+                if interval is None or interval[1] != hour_last_ns(interval[0]):
+                    continue
+                stat = path.stat()
+                entry = found.setdefault(interval[0], [0, 0, 0])
+                if folder == "data":
+                    entry[0] += stat.st_size
+                    catalog_bytes += stat.st_size
+                entry[1] += stat.st_size
+                entry[2] = max(entry[2], stat.st_mtime_ns)
+        hours = [HourFiles(hour, data, total, mtime) for hour, (data, total, mtime) in sorted(found.items())]
+        return hours, catalog_bytes
+
+    def delete_hour(self, hour: int) -> None:
+        """Delete one whole catalog hour: every table and instrument, with its quarantine files."""
+        name: str = _timestamps_to_filename(hour, hour_last_ns(hour))
+        for folder in ("data", "quarantine"):
+            for path in (self.root / folder).glob(f"*/*/{name}"):
+                path.unlink(missing_ok=True)
 
     def load_done(self) -> DoneRecord:
         """The commit record, or an empty one before the first commit."""
@@ -215,3 +244,22 @@ class CatalogStore:
         """Rewrite the commit record atomically. This is the commit."""
         text = done.to_json()
         atomic_write(self.done_path, lambda tmp: tmp.write_text(text))
+
+
+def read_backup_state(path: Path) -> object | None:
+    """The parsed backup state file (spec 0007 AC-8), or ``None`` when there is none yet.
+
+    Raises ``BackupStateInvalid`` when it cannot be read or is not JSON; ``parse_backup_state``
+    checks the fields.
+    """
+    try:
+        text = path.read_text()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise BackupStateInvalid(f"{path} is unreadable: {exc.strerror}") from exc
+    try:
+        raw: object = json.loads(text)
+    except ValueError as exc:
+        raise BackupStateInvalid(f"{path} is not JSON") from exc
+    return raw

@@ -24,3 +24,27 @@ _Steps derived from spec 0007 acceptance criteria. `/check verify` runs these; `
 - AC-13: queue watch levels, throttle, stop check, config capacity
 - AC-14: compose values now; the VPS step in Milestone 6
 - AC-2, AC-4, AC-5, AC-11: count check with late rows, gaps from written rows, manifest late counts, reruns with late rows
+
+## Milestone 5: disk safety and backup (added 2026-10-08)
+
+### Commands
+- [ ] `docker compose run --rm --no-deps -T -w /app/packages/core trader pytest -q tests/test_marketdata_retention.py tests/test_settings.py` → all pass (oldest whole hours first, the cutoff, the state check, the floor pair) → AC-6, AC-7
+- [ ] `docker compose run --rm --no-deps -T recorder pytest -q tests/test_disk.py tests/test_compactor_retention.py` → all pass → AC-6, AC-7
+- [ ] On the VPS: `docker inspect` of the recorder shows the `python -m recorder.health` health check, and the recorder is healthy → AC-7
+- [ ] On the VPS: `kfs-compose exec backup kfs-backup once` → a snapshot tagged `kfs` and `catalog` holding `data/`, `quarantine/`, `gaps/`, `manifests/` and no `live/`, `.compactor/`, or `.tmp` (`restic ls`), and `/state/catalog_backup.json` with a cutoff that is not in the future → AC-8
+- [ ] A backup with Postgres unreachable still runs the catalog step: `backup_failed step=downsample`, then `catalog backup done` and a new state file; `last_success` is unchanged → AC-8
+- [ ] `scripts/restore-drill.sh` after a catalog snapshot exists → restores the newest main snapshot (never a catalog one) and passes; the retention dry run keeps every `catalog` and `backlog` snapshot → AC-8
+
+### Value sourcing checks
+- [ ] Catalog bytes: with `CATALOG_CAP_GB` below the size of `data/` and no state file → `catalog_retention_blocked` with `bytes_needed`, nothing deleted → AC-6
+- [ ] Backed up or not: after a catalog backup, the oldest hours go whole (every table, instrument, and quarantine file), each with `catalog_retention_deleted`, until under the cap; hours written after the cutoff stay → AC-6
+- [ ] Backup state: a cutoff in the future, an empty `snapshot_id`, or text that is not JSON → `backup_state_invalid`, nothing deleted → AC-6
+- [ ] Free bytes (retention): with `CATALOG_FREE_FLOOR_GB` above the free space, hours are deleted until the floor holds, even under the cap → AC-6
+- [ ] Free bytes (recorder): start with `CATALOG_HARD_FLOOR_GB` above the free space (and the free floor above it) → one `catalog_disk_full`, no node, no restarts, unhealthy; restore the default → `catalog_disk_ok` and healthy → AC-7
+- [ ] Stream freshness: a recorder whose current run stops writing book deltas for 60 s turns unhealthy, even with a fresh heartbeat → AC-7
+- [ ] Cutoff: the state file's `cutoff` equals the time the catalog step began (the `catalog backup done` log line), not the end of the upload → AC-8
+
+### Acceptance criteria coverage (Milestone 5)
+- AC-6: retention unit and file tests; the cap, floor, blocked, and invalid state checks above
+- AC-7: guard, wait at start, exit 75, health check tests; the laptop run on 2026-10-08 (wait without restarts, healthy in 11 s); the VPS health step
+- AC-8: the backup image run against a local restic repository on 2026-10-08 (main chain failed, catalog step ran, tags and contents correct, state file written); the VPS and drill steps

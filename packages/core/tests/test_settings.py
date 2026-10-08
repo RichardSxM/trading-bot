@@ -1,11 +1,12 @@
 """covers: spec 0001 configuration, spec 0002 git_commit, spec 0003 secrets folder and database URL."""
 
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
 from pydantic import SecretStr, ValidationError
 
-from trading_core.settings import Settings
+from trading_core.settings import CatalogDiskSettings, Settings
 
 
 def test_trading_env_is_required():
@@ -200,3 +201,23 @@ def test_strategy_config_holds_the_placeholder_and_risk_settings_only():
     assert config["risk_max_order_notional_usd"] == "250"
     assert all(name.startswith(("placeholder_", "risk_")) for name in config)
     assert "sandbox_taker_fee" not in config
+
+
+def test_catalog_floors_default_to_the_spec(monkeypatch):
+    """covers: spec 0007 AC-6, AC-7."""
+    monkeypatch.setenv("TRADING_ENV", "demo")
+
+    settings = CatalogDiskSettings()
+
+    assert (settings.catalog_free_floor_gb, settings.catalog_hard_floor_gb) == (Decimal(8), Decimal(2))
+
+
+@pytest.mark.parametrize("hard", ["8", "9"])
+def test_hard_floor_must_be_below_the_free_floor(monkeypatch, hard):
+    """covers: spec 0007 AC-7 (each process refuses to start on a bad pair)."""
+    monkeypatch.setenv("TRADING_ENV", "demo")
+    monkeypatch.setenv("CATALOG_FREE_FLOOR_GB", "8")
+    monkeypatch.setenv("CATALOG_HARD_FLOOR_GB", hard)
+
+    with pytest.raises(ValidationError, match="CATALOG_HARD_FLOOR_GB"):
+        CatalogDiskSettings()

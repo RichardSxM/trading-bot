@@ -12,7 +12,7 @@ import logging
 import os
 import time
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Final
 
@@ -34,6 +34,7 @@ from recorder.compactor.store import (
     merge_quarantine,
     stream_key,
 )
+from recorder.live_files import FeatherFile
 from trading_core.marketdata.errors import HourCountMismatch
 from trading_core.marketdata.gaps import Gap, GapDetector
 from trading_core.marketdata.hours import (
@@ -62,20 +63,6 @@ F_SNAPSHOT: Final = 32
 CLEAR: Final[int] = int(p3.BookAction.CLEAR.value)
 
 Beat = Callable[[], None]
-
-
-@dataclass(frozen=True, order=True)
-class FeatherFile:
-    """One recorder feather file. Files sort by the creation time in their name."""
-
-    created_ns: int
-    path: Path = field(compare=False)
-    run: str = field(compare=False)
-
-    @classmethod
-    def parse(cls, path: Path, run: str) -> FeatherFile:
-        """Read the creation time from ``<name>_<ns>.feather``."""
-        return cls(created_ns=int(path.stem.rsplit("_", 1)[1]), path=path, run=run)
 
 
 def read_chunks(path: Path, beat: Beat | None = None) -> Iterator[Any]:

@@ -1,7 +1,8 @@
 import pytest
 from nautilus_trader.model.identifiers import InstrumentId
 
-from recorder.main import RecorderSettings, build_config
+from recorder.main import build_config
+from recorder.settings import RecorderSettings
 
 
 def test_demo_config_records_into_catalog_without_redis(monkeypatch):

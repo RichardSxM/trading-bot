@@ -13,3 +13,11 @@ class HourCountMismatch(CatalogError):
         self.hour = hour
         self.expected = expected
         self.written = written
+
+
+class BackupStateInvalid(CatalogError):
+    """The backup state file is unreadable or wrong, so no catalog hour counts as backed up (AC-6)."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(f"backup state invalid: {reason}")
+        self.reason = reason

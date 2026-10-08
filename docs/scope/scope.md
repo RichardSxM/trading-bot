@@ -148,7 +148,7 @@ spec [0007](../specs/0007-order-book-recorder/index.md)
   - [x] Conversion and backlog: all types, closed file rule, `done.json`, space checked backlog, idempotent reruns, overlap (AC-2, AC-9, AC-11, AC-12)
   - [x] Gaps and manifest: reconnect, recorder down, silence, daily manifest (AC-4, AC-5)
   - [x] Out of order rows: 600 s reorder window, late rows to a backed up quarantine, recorder queue depth warning, compactor CPU weight (AC-12, AC-13, AC-14). The laptop stress check (task 12) was skipped on 2026-10-08; the VPS checks in the last milestone cover AC-13 and AC-14 live.
-  - [ ] Disk safety and backup: retention gated on the backup, recorder health and hard floor, `catalog` snapshots kept by the drill (AC-6, AC-7, AC-8)
+  - [x] Disk safety and backup: retention gated on the backup, recorder health and hard floor, `catalog` snapshots kept by the drill (AC-6, AC-7, AC-8). The drill also restores only main snapshots now, since a catalog snapshot holds no dump.
   - [ ] Laptop fetch and VPS deploy: `fetch-catalog.sh`, deploy, backlog converts (AC-10)
 - [ ] Verify it: `/check verify order book recorder`
 - [ ] Test it: `/test order book recorder`

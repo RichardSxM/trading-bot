@@ -5,8 +5,9 @@ import logging
 import pytest
 from pydantic import ValidationError
 
-from recorder.main import DATA_QUEUE_SIZE, RecorderSettings, build_config
+from recorder.main import DATA_QUEUE_SIZE, build_config
 from recorder.queue_depth import QueueWatch
+from recorder.settings import RecorderSettings
 
 CAP = 100_000
 S = 1_000_000_000

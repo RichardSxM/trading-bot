@@ -22,17 +22,19 @@ from nautilus_trader.model.data import OrderBookDeltas, TradeTick
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.instruments import CryptoPerpetual
 from nautilus_trader.persistence.writer import RotationMode
-from pydantic import Field, SecretStr
+from pydantic import SecretStr
 
-from recorder.actor import RecordingActor, RecordingConfig
+from recorder.actor import DiskGuardActor, DiskGuardConfig, RecordingActor, RecordingConfig
+from recorder.disk import EXIT_DISK_FULL, wait_for_space
 from recorder.queue_depth import QueueDepthActor, QueueDepthConfig
+from recorder.settings import RecorderSettings
 from recorder.volume import CatalogVolumeMissing, check_catalog_volume
 from trading_core import env_guard
 from trading_core.boot import boot
+from trading_core.marketdata.hours import GB
 from trading_core.naming import node_id
 from trading_core.node.heartbeat import HeartbeatActor, HeartbeatConfig
 from trading_core.node.kraken import futures_data_client
-from trading_core.settings import Settings
 
 log = logging.getLogger(__name__)
 
@@ -41,20 +43,6 @@ log = logging.getLogger(__name__)
 RECORDED_TYPES: list[type] = [OrderBookDeltas, TradeTick, CryptoPerpetual]
 # The data engine's queue capacity (the Nautilus default), watched by QueueDepthActor (AC-13).
 DATA_QUEUE_SIZE = 100_000
-
-
-class RecorderSettings(Settings):
-    # Pinned from the adapter's instrument provider (Kraken's live public data).
-    recorder_instruments: str = "PF_XBTUSD.KRAKEN,PF_ETHUSD.KRAKEN"
-    catalog_path: str = "/data/catalog"
-    # True on the VPS (compose.vps.yaml): refuse to start unless the extra disk is mounted.
-    catalog_require_marker: bool = False
-    # The data queue depth, in percent of its capacity, that logs `recorder_queue_high` (AC-13).
-    recorder_queue_warn_pct: int = Field(default=50, ge=1, le=99)
-
-    @property
-    def instrument_list(self) -> list[str]:
-        return [i.strip() for i in self.recorder_instruments.split(",") if i.strip()]
 
 
 def build_config(settings: RecorderSettings) -> TradingNodeConfig:
@@ -96,6 +84,9 @@ def main() -> None:
             extra={"fields": {"code": "catalog_volume_missing", "path": str(exc.path)}},
         )
         sys.exit(1)
+    # Below the hard floor, wait here instead of building the node: no crash loop (AC-7).
+    floor_bytes = int(settings.catalog_hard_floor_gb * GB)
+    wait_for_space(Path(settings.catalog_path), floor_bytes)
     config = build_config(settings)
     node = TradingNode(config=config)
     node.trader.add_actor(
@@ -110,12 +101,16 @@ def main() -> None:
             capacity=config.data_engine.qsize,
         )
     )
+    disk_guard = DiskGuardActor(DiskGuardConfig(catalog_path=settings.catalog_path, floor_bytes=floor_bytes))
+    node.trader.add_actor(disk_guard)
     node.add_data_client_factory(KRAKEN, KrakenLiveDataClientFactory)
     node.build()
     try:
         node.run()
     finally:
         node.dispose()
+    if disk_guard.guard.tripped:
+        sys.exit(EXIT_DISK_FULL)
 
 
 if __name__ == "__main__":
