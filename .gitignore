@@ -22,3 +22,5 @@ __pycache__/
 /catalog-vps/
 /.fetch-test.*/
 /tardis/
+/catalog-lab/
+/lab-reports/
