@@ -2,10 +2,10 @@
 _Steps derived from spec 0007 acceptance criteria. `/check verify` runs these; `/test` locks the durable ones. This first part covers Milestone 4 (out of order rows); later milestones add their own._
 
 ## Commands
-- [ ] `docker compose run --rm --no-deps -T -w /app/packages/core trader pytest -q tests/test_marketdata_hours.py tests/test_marketdata_queue_depth.py` → all pass (watermark, late cause, cap, queue levels) → AC-12, AC-13
-- [ ] `docker compose run --rm --no-deps -T recorder pytest -q tests/test_compactor_reorder.py tests/test_compactor_lifecycle.py tests/test_queue_depth.py` → all pass → AC-2, AC-4, AC-5, AC-11, AC-12, AC-13
-- [ ] `docker compose run --rm --no-deps -T -e KFS_SLOW_TESTS=1 recorder pytest -q tests/test_compactor_memory.py` → passes under 512 MB with the window full → AC-9, AC-12
-- [ ] `docker compose config compactor` → command starts `nice -n 19`, `cpu_shares: 256`, `COMPACTOR_REORDER_WINDOW_S` 600, `COMPACTOR_REORDER_MAX_ROWS` 2000000 → AC-14
+- [x] `docker compose run --rm --no-deps -T -w /app/packages/core trader pytest -q tests/test_marketdata_hours.py tests/test_marketdata_queue_depth.py` → all pass (watermark, late cause, cap, queue levels) → AC-12, AC-13
+- [x] `docker compose run --rm --no-deps -T recorder pytest -q tests/test_compactor_reorder.py tests/test_compactor_lifecycle.py tests/test_queue_depth.py` → all pass → AC-2, AC-4, AC-5, AC-11, AC-12, AC-13
+- [x] `docker compose run --rm --no-deps -T -e KFS_SLOW_TESTS=1 recorder pytest -q tests/test_compactor_memory.py` → passes under 512 MB with the window full → AC-9, AC-12
+- [x] `docker compose config compactor` → command starts `nice -n 19`, `cpu_shares: 256`, `COMPACTOR_REORDER_WINDOW_S` 600, `COMPACTOR_REORDER_MAX_ROWS` 2000000 → AC-14
 - [ ] On the VPS: `docker inspect` of the compactor shows `CpuShares` 256, `stat -fc %T /sys/fs/cgroup` prints `cgroup2fs`, and while the compactor converts a dead run the recorder logs no `recorder_queue_high` → AC-14
 
 ## Value sourcing checks
@@ -28,9 +28,9 @@ _Steps derived from spec 0007 acceptance criteria. `/check verify` runs these; `
 ## Milestone 5: disk safety and backup (added 2026-10-08)
 
 ### Commands
-- [ ] `docker compose run --rm --no-deps -T -w /app/packages/core trader pytest -q tests/test_marketdata_retention.py tests/test_settings.py` → all pass (oldest whole hours first, the cutoff, the state check, the floor pair) → AC-6, AC-7
-- [ ] `docker compose run --rm --no-deps -T recorder pytest -q tests/test_disk.py tests/test_compactor_retention.py` → all pass → AC-6, AC-7
-- [ ] On the VPS: `docker inspect` of the recorder shows the `python -m recorder.health` health check, and the recorder is healthy → AC-7
+- [x] `docker compose run --rm --no-deps -T -w /app/packages/core trader pytest -q tests/test_marketdata_retention.py tests/test_settings.py` → all pass (oldest whole hours first, the cutoff, the state check, the floor pair) → AC-6, AC-7
+- [x] `docker compose run --rm --no-deps -T recorder pytest -q tests/test_disk.py tests/test_compactor_retention.py` → all pass → AC-6, AC-7
+- [x] On the VPS: `docker inspect` of the recorder shows the `python -m recorder.health` health check, and the recorder is healthy → AC-7
 - [ ] On the VPS: `kfs-compose exec backup kfs-backup once` → a snapshot tagged `kfs` and `catalog` holding `data/`, `quarantine/`, `gaps/`, `manifests/` and no `live/`, `.compactor/`, or `.tmp` (`restic ls`), and `/state/catalog_backup.json` with a cutoff that is not in the future → AC-8
 - [ ] A backup with Postgres unreachable still runs the catalog step: `backup_failed step=downsample`, then `catalog backup done` and a new state file; `last_success` is unchanged → AC-8
 - [ ] `scripts/restore-drill.sh` after a catalog snapshot exists → restores the newest main snapshot (never a catalog one) and passes; the retention dry run keeps every `catalog` and `backlog` snapshot → AC-8
