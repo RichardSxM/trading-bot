@@ -255,7 +255,10 @@ services:
       # Heartbeat, a book delta file written in the last 60 s, and free space above the hard
       # floor (spec 0007 AC-7).
       test: ["CMD", "python", "-m", "recorder.health"]
-    mem_limit: 768m
+    # 2026-10-08: at 3.2 GB/h of market data the data queue stays full and Nautilus parks every
+    # overflowing message in a pending put(), which grew past 768m and got the recorder killed
+    # every 5 minutes. The room lets a burst drain instead (late rows are repaired, spec 0007 AC-12).
+    mem_limit: 1536m
 
   # Turns closed feather hours into the Parquet catalog (spec 0007). Same image as the recorder,
   # no network and no secrets; one core at nice 19, so the trader always wins the CPU.
