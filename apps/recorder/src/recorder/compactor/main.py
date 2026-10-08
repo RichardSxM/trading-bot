@@ -34,8 +34,9 @@ class CompactorSettings(Settings):
     # True on the VPS (compose.vps.yaml): refuse to start unless the extra disk is mounted.
     catalog_require_marker: bool = False
     catalog_free_floor_gb: Decimal = Field(default=Decimal(8), gt=0)
-    # Parquet bytes per feather byte, for the dead run space check (spec 0007 AC-9).
-    compactor_parquet_ratio: Decimal = Field(default=Decimal("0.05"), gt=0)
+    # Parquet bytes per feather byte, for the dead run space check (spec 0007 AC-9): measured 0.0275
+    # in Milestone 1, times 1.5.
+    compactor_parquet_ratio: Decimal = Field(default=Decimal("0.042"), gt=0)
     # The wait after a file's last write before it is read, so an hour is never finished early.
     compactor_grace_s: int = Field(default=300, ge=0)
     compactor_interval_s: int = Field(default=60, gt=0)
@@ -113,7 +114,7 @@ class Compactor:
         store: CatalogStore,
         *,
         grace_ns: int,
-        ratio: Decimal = Decimal("0.05"),
+        ratio: Decimal = Decimal("0.042"),
         floor_bytes: int = 8 * GB,
         silence_ns: int = 10 * SECOND_NS,
         beat: Beat | None = None,

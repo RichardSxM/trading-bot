@@ -307,13 +307,13 @@ This milestone proves five assumptions on Nautilus 1.231.0, on the laptop, with 
 - The catalog's file names and Arrow schema come from Nautilus internals (`_timestamps_to_filename`). An upgrade from 1.231.0 must run the replay test again.
 
 **Neutral**:
-- Measured before this spec: 0.75 GB/h on average and about 2 GB/h at peak of raw feather, 99% book deltas. Milestone 0 saw zstd Parquet at about 3% of the feather bytes (an early sample, roughly 1 to 1.5 GB per day). Milestone 1 measures it over 2 hours and writes it here.
+- Measured before this spec: 0.75 GB/h on average and about 2 GB/h at peak of raw feather, 99% book deltas. Milestone 0 saw zstd Parquet at about 3% of the feather bytes. Milestone 1 measured it on 2026-10-08 (06:50 to 09:12 UTC, 3.87 GB of feather from the laptop): book deltas take 616 bytes per row in feather and 16.8 in Parquet (2.73%), trades 504 and 33.5 (6.64%). Deltas are 99.6% of the bytes, so the ratio is about 0.0275, and at the measured 0.75 GB/h average that is about 0.5 GB of Parquet per day (about 1.3 GB on a day at the 2 GB/h peak). `COMPACTOR_PARQUET_RATIO` defaults to 0.042, the ratio × 1.5. The same run hit `data_queue at capacity` in the recorder while the laptop was busy with another test, and the overflow put rows out of order: hour 08:00 overlapped and was kept as feather (AC-12), as designed.
 - B2 cost grows linearly with compressed bytes; the measured GB per day sets it.
 - The backup no longer uploads raw feather, so the nightly upload gets smaller.
 
 ## Follow-up
 
-- [ ] Milestone 1 writes the measured Parquet GB per day and the compression ratio into Consequences, and updates spec 0001's follow-up "measure the recorder's compressed bytes per day".
+- [x] Milestone 1 writes the measured Parquet GB per day and the compression ratio into Consequences, and updates spec 0001's follow-up "measure the recorder's compressed bytes per day".
 - [ ] Feature 12: alert on `catalog_disk_full`, `catalog_retention_blocked`, `catalog_hour_overlap`, `compactor_pass_failed`, `backup_failed step=catalog`, and long `book_gap`.
 - [ ] Feature 15 (simulator): read `gaps/` and skip or split replays at gaps.
 - [ ] Feature 20 (market context): add its types to `include_types` and to the compactor's type list.
