@@ -31,6 +31,7 @@ from trading_core.marketdata.errors import BackupStateInvalid
 from trading_core.marketdata.gaps import GapDetector, GapState
 from trading_core.marketdata.hours import GB, SECOND_NS, backlog_bytes_needed
 from trading_core.marketdata.retention import parse_backup_state, plan_retention
+from trading_core.marketdata.sequence import RunHoles, parse_holes
 from trading_core.settings import CatalogDiskSettings
 
 log = logging.getLogger(__name__)
@@ -118,11 +119,14 @@ class Compactor:
         found = discover(self._store.live, STREAM_TABLES, INSTRUMENTS_TABLE)
         current = None if self._offline else current_run(found)
         stop_at = self._backlog_gate(found, current)
+        holes = self._read_holes(found, current)
         instruments = {instrument for _, instrument in found.streams}
         for file in found.instruments:
             self.definitions.read(file, instruments)
         for (table, instrument), files in found.streams.items():
             stream = self._stream(table, instrument)
+            stream.set_holes(holes, current)
+            stream.drain(self.done, now_ns)
             for file in files:
                 if stop_at is not None and file.created_ns >= stop_at:
                     break
@@ -165,6 +169,38 @@ class Compactor:
             )
             self.streams[(table, instrument)] = stream
         return stream
+
+    def _read_holes(self, found: Found, current: str | None) -> dict[str, RunHoles | None]:
+        """Each run's holes file as written so far (AC-16); ``None`` for a run without one.
+
+        A run that ended without ``closed`` gets the fail safe hole over its unchecked tail. A run
+        without a file was recorded before the sequence watch shipped: it converts as before, and
+        INFO ``sequence_unchecked_run`` is logged once.
+        """
+        holes: dict[str, RunHoles | None] = {}
+        for run in found.runs:
+            read = self._store.read_holes_lines(run)
+            if read is None:
+                holes[run] = None
+                if self.done.holes.get(run) != {"unchecked": True}:
+                    log.info(
+                        "run has no sequence holes file",
+                        extra={"fields": {"code": "sequence_unchecked_run", "run": run}},
+                    )
+                    self.done.holes[run] = {"unchecked": True}
+                continue
+            lines, read_bytes = read
+            parsed = parse_holes(lines)
+            if run == current:
+                holes[run] = parsed
+            else:
+                holes[run] = parsed.with_fail_safe()
+            self.done.holes[run] = {
+                "read_bytes": read_bytes,
+                "checked_to_ns": parsed.checked_to_ns,
+                "closed": parsed.closed,
+            }
+        return holes
 
     def _backlog_gate(self, found: Found, current: str | None) -> int | None:
         """AC-9: dead runs not yet started need room for their Parquet plus the floor.
@@ -220,8 +256,26 @@ class Compactor:
                 if not (self._store.live / run).exists() and run in self.done.started_runs:
                     self.done.started_runs.discard(run)
                     changed = True
+        self._remove_holes_only_runs(found, current)
+        for run in [r for r in self.done.holes if not (self._store.live / r).exists()]:
+            del self.done.holes[run]
+            changed = True
         if changed:
             self._store.save_done(self.done)
+
+    def _remove_holes_only_runs(self, found: Found, current: str | None) -> None:
+        """Delete run folders that hold a holes file but no feather (the recorder stopped before
+        any data came), once the current run started after the holes file's last write."""
+        files = found.runs.get(current) if current is not None else None
+        if not files or not self._store.live.exists():
+            return
+        started = files[0].created_ns
+        for folder in self._store.live.iterdir():
+            if not folder.is_dir() or folder.name in found.runs:
+                continue
+            holes = self._store.holes_file(folder.name)
+            if holes.exists() and holes.stat().st_mtime_ns < started:
+                self._store.remove_run_if_empty(folder.name)
 
 
 def run_retention(store: CatalogStore, *, state_path: Path, cap_bytes: int, floor_bytes: int, now_ns: int) -> None:

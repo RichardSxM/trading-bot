@@ -22,6 +22,7 @@ from nautilus_trader.persistence.catalog.parquet import _parse_filename_timestam
 from nautilus_trader.persistence.funcs import class_to_filename, urisafe_identifier
 
 from recorder.disk import free_bytes
+from recorder.sequence_holes import HOLES_FILE
 from trading_core.marketdata.errors import BackupStateInvalid
 from trading_core.marketdata.hours import hour_last_ns
 from trading_core.marketdata.retention import HourFiles
@@ -61,6 +62,8 @@ class DoneRecord:
     - ``empty``: per instrument, hours without rows that lie wholly inside a ``recorder_down`` gap;
       they count towards closing a day (AC-5).
     - ``days``: the closed days (``YYYY-MM-DD``), each with its manifest written.
+    - ``holes``: per run, its holes file as last read: the bytes read, the last ``checked_to_ns``,
+      and whether it was ``closed``; or ``unchecked`` for a run without one (AC-16).
     """
 
     hours: dict[str, dict[int, dict[str, int]]] = field(default_factory=dict)
@@ -73,6 +76,7 @@ class DoneRecord:
     streams: dict[str, dict[str, object]] = field(default_factory=dict)
     empty: dict[str, set[int]] = field(default_factory=dict)
     days: set[str] = field(default_factory=set)
+    holes: dict[str, dict[str, object]] = field(default_factory=dict)
 
     def is_done(self, key: str, hour: int) -> bool:
         """Whether a stream's hour is finished."""
@@ -94,6 +98,7 @@ class DoneRecord:
                 "streams": dict(sorted(self.streams.items())),
                 "empty": {k: sorted(v) for k, v in sorted(self.empty.items())},
                 "days": sorted(self.days),
+                "holes": dict(sorted(self.holes.items())),
             },
             indent=1,
             sort_keys=True,
@@ -114,6 +119,7 @@ class DoneRecord:
             streams=dict(raw.get("streams", {})),
             empty={k: set(v) for k, v in raw.get("empty", {}).items()},
             days=set(raw.get("days", [])),
+            holes=dict(raw.get("holes", {})),
         )
 
 
@@ -199,6 +205,23 @@ class CatalogStore:
     def free_bytes(self) -> int:
         """Free space on the catalog's file system, as a non root process can use it."""
         return free_bytes(self.root)
+
+    def holes_file(self, run: str) -> Path:
+        """The recorder's ``sequence_holes.jsonl`` of a run (spec 0007 AC-15)."""
+        return self.live / run / HOLES_FILE
+
+    def read_holes_lines(self, run: str) -> tuple[list[str], int] | None:
+        """The complete lines of a run's holes file and their bytes, or ``None`` when it has none.
+
+        A last line without its newline is still being written (or was torn by a crash), so it is
+        left out.
+        """
+        try:
+            data = self.holes_file(run).read_bytes()
+        except FileNotFoundError:
+            return None
+        end = data.rfind(b"\n") + 1
+        return data[:end].decode(errors="replace").splitlines(), end
 
     def remove_run_if_empty(self, run: str) -> None:
         """Delete a finished run folder once no feather file is left in it."""

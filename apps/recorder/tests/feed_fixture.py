@@ -7,6 +7,7 @@ a ``CLEAR`` with ``F_SNAPSHOT`` first, and ``F_LAST`` on the last row of every m
 import os
 import random
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 
 import pyarrow as pa
@@ -31,23 +32,30 @@ class Feed:
     messages: list[list[p3.OrderBookDelta]] = field(default_factory=list)
 
 
-def _delta(action, side, price, size, flags, seq, ts):
+def _delta(action, side, price, size, flags, seq, ts, instrument=INSTRUMENT):
     order = p3.BookOrder(side, p3.Price(price, PRICE_PRECISION), p3.Quantity(size, SIZE_PRECISION), 0)
-    return p3.OrderBookDelta(p3.InstrumentId.from_str(INSTRUMENT), action, order, flags, seq, ts, ts)
+    return p3.OrderBookDelta(p3.InstrumentId.from_str(instrument), action, order, flags, seq, ts, ts)
 
 
-def make_feed(start_ns: int, end_ns: int, seed: int = 7, step_ms: tuple[int, int] = (200, 900)) -> Feed:
+def make_feed(
+    start_ns: int,
+    end_ns: int,
+    seed: int = 7,
+    step_ms: tuple[int, int] = (200, 900),
+    instrument: str = INSTRUMENT,
+) -> Feed:
     """A random walk L2 book from ``start_ns`` until ``end_ns``, starting with a feed snapshot."""
     rng = random.Random(seed)
+    _delta_of = partial(_delta, instrument=instrument)
     bids = {80_000.0 - i * 0.5: round(rng.uniform(0.01, 2), 3) for i in range(1, 30)}
     asks = {80_000.0 + i * 0.5: round(rng.uniform(0.01, 2), 3) for i in range(1, 30)}
     seq = 1
     ts = start_ns
-    snapshot = [_delta(p3.BookAction.CLEAR, p3.OrderSide.NO_ORDER_SIDE, 0, 0, F_SNAPSHOT, seq, ts)]
+    snapshot = [_delta_of(p3.BookAction.CLEAR, p3.OrderSide.NO_ORDER_SIDE, 0, 0, F_SNAPSHOT, seq, ts)]
     for side, levels in ((p3.OrderSide.BUY, bids), (p3.OrderSide.SELL, asks)):
         for price, size in levels.items():
             seq += 1
-            snapshot.append(_delta(p3.BookAction.ADD, side, price, size, 0, seq, ts))
+            snapshot.append(_delta_of(p3.BookAction.ADD, side, price, size, 0, seq, ts))
     snapshot[-1] = _with_flags(snapshot[-1], F_LAST)
     feed = Feed([snapshot])
     while True:
@@ -65,11 +73,11 @@ def make_feed(start_ns: int, end_ns: int, seed: int = 7, step_ms: tuple[int, int
             roll = rng.random()
             if price in levels and roll < 0.3 and len(levels) > 5:
                 del levels[price]
-                message.append(_delta(p3.BookAction.DELETE, side, price, 0, 0, seq, ts))
+                message.append(_delta_of(p3.BookAction.DELETE, side, price, 0, 0, seq, ts))
             else:
                 action = p3.BookAction.UPDATE if price in levels else p3.BookAction.ADD
                 levels[price] = round(rng.uniform(0.01, 2), 3)
-                message.append(_delta(action, side, price, levels[price], 0, seq, ts))
+                message.append(_delta_of(action, side, price, levels[price], 0, seq, ts))
         message[-1] = _with_flags(message[-1], F_LAST)
         feed.messages.append(message)
 
@@ -110,23 +118,29 @@ def _with_flags(delta, flags):
     )
 
 
-def _schema_metadata() -> dict[bytes, bytes]:
+def _schema_metadata(instrument: str = INSTRUMENT) -> dict[bytes, bytes]:
     return {
-        b"instrument_id": INSTRUMENT.encode(),
+        b"instrument_id": instrument.encode(),
         b"price_precision": str(PRICE_PRECISION).encode(),
         b"size_precision": str(SIZE_PRECISION).encode(),
     }
 
 
-def _table(batch_bytes: bytes):
+def _table(batch_bytes: bytes, instrument: str = INSTRUMENT):
     table = pa.ipc.open_stream(pa.py_buffer(batch_bytes)).read_all()
-    return table.replace_schema_metadata(_schema_metadata())
+    return table.replace_schema_metadata(_schema_metadata(instrument))
 
 
-def write_run(live: Path, run: str, messages: list[list[p3.OrderBookDelta]], rotate_at: list[int]) -> list[Path]:
+def write_run(
+    live: Path,
+    run: str,
+    messages: list[list[p3.OrderBookDelta]],
+    rotate_at: list[int],
+    instrument: str = INSTRUMENT,
+) -> list[Path]:
     """Write delta messages as the recorder does: one batch per message, rotating at each time."""
-    items = [(m[0].ts_init, _table(p3.book_deltas_to_arrow_record_batch_bytes(m))) for m in messages]
-    return write_stream(live / run / "order_book_deltas" / INSTRUMENT, items, rotate_at)
+    items = [(m[0].ts_init, _table(p3.book_deltas_to_arrow_record_batch_bytes(m), instrument)) for m in messages]
+    return write_stream(live / run / "order_book_deltas" / instrument, items, rotate_at)
 
 
 def make_trades(start_ns: int, end_ns: int, seed: int = 11) -> list[p3.TradeTick]:
