@@ -6,7 +6,7 @@
 # Restores the newest snapshot of host kfs-vps into a throwaway postgres:16 container,
 # runs pg_restore, and compares the row counts and the newest fill time with that snapshot's
 # manifest. Prints PASS or FAIL with the differences, removes the container, and only after a
-# PASS runs the retention: restic forget --keep-daily 14 --keep-weekly 8 --keep-monthly 24 --prune.
+# PASS runs the retention: restic forget --keep-daily 14 --keep-weekly 8 --keep-monthly 24 --keep-tag backlog --prune (spec 0007: snapshots holding raw feather not yet converted).
 # The VPS key cannot delete, so this is the only place retention runs.
 #
 # A compromised VPS can hide snapshots or add forged ones, so two checks guard the prune:
@@ -67,7 +67,7 @@ ask() {
 }
 
 RESTIC_HOST=kfs-vps
-RETENTION=(--host "$RESTIC_HOST" --group-by host --keep-daily 14 --keep-weekly 8 --keep-monthly 24)
+RETENTION=(--host "$RESTIC_HOST" --group-by host --keep-daily 14 --keep-weekly 8 --keep-monthly 24 --keep-tag backlog)
 STALE_H=36
 MAX_FORGET=40
 RECENT_DAYS=15

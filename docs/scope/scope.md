@@ -18,7 +18,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 5 | Design system & dashboard shell | Foundation | done |
 | 6 | Core paper trading loop | Slice 1 | done |
 | 7 | Always on cloud deployment | Slice 2 | in-progress |
-| 8 | Order book recorder | Slice 3 | planned |
+| 8 | Order book recorder | Slice 3 | in-progress |
 | 20 | Market context feed | Slice 3 | planned |
 | 9 | Kill switch & loss limits | Slice 4 | planned |
 | 10 | Leverage & liquidation guard | Slice 4 | planned |
@@ -136,11 +136,23 @@ spec [0005](../specs/0005-always-on-cloud-deployment/index.md) · code in [deplo
 
 ## Slice 3: Start the data clock
 
-### 8. Order book recorder · needs a decision
+### 8. Order book recorder · in-progress
 Record BTC and ETH perp order book updates and trades continuously, because scalping can only be tested on this data and it takes weeks to collect.
 **Done when:** the recorder runs 24/7, detects and logs gaps, and stored data can be replayed in order at a known size cost per day.
 **Carried over from spec 0005:** local catalog retention on the 50 GB disk (B2 holds the history), and which catalog paths the nightly backup should skip while an hour is still open.
-- [ ] Design it (spec): `/architect order book recorder`
+spec [0007](../specs/0007-order-book-recorder/index.md)
+- [x] Design it (spec): `/architect order book recorder`
+- [ ] Build it: `/develop order book recorder`
+  - [x] Gate: rotation and types, pyarrow Parquet read by the catalog, feed `CLEAR`, carry speed, 512 MB memory (M0)
+  - [ ] Thin thread: hourly rotation, BTC delta conversion with the hour start snapshot, replay check, Parquet ratio measured (AC-1, AC-2, AC-3)
+  - [ ] Conversion and backlog: all types, closed file rule, `done.json`, space checked backlog, idempotent reruns, overlap (AC-2, AC-9, AC-11, AC-12)
+  - [ ] Gaps and manifest: reconnect, recorder down, silence, daily manifest (AC-4, AC-5)
+  - [ ] Disk safety and backup: retention gated on the backup, recorder health and hard floor, `catalog` snapshots kept by the drill (AC-6, AC-7, AC-8)
+  - [ ] Laptop fetch and VPS deploy: `fetch-catalog.sh`, deploy, backlog converts (AC-10)
+- [ ] Verify it: `/check verify order book recorder`
+- [ ] Test it: `/test order book recorder`
+- [ ] Review it (fresh model): `/check review order book recorder`
+- [ ] Document it: `/document order book recorder`
 
 ### 20. Market context feed · needs a decision
 Record the perp market's own context next to prices: funding rate, open interest, mark versus index basis, and liquidations. Strategies can then use them as inputs and regime filters, in backtests and live alike. Much of this history cannot be downloaded later, so recording starts early.
