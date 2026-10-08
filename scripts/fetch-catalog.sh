@@ -185,7 +185,7 @@ if [ "$BACKLOG" = 1 ]; then
     : >"$lines"
     trap 'rm -rf "$TMP" "$lines"' EXIT
     for id in $ids; do
-        restic_run ls --json "$id" "$CATALOG/live" | jq_run -r --arg c "$CATALOG" --arg s "$id" '
+        restic_run ls --json --recursive "$id" "$CATALOG/live" | jq_run -r --arg c "$CATALOG" --arg s "$id" '
             select(.struct_type == "node" and .type == "file")
             | select(.path | test("^" + $c + "/live/[^/]+/((order_book_deltas|trade_tick)/[^/]+/[^/]+|crypto_perpetual_[0-9]+)\\.feather$"))
             | "\($s) \(.path) \(.size)"' >>"$lines"
