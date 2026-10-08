@@ -8,7 +8,8 @@ import sys
 import pytest
 from pydantic import SecretStr
 
-from trading_core.db_roles import APP_ROLES, MIGRATE_SECRETS, role_passwords
+from trading_core.db_roles import APP_ROLES, MIGRATE_SECRETS, load_optional, role_passwords
+from trading_core.secrets import SecretUnavailable
 
 PASSWORDS = {name: f"{name}-0123456789abcdef" for name in MIGRATE_SECRETS}
 
@@ -20,8 +21,30 @@ def test_role_passwords_cover_every_app_role():
         "trader_app": PASSWORDS["postgres_trader_password"],
         "dashboard_app": PASSWORDS["postgres_dashboard_password"],
         "backup_app": PASSWORDS["postgres_backup_password"],
+        "lab_app": None,
     }
     assert set(role_passwords(secrets)) == set(APP_ROLES)
+
+
+def test_the_lab_password_is_used_when_present():
+    """covers: spec 0008 AC-17 (lab_app logs in only where its password file exists)."""
+    lab = "lab-0123456789abcdef"
+    secrets = {name: SecretStr(value) for name, value in PASSWORDS.items()} | {"postgres_lab_password": SecretStr(lab)}
+
+    assert role_passwords(secrets)["lab_app"] == lab
+
+
+def test_a_missing_lab_password_file_is_skipped(tmp_path):
+    assert load_optional(tmp_path) == {}
+
+
+def test_an_unusable_lab_password_file_still_refuses(tmp_path):
+    (tmp_path / "postgres_lab_password").write_text("")
+
+    with pytest.raises(SecretUnavailable) as raised:
+        load_optional(tmp_path)
+
+    assert raised.value.reason == "empty"
 
 
 def test_migrate_reads_the_owner_and_three_role_files():

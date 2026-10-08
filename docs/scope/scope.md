@@ -215,10 +215,11 @@ Replay recorded order book data to test scalping honestly: maker and taker fees,
 **Done when:** a scalping strategy replays over recorded days, results account for fees, queue position, and latency, and a known losing strategy shows a loss.
 **Carried over from an article (2026-10-08, `strategy.md`), for the design to weigh:** post only maker entries pay the lower maker fee, but a resting limit order often never fills, and when it does it is often because price is running through it (adverse selection). The simulator should model both: the fills a limit order misses, and the worse average outcome of the fills it gets.
 spec [0008](../specs/0008-scalping-simulator/index.md)
+code in `apps/lab`, `packages/core/src/trading_core/lab`
 - [x] Design it (spec): `/architect scalping simulator`
 - [ ] Build it: `/develop scalping simulator`
   - [x] Gate: one real hour through the engine with queue, latency, fees; speed and memory; commission rounding; quotes into bars; one Tardis hour and its funding fields (AC-1, AC-5, AC-9, AC-14, AC-16)
-  - [ ] Thin thread: `apps/lab` and its Compose service, migration (`run_fill_stats`, `lab_app`), run file, segment planner, hour stream, `random_taker`, bundle into the laptop Postgres, report (AC-3, AC-4, AC-5, AC-7, AC-11, AC-14, AC-16, AC-17)
+  - [x] Thin thread: `apps/lab` and its Compose service, migration (`run_fill_stats`, `lab_app`), run file, segment planner, hour stream, `random_taker`, bundle into the laptop Postgres, report (AC-3, AC-4, AC-5, AC-7, AC-11, AC-14, AC-16, AC-17)
   - [ ] Tardis data and funding: shared hour writer moved to core, `lab import-tardis`, cap and prune, funding payments, the full loser check on a Tardis day (AC-1, AC-2, AC-9, AC-14)
   - [ ] Fill realism and variants: `maker_probe`, queue bound, latency sweep, pair entry, segment end close, fill rate and markouts (AC-6, AC-8, AC-10, AC-18)
   - [ ] Hardening and parity: determinism, failure isolation, the worker pool and the day timings, `fetch-paper-decisions.sh` and the parity check, permission tests (AC-12, AC-13, AC-15, AC-16, AC-17)

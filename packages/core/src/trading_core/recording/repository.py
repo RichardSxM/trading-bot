@@ -69,6 +69,7 @@ from trading_core.recording.rows import (
     PromotionRow,
     RiskEventRow,
     RunBundle,
+    RunFillStatsRow,
     RunResultRow,
     RunRow,
     canonical_json,
@@ -758,14 +759,26 @@ def _bundle_order_ids(bundle: RunBundle, client_order_ids: Sequence[str]) -> dic
 def _check_bundle_rows(bundle: RunBundle) -> None:
     """Every child row must carry the bundle's run id and env, so a sim cannot write into another run."""
     run = bundle.run
-    children: list[RunResultRow | DecisionRow | OrderRow | OrderEventRow | FillRow | PositionRow | FundingRow] = [
+    children: list[
+        RunResultRow
+        | RunFillStatsRow
+        | DecisionRow
+        | OrderRow
+        | OrderEventRow
+        | FillRow
+        | PositionRow
+        | FundingRow
+        | RiskEventRow
+    ] = [
         *bundle.results,
+        *bundle.fill_stats,
         *bundle.decisions,
         *bundle.orders,
         *bundle.order_events,
         *bundle.fills,
         *bundle.positions,
         *bundle.funding,
+        *bundle.risk_events,
     ]
     foreign = sorted({(str(row.run_id), str(row.env)) for row in children} - {(str(run.id), str(run.env))})
     if foreign:
@@ -794,8 +807,11 @@ def write_run_bundle(session: Session, bundle: RunBundle) -> UUID:
         )
         _insert_all(session, models.StrategyRun, [column_values(run)])
         _insert_all(session, models.RunResult, [column_values(r) for r in bundle.results])
+        _insert_all(session, models.RunFillStats, [column_values(s) for s in bundle.fill_stats])
         _insert_all(session, models.Decision, [column_values(d) for d in bundle.decisions])
         _insert_all(session, models.Order, [column_values(o) for o in bundle.orders])
+        # After decisions and orders, which a risk event may reference.
+        _insert_all(session, models.RiskEvent, [column_values(r) for r in bundle.risk_events])
         _insert_all(
             session,
             models.OrderEvent,

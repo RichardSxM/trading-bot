@@ -52,7 +52,7 @@ jobs:
 
       - name: pytest
         run: |
-          for pkg in packages/core apps/trader apps/recorder apps/dashboard; do
+          for pkg in packages/core apps/trader apps/recorder apps/dashboard apps/lab; do
             echo "::group::pytest $pkg"
             (cd "$pkg" && uv run --frozen pytest -q)
             echo "::endgroup::"

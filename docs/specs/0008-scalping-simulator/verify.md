@@ -48,3 +48,24 @@ _Steps derived from spec 0008 acceptance criteria. `/check verify` runs these; `
 
 ## Afterwards
 - [ ] `docker compose down`; `docker compose run --rm lab prune` when the data is no longer needed
+
+## Milestone 2 (thin thread) · added 2026-10-08 by /develop
+_The `lab` service's entrypoint is `lab`, so its tests run with `--entrypoint pytest` (the first Commands step above needs that too)._
+- [ ] `docker compose --profile lab build lab` then `docker compose run --rm --no-deps -T --entrypoint pytest lab -q` → 29 pass (run file, stream, fixture replay) → AC-3, AC-4, AC-5, AC-7, AC-11, AC-14, AC-17
+- [ ] `docker compose --profile lab run --rm -T --entrypoint pytest lab -q -m postgres` → 1 pass: a replay of the fixture writes one `strategy_runs` row as `lab_app` plus `base.md`, `base.json`, `base.bundle.json`, `index.md` → AC-11
+- [ ] `docker compose run --rm -T migrate pytest -q -m integration` → all pass, including `lab_app` privileges (SELECT and INSERT on the 13 bundle tables only, `permission denied` on `UPDATE orders`, `DELETE FROM fills`, `INSERT INTO control_commands`, `SELECT control_commands`) and a bundle with fill stats and risk events → AC-11, AC-17
+- [ ] `docker compose run --rm -e TRADING_ENV=live --no-deps lab replay /app/apps/lab/runs/random_taker_own.toml` → exit 78 → AC-17
+- [ ] `docker compose run --rm --no-deps lab replay /app/apps/lab/runs/random_taker_own.toml --pair-entry` → exit 64, the flag listed as not built yet → AC-3
+- [ ] A run file with `maker_fee = 0.0002` (a float) and `latency_ms = -1` → exit 64 listing both problems at once, nothing written → AC-3
+- [ ] Real hours: with `catalog-lab/own` holding 2026-10-08 17:00 and 18:00 plus that day's manifest and gap file, `docker compose --profile lab run --rm -T lab replay /app/apps/lab/runs/random_taker_own.toml` → `lab_segment_planned` shows 1 segment, skipped hours split as `gap:reconnect` 4, `gap:recorder_down` 1, `gap:silence` 1, `missing` 16; `lab_hour_replayed` RSS under 1 GB; about 120 closed trades, net P&L negative, loser check `pass` (2026-10-08 with a stand in manifest: 9.89 M events in 603 s, 119 trades, −124.52 USD, band −1.149 to −0.873, mean −1.046, pass) → AC-4, AC-14, AC-16
+- [ ] Replace the local stand in manifest with the VPS one (`scripts/fetch-catalog.sh --into catalog-lab/own 2026-10-08 2026-10-08`) and replay again → the same skipped hours unless the real manifest lists incomplete hours for 17:00 or 18:00 → AC-4
+
+### Value sourcing checks (Milestone 2 rows)
+- [ ] Fees: in `base.bundle.json`, every fill's `fee` equals `taker_fee × quantity × price` rounded to cents; rerun with `taker_fee = "0.001"` → fees double, the `instruments` row still shows `taker_fee` 0.0005 (the pin) → AC-5, AC-11
+- [ ] Latency: every fill's `filled_ns` is at least its order's decision `decided_ns` + 25 ms; with `latency_ms = 100` the gap grows to 100 ms → AC-5
+- [ ] Segment id tag: every `client_order_id` contains `-S1-`; a range with two segments shows `-S2-` on the second's orders → AC-7
+- [ ] Quantity: each entry's quantity is `notional_usd ÷ mid` floored to 0.0001 BTC (about 0.0124 at 80,600 USD) → *random_taker*
+- [ ] Random side: the same run with `--seed 8` changes the sides, and `--seed 7` again repeats the first run's sides exactly → *random_taker*
+- [ ] Spread at submit: the loser band uses the quote at each order's creation; set `latency_ms = 0` and the expected value barely moves (spreads come from submit time, not fill time) → AC-14
+- [ ] Segments end with the data: no fill's `filled_ns` is after the last delta of the segment's last hour → AC-4
+- [ ] `run_config` carries `funding_source = "none"`, `queue_model = "pessimistic"`, the run file's sha256, and `nautilus_version` 1.231.0 → AC-9, AC-11

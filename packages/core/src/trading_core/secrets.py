@@ -30,6 +30,9 @@ KEY_MAX_AGE_DAYS: Final = 90
 # role password under the generic names, so code never knows which role it runs as.
 POSTGRES_PASSWORD: Final = "postgres_password"
 REDIS_PASSWORD: Final = "redis_password"
+# The lab role's password as the migrate service mounts it (spec 0008); laptop only. The lab
+# service itself mounts it under POSTGRES_PASSWORD.
+POSTGRES_LAB_PASSWORD: Final = "postgres_lab_password"
 KRAKEN_API_KEY: Final = "kraken_api_key"
 KRAKEN_API_SECRET: Final = "kraken_api_secret"
 # The dashboard login (spec 0004), mounted into the dashboard only.

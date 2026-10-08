@@ -152,6 +152,8 @@ services:
       - postgres_trader_password
       - postgres_dashboard_password
       - postgres_backup_password
+      # Optional: without it the lab role is created NOLOGIN. compose.vps.yaml leaves it out.
+      - postgres_lab_password
     depends_on:
       # Only where the laptop profile runs it (the clock service); ignored on the VPS.
       clock:
@@ -437,6 +439,50 @@ services:
       - .:/app
       - tools-cache:/cache
 
+  lab:
+    # Laptop only replay lab (spec 0008), never started by `up` and never deployed: run it as
+    # `docker compose run --rm lab replay <runfile>` (import, parity, and prune take --no-deps).
+    profiles: ["lab"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: ${IMAGE_TARGET:-runtime}
+      args:
+        PACKAGE: lab
+        APP_DIR: apps/lab
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
+    image: ${KFS_IMAGE_PREFIX:-kfs/}lab:${KFS_TAG:-${IMAGE_TARGET:-runtime}}
+    restart: "no"
+    logging: *logging
+    entrypoint: ["lab"]
+    environment:
+      <<: [*base-env, *app-db-env]
+      PROCESS_NAME: lab
+      # Demo only: the lab refuses live with exit 78 (AC-17).
+      TRADING_ENV: demo
+      POSTGRES_USER: lab_app
+      # Fixed hash order, so the same replay gives the same output (AC-12). Set on this
+      # service only, so the other services keep hash randomization.
+      PYTHONHASHSEED: "0"
+      LAB_CATALOG_DIR: /catalog-lab
+      LAB_REPORTS_DIR: /lab-reports
+      LAB_CATALOG_CAP_GB: ${LAB_CATALOG_CAP_GB:-40}
+      LAB_WORKERS: ${LAB_WORKERS:-2}
+      LAB_TARDIS_DAY_GB: ${LAB_TARDIS_DAY_GB:-3}
+    secrets:
+      - source: postgres_lab_password
+        target: postgres_password
+    volumes:
+      - ./catalog-lab:/catalog-lab
+      - ./lab-reports:/lab-reports
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    # Two workers at under 1 GB each plus the parent, inside the laptop's 4 GB Docker VM (AC-16).
+    mem_limit: 3g
+
 secrets:
   postgres_owner_password:
     file: ${SECRETS_DIR:-./secrets}/postgres_owner_password
@@ -446,6 +492,8 @@ secrets:
     file: ${SECRETS_DIR:-./secrets}/postgres_dashboard_password
   postgres_backup_password:
     file: ${SECRETS_DIR:-./secrets}/postgres_backup_password
+  postgres_lab_password:
+    file: ${SECRETS_DIR:-./secrets}/postgres_lab_password
   redis_trader_password:
     file: ${SECRETS_DIR:-./secrets}/redis_trader_password
   redis_dashboard_password:

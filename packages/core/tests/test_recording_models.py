@@ -1,4 +1,5 @@
-"""covers: spec 0002 AC-1 (18 tables), AC-9 (no float column, numeric money, timestamptz, ns bigint)."""
+"""covers: spec 0002 AC-1 (18 tables, plus spec 0008's run_fill_stats), AC-9 (no float column, numeric money,
+timestamptz, ns bigint)."""
 
 from sqlalchemy import BigInteger, DateTime, Numeric
 from sqlalchemy.dialects import postgresql
@@ -25,6 +26,7 @@ EXPECTED_TABLES = {
     "funding_payments",
     "risk_events",
     "control_commands",
+    "run_fill_stats",
 }
 
 
@@ -33,7 +35,7 @@ def _columns():
         yield from table.columns
 
 
-def test_the_model_has_exactly_the_18_spec_tables():
+def test_the_model_has_exactly_the_spec_tables():
     assert set(Base.metadata.tables) == EXPECTED_TABLES
 
 

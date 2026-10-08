@@ -12,6 +12,7 @@ supported-markers = [
 members = [
     "dashboard",
     "kraken-futures-scalper",
+    "lab",
     "recorder",
     "trader",
     "trading-core",
@@ -863,6 +864,25 @@ research = [
     { name = "duckdb", specifier = ">=1.1" },
     { name = "jupyterlab", specifier = ">=4" },
 ]
+
+[[package]]
+name = "lab"
+version = "0.1.0"
+source = { editable = "apps/lab" }
+dependencies = [
+    { name = "trading-core", extra = ["node"] },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "trading-core", extras = ["node"], editable = "packages/core" }]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=8" }]
 
 [[package]]
 name = "lark"

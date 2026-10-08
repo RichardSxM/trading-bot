@@ -13,6 +13,7 @@ from trading_core.recording.rows import (
     FillRow,
     InstrumentRow,
     JsonObject,
+    RunFillStatsRow,
     RunRow,
     canonical_json,
     column_values,
@@ -137,3 +138,39 @@ def test_column_values_leave_out_lookup_only_fields():
 
     assert "client_order_id" not in values
     assert values["filled_at"] == ns_to_utc(1)
+
+
+def _fill_stats(**overrides):
+    values = {
+        "run_id": uuid7(),
+        "env": Env.DEMO,
+        "liquidity": Liquidity.MAKER,
+        "orders_placed": 4,
+        "orders_filled": 1,
+        "fill_rate": Decimal("0.25"),
+        "fill_count": 2,
+        "computed_at": datetime(2026, 10, 8, tzinfo=UTC),
+    }
+    return RunFillStatsRow(**(values | overrides))  # type: ignore[arg-type]
+
+
+def test_fill_stats_accept_a_consistent_side():
+    """covers: spec 0008 AC-10 (one row per side with at least one entry order)."""
+    row = _fill_stats()
+
+    assert (row.markout_1s_bps, row.markout_5s_bps, row.markout_30s_bps) == (None, None, None)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"liquidity": Liquidity.NO_LIQUIDITY},
+        {"orders_placed": 0, "orders_filled": 0, "fill_rate": Decimal(0)},
+        {"orders_filled": 5},
+        {"fill_count": -1},
+        {"fill_rate": Decimal("1.5")},
+    ],
+)
+def test_fill_stats_refuse_an_impossible_row(overrides):
+    with pytest.raises(ValueError, match=r"maker or taker|inconsistent|outside"):
+        _fill_stats(**overrides)

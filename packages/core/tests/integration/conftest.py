@@ -24,7 +24,7 @@ from pydantic import SecretStr
 from sqlalchemy import Engine, create_engine, pool
 from sqlalchemy.orm import Session
 
-from trading_core.db_roles import MIGRATE_SECRETS, role_passwords, setup_roles
+from trading_core.db_roles import MIGRATE_SECRETS, load_optional, role_passwords, setup_roles
 from trading_core.recording import repository
 from trading_core.recording.enums import (
     Env,
@@ -76,8 +76,12 @@ def owner_settings(database: str | None = None) -> Settings:
 
 
 def migrate_secrets() -> dict[str, SecretStr]:
-    """The owner password and the three role passwords from the mounted files."""
-    return load_required(MIGRATE_SECRETS, _SECRETS_DIR)
+    """The owner password, the three role passwords, and the lab password when mounted.
+
+    Roles are cluster wide, so leaving out a mounted lab password would reset the dev stack's
+    lab_app to NOLOGIN.
+    """
+    return load_required(MIGRATE_SECRETS, _SECRETS_DIR) | load_optional(_SECRETS_DIR)
 
 
 def owner_url(database: str | None = None) -> str:
@@ -88,7 +92,10 @@ def owner_url(database: str | None = None) -> str:
 def role_url(database: str, role: str) -> str:
     """SQLAlchemy URL for one app role on ``database``."""
     settings = owner_settings(database).model_copy(update={"postgres_user": role})
-    return settings.database_url(SecretStr(role_passwords(migrate_secrets())[role]))
+    password = role_passwords(migrate_secrets())[role]
+    if password is None:
+        pytest.skip(f"{role} has no mounted password here, so it cannot log in")
+    return settings.database_url(SecretStr(password))
 
 
 def _admin() -> psycopg.Connection:

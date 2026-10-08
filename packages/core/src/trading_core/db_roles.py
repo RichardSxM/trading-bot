@@ -4,13 +4,15 @@ Runs as the owner role ``trading`` in the migrate service: ``python -m trading_c
 Roles are cluster wide and live outside Alembic, so a downgrade leaves them in place. Running
 it again only resets the passwords and grants, so it is safe to repeat. The owner password and
 the three role passwords are secret files (spec 0003); an unusable one stops it with exit 1
-and one JSON error line.
+and one JSON error line. The lab role's password (spec 0008) is optional: the laptop has it,
+the VPS does not, and without it the role exists but cannot log in (``NOLOGIN``).
 """
 
 import logging
 import os
 import sys
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Final
 
 import psycopg
@@ -19,7 +21,7 @@ from psycopg.rows import TupleRow
 from pydantic import SecretStr, ValidationError
 
 from trading_core.logs import configure_logging
-from trading_core.secrets import POSTGRES_PASSWORD, SecretUnavailable, load_required
+from trading_core.secrets import POSTGRES_LAB_PASSWORD, POSTGRES_PASSWORD, SecretUnavailable, load_required, read_secret
 from trading_core.settings import Settings
 
 log = logging.getLogger(__name__)
@@ -27,7 +29,8 @@ log = logging.getLogger(__name__)
 TRADER_ROLE: Final = "trader_app"
 DASHBOARD_ROLE: Final = "dashboard_app"
 BACKUP_ROLE: Final = "backup_app"
-APP_ROLES: Final = (TRADER_ROLE, DASHBOARD_ROLE, BACKUP_ROLE)
+LAB_ROLE: Final = "lab_app"
+APP_ROLES: Final = (TRADER_ROLE, DASHBOARD_ROLE, BACKUP_ROLE, LAB_ROLE)
 
 # Each app role's password file as the migrate service mounts it.
 ROLE_SECRETS: Final = {
@@ -35,25 +38,49 @@ ROLE_SECRETS: Final = {
     DASHBOARD_ROLE: "postgres_dashboard_password",
     BACKUP_ROLE: "postgres_backup_password",
 }
-# Everything role setup and Alembic read: the owner password, then the three role passwords.
+# Roles whose password file may be absent; such a role is created or reset NOLOGIN.
+OPTIONAL_ROLE_SECRETS: Final = {LAB_ROLE: POSTGRES_LAB_PASSWORD}
+# Everything role setup and Alembic need: the owner password, then the three role passwords.
 MIGRATE_SECRETS: Final = (POSTGRES_PASSWORD, *ROLE_SECRETS.values())
 
 _ATTRIBUTES: Final = sql.SQL("LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD {}")
+_NO_LOGIN: Final = sql.SQL("NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD NULL")
 
 
-def role_passwords(secrets: Mapping[str, SecretStr]) -> dict[str, str]:
-    """Map each app role to its password from the loaded secrets."""
-    return {role: secrets[name].get_secret_value() for role, name in ROLE_SECRETS.items()}
+def load_optional(secrets_dir: Path) -> dict[str, SecretStr]:
+    """Read each optional role password whose file exists; a missing file is skipped.
+
+    A file that exists but is unusable (empty, too short, unreadable) still raises
+    ``SecretUnavailable``: only absence means "this host has no such role login".
+    """
+    loaded: dict[str, SecretStr] = {}
+    for name in OPTIONAL_ROLE_SECRETS.values():
+        try:
+            loaded[name] = read_secret(name, secrets_dir)
+        except SecretUnavailable as exc:
+            if exc.reason != "missing":
+                raise
+    return loaded
 
 
-def setup_roles(conn: psycopg.Connection[TupleRow], database: str, passwords: Mapping[str, str]) -> None:
+def role_passwords(secrets: Mapping[str, SecretStr]) -> dict[str, str | None]:
+    """Map each app role to its password from the loaded secrets; ``None`` for an absent optional one."""
+    passwords: dict[str, str | None] = {role: secrets[name].get_secret_value() for role, name in ROLE_SECRETS.items()}
+    for role, name in OPTIONAL_ROLE_SECRETS.items():
+        secret = secrets.get(name)
+        passwords[role] = secret.get_secret_value() if secret is not None else None
+    return passwords
+
+
+def setup_roles(conn: psycopg.Connection[TupleRow], database: str, passwords: Mapping[str, str | None]) -> None:
     """Create each role or reset its attributes and password, then grant CONNECT and schema USAGE.
 
-    DDL takes no bind parameters, so names and passwords are quoted with ``psycopg.sql``.
+    A role whose password is ``None`` is made ``NOLOGIN`` with no password. DDL takes no bind
+    parameters, so names and passwords are quoted with ``psycopg.sql``.
     """
     for role, password in passwords.items():
         name = sql.Identifier(role)
-        attributes = _ATTRIBUTES.format(sql.Literal(password))
+        attributes = _NO_LOGIN if password is None else _ATTRIBUTES.format(sql.Literal(password))
         exists = conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)).fetchone() is not None
         if exists:
             conn.execute(sql.SQL("ALTER ROLE {} WITH {}").format(name, attributes))
@@ -87,6 +114,7 @@ def main() -> None:
         sys.exit(1)
     try:
         secrets = load_required(MIGRATE_SECRETS, settings.secrets_dir)
+        secrets |= load_optional(settings.secrets_dir)
     except SecretUnavailable as exc:
         log.critical(
             "secret unavailable, refusing to start",
@@ -95,8 +123,10 @@ def main() -> None:
         sys.exit(1)
 
     with connect(settings, secrets[POSTGRES_PASSWORD]) as conn:
-        setup_roles(conn, settings.postgres_db, role_passwords(secrets))
-    log.info("app roles ready", extra={"fields": {"roles": list(APP_ROLES)}})
+        passwords = role_passwords(secrets)
+        setup_roles(conn, settings.postgres_db, passwords)
+    no_login = [role for role, password in passwords.items() if password is None]
+    log.info("app roles ready", extra={"fields": {"roles": list(APP_ROLES), "no_login": no_login}})
 
 
 if __name__ == "__main__":
