@@ -4,8 +4,10 @@ import logging
 import os
 import sys
 from collections.abc import Mapping
+from datetime import time
 from pathlib import Path
 
+import pandas as pd  # type: ignore[import-untyped]  # no pandas-stubs; only Timedelta for StreamingConfig
 from nautilus_trader.adapters.kraken import KRAKEN, KrakenLiveDataClientFactory
 from nautilus_trader.config import (
     CacheConfig,
@@ -15,7 +17,10 @@ from nautilus_trader.config import (
     TradingNodeConfig,
 )
 from nautilus_trader.live.node import TradingNode
+from nautilus_trader.model.data import OrderBookDeltas, TradeTick
 from nautilus_trader.model.identifiers import TraderId
+from nautilus_trader.model.instruments import CryptoPerpetual
+from nautilus_trader.persistence.writer import RotationMode
 from pydantic import SecretStr
 
 from recorder.actor import RecordingActor, RecordingConfig
@@ -28,6 +33,10 @@ from trading_core.node.kraken import futures_data_client
 from trading_core.settings import Settings
 
 log = logging.getLogger(__name__)
+
+# What the stream records (spec 0007 AC-1). The data engine publishes book deltas as
+# OrderBookDeltas batches; their rows are OrderBookDelta.
+RECORDED_TYPES: list[type] = [OrderBookDeltas, TradeTick, CryptoPerpetual]
 
 
 class RecorderSettings(Settings):
@@ -50,7 +59,17 @@ def build_config(settings: RecorderSettings) -> TradingNodeConfig:
         cache=CacheConfig(),  # in memory only: the recorder holds no orders or positions
         exec_engine=LiveExecEngineConfig(reconciliation=False),
         data_clients={KRAKEN: futures_data_client()},
-        streaming=StreamingConfig(catalog_path=settings.catalog_path, flush_interval_ms=1_000),
+        # A new feather file per stream after each UTC hour, which the compactor turns into
+        # Parquet (spec 0007). The writer rotates on the first write past the boundary.
+        streaming=StreamingConfig(
+            catalog_path=settings.catalog_path,
+            flush_interval_ms=1_000,
+            include_types=RECORDED_TYPES,
+            rotation_mode=RotationMode.SCHEDULED_DATES,
+            rotation_interval=pd.Timedelta(hours=1),
+            rotation_time=time(0, 0),
+            rotation_timezone="UTC",
+        ),
     )
 
 
