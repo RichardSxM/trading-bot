@@ -6,21 +6,25 @@ is not listed are leftovers of a crash, and the next pass overwrites them.
 
 import json
 import os
+import shutil
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
-from nautilus_trader.model.data import OrderBookDelta
+from nautilus_trader.model.data import OrderBookDelta, TradeTick
+from nautilus_trader.model.instruments import CryptoPerpetual
 from nautilus_trader.persistence.catalog.parquet import _timestamps_to_filename
 from nautilus_trader.persistence.funcs import class_to_filename, urisafe_identifier
 
 from trading_core.marketdata.hours import hour_last_ns
 
-# The catalog folder Nautilus reads deltas from, `class_to_filename(OrderBookDelta)`.
+# Catalog folders, `class_to_filename(cls)`. For deltas and trades the recorder's stream folder
+# under `live/<run>/` has the same name; instruments are `live/<run>/crypto_perpetual_<ns>.feather`.
 DELTAS_TABLE: Final[str] = class_to_filename(OrderBookDelta)
-# The recorder's stream folder for deltas (it writes OrderBookDeltas batches).
-LIVE_DELTAS: Final = "order_book_deltas"
+TRADES_TABLE: Final[str] = class_to_filename(TradeTick)
+INSTRUMENTS_TABLE: Final[str] = class_to_filename(CryptoPerpetual)
+STREAM_TABLES: Final = (DELTAS_TABLE, TRADES_TABLE)
 TMP_SUFFIX: Final = ".tmp"
 # Book files kept per instrument: the newest is the carry, the one before it a spare.
 BOOKS_KEPT: Final = 2
@@ -35,29 +39,41 @@ def stream_key(table: str, instrument_id: str) -> str:
 class DoneRecord:
     """The commit record.
 
-    ``hours`` maps a stream key to its finished hours and their rows and bytes. ``carry`` maps an
-    instrument to the last hour whose book file is valid, or ``None``. ``files`` lists the feather
-    files (relative to the catalog root) whose rows are all in finished hours.
+    - ``hours``: per stream key, the finished hours with their rows and bytes.
+    - ``carry``: per instrument, the last hour whose book file is valid, or ``None``.
+    - ``files``: converted feather files (relative to the catalog root), deleted at the pass end.
+    - ``overlaps``: per stream key, hours left unconverted because their rows overlapped (AC-12).
+    - ``kept``: feather files that hold an overlapped hour; never deleted.
+    - ``instruments``: per instrument, the newest definition used for an hour (``to_dict`` form).
+    - ``started_runs``: dead runs whose conversion began, so the space check (AC-9) runs once.
     """
 
     hours: dict[str, dict[int, dict[str, int]]] = field(default_factory=dict)
     carry: dict[str, int | None] = field(default_factory=dict)
     files: set[str] = field(default_factory=set)
+    overlaps: dict[str, set[int]] = field(default_factory=dict)
+    kept: set[str] = field(default_factory=set)
+    instruments: dict[str, dict[str, Any]] = field(default_factory=dict)
+    started_runs: set[str] = field(default_factory=set)
 
-    def last_hour(self, key: str) -> int | None:
-        """The newest finished hour of a stream, or ``None`` before its first one."""
-        hours = self.hours.get(key)
-        return max(hours) if hours else None
+    def is_done(self, key: str, hour: int) -> bool:
+        """Whether a stream's hour is finished."""
+        return hour in self.hours.get(key, {})
 
     def to_json(self) -> str:
-        """The record as JSON, hour keys as strings and files sorted, so equal records give equal text."""
+        """The record as JSON with sorted keys and lists, so equal records give equal text."""
         return json.dumps(
             {
                 "hours": {k: {str(h): v for h, v in sorted(hours.items())} for k, hours in sorted(self.hours.items())},
                 "carry": dict(sorted(self.carry.items())),
                 "files": sorted(self.files),
+                "overlaps": {k: sorted(v) for k, v in sorted(self.overlaps.items())},
+                "kept": sorted(self.kept),
+                "instruments": dict(sorted(self.instruments.items())),
+                "started_runs": sorted(self.started_runs),
             },
             indent=1,
+            sort_keys=True,
         )
 
     @classmethod
@@ -68,6 +84,10 @@ class DoneRecord:
             hours={k: {int(h): v for h, v in hours.items()} for k, hours in raw.get("hours", {}).items()},
             carry=dict(raw.get("carry", {})),
             files=set(raw.get("files", [])),
+            overlaps={k: set(v) for k, v in raw.get("overlaps", {}).items()},
+            kept=set(raw.get("kept", [])),
+            instruments=dict(raw.get("instruments", {})),
+            started_runs=set(raw.get("started_runs", [])),
         )
 
 
@@ -88,6 +108,10 @@ class CatalogStore:
         self.state = root / ".compactor"
         self.done_path = self.state / "done.json"
 
+    def relative(self, path: Path) -> str:
+        """A path as ``done.json`` records it."""
+        return str(path.relative_to(self.root))
+
     def data_file(self, table: str, instrument_id: str, hour: int) -> Path:
         """``data/<table>/<instrument>/<interval>.parquet``, the name ``ParquetDataCatalog`` reads."""
         name: str = _timestamps_to_filename(hour, hour_last_ns(hour))
@@ -103,6 +127,23 @@ class CatalogStore:
         files = sorted(folder.glob("*.parquet"), key=lambda p: int(p.stem))
         for old in files[:-BOOKS_KEPT]:
             old.unlink(missing_ok=True)
+
+    def remove_tmp_files(self) -> None:
+        """Delete ``.tmp`` files a killed process left behind. Call only while nothing is writing."""
+        for folder in (self.root / "data", self.state):
+            for tmp in folder.rglob(f"*{TMP_SUFFIX}") if folder.exists() else ():
+                tmp.unlink(missing_ok=True)
+
+    def free_bytes(self) -> int:
+        """Free space on the catalog's file system, as a non root process can use it."""
+        stat = os.statvfs(self.root)
+        return stat.f_bavail * stat.f_frsize
+
+    def remove_run_if_empty(self, run: str) -> None:
+        """Delete a finished run folder once no feather file is left in it."""
+        folder = self.live / run
+        if folder.is_dir() and not any(folder.rglob("*.feather")):
+            shutil.rmtree(folder)
 
     def load_done(self) -> DoneRecord:
         """The commit record, or an empty one before the first commit."""

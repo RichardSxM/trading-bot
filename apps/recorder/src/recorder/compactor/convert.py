@@ -1,13 +1,15 @@
 """Feather to Parquet, one hour at a time, with the book carried across hours (spec 0007).
 
-Rows go into the open hour's Parquet writer in stream order and are applied to a carried
-``nautilus_pyo3.OrderBook``. When the first row of a later hour arrives, the open hour is
-finished: Parquet renamed after a row count check, the book saved, then ``done.json`` rewritten.
+Rows go into the open hour's Parquet writer in stream order. For book deltas they are also
+applied to a carried ``nautilus_pyo3.OrderBook``. When the first row of a later hour arrives, the
+open hour is finished: Parquet renamed after a row count check, the book saved, then
+``done.json`` rewritten.
 """
 
 import logging
 import os
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
@@ -19,15 +21,8 @@ from nautilus_trader.core import nautilus_pyo3 as p3
 from nautilus_trader.model.data import OrderBookDelta
 from nautilus_trader.serialization.arrow.serializer import ArrowSerializer
 
-from recorder.compactor.store import (
-    DELTAS_TABLE,
-    TMP_SUFFIX,
-    CatalogStore,
-    DoneRecord,
-    atomic_write,
-    stream_key,
-)
-from trading_core.marketdata.errors import HourCountMismatch, HourOverlapError
+from recorder.compactor.store import TMP_SUFFIX, CatalogStore, DoneRecord, atomic_write, stream_key
+from trading_core.marketdata.errors import HourCountMismatch
 from trading_core.marketdata.hours import HOUR_NS, hour_ready
 
 log = logging.getLogger(__name__)
@@ -40,6 +35,8 @@ F_SNAPSHOT: Final = 32
 # The `action` column value of a CLEAR (the pyo3 stub types `.value` as str; it is an int).
 CLEAR: Final[int] = int(p3.BookAction.CLEAR.value)
 COMPRESSION: Final = "zstd"
+
+Beat = Callable[[], None]
 
 
 @dataclass(frozen=True, order=True)
@@ -56,10 +53,11 @@ class FeatherFile:
         return cls(created_ns=int(path.stem.rsplit("_", 1)[1]), path=path, run=run)
 
 
-def read_chunks(path: Path) -> Iterator[Any]:
+def read_chunks(path: Path, beat: Beat | None = None) -> Iterator[Any]:
     """The rows of a feather stream as Arrow tables of about ``CHUNK_ROWS`` rows, in file order.
 
-    A truncated final message (a killed recorder) ends the file at its last complete batch.
+    A truncated final message (a killed recorder, or a file still being written) ends the file at
+    its last complete batch.
     """
     with pa.OSFile(str(path), "rb") as source:
         try:
@@ -74,7 +72,7 @@ def read_chunks(path: Path) -> Iterator[Any]:
             except StopIteration:
                 break
             except (pa.ArrowInvalid, OSError) as exc:
-                log.warning(
+                log.info(
                     "feather file ends in a truncated batch",
                     extra={"fields": {"code": "feather_truncated", "path": str(path), "error": str(exc)}},
                 )
@@ -85,6 +83,8 @@ def read_chunks(path: Path) -> Iterator[Any]:
             if rows >= CHUNK_ROWS:
                 yield pa.Table.from_batches(pending, schema=reader.schema)
                 pending, rows = [], 0
+                if beat is not None:
+                    beat()
         if pending:
             yield pa.Table.from_batches(pending, schema=reader.schema)
 
@@ -96,7 +96,6 @@ class HourSink:
         self.path = path
         self.schema = schema
         self.hour = hour
-        self.rows = 0
         self._tmp = path.with_name(path.name + TMP_SUFFIX)
         path.parent.mkdir(parents=True, exist_ok=True)
         self._writer: Any = pq.ParquetWriter(str(self._tmp), schema, compression=COMPRESSION)
@@ -104,7 +103,6 @@ class HourSink:
     def write(self, table: Any) -> None:
         """Append rows. The schema metadata (instrument and precisions) always comes from the hour."""
         self._writer.write_table(table.replace_schema_metadata(self.schema.metadata))
-        self.rows += table.num_rows
 
     def commit(self, expected: int) -> int:
         """Close, check the footer's row count against ``expected``, rename. Returns the file's bytes."""
@@ -127,9 +125,9 @@ class HourSink:
 class BookCarry:
     """The L2 book of one instrument, carried from hour to hour.
 
-    ``valid`` is false until the feed's first ``CLEAR``, and again after a restart or a gap;
-    rows that arrive while it is false are written but not applied. ``hour`` is the hour whose
-    end the book stands at, once that hour is finished.
+    ``valid`` is false until the feed's first ``CLEAR``, and again after a restart, a gap, or an
+    overlap; rows that arrive while it is false are written but not applied. ``hour`` is the hour
+    whose end the book stands at, once that hour is finished.
     """
 
     def __init__(self, instrument_id: str) -> None:
@@ -200,48 +198,72 @@ class BookCarry:
 class _OpenHour:
     hour: int
     sink: HourSink
+    started: float
     source_rows: int = 0
     snapshot_rows: int = 0
     last_ts: int = -1
+    files: set[str] = field(default_factory=set)
 
 
-class DeltaStream:
-    """One instrument's book deltas, converted hour by hour in one pass over its closed files."""
+class HourStream:
+    """One stream (book deltas or trades) of one instrument, converted in one pass over its files.
 
-    def __init__(self, store: CatalogStore, instrument_id: str, done: DoneRecord) -> None:
+    ``carry`` is the book for a delta stream and ``None`` for trades. ``on_overlap`` is called
+    with the hour when rows go backwards (AC-12), so every carried book can be invalidated.
+    """
+
+    def __init__(
+        self,
+        store: CatalogStore,
+        table: str,
+        instrument_id: str,
+        done: DoneRecord,
+        *,
+        carry: BookCarry | None,
+        on_overlap: Callable[[int], None],
+        beat: Beat | None = None,
+    ) -> None:
         self._store = store
+        self.table = table
         self.instrument_id = instrument_id
-        self.key = stream_key(DELTAS_TABLE, instrument_id)
-        self.carry = BookCarry(instrument_id)
+        self.key = stream_key(table, instrument_id)
+        self.carry = carry
+        self._on_overlap = on_overlap
+        self._beat = beat
         self.open: _OpenHour | None = None
         self._run: str | None = None
         self._newest_hour: dict[str, int] = {}  # fed file -> the newest hour it held
         self.fed: set[str] = set()
         carried = done.carry.get(instrument_id)
-        book = store.book_file(instrument_id, carried) if carried is not None else None
-        if carried is not None and book is not None and book.exists():
-            self.carry.restore(pq.read_table(str(book)), carried)
+        if carry is not None and carried is not None:
+            book = store.book_file(instrument_id, carried)
+            if book.exists():
+                carry.restore(pq.read_table(str(book)), carried)
 
     def feed(self, file: FeatherFile, done: DoneRecord) -> None:
         """Read one closed file from start to end, finishing every hour that the stream passes."""
-        rel = str(file.path.relative_to(self._store.root))
-        if rel in done.files or rel in self.fed:
+        rel = self._store.relative(file.path)
+        if rel in done.files:
+            self.fed.add(rel)  # converted before a restart; nothing in it is left to read
+        if rel in self.fed:
             return
-        if self._run is not None and file.run != self._run:
+        if self._run is not None and file.run != self._run and self.carry is not None:
             # A restart: the old book no longer matches the feed until its next CLEAR.
             self.carry.invalidate()
         self._run = file.run
-        last_done = done.last_hour(self.key)
-        for chunk in read_chunks(file.path):
+        for chunk in read_chunks(file.path, self._beat):
             ts = chunk.column("ts_init").to_numpy()
             hours = ts - ts % HOUR_NS
             cuts = (np.flatnonzero(np.diff(hours)) + 1).tolist()
             for start, end in zip([0, *cuts], [*cuts, len(ts)], strict=True):
                 hour = int(hours[start])
                 self._newest_hour[rel] = max(self._newest_hour.get(rel, hour), hour)
-                if last_done is not None and hour <= last_done:
+                if hour in done.overlaps.get(self.key, ()):
+                    done.kept.add(rel)
+                    continue
+                if done.is_done(self.key, hour):
                     continue  # finished before a restart; the carried book already holds it
-                self._write(hour, chunk.slice(start, end - start), ts[start:end], done)
+                self._write(hour, chunk.slice(start, end - start), ts[start:end], rel, done)
         self.fed.add(rel)
 
     def finish_if_passed(self, *, now_ns: int, grace_ns: int, more_source: bool, done: DoneRecord) -> None:
@@ -257,54 +279,102 @@ class DeltaStream:
             self.open.sink.abort()
             self.open = None
 
-    def _write(self, hour: int, rows: Any, ts: Any, done: DoneRecord) -> None:
-        if self.open is None:
-            self._start(hour, rows.schema)
-        elif hour > self.open.hour:
+    def _write(self, hour: int, rows: Any, ts: Any, rel: str, done: DoneRecord) -> None:
+        if self.open is not None and hour > self.open.hour:
             self._finish(done)
+        if self.open is None:
             self._start(hour, rows.schema)
         assert self.open is not None
         open_hour = self.open
         if hour < open_hour.hour or int(ts[0]) < open_hour.last_ts or bool((np.diff(ts) < 0).any()):
-            raise HourOverlapError(open_hour.hour, open_hour.last_ts, int(ts.min()))
+            self._overlap({open_hour.hour, hour}, rel, done)
+            return
         open_hour.sink.write(rows)
         open_hour.source_rows += rows.num_rows
         open_hour.last_ts = int(ts[-1])
-        self.carry.apply(rows)
+        open_hour.files.add(rel)
+        if self.carry is not None:
+            self.carry.apply(rows)
 
     def _start(self, hour: int, schema: Any) -> None:
-        sink = HourSink(self._store.data_file(DELTAS_TABLE, self.instrument_id, hour), schema, hour)
-        self.open = _OpenHour(hour=hour, sink=sink)
-        if self.carry.valid and self.carry.hour == hour - HOUR_NS:
-            snapshot = self.carry.snapshot_rows(hour, schema)
+        sink = HourSink(self._store.data_file(self.table, self.instrument_id, hour), schema, hour)
+        self.open = _OpenHour(hour=hour, sink=sink, started=time.monotonic())
+        carry = self.carry
+        if carry is None:
+            return
+        if carry.valid and carry.hour == hour - HOUR_NS:
+            snapshot = carry.snapshot_rows(hour, schema)
             sink.write(snapshot)
             self.open.snapshot_rows = snapshot.num_rows
-        elif self.carry.hour is not None:
+        elif carry.hour is not None:
             # Hours without rows lie between: the book is stale until the feed's next CLEAR.
-            self.carry.invalidate()
+            carry.invalidate()
+
+    def _overlap(self, hours: set[int], rel: str, done: DoneRecord) -> None:
+        """AC-12: write nothing for the hour, keep its feather, and invalidate every carried book."""
+        open_hour, self.open = self.open, None
+        assert open_hour is not None
+        open_hour.sink.abort()
+        files = sorted(open_hour.files | {rel})
+        done.overlaps.setdefault(self.key, set()).update(hours)
+        done.kept.update(files)
+        self._store.save_done(done)
+        log.error(
+            "catalog hour overlap",
+            extra={
+                "fields": {
+                    "code": "catalog_hour_overlap",
+                    "stream": self.key,
+                    "hours_ns": sorted(hours),
+                    "files": files,
+                }
+            },
+        )
+        self._on_overlap(open_hour.hour)
 
     def _finish(self, done: DoneRecord) -> None:
         open_hour, self.open = self.open, None
         assert open_hour is not None
         hour = open_hour.hour
         expected = open_hour.source_rows + open_hour.snapshot_rows
-        size = open_hour.sink.commit(expected)
-        if self.carry.valid:
-            book = self.carry.snapshot_rows(hour + HOUR_NS, open_hour.sink.schema)
+        try:
+            size = open_hour.sink.commit(expected)
+        except HourCountMismatch as exc:
+            # The feather stays (its file never reaches `files`); the pass stops and is retried.
+            log.error(
+                "catalog hour mismatch",
+                extra={
+                    "fields": {
+                        "code": "catalog_hour_mismatch",
+                        "stream": self.key,
+                        "hour_ns": hour,
+                        "expected": exc.expected,
+                        "written": exc.written,
+                    }
+                },
+            )
+            raise
+        carry = self.carry
+        if carry is not None and carry.valid:
+            book = carry.snapshot_rows(hour + HOUR_NS, open_hour.sink.schema)
             atomic_write(
                 self._store.book_file(self.instrument_id, hour),
                 lambda tmp: pq.write_table(book, str(tmp), compression=COMPRESSION),
             )
-            self.carry.hour = hour
+            carry.hour = hour
         done.hours.setdefault(self.key, {})[hour] = {
             "rows": expected,
             "bytes": size,
             "snapshot_rows": open_hour.snapshot_rows,
         }
-        done.carry[self.instrument_id] = hour if self.carry.valid else None
-        done.files |= {f for f, newest in self._newest_hour.items() if f in self.fed and newest <= hour}
+        if carry is not None:
+            done.carry[self.instrument_id] = hour if carry.valid else None
+        done.files |= {
+            f for f, newest in self._newest_hour.items() if f in self.fed and newest <= hour and f not in done.kept
+        }
         self._store.save_done(done)
-        self._store.prune_books(self.instrument_id)
+        if carry is not None:
+            self._store.prune_books(self.instrument_id)
         log.info(
             "catalog hour converted",
             extra={
@@ -315,6 +385,7 @@ class DeltaStream:
                     "rows": expected,
                     "snapshot_rows": open_hour.snapshot_rows,
                     "bytes": size,
+                    "duration_s": round(time.monotonic() - open_hour.started, 1),
                 }
             },
         )

@@ -1,6 +1,16 @@
-"""covers: spec 0007 AC-2 (hour bounds for file names) and the ready rule of *Lifecycle of one hour*."""
+"""covers: spec 0007 AC-2 (hour bounds), the ready rule of *Lifecycle of one hour*, AC-9 (backlog space)."""
 
-from trading_core.marketdata.hours import HOUR_NS, SECOND_NS, hour_last_ns, hour_of, hour_ready
+from decimal import Decimal
+
+from trading_core.marketdata.hours import (
+    GB,
+    HOUR_NS,
+    SECOND_NS,
+    backlog_bytes_needed,
+    hour_last_ns,
+    hour_of,
+    hour_ready,
+)
 
 # 2026-10-08 06:00:00 UTC
 H = 1_791_439_200 * SECOND_NS
@@ -36,3 +46,11 @@ def test_not_ready_until_every_stream_has_passed_the_end():
 def test_the_last_hour_of_an_ended_run_is_ready():
     now = H + 2 * HOUR_NS
     assert hour_ready(H, now_ns=now, grace_ns=GRACE, positions={"deltas": H + 10}, run_ended=True)
+
+
+def test_backlog_needs_its_parquet_plus_the_floor():
+    assert backlog_bytes_needed(25 * GB, Decimal("0.05"), 8 * GB) == 25 * GB // 20 + 8 * GB
+
+
+def test_backlog_rounds_its_parquet_up():
+    assert backlog_bytes_needed(3, Decimal("0.5"), 0) == 2

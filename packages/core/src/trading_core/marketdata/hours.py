@@ -3,11 +3,14 @@
 Times are Nautilus nanosecond ints since the Unix epoch, UTC. An hour is named by its start.
 """
 
+import math
 from collections.abc import Mapping
+from decimal import Decimal
 from typing import Final
 
 SECOND_NS: Final = 1_000_000_000
 HOUR_NS: Final = 3_600 * SECOND_NS
+GB: Final = 1_000_000_000
 
 
 def hour_of(ts_ns: int) -> int:
@@ -38,3 +41,12 @@ def hour_ready(
     if now_ns < end + grace_ns:
         return False
     return run_ended or all(position >= end for position in positions.values())
+
+
+def backlog_bytes_needed(feather_bytes: int, ratio: Decimal, floor_bytes: int) -> int:
+    """Free space a dead run needs before it is converted (spec 0007 AC-9).
+
+    Its Parquet (the feather bytes times ``ratio``, rounded up) plus the free space floor, since
+    the feather is freed only after its hours are done.
+    """
+    return math.ceil(feather_bytes * ratio) + floor_bytes

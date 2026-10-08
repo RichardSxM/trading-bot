@@ -16,6 +16,16 @@ services:
         bind:
           create_host_path: true
 
+  compactor:
+    environment:
+      CATALOG_REQUIRE_MARKER: "true"
+    volumes:
+      - type: bind
+        source: /srv/kfs/catalog
+        target: /data/catalog
+        bind:
+          create_host_path: true
+
   trader:
     volumes:
       - type: bind

@@ -33,13 +33,17 @@ def _later():
 
 
 def _two_runs(tmp_path, end_ns):
-    """A dead run holding the feed (rotating after each hour), and an empty current run."""
+    """A dead run holding the feed (rotating after each hour), and a current run hours later."""
     store = CatalogStore(tmp_path)
     feed = make_feed(H0 + 7 * SECOND_NS, end_ns)
     write_run(store.live, "a-dead", feed.messages, rotate_at=[H0 + HOUR_NS, H0 + 2 * HOUR_NS])
-    time.sleep(0.01)
-    (store.live / "b-current").mkdir()
+    later = make_feed(H0 + 5 * HOUR_NS, H0 + 5 * HOUR_NS + 60 * SECOND_NS, seed=3)
+    write_run(store.live, "b-current", later.messages, rotate_at=[])
     return store, feed
+
+
+def _compactor(store):
+    return Compactor(store, grace_ns=0, floor_bytes=0)
 
 
 def _top(levels_bids, levels_asks):
@@ -103,7 +107,7 @@ class _Sampler(Actor):  # type: ignore[misc]
 
 def test_hours_convert_with_a_snapshot_and_the_second_hour_replays_alone(tmp_path):
     store, feed = _two_runs(tmp_path, H0 + 2 * HOUR_NS + 20 * 60 * SECOND_NS)
-    compactor = Compactor(store, grace_ns=0)
+    compactor = _compactor(store)
     compactor.run_pass(_later())
 
     done = json.loads(store.done_path.read_text())
@@ -161,11 +165,11 @@ def test_hours_convert_with_a_snapshot_and_the_second_hour_replays_alone(tmp_pat
 
 def test_a_rerun_changes_nothing(tmp_path):
     store, _ = _two_runs(tmp_path, H0 + HOUR_NS + 30 * 60 * SECOND_NS)
-    Compactor(store, grace_ns=0).run_pass(_later())
+    _compactor(store).run_pass(_later())
     before = {p: p.read_bytes() for p in (tmp_path / "data").rglob("*.parquet")}
     done_before = store.done_path.read_text()
 
-    Compactor(store, grace_ns=0).run_pass(_later())
+    _compactor(store).run_pass(_later())
 
     assert {p: p.read_bytes() for p in (tmp_path / "data").rglob("*.parquet")} == before
     assert store.done_path.read_text() == done_before
@@ -176,7 +180,7 @@ def test_the_open_hour_waits_while_the_current_run_may_hold_more_of_it(tmp_path)
     feed = make_feed(H0 + 7 * SECOND_NS, H0 + HOUR_NS + 10 * 60 * SECOND_NS)
     # One run that is still current: its newest file is open, so only the first hour can finish.
     write_run(store.live, "a-current", feed.messages, rotate_at=[H0 + HOUR_NS])
-    Compactor(store, grace_ns=0).run_pass(_later())
+    _compactor(store).run_pass(_later())
     done = json.loads(store.done_path.read_text())
     assert [int(h) for h in done["hours"][KEY]] == [H0]
 
@@ -186,7 +190,8 @@ def test_a_row_count_mismatch_keeps_nothing(tmp_path, monkeypatch):
     real_commit = convert.HourSink.commit
     monkeypatch.setattr(convert.HourSink, "commit", lambda self, expected: real_commit(self, expected + 1))
     with pytest.raises(HourCountMismatch):
-        Compactor(store, grace_ns=0).run_pass(_later())
+        _compactor(store).run_pass(_later())
     assert not list((tmp_path / "data").rglob("*.parquet"))
     assert not list((tmp_path / "data").rglob("*.tmp"))
-    assert not store.done_path.exists()
+    assert not store.load_done().hours
+    assert list((store.live / "a-dead").rglob("*.feather"))  # the feather stays

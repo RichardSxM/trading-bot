@@ -65,6 +65,15 @@ def test_dashboard_always_starts_and_logs_a_warning(caplog, env, result):
     assert [r.levelno for r in caplog.records] == [logging.WARNING]
 
 
+@pytest.mark.parametrize("result", [_result(None, answered=0), _result(5_000.0)], ids=["no-answer", "over-limit"])
+def test_a_worker_starts_in_live_without_a_good_clock(caplog, result):
+    # The compactor runs with no network and places no orders (spec 0007).
+    with caplog.at_level(logging.INFO, logger="trading_core.clock"):
+        enforce(result, kind="worker", env="live", max_offset_ms=LIMIT)
+
+    assert [r.levelno for r in caplog.records] == [logging.WARNING]
+
+
 # measure: query every server, median of those that answer
 
 

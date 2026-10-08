@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pyarrow as pa
 from nautilus_trader.core import nautilus_pyo3 as p3
+from nautilus_trader.model.instruments import CryptoPerpetual
 
 from recorder.compactor.convert import F_LAST, F_SNAPSHOT
 
@@ -93,35 +94,88 @@ def _schema_metadata() -> dict[bytes, bytes]:
     }
 
 
-def write_run(live: Path, run: str, messages: list[list[p3.OrderBookDelta]], rotate_at: list[int]) -> list[Path]:
-    """Write messages as the recorder does: one batch per message, a new file at each rotation time.
+def _table(batch_bytes: bytes):
+    table = pa.ipc.open_stream(pa.py_buffer(batch_bytes)).read_all()
+    return table.replace_schema_metadata(_schema_metadata())
 
-    Like the real writer, the file rotates on the first message at or after each rotation time,
-    and that message is the last one written to the old file.
+
+def write_run(live: Path, run: str, messages: list[list[p3.OrderBookDelta]], rotate_at: list[int]) -> list[Path]:
+    """Write delta messages as the recorder does: one batch per message, rotating at each time."""
+    items = [(m[0].ts_init, _table(p3.book_deltas_to_arrow_record_batch_bytes(m))) for m in messages]
+    return write_stream(live / run / "order_book_deltas" / INSTRUMENT, items, rotate_at)
+
+
+def make_trades(start_ns: int, end_ns: int, seed: int = 11) -> list[p3.TradeTick]:
+    """Trades every few seconds."""
+    rng = random.Random(seed)
+    trades: list[p3.TradeTick] = []
+    ts = start_ns
+    n = 0
+    while True:
+        ts += rng.randint(1, 8) * SECOND_NS
+        if ts >= end_ns:
+            return trades
+        n += 1
+        side = p3.AggressorSide.BUYER if rng.random() < 0.5 else p3.AggressorSide.SELLER
+        trades.append(
+            p3.TradeTick(
+                p3.InstrumentId.from_str(INSTRUMENT),
+                p3.Price(80_000 + rng.randint(-20, 20) * 0.5, PRICE_PRECISION),
+                p3.Quantity(round(rng.uniform(0.001, 1), 3), SIZE_PRECISION),
+                side,
+                p3.TradeId(str(n)),
+                ts,
+                ts,
+            )
+        )
+
+
+def write_trades(live: Path, run: str, trades: list[p3.TradeTick], rotate_at: list[int]) -> list[Path]:
+    """Write trades as the recorder does: one batch per trade, rotating at each time."""
+    items = [(t.ts_init, _table(p3.trades_to_arrow_record_batch_bytes([t]))) for t in trades]
+    return write_stream(live / run / "trade_tick" / INSTRUMENT, items, rotate_at)
+
+
+def write_instruments(live: Path, run: str, instruments: list[CryptoPerpetual], created_ns: int) -> Path:
+    """An instrument file in the run folder, with the venue list (ours and others)."""
+    from nautilus_trader.serialization.arrow.serializer import ArrowSerializer
+
+    path = live / run / f"crypto_perpetual_{created_ns}.feather"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    batches = [ArrowSerializer.serialize(i) for i in instruments]
+    with pa.OSFile(str(path), "wb") as sink:
+        writer = pa.ipc.new_stream(sink, batches[0].schema)
+        for batch in batches:
+            writer.write_batch(batch)
+        writer.close()
+    return path
+
+
+def write_stream(folder: Path, items: list[tuple[int, pa.Table]], rotate_at: list[int]) -> list[Path]:
+    """Write ``(ts, table)`` items as the recorder does: one batch per item, a new file at each rotation.
+
+    Like the real writer, the file rotates on the first item at or after each rotation time,
+    and that item is the last one written to the old file.
     """
-    folder = live / run / "order_book_deltas" / INSTRUMENT
     folder.mkdir(parents=True, exist_ok=True)
-    os.utime(live / run)
+    os.utime(folder.parent.parent)
     paths: list[Path] = []
     writer = sink = None
     pending_rotations = sorted(rotate_at)
 
     def open_file(created: int):
         nonlocal writer, sink
-        path = folder / f"{INSTRUMENT}_{created}.feather"
+        path = folder / f"{folder.name}_{created}.feather"
         paths.append(path)
         sink = pa.OSFile(str(path), "wb")
         writer = None
 
-    open_file(messages[0][0].ts_init)
-    for message in messages:
-        table = pa.ipc.open_stream(pa.py_buffer(p3.book_deltas_to_arrow_record_batch_bytes(message))).read_all()
-        table = table.replace_schema_metadata(_schema_metadata())
+    open_file(items[0][0])
+    for ts, table in items:
         if writer is None:
             writer = pa.ipc.new_stream(sink, table.schema)
         for batch in table.to_batches():
             writer.write_batch(batch)
-        ts = message[0].ts_init
         if pending_rotations and ts >= pending_rotations[0]:
             pending_rotations.pop(0)
             assert writer is not None
