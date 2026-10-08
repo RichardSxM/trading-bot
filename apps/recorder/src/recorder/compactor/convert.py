@@ -21,9 +21,11 @@ from nautilus_trader.core import nautilus_pyo3 as p3
 from nautilus_trader.model.data import OrderBookDelta
 from nautilus_trader.serialization.arrow.serializer import ArrowSerializer
 
-from recorder.compactor.store import TMP_SUFFIX, CatalogStore, DoneRecord, atomic_write, stream_key
+from recorder.compactor.days import write_gaps
+from recorder.compactor.store import COMPRESSION, TMP_SUFFIX, CatalogStore, DoneRecord, atomic_write, stream_key
 from trading_core.marketdata.errors import HourCountMismatch
-from trading_core.marketdata.hours import HOUR_NS, hour_ready
+from trading_core.marketdata.gaps import Gap, GapDetector
+from trading_core.marketdata.hours import HOUR_NS, hour_ready, hours_inside
 
 log = logging.getLogger(__name__)
 
@@ -34,7 +36,6 @@ F_LAST: Final = 128
 F_SNAPSHOT: Final = 32
 # The `action` column value of a CLEAR (the pyo3 stub types `.value` as str; it is an int).
 CLEAR: Final[int] = int(p3.BookAction.CLEAR.value)
-COMPRESSION: Final = "zstd"
 
 Beat = Callable[[], None]
 
@@ -208,8 +209,9 @@ class _OpenHour:
 class HourStream:
     """One stream (book deltas or trades) of one instrument, converted in one pass over its files.
 
-    ``carry`` is the book for a delta stream and ``None`` for trades. ``on_overlap`` is called
-    with the hour when rows go backwards (AC-12), so every carried book can be invalidated.
+    ``carry`` is the book for a delta stream and ``None`` for trades; ``gaps`` likewise detects a
+    delta stream's gaps (AC-4), which are written with the hour that holds their end. ``on_overlap``
+    is called with the hour when rows go backwards (AC-12), so every carried book can be invalidated.
     """
 
     def __init__(
@@ -220,6 +222,7 @@ class HourStream:
         done: DoneRecord,
         *,
         carry: BookCarry | None,
+        gaps: GapDetector | None = None,
         on_overlap: Callable[[int], None],
         beat: Beat | None = None,
     ) -> None:
@@ -228,6 +231,8 @@ class HourStream:
         self.instrument_id = instrument_id
         self.key = stream_key(table, instrument_id)
         self.carry = carry
+        self.gaps = gaps
+        self._pending: list[Gap] = []
         self._on_overlap = on_overlap
         self._beat = beat
         self.open: _OpenHour | None = None
@@ -275,6 +280,7 @@ class HourStream:
 
     def abort(self) -> None:
         """Drop the open hour after a failed pass; the next pass starts again from ``done.json``."""
+        self._pending = []
         if self.open is not None:
             self.open.sink.abort()
             self.open = None
@@ -289,6 +295,9 @@ class HourStream:
         if hour < open_hour.hour or int(ts[0]) < open_hour.last_ts or bool((np.diff(ts) < 0).any()):
             self._overlap({open_hour.hour, hour}, rel, done)
             return
+        if self.gaps is not None and self._run is not None:
+            clear = (rows.column("action").to_numpy() == CLEAR).tolist()
+            self._pending.extend(self.gaps.scan(self._run, ts.tolist(), clear))
         open_hour.sink.write(rows)
         open_hour.source_rows += rows.num_rows
         open_hour.last_ts = int(ts[-1])
@@ -332,6 +341,28 @@ class HourStream:
         )
         self._on_overlap(open_hour.hour)
 
+    def _commit_gaps(self, done: DoneRecord) -> None:
+        """Write the gaps found so far and the detector's state, ahead of the ``done.json`` commit."""
+        assert self.gaps is not None
+        write_gaps(self._store, self._pending)
+        for gap in self._pending:
+            log.warning(
+                "book gap",
+                extra={
+                    "fields": {
+                        "code": "book_gap",
+                        "instrument_id": gap.instrument_id,
+                        "kind": gap.kind,
+                        "start_ns": gap.start_ns,
+                        "end_ns": gap.end_ns,
+                        "duration_s": round(gap.duration_s, 3),
+                    }
+                },
+            )
+            if gap.kind == "recorder_down":
+                done.empty.setdefault(self.instrument_id, set()).update(hours_inside(gap.start_ns, gap.end_ns))
+        done.streams[self.instrument_id] = self.gaps.state.to_dict()
+
     def _finish(self, done: DoneRecord) -> None:
         open_hour, self.open = self.open, None
         assert open_hour is not None
@@ -372,7 +403,10 @@ class HourStream:
         done.files |= {
             f for f, newest in self._newest_hour.items() if f in self.fed and newest <= hour and f not in done.kept
         }
+        if self.gaps is not None:
+            self._commit_gaps(done)
         self._store.save_done(done)
+        self._pending = []
         if carry is not None:
             self._store.prune_books(self.instrument_id)
         log.info(

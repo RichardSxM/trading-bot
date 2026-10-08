@@ -264,6 +264,7 @@ services:
       COMPACTOR_PARQUET_RATIO: ${COMPACTOR_PARQUET_RATIO:-0.05}
       COMPACTOR_GRACE_S: ${COMPACTOR_GRACE_S:-300}
       COMPACTOR_INTERVAL_S: ${COMPACTOR_INTERVAL_S:-60}
+      BOOK_SILENCE_GAP_S: ${BOOK_SILENCE_GAP_S:-10}
     volumes:
       - catalog:/data/catalog
     network_mode: none

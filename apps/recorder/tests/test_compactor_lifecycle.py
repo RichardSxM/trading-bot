@@ -146,7 +146,13 @@ def test_overlapping_runs_write_nothing_for_the_hour_and_keep_the_feather(tmp_pa
 
 
 def _snapshot(root):
-    files = {str(p.relative_to(root)): p.read_bytes() for p in (root / "data").rglob("*") if p.is_file()}
+    """The catalog files (data, gaps, manifests) and done.json, to compare two catalogs."""
+    files = {
+        str(p.relative_to(root)): p.read_bytes()
+        for folder in ("data", "gaps", "manifests")
+        for p in (root / folder).rglob("*")
+        if p.is_file()
+    }
     return files, json.loads((root / ".compactor" / "done.json").read_text())
 
 

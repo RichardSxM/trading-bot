@@ -26,6 +26,7 @@ TRADES_TABLE: Final[str] = class_to_filename(TradeTick)
 INSTRUMENTS_TABLE: Final[str] = class_to_filename(CryptoPerpetual)
 STREAM_TABLES: Final = (DELTAS_TABLE, TRADES_TABLE)
 TMP_SUFFIX: Final = ".tmp"
+COMPRESSION: Final = "zstd"
 # Book files kept per instrument: the newest is the carry, the one before it a spare.
 BOOKS_KEPT: Final = 2
 
@@ -46,6 +47,11 @@ class DoneRecord:
     - ``kept``: feather files that hold an overlapped hour; never deleted.
     - ``instruments``: per instrument, the newest definition used for an hour (``to_dict`` form).
     - ``started_runs``: dead runs whose conversion began, so the space check (AC-9) runs once.
+    - ``streams``: per instrument, the gap detector's state (``GapState.to_dict``), so detection
+      resumes across passes (AC-4).
+    - ``empty``: per instrument, hours without rows that lie wholly inside a ``recorder_down`` gap;
+      they count towards closing a day (AC-5).
+    - ``days``: the closed days (``YYYY-MM-DD``), each with its manifest written.
     """
 
     hours: dict[str, dict[int, dict[str, int]]] = field(default_factory=dict)
@@ -55,6 +61,9 @@ class DoneRecord:
     kept: set[str] = field(default_factory=set)
     instruments: dict[str, dict[str, Any]] = field(default_factory=dict)
     started_runs: set[str] = field(default_factory=set)
+    streams: dict[str, dict[str, object]] = field(default_factory=dict)
+    empty: dict[str, set[int]] = field(default_factory=dict)
+    days: set[str] = field(default_factory=set)
 
     def is_done(self, key: str, hour: int) -> bool:
         """Whether a stream's hour is finished."""
@@ -71,6 +80,9 @@ class DoneRecord:
                 "kept": sorted(self.kept),
                 "instruments": dict(sorted(self.instruments.items())),
                 "started_runs": sorted(self.started_runs),
+                "streams": dict(sorted(self.streams.items())),
+                "empty": {k: sorted(v) for k, v in sorted(self.empty.items())},
+                "days": sorted(self.days),
             },
             indent=1,
             sort_keys=True,
@@ -88,6 +100,9 @@ class DoneRecord:
             kept=set(raw.get("kept", [])),
             instruments=dict(raw.get("instruments", {})),
             started_runs=set(raw.get("started_runs", [])),
+            streams=dict(raw.get("streams", {})),
+            empty={k: set(v) for k, v in raw.get("empty", {}).items()},
+            days=set(raw.get("days", [])),
         )
 
 
@@ -121,6 +136,14 @@ class CatalogStore:
         """The carried book at the end of ``hour``, stored as the snapshot rows for the next hour."""
         return self.state / "books" / urisafe_identifier(instrument_id) / f"{hour}.parquet"
 
+    def gap_file(self, day: str) -> Path:
+        """``gaps/<YYYY-MM-DD>.parquet``, the gaps that start on that UTC day."""
+        return self.root / "gaps" / f"{day}.parquet"
+
+    def manifest_file(self, day: str) -> Path:
+        """``manifests/<YYYY-MM-DD>.json``, the closed day's size and gap totals."""
+        return self.root / "manifests" / f"{day}.json"
+
     def prune_books(self, instrument_id: str) -> None:
         """Keep only the newest ``BOOKS_KEPT`` book files of an instrument."""
         folder = self.state / "books" / urisafe_identifier(instrument_id)
@@ -130,7 +153,7 @@ class CatalogStore:
 
     def remove_tmp_files(self) -> None:
         """Delete ``.tmp`` files a killed process left behind. Call only while nothing is writing."""
-        for folder in (self.root / "data", self.state):
+        for folder in (self.root / "data", self.root / "gaps", self.root / "manifests", self.state):
             for tmp in folder.rglob(f"*{TMP_SUFFIX}") if folder.exists() else ():
                 tmp.unlink(missing_ok=True)
 

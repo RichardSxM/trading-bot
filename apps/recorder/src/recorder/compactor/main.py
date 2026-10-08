@@ -15,10 +15,12 @@ from pathlib import Path
 from pydantic import Field
 
 from recorder.compactor.convert import Beat, BookCarry, FeatherFile, HourStream
+from recorder.compactor.days import close_days
 from recorder.compactor.instruments import InstrumentDefinitions
 from recorder.compactor.store import DELTAS_TABLE, INSTRUMENTS_TABLE, STREAM_TABLES, CatalogStore
 from recorder.volume import CatalogVolumeMissing, check_catalog_volume
 from trading_core.boot import boot
+from trading_core.marketdata.gaps import GapDetector, GapState
 from trading_core.marketdata.hours import GB, HOUR_NS, SECOND_NS, backlog_bytes_needed
 from trading_core.settings import Settings
 
@@ -37,6 +39,8 @@ class CompactorSettings(Settings):
     # The wait after a file's last write before it is read, so an hour is never finished early.
     compactor_grace_s: int = Field(default=300, ge=0)
     compactor_interval_s: int = Field(default=60, gt=0)
+    # Two book deltas of one instrument this far apart are a `silence` gap (spec 0007 AC-4).
+    book_silence_gap_s: int = Field(default=10, gt=0)
 
 
 @dataclass
@@ -111,12 +115,14 @@ class Compactor:
         grace_ns: int,
         ratio: Decimal = Decimal("0.05"),
         floor_bytes: int = 8 * GB,
+        silence_ns: int = 10 * SECOND_NS,
         beat: Beat | None = None,
     ) -> None:
         self._store = store
         self._grace_ns = grace_ns
         self._ratio = ratio
         self._floor_bytes = floor_bytes
+        self._silence_ns = silence_ns
         self._beat = beat
         store.remove_tmp_files()  # a killed pass may have left some; nothing writes yet
         self.done = store.load_done()
@@ -145,7 +151,8 @@ class Compactor:
                 for f in files
             )
             stream.finish_if_passed(now_ns=now_ns, grace_ns=self._grace_ns, more_source=more_source, done=self.done)
-        if self.definitions.write_hours(instruments, self.done, STREAM_TABLES):
+        changed = self.definitions.write_hours(instruments, self.done, STREAM_TABLES)
+        if close_days(self._store, self.done) or changed:
             self._store.save_done(self.done)
         self._delete_converted(found, current, instruments)
 
@@ -157,9 +164,20 @@ class Compactor:
     def _stream(self, table: str, instrument: str) -> HourStream:
         stream = self.streams.get((table, instrument))
         if stream is None:
-            carry = BookCarry(instrument) if table == DELTAS_TABLE else None
+            deltas = table == DELTAS_TABLE
+            gaps = None
+            if deltas:
+                state = GapState.from_dict(self.done.streams.get(instrument, {}))
+                gaps = GapDetector(instrument, state, silence_ns=self._silence_ns)
             stream = HourStream(
-                self._store, table, instrument, self.done, carry=carry, on_overlap=self._on_overlap, beat=self._beat
+                self._store,
+                table,
+                instrument,
+                self.done,
+                carry=BookCarry(instrument) if deltas else None,
+                gaps=gaps,
+                on_overlap=self._on_overlap,
+                beat=self._beat,
             )
             self.streams[(table, instrument)] = stream
         return stream
@@ -250,6 +268,7 @@ def main() -> None:
             grace_ns=settings.compactor_grace_s * SECOND_NS,
             ratio=settings.compactor_parquet_ratio,
             floor_bytes=int(settings.catalog_free_floor_gb * GB),
+            silence_ns=settings.book_silence_gap_s * SECOND_NS,
             beat=heartbeat,
         )
 

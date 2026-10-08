@@ -17,8 +17,8 @@ import pyarrow.parquet as pq
 from nautilus_trader.model.instruments import CryptoPerpetual
 from nautilus_trader.serialization.arrow.serializer import ArrowSerializer
 
-from recorder.compactor.convert import COMPRESSION, FeatherFile, read_chunks
-from recorder.compactor.store import INSTRUMENTS_TABLE, CatalogStore, DoneRecord, atomic_write, stream_key
+from recorder.compactor.convert import FeatherFile, read_chunks
+from recorder.compactor.store import COMPRESSION, INSTRUMENTS_TABLE, CatalogStore, DoneRecord, atomic_write, stream_key
 from trading_core.marketdata.hours import hour_last_ns, hour_of
 
 log = logging.getLogger(__name__)
