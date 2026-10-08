@@ -1,15 +1,22 @@
 """The compactor service: every ``COMPACTOR_INTERVAL_S`` it converts closed feather hours (spec 0007).
 
-Usage: ``python -m recorder.compactor.main``. A pass that fails logs ``compactor_pass_failed`` and
-drops its unfinished hours; the next pass starts again from ``done.json``.
+Usage: ``python -m recorder.compactor.main [--offline]``. A pass that fails logs
+``compactor_pass_failed`` and drops its unfinished hours; the next pass starts again from ``done.json``.
+
+``--offline`` is the laptop's one time backlog conversion (AC-9): no recorder writes there, so every
+run has ended and every file is closed. It runs passes until one converts nothing more, with no
+grace and no retention, then exits 0 only when no feather is left and nothing failed.
 """
 
+import argparse
 import logging
 import os
 import sys
 import time
+from collections.abc import Callable
 from decimal import Decimal
 from pathlib import Path
+from typing import Final
 
 from pydantic import Field
 
@@ -29,6 +36,10 @@ from trading_core.settings import CatalogDiskSettings
 log = logging.getLogger(__name__)
 
 HEARTBEAT_EVERY_S = 10.0
+# An offline conversion that logged any of these did not finish the backlog (spec 0007 AC-9).
+OFFLINE_FAIL_CODES: Final = frozenset({"catalog_hour_mismatch", "compactor_pass_failed", "backlog_needs_space"})
+# A backlog converts in one or two passes; more means something keeps changing without finishing.
+MAX_OFFLINE_PASSES: Final = 20
 
 
 class CompactorSettings(CatalogDiskSettings):
@@ -84,8 +95,11 @@ class Compactor:
         window_ns: int = 600 * SECOND_NS,
         max_rows: int = 2_000_000,
         beat: Beat | None = None,
+        offline: bool = False,
     ) -> None:
         self._store = store
+        # Offline (the laptop backlog, AC-9): no run is the current one, so every run ends.
+        self._offline = offline
         self._grace_ns = grace_ns
         self._ratio = ratio
         self._floor_bytes = floor_bytes
@@ -102,7 +116,7 @@ class Compactor:
         """Feed closed, settled files in time order, finish hours the watermark passed, then delete
         what is converted."""
         found = discover(self._store.live, STREAM_TABLES, INSTRUMENTS_TABLE)
-        current = current_run(found)
+        current = None if self._offline else current_run(found)
         stop_at = self._backlog_gate(found, current)
         instruments = {instrument for _, instrument in found.streams}
         for file in found.instruments:
@@ -252,7 +266,57 @@ def run_retention(store: CatalogStore, *, state_path: Path, cap_bytes: int, floo
         )
 
 
+class CodeWatch(logging.Handler):
+    """Remembers which of ``codes`` were logged, from the ``code`` field of each record."""
+
+    def __init__(self, codes: frozenset[str]) -> None:
+        super().__init__()
+        self._codes = codes
+        self.seen: set[str] = set()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        fields = getattr(record, "fields", None)
+        code = fields.get("code") if isinstance(fields, dict) else None
+        if code in self._codes:
+            self.seen.add(code)
+
+
+def run_offline(compactor: Compactor, store: CatalogStore, clock: Callable[[], int] = time.time_ns) -> int:
+    """AC-9: convert every run under ``live/`` until a pass changes nothing. Returns the exit code:
+    0 only when no feather is left and no pass failed, mismatched, or lacked space."""
+    watch = CodeWatch(OFFLINE_FAIL_CODES)
+    logging.getLogger().addHandler(watch)
+    try:
+        for _ in range(MAX_OFFLINE_PASSES):
+            before = store.load_done().to_json()
+            try:
+                compactor.run_pass(clock())
+            except Exception as exc:
+                log.exception(
+                    "compactor pass failed",
+                    extra={"fields": {"code": "compactor_pass_failed", "error": type(exc).__name__}},
+                )
+                compactor.abort()
+                break
+            if store.load_done().to_json() == before:
+                break
+    finally:
+        logging.getLogger().removeHandler(watch)
+    left = sorted(store.relative(p) for p in store.live.rglob("*.feather")) if store.live.exists() else []
+    ok = not left and not watch.seen
+    fields: dict[str, object] = {"code": "compactor_offline_done", "ok": ok, "feather_left": len(left)}
+    if watch.seen:
+        fields["failed_codes"] = sorted(watch.seen)
+    if left:
+        fields["first_left"] = left[0]
+    (log.info if ok else log.error)("offline conversion finished", extra={"fields": fields})
+    return 0 if ok else 1
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(prog="recorder.compactor.main")
+    parser.add_argument("--offline", action="store_true", help="convert the laptop backlog once, then exit")
+    offline = parser.parse_args().offline
     settings = boot("worker", settings_cls=CompactorSettings).settings
     root = Path(settings.catalog_path)
     try:
@@ -269,15 +333,19 @@ def main() -> None:
     def fresh() -> Compactor:
         return Compactor(
             store,
-            grace_ns=settings.compactor_grace_s * SECOND_NS,
+            # Offline, every file was closed long ago, so there is nothing to wait for.
+            grace_ns=0 if offline else settings.compactor_grace_s * SECOND_NS,
             ratio=settings.compactor_parquet_ratio,
             floor_bytes=int(settings.catalog_free_floor_gb * GB),
             silence_ns=settings.book_silence_gap_s * SECOND_NS,
             window_ns=settings.compactor_reorder_window_s * SECOND_NS,
             max_rows=settings.compactor_reorder_max_rows,
             beat=heartbeat,
+            offline=offline,
         )
 
+    if offline:
+        sys.exit(run_offline(fresh(), store))
     compactor = fresh()
     while True:
         try:

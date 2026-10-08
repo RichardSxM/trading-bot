@@ -44,6 +44,14 @@ def read_gaps(store: CatalogStore, day: str) -> list[Gap]:
     ]
 
 
+def gap_days(store: CatalogStore, *, until: str) -> list[str]:
+    """The days up to ``until`` (inclusive) that have a gap file, oldest first."""
+    folder = store.gap_file(until).parent
+    if not folder.exists():
+        return []
+    return sorted(p.stem for p in folder.glob("*.parquet") if p.stem <= until)
+
+
 def write_gaps(store: CatalogStore, gaps: Iterable[Gap]) -> None:
     """Merge gaps into their day files: union, one row per (instrument, kind, start), sorted."""
     by_day: dict[str, list[Gap]] = defaultdict(list)
@@ -76,9 +84,11 @@ def close_days(store: CatalogStore, done: DoneRecord) -> bool:
     every_hour = [hour for hours in done.hours.values() for hour in hours]
     if not every_hour:
         return False
+    # Up to the last covered hour, empty ones too: a day wholly inside a gap closes as well.
+    last = max([*every_hour, *(hour for hours in done.empty.values() for hour in hours)])
     _rewrite_incomplete_days(store, done)
     closed = False
-    for day in range(day_of(min(every_hour)), day_of(max(every_hour)) + 1, DAY_NS):
+    for day in range(day_of(min(every_hour)), day_of(last) + 1, DAY_NS):
         name = day_name(day)
         if name in done.days or not day_closed(day, covered):
             continue
@@ -140,8 +150,9 @@ def _manifest(store: CatalogStore, done: DoneRecord, day: int) -> dict[str, Any]
                 }
             )
     seconds: dict[tuple[str, str], float] = defaultdict(float)
-    # A gap that crosses midnight lies in its start day's file, so the day before is read too.
-    for gap in [*read_gaps(store, day_name(day - DAY_NS)), *read_gaps(store, day_name(day))]:
+    # A gap lies whole in its start day's file and may span several days, so every earlier file
+    # is read too (one small file per day).
+    for gap in [g for earlier in gap_days(store, until=day_name(day)) for g in read_gaps(store, earlier)]:
         inside = seconds_within(gap, day, end)
         if inside > 0:
             seconds[(gap.instrument_id, gap.kind)] += inside

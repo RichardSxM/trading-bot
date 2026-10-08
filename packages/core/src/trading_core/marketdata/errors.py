@@ -21,3 +21,11 @@ class BackupStateInvalid(CatalogError):
     def __init__(self, reason: str) -> None:
         super().__init__(f"backup state invalid: {reason}")
         self.reason = reason
+
+
+class BridgeRefused(CatalogError):
+    """The laptop backlog's bridge gap cannot be written yet, so nothing was changed (AC-9)."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(f"bridge refused: {reason}")
+        self.reason = reason
