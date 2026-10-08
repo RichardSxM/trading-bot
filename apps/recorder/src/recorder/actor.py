@@ -1,32 +1,69 @@
-"""The recorder's actors: market data subscriptions, and the disk floor guard (spec 0007 AC-7)."""
+"""The recorder's actors: market data subscriptions with the sequence watch (spec 0007 AC-15), and
+the disk floor guard (AC-7)."""
 
+from collections.abc import Callable
 from datetime import timedelta
 from pathlib import Path
 
 from nautilus_trader.common.actor import Actor
 from nautilus_trader.common.config import ActorConfig
 from nautilus_trader.common.events import TimeEvent
+from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.enums import BookType
 from nautilus_trader.model.identifiers import InstrumentId
 
-from recorder.disk import DiskGuard
+from recorder.disk import DiskGuard, stop_process
+from recorder.sequence_holes import HOLES_FILE, SequenceWatch
+from trading_core.marketdata.hours import SECOND_NS
 
 
 class RecordingConfig(ActorConfig, frozen=True):
     instrument_ids: list[str]
+    catalog_path: str
+    sequence_confirm_s: int = 600
+    holes_every_s: int = 60
 
 
 class RecordingActor(Actor):  # type: ignore[misc]  # Actor is Cython with no stubs
-    def __init__(self, config: RecordingConfig) -> None:
+    """Subscribes the recorded data, and watches the run's message counter for lost book messages.
+
+    ``run_id`` names the run folder under ``live/`` (the node's instance id, known once the node is
+    built). ``main.py`` exits 75 once ``watch.tripped``.
+    """
+
+    def __init__(
+        self, config: RecordingConfig, run_id: Callable[[], str], *, stop: Callable[[], None] = stop_process
+    ) -> None:
         super().__init__(config)
         self._instrument_ids = [InstrumentId.from_str(i) for i in config.instrument_ids]
+        live = Path(config.catalog_path) / "live"
+        self.watch = SequenceWatch(
+            lambda: live / run_id() / HOLES_FILE, confirm_ns=config.sequence_confirm_s * SECOND_NS, stop=stop
+        )
+        self._holes_every = timedelta(seconds=config.holes_every_s)
 
     def on_start(self) -> None:
+        # The tracker and the holes file come first, so it sees the run's first delta.
+        self.watch.start(self.clock.timestamp_ns())
+        self.clock.set_timer("sequence_holes", self._holes_every, callback=self._tick)
         # The kernel's streaming writer receives everything on the bus; these
-        # subscriptions make the data flow. Hourly Parquet conversion is feature 8.
+        # subscriptions make the data flow.
         for instrument_id in self._instrument_ids:
             self.subscribe_order_book_deltas(instrument_id, BookType.L2_MBP)
             self.subscribe_trade_ticks(instrument_id)
+
+    def on_stop(self) -> None:
+        self.clock.cancel_timer("sequence_holes")
+        self.watch.stop()
+
+    def on_order_book_deltas(self, deltas: OrderBookDeltas) -> None:
+        now = self.clock.timestamp_ns()
+        observe = self.watch.observe
+        for delta in deltas.deltas:
+            observe(delta.sequence, delta.ts_init, now)
+
+    def _tick(self, _event: TimeEvent) -> None:
+        self.watch.tick(self.clock.timestamp_ns())
 
 
 class DiskGuardConfig(ActorConfig, frozen=True):

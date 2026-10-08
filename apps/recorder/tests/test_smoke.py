@@ -79,11 +79,11 @@ def test_recording_actor_accepts_the_pinned_instruments():
 
     settings = RecorderSettings(trading_env="demo", recorder_instruments="PF_XBTUSD.KRAKEN,PF_ETHUSD.KRAKEN")
 
-    RecordingActor(RecordingConfig(instrument_ids=settings.instrument_list))
+    RecordingActor(RecordingConfig(instrument_ids=settings.instrument_list, catalog_path="/tmp"), lambda: "run")
 
 
 def test_recording_actor_rejects_a_malformed_instrument_id():
     from recorder.actor import RecordingActor, RecordingConfig
 
     with pytest.raises(ValueError, match=r"missing '\.' separator"):
-        RecordingActor(RecordingConfig(instrument_ids=["PF_XBTUSD"]))
+        RecordingActor(RecordingConfig(instrument_ids=["PF_XBTUSD"], catalog_path="/tmp"), lambda: "run")
