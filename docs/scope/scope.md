@@ -212,6 +212,7 @@ Test hour level strategies on Kraken candle history with realistic fees, funding
 ### 14. Scalping simulator · needs a decision
 Replay recorded order book data to test scalping honestly: maker and taker fees, queue position, latency, and partial fills.
 **Done when:** a scalping strategy replays over recorded days, results account for fees, queue position, and latency, and a known losing strategy shows a loss.
+**Carried over from an article (2026-10-08, `strategy.md`), for the design to weigh:** post only maker entries pay the lower maker fee, but a resting limit order often never fills, and when it does it is often because price is running through it (adverse selection). The simulator should model both: the fills a limit order misses, and the worse average outcome of the fills it gets.
 - [ ] Design it (spec): `/architect scalping simulator`
 
 ### 15. Strategy scoring & promotion gate · needs a decision
@@ -221,6 +222,7 @@ Score every strategy on return after costs, max drawdown, and a risk adjusted ra
 - **Fee hurdle:** short horizon Bitcoin strategies that beat buy and hold on paper were not reliably profitable once fees were counted (Ahmad et al. 2021, PeerJ Computer Science 7:e337). The gate should require the average trade to clear the round trip cost (taker fee twice, about 0.1 %, plus funding) by a clear margin.
 - **Buy and hold benchmark:** most standard indicator rules did not beat simply holding the coin (Ahmed et al. 2020, Finance Research Letters 35:101495). Score every candidate next to holding BTC over the same period, and fail it if it does not beat that.
 - **Overfitting test:** a backtest can look good only because it fits noise. Consider the probability of backtest overfitting test (Gort et al. 2022, arXiv 2209.05559) alongside the out of sample windows.
+- **Maker or taker entries** (from an article, 2026-10-08, `strategy.md`): score each scalping candidate twice, once entering with taker orders and once with post only maker orders. The maker fee lowers the fee hurdle, but only the simulator's fill model (feature 14) says whether the missed fills and adverse selection eat that saving.
 - [ ] Design it (spec): `/architect strategy scoring & promotion gate`
 
 ## Slice 7: First strategies
@@ -238,6 +240,11 @@ A small set of well known scalping ideas (for example order book imbalance, shor
 - **EMA pullback:** on 1 minute candles, 8 EMA above 21 EMA, price pulls back to the 8 EMA with RSI(7) between 30 and 50, enter on a close back above the 8 EMA; stop past the 21 EMA, target 1.5 to 2 times the risk. A natural pair to compare with the VWAP bounce.
 **Also from an article (2026-10-04, NinjaTrader 1 minute scalping, CME focused; its 1 to 5 tick targets cannot clear Kraken's fees, see feature 15's fee hurdle):**
 - **Cumulative delta:** a running total of aggressive buying minus aggressive selling (a trade at the ask adds, one at the bid subtracts). When price keeps rising but delta flattens or falls, the move is losing its buyers. Try it two ways: as a filter that stops other candidates from chasing a fading move, and as a reversal candidate of its own. The recorder already stores trade ticks with their aggressor side, so delta comes from recorded data. It measures actual trades, unlike order book imbalance, which measures resting orders.
+**Also from an article (2026-10-08, `strategy.md`, a general scalping compendium with no backtests or fees; its account sizes, prop firm rules, Nasdaq hours, and pip stops do not carry over):**
+- **Liquidity sweep and structure shift:** price runs past a recent 5 minute high or low and is rejected, then a 1 minute close breaks the nearest micro swing the other way. Enter with a limit order back at the broken level, stop just past the sweep's wick. The recorder sees a sweep directly in the trades and the book, not only in candles. Swings need confirming bars, so the look ahead warning in feature 13 applies.
+- **Bollinger and RSI mean reversion:** Bollinger Bands (20, 2) and RSI(14). Buy when price closes back inside the lower band with RSI under 30 (short in the mirror case), take profit at the middle band, and trade only while the bands are flat. Flat bands are a second range test to compare with the ADX regime gate above. Also worth a try on 15 minute candles in feature 17.
+- **Scaled exit:** close half at 1R, move the stop to breakeven, let the rest run to the opposite 5 minute high or low. Score it against a single exit; breakeven stops often lower the average trade once fees count.
+- **VWAP break and retest:** the short side mirror of the VWAP bounce: price breaks below VWAP, bounces weakly back to it, and is rejected. MACD histogram fading is offered as a confirmation; it adds free parameters, so test it for overfitting.
 - [ ] Design it (spec): `/architect scalping strategy candidates`
 
 ### 17. Hour level strategy candidates · needs a decision
