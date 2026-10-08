@@ -324,7 +324,7 @@ Tracer Bullet: the first milestone puts the real stack on the real box through t
 - [ ] Feature 9 builds `stop`, `resume`, and `flatten` on the ControlActor from this spec and decides how stop and pause combine in `target_trading_state`. It also rewords spec 0004 verify step 21, since stop now answers `failed`/`not_implemented` until then.
 - [ ] Feature 11: test that a crash with an open demo position rebuilds the sandbox position and its stop, or define what happens if it cannot.
 - [ ] Feature 12: alert on `autoheal_gave_up`, `backup_failed`, an unhealthy backup, a deploy `rollback_failed`, disk under 5 GB, a restore drill older than 35 days, and a newest `kfs-vps` snapshot in B2 older than 26 h (seen from outside the VPS, since a compromised VPS can hide snapshots and still report healthy).
-- [ ] Feature 8: local catalog retention on the 50 GB disk (B2 holds the history), and which catalog paths the backup should skip while an hour is still open.
+- [x] Feature 8: local catalog retention on the 50 GB disk (B2 holds the history), and which catalog paths the backup should skip while an hour is still open. Answered by spec [0007](../0007-order-book-recorder/index.md).
 - [ ] Spec 0001: amend the Hosting row (2 vCore, 4 GB, 40 GB plus a 50 GB extra disk, Ubuntu 26.04) and the Backups row (append only VPS key, prune from the laptop). Spec 0003: add `ghcr_token` to the inventory and mark its two Follow-ups (secret placement, two file command) done by this spec.
 - [ ] Watch `docker stats` during the soak. If the trader gets near 1 GB or swap use stays high, revisit the memory limits or the plan size.
 - [ ] Add `shellcheck` to pre-commit and CI for `deploy/` and `scripts/` (pin it like ruff).

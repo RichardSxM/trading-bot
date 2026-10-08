@@ -6,7 +6,9 @@
 # Restores the newest snapshot of host kfs-vps into a throwaway postgres:16 container,
 # runs pg_restore, and compares the row counts and the newest fill time with that snapshot's
 # manifest. Prints PASS or FAIL with the differences, removes the container, and only after a
-# PASS runs the retention: restic forget --keep-daily 14 --keep-weekly 8 --keep-monthly 24 --prune.
+# PASS runs the retention: restic forget --keep-daily 14 --keep-weekly 8 --keep-monthly 24
+# --keep-tag catalog --keep-tag backlog --prune (spec 0007: catalog snapshots are the only copy
+# of old catalog hours; backlog ones hold raw feather not yet converted).
 # The VPS key cannot delete, so this is the only place retention runs.
 #
 # A compromised VPS can hide snapshots or add forged ones, so two checks guard the prune:
@@ -67,7 +69,7 @@ ask() {
 }
 
 RESTIC_HOST=kfs-vps
-RETENTION=(--host "$RESTIC_HOST" --group-by host --keep-daily 14 --keep-weekly 8 --keep-monthly 24)
+RETENTION=(--host "$RESTIC_HOST" --group-by host --keep-daily 14 --keep-weekly 8 --keep-monthly 24 --keep-tag catalog --keep-tag backlog)
 STALE_H=36
 MAX_FORGET=40
 RECENT_DAYS=15
@@ -130,11 +132,13 @@ JQ_EPOCH='def epoch: sub("\\.[0-9]+"; "") | capture("^(?<d>.{19})(?<z>.*)$")
         | (if .s == "-" then -1 else 1 end) * ((.h | tonumber) * 3600 + (.m | tonumber) * 60) end)
     | floor;'
 
-# The newest snapshot by its own time, not restic's order, so its age can be judged.
+# The newest main snapshot by its own time, not restic's order, so its age can be judged. Catalog
+# snapshots (spec 0007 AC-8) hold no dump, so they are never restored or judged here.
 snapshots=$(restic_run snapshots --host "$RESTIC_HOST" --json) ||
     die "could not list snapshots (wrong password, key, or repository?)"
 newest=$(printf '%s' "$snapshots" | jq_run -r "$JQ_EPOCH"'
-    map(. + {epoch: (.time | epoch)}) | max_by(.epoch) // empty | "\(.short_id) \(.epoch) \(.time)"')
+    map(select((.tags // []) | index("catalog") | not))
+    | map(. + {epoch: (.time | epoch)}) | max_by(.epoch) // empty | "\(.short_id) \(.epoch) \(.time)"')
 [ -n "$newest" ] || die "no snapshot for host $RESTIC_HOST yet"
 read -r snapshot snap_epoch snap_time <<<"$newest"
 age_h=$((($(date -u +%s) - snap_epoch) / 3600))

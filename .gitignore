@@ -17,3 +17,7 @@ secrets/
 __pycache__/
 .pytest_cache/
 /data/
+# Catalog days fetched from B2 (scripts/fetch-catalog.sh), never committed
+/catalog/
+/catalog-vps/
+/.fetch-test.*/

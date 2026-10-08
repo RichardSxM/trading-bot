@@ -68,6 +68,25 @@ class Settings(BaseSettings):
         return f"postgresql+psycopg://{user}:{secret}@{self.postgres_host}:{self.postgres_port}/{dbname}"
 
 
+class CatalogDiskSettings(Settings):
+    """The catalog disk limits shared by the recorder and the compactor (spec 0007 AC-6, AC-7).
+
+    Both come from ``base-env``, so each process checks the pair at start: the recorder's hard
+    floor must sit below the free space the compactor's retention keeps.
+    """
+
+    # The free space retention keeps on the catalog's file system (AC-6).
+    catalog_free_floor_gb: Decimal = Field(default=Decimal(8), gt=0)
+    # Below this the recorder stops, or waits at start (AC-7).
+    catalog_hard_floor_gb: Decimal = Field(default=Decimal(2), gt=0)
+
+    @model_validator(mode="after")
+    def _hard_floor_below_free_floor(self) -> Self:
+        if self.catalog_hard_floor_gb >= self.catalog_free_floor_gb:
+            raise ValueError("CATALOG_HARD_FLOOR_GB must be below CATALOG_FREE_FLOOR_GB")
+        return self
+
+
 class PaperLoopSettings(Settings):
     """The placeholder strategy, risk caps, sandbox, and recording settings of the paper loop (spec 0006).
 

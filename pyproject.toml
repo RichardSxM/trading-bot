@@ -53,3 +53,8 @@ warn_required_dynamic_aliases = true
 [[tool.mypy.overrides]]
 module = ["nautilus_trader.*"]
 ignore_missing_imports = true
+
+# pyarrow ships no type information (spec 0007's compactor reads and writes Arrow and Parquet).
+[[tool.mypy.overrides]]
+module = ["pyarrow", "pyarrow.*"]
+ignore_missing_imports = true

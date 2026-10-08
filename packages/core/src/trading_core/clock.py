@@ -18,7 +18,9 @@ from trading_core.settings import TradingEnv
 
 log = logging.getLogger(__name__)
 
-ProcessKind = Literal["node", "dashboard"]  # node = trader and recorder
+# node = trader and recorder. worker = an offline process with no network and no orders (the
+# catalog compactor, spec 0007): like the dashboard, it only warns about the clock.
+ProcessKind = Literal["node", "dashboard", "worker"]
 
 _NTP_EPOCH_DELTA = 2_208_988_800  # seconds between 1900-01-01 and 1970-01-01
 _NTP_PORT = 123
@@ -94,7 +96,7 @@ def enforce(result: ClockResult, kind: ProcessKind, env: TradingEnv, max_offset_
     if abs(result.offset_ms) > max_offset_ms:
         if kind == "node":
             raise ClockCheckFailed(f"clock offset {result.offset_ms:.1f} ms exceeds limit {max_offset_ms} ms")
-        log.warning("clock check: offset over limit, dashboard starts anyway", extra={"fields": fields})
+        log.warning("clock check: offset over limit, starting anyway", extra={"fields": fields})
         return
     level = logging.WARNING if kind == "dashboard" else logging.INFO
     log.log(level, "clock check passed", extra={"fields": fields})

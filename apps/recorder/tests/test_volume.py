@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from recorder import main as recorder_main
-from recorder.main import RecorderSettings
+from recorder.settings import RecorderSettings
 from recorder.volume import MARKER, CatalogVolumeMissing, check_catalog_volume
 
 

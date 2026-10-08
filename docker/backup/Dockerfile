@@ -7,10 +7,11 @@ FROM alpine:3.20 AS runtime
 RUN apk add --no-cache bash jq restic postgresql16-client
 
 # Same uid as the app images: the VPS secret files are owner 10001, mode 0400. Folders created
-# here keep this owner when a named volume first mounts them (/staging), or a drill volume (/restore).
+# here keep this owner when a named volume first mounts them (/staging, /state for the catalog
+# backup state of spec 0007), or a drill volume (/restore).
 RUN adduser -D -H -u 10001 -h /staging app \
-    && mkdir -p /staging /restore \
-    && chown app:app /staging /restore
+    && mkdir -p /staging /restore /state \
+    && chown app:app /staging /restore /state
 
 COPY --chmod=0755 docker/backup/run.sh /usr/local/bin/kfs-backup
 

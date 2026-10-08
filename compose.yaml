@@ -29,6 +29,10 @@ x-base-env: &base-env
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
   CLOCK_SERVERS: ${CLOCK_SERVERS:-0.pool.ntp.org,1.pool.ntp.org,2.pool.ntp.org}
   MAX_CLOCK_OFFSET_MS: ${MAX_CLOCK_OFFSET_MS:-250}
+  # The catalog disk limits (spec 0007): retention keeps the free floor, the recorder stops at the
+  # hard floor. Shared, so the recorder and the compactor each check the pair at start.
+  CATALOG_FREE_FLOOR_GB: ${CATALOG_FREE_FLOOR_GB:-8}
+  CATALOG_HARD_FLOOR_GB: ${CATALOG_HARD_FLOOR_GB:-2}
 
 x-postgres-env: &postgres-env
   POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
@@ -237,6 +241,7 @@ services:
       PROCESS_NAME: recorder
       CATALOG_PATH: /data/catalog
       RECORDER_INSTRUMENTS: ${RECORDER_INSTRUMENTS:-PF_XBTUSD.KRAKEN,PF_ETHUSD.KRAKEN}
+      RECORDER_QUEUE_WARN_PCT: ${RECORDER_QUEUE_WARN_PCT:-50}
       # true on the VPS (compose.vps.yaml): refuse to start without the extra disk's marker (spec 0005).
       CATALOG_REQUIRE_MARKER: ${CATALOG_REQUIRE_MARKER:-false}
     volumes:
@@ -245,8 +250,50 @@ services:
       clock:
         condition: service_healthy
         required: false
-    healthcheck: *node-healthcheck
+    healthcheck:
+      <<: *node-healthcheck
+      # Heartbeat, a book delta file written in the last 60 s, and free space above the hard
+      # floor (spec 0007 AC-7).
+      test: ["CMD", "python", "-m", "recorder.health"]
     mem_limit: 768m
+
+  # Turns closed feather hours into the Parquet catalog (spec 0007). Same image as the recorder,
+  # no network and no secrets; one core at nice 19, so the trader always wins the CPU.
+  compactor:
+    <<: *app
+    image: ${KFS_IMAGE_PREFIX:-kfs/}recorder:${KFS_TAG:-${IMAGE_TARGET:-runtime}}
+    # The lowest priority inside its container; cpu_shares is what yields the CPU to the
+    # recorder and the trader (spec 0007 AC-14).
+    command: ["nice", "-n", "19", "python", "-m", "recorder.compactor.main"]
+    environment:
+      <<: *base-env
+      PROCESS_NAME: compactor
+      CATALOG_PATH: /data/catalog
+      CLOCK_SERVERS: ""  # no network: the worker clock check only warns
+      CATALOG_REQUIRE_MARKER: ${CATALOG_REQUIRE_MARKER:-false}
+      CATALOG_CAP_GB: ${CATALOG_CAP_GB:-30}
+      # Written by the backup's catalog step; retention deletes only hours older than its cutoff.
+      BACKUP_STATE_PATH: /state/catalog_backup.json
+      COMPACTOR_PARQUET_RATIO: ${COMPACTOR_PARQUET_RATIO:-0.042}
+      COMPACTOR_GRACE_S: ${COMPACTOR_GRACE_S:-300}
+      COMPACTOR_INTERVAL_S: ${COMPACTOR_INTERVAL_S:-60}
+      BOOK_SILENCE_GAP_S: ${BOOK_SILENCE_GAP_S:-10}
+      COMPACTOR_REORDER_WINDOW_S: ${COMPACTOR_REORDER_WINDOW_S:-600}
+      COMPACTOR_REORDER_MAX_ROWS: ${COMPACTOR_REORDER_MAX_ROWS:-2000000}
+    volumes:
+      - catalog:/data/catalog
+      - backup-state:/state:ro
+    network_mode: none
+    healthcheck:
+      # The heartbeat is touched every 10 s during a pass and after each one.
+      test: ["CMD", "python", "-m", "trading_core.health", "/run/heartbeat/alive", "180"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    mem_limit: 512m
+    cpus: 1.0
+    cpu_shares: 256  # a quarter of the default weight when the CPUs are busy
 
   dashboard:
     <<: *app
@@ -337,6 +384,8 @@ services:
     # The catalog is added on the VPS only (compose.vps.yaml): the laptop's copy is not the record.
     volumes:
       - backup-staging:/staging
+      # catalog_backup.json, the catalog snapshot's cutoff the compactor's retention reads (spec 0007 AC-8).
+      - backup-state:/state
     # The Postgres password file and the start marker the health check reads; reset on every start.
     tmpfs:
       - /run/kfs:uid=10001,gid=10001,mode=0700
@@ -417,3 +466,4 @@ volumes:
   catalog:
   trader-spool:
   backup-staging:
+  backup-state:
