@@ -37,7 +37,7 @@ Replay the hourly L2 catalog through a fresh `BacktestEngine` per run of clean h
 **Cons**:
 - The engine's queue model gives no credit for cancels ahead of you, so it leans pessimistic.
 - Bound to the engine's behavior in 1.231.0. A Nautilus upgrade can change fills, so the loser band and the determinism test must be rerun on every bump.
-- Python strategy callbacks on a 45 million row day are slow (up to 30 minutes per day).
+- Slow: the gate measured about 19,000 events a second, so a Tardis day takes about 57 minutes and an own day about 104, per variant (parallel units on two workers recover some of it).
 
 ### Option 3: Our own event driven matching simulator
 
@@ -100,7 +100,7 @@ The draft was read by a different model for missing decisions. These fixes came 
 
 Milestone 1 ran `scripts/spikes/0008_gate.py` in the `kfs/trader:dev` image (NautilusTrader 1.231.0) on the laptop. Data: the own recorder hours 2026-10-08 17:00 and 18:00 UTC (BTC only, no gap rows, copied read only from the VPS), and the free Tardis day 2026-10-01 (`incremental_book_L2`, `trades`, `derivative_ticker`). **Result: the gate does not pass.** Three findings need a spec change (the first three below). The rest confirm the design or are build notes for Milestone 2.
 
-**Needs a decision**
+**Needs a decision** (all three resolved, see *Gate decisions* below)
 - **Speed misses AC-16 by about 3.5 times.** The AC-5 venue with a simple taker strategy replays about 19,000 events a second (the engine's compiled code takes about 70 % of the time, the Python hour stream the rest). Own hours 17:00 and 18:00 as one segment: 9,894,163 events in 521 s. At that density an own day takes about 104 minutes. A Tardis day (64.6 million book rows plus trades) takes about 57 minutes. AC-16 asks for under 30 minutes.
 - **Tardis days are full of new snapshots.** 2026-10-01 has 52 snapshot blocks, and 21 of its 24 hours hold one after the first. The pause before a block has a median of 80 ms (one is a real 924 s outage). Under AC-1 each block is a `reconnect` gap, and under AC-4 every hour that touches a gap is dropped, so only 3 hours of that day would replay. The engine also moves every resting order to the front of its queue on any snapshot or `CLEAR` (`_clear_all_queue_positions`), so replaying through a new snapshot would flatter maker fills.
 - **The 6 GB memory limit does not fit the laptop.** The Docker VM has 4 GB (the Mac has 8 GB). Peak RSS was 594 to 613 MB for one or two hours, flat across the run, so the limit can be much lower than 6 GB.
@@ -120,4 +120,22 @@ Milestone 1 ran `scripts/spikes/0008_gate.py` in the `kfs/trader:dev` image (Nau
 - `ArrowSerializer.deserialize` returns pyo3 objects; the engine needs the Cython ones (`OrderBookDelta.from_pyo3_list`, `TradeTick.from_pyo3_list`). Reading an hour in row group batches stays under 600 MB.
 - `engine.run` needs each segment's `start` and `end`. Without `start`, time bar aggregation starts from the 1970 clock origin and fills memory before the first event.
 - The bar aggregator also closes one bar stamped at the run start, built from the snapshot's quote at that same nanosecond. AC-15 already skips the first `lookback_min + hold_min` minutes of a segment, so parity is not affected.
-- The recorded `crypto_perpetual` row has `maker_fee` and `taker_fee` of 0 (Kraken publishes zero fees). AC-11 says the `instruments` row carries "Kraken's real fees" through the pinned JSON, so the pinned file needs the real fee values written in (or AC-11 reworded).
+- The recorded `crypto_perpetual` row has `maker_fee` and `taker_fee` of 0 (Kraken publishes zero fees). AC-11 says the `instruments` row carries "Kraken's real fees" through the pinned JSON, so the pinned file needs the real fee values written in (or AC-11 reworded). Resolved: the pin carries them (see below).
+
+## Gate decisions (2026-10-08)
+
+The engineer chose these four in an `/architect` run right after the gate. The spec was updated in place.
+
+- **Speed: parallel units plus honest bounds.** Work is split into units of one variant over one segment, run on a pool of `LAB_WORKERS` processes (default 2, one per physical core of the laptop), and own segments are split at UTC midnight so units stay bounded. AC-16 now asks for what the engine can do (Tardis day under 75 min, own day under 135 min, per variant) plus proof that the pool works (a two variant Tardis day under 85 min). About 70 % of the time is the engine's compiled code, so the only big lever that leaves fills untouched is running more than one engine at a time. Runner up: relax AC-16 and stay serial (simpler, about half the throughput). Rejected for now: a depth band filter in the stream (large speedup, but it changes what the engine sees and needs its own fidelity proof; kept as a Follow-up).
+- **Snapshots: diff against the carried book.** A mid day Tardis snapshot block is written as the level changes against the book carried so far, never as a `CLEAR`. The resulting book is the same, and since a shrinking level already gives no queue credit, the pessimistic queue stays consistent while resting orders keep their place. A pause of 10 s or more (the existing silence threshold) still makes a `reconnect` gap, so the 924 s outage still drops its hours; on 2026-10-01 about 22 of 24 hours stay instead of 3. The stream refuses any inner `CLEAR` as a backstop, because the engine would reset every queue (`_clear_all_queue_positions`). Runner up: sub hour segments, a fresh engine after each block (honest, but about 50 forced flat closes a day distort a scalper).
+- **Memory: `mem_limit: 3g`, two workers, each under 1 GB RSS.** The Docker VM has 4 GB; peak RSS was about 600 MB per engine, flat. Runner up: 1g and serial (it rules out the speed decision).
+- **Fees: written into the pin.** The pinned JSON carries `maker_fee` 0.0002 and `taker_fee` 0.0005 by hand, so the `instruments` row stays truthful for feature 15. Runner up: store the recorded 0 and keep fees only in the run.
+
+Calls made while writing the update:
+- **A fresh spawned process per unit, scheduled by the parent**: one `multiprocessing.Process` (spawn) per unit, at most `LAB_WORKERS` at once, with results over pipes. Nautilus sets up its logger once per process, forked Rust state is unsafe, and a new process returns all memory between units. The cross check pointed out that `ProcessPoolExecutor` marks the whole pool broken when one worker is killed, which would fail every variant, so the parent schedules the processes itself. Runner up: `ProcessPoolExecutor` with `max_tasks_per_child=1` (less code, but one OOM kill takes down the batch).
+- **The parent builds the bundle.** Each unit returns a picklable `UnitResult` (rows, per fill markouts, order sides, funding inputs, flags, timings). The parent merges a variant's units in segment order and computes fill stats from per fill values (averaging unit means would weight units wrongly), funding, and metrics, then writes one bundle. That keeps all or nothing per variant. Runner up: each worker writes its own partial bundle (breaks atomicity per variant).
+- **The midnight split lives in the pure planner**, so units and `S<n>` tags are fixed by the plan and results cannot depend on the worker count.
+- **The diff is computed at import, by a pure core function.** Runner up: diff in the replay stream (keeps the catalog raw, but every replay pays for it, and the catalog would hold `CLEAR`s the planner must reason about).
+- **Python stream speedups are a build note**, not an AC: they can save at most the stream's roughly 30 % share.
+
+Cross check of the update (2026-10-08, a second model): it named the pool breakage above, plus gaps the engineer had fixed as recommended. Those gaps covered funding inputs sampled inside the unit at each boundary (and a typed error when no rate precedes one), the segment `end` at the final synthetic batch, how the carry and the diff interact, one gap row per pause, the exact rows the inner hour drop may remove, `PYTHONHASHSEED` and merge order, drawdown ties and its first peak, variant write order and log keys, how RSS is logged, signal handling with exit 130, and a count of fills left out of each markout horizon.
