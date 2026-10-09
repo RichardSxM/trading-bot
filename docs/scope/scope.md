@@ -222,7 +222,7 @@ code in `apps/lab`, `packages/core/src/trading_core/lab`
   - [x] Thin thread: `apps/lab` and its Compose service, migration (`run_fill_stats`, `lab_app`), run file, segment planner, hour stream, `random_taker`, bundle into the laptop Postgres, report (AC-3, AC-4, AC-5, AC-7, AC-11, AC-14, AC-16, AC-17)
   - [x] Tardis data and funding: shared hour writer moved to core, `lab import-tardis`, cap and prune, funding payments, the full loser check on a Tardis day (AC-1, AC-2, AC-9, AC-14)
   - [x] Fill realism and variants: `maker_probe`, queue bound, latency sweep, pair entry, segment end close, fill rate and markouts (AC-6, AC-8, AC-10, AC-18)
-  - [ ] Hardening and parity: determinism, failure isolation, the worker pool and the day timings, `fetch-paper-decisions.sh` and the parity check, permission tests (AC-12, AC-13, AC-15, AC-16, AC-17)
+  - [ ] Hardening and parity: determinism, failure isolation, the worker pool and the day timings, `fetch-paper-decisions.sh` and the parity check, permission tests (AC-12, AC-13, AC-15, AC-16, AC-17). Built 2026-10-09: determinism, failure isolation, the worker pool, signals, safety tests (tasks 17, 18, 20). Open: the own day timing (verify.md), and parity (task 19), owed to `/architect` (paper block windows have no end time in the database; the run file to config hash mapping is unnamed)
 - [ ] Verify it: `/check verify scalping simulator`
 - [ ] Test it: `/test scalping simulator`
 - [ ] Review it (fresh model): `/check review scalping simulator`

@@ -94,3 +94,26 @@ _Task 13 ran 2026-10-09 on Tardis 2026-09-01: 1439 trades, net −1,446.54 USD, 
 
 ### Acceptance criteria coverage (Milestone 4)
 - AC-6: variant tests (core), exit 64 steps, the `--sweep-latency` step · AC-8: the segment end tests and the real data step · AC-10: fill stats and markout tests, the `run_fill_stats` query · AC-18: the `--pair-entry` real day batch
+
+## Milestone 5 (hardening, tasks 17, 18, 20) · added 2026-10-09 by /develop
+_Task 19 (parity, AC-15) is not built: the paper block windows have no end time in the database, and the run file to paper config hash mapping is unnamed. It is owed to `/architect` first. Its steps above stay open._
+
+### Commands
+- [ ] `docker compose --profile lab run --rm --no-deps -T --entrypoint pytest lab -q` → 56 pass (adds `test_determinism`, `test_failure`, `test_pool`, `test_safety`) → AC-12, AC-13, AC-16, AC-17
+- [ ] `test_determinism`: the fixture batch with `--queue-bound` under `LAB_WORKERS=1` and `2` (with `base` held back 3 s) gives equal report and bundle JSON once ids and wall clock stamps are removed, and bundles land `base` first → AC-6, AC-12
+- [ ] `test_failure`: `raise_probe` (`LAB_TEST_STRATEGIES=1`) with `--pair-entry` fails `base` with `ProbeError`, no bundle, `entry=taker` completes, exit 1; a worker that exits without a result fails only its variant with `WorkerDiedError`; SIGTERM gives exit 130 and `interrupted` reports for both variants → AC-13
+- [ ] `docker compose run --rm --no-deps -T -w /app/packages/core trader pytest -q -m integration tests/integration/test_roles.py` → `lab_app` is refused UPDATE on `orders`, DELETE on `fills`, INSERT and SELECT on `control_commands` → AC-17
+
+### Real data
+- [ ] `lab replay /app/apps/lab/runs/maker_probe.toml --pair-entry` (2026-09-01, `LAB_WORKERS=2`) → wall clock under 85 min, every `lab_unit_done` `ru_maxrss` under 1 GB, no OOM kill, both units run side by side (their `lab_hour_replayed` lines interleave) → AC-16
+- [ ] Fetch a real own day (`scripts/fetch-catalog.sh --into catalog-lab/own <day> <day>`, replacing the local stand in manifest of 2026-10-08), then `lab replay /app/apps/lab/runs/random_taker_own.toml --from <day> --to <day>` → under 135 min → AC-16
+- [ ] Press Ctrl-C during a real batch → exit 130 within seconds, no `lab-*` worker process left (`docker top`), `index.md` marks the unfinished variants `interrupted`, no new `strategy_runs` row for them → AC-13
+- [ ] During a `--pair-entry` batch, `kill -9` one worker inside the container → only its variant reports `failed` (`WorkerDiedError`), the other completes, exit 1 → AC-13
+
+### Value sourcing checks (Milestone 5 rows)
+- [ ] Worker count: `LAB_WORKERS=1` runs units one at a time (no interleaved `lab_hour_replayed` lines); `LAB_WORKERS=5` refuses to start (1 to 4) → AC-16
+- [ ] Units: `lab_segment_planned` `units` equals segments × variants, and each unit logs its own `variant` and `segment` → AC-16
+- [ ] Write order: reports and bundles land in variant order (`base` first) whatever order the units finish in; `strategy_runs.started_at` order matches → AC-6
+
+### Acceptance criteria coverage (Milestone 5)
+- AC-12: `test_determinism` · AC-13: `test_failure`, `test_pool`, the Ctrl-C and kill steps · AC-16: `test_pool`, the two timings · AC-17: `test_roles`, `test_safety`, exit 78 (`test_runfile`) · AC-15: open (owed to `/architect`)
