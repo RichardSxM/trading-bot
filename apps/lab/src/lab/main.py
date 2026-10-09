@@ -1,12 +1,14 @@
 """The ``lab`` command (spec 0008, *API surface*): ``docker compose run --rm lab <command>``.
 
-Exit codes: 0 done, 1 a variant failed (``replay``) or a day could not be imported
-(``import-tardis``), 2 required days missing, 3 the catalog cap would be passed, 64 bad input
-(every problem listed), 78 ``TRADING_ENV=live`` (the lab only ever runs in demo, AC-17), 130
-interrupted by SIGINT or SIGTERM (``replay``, AC-13).
+Exit codes: 0 done, 1 a variant failed (``replay``), the parity ratio is under 0.95 (``parity``),
+or a day could not be imported (``import-tardis``), 2 required days missing (or, for ``parity``, no
+decision left to compare), 3 the catalog cap would be passed, 64 bad input (every problem listed),
+78 ``TRADING_ENV=live`` (the lab only ever runs in demo, AC-17), 130 interrupted by SIGINT or
+SIGTERM (``replay``, ``parity``, AC-13).
 
-``replay`` runs ``base`` plus the variants its flags add (AC-6); ``parity`` arrives in Milestone 5.
-Only ``replay`` connects to Postgres, so the other commands run with ``--no-deps``.
+``replay`` runs ``base`` plus the variants its flags add (AC-6); ``parity`` replays the paper loop's
+strategy in memory and compares it with the paper decisions (AC-15). Only ``replay`` connects to
+Postgres, so the other commands run with ``--no-deps``.
 """
 
 import argparse
@@ -20,12 +22,15 @@ from typing import Final, NoReturn
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from lab.paper_csv import read_paper_csv
+from lab.parity import parity
 from lab.replay import PostgresStore, replay
 from lab.runfile import Overrides, RunFileError, load_run
 from lab.settings import LabSettings, ProbeSwitch
 from lab.strategies import registry_entry
 from lab.tardis_import import import_tardis, prune
 from trading_core.boot import boot
+from trading_core.lab.parity import ParityInputError
 from trading_core.lab.tardis_days import import_days
 from trading_core.lab.variants import VariantError, VariantSpec, expand_variants
 from trading_core.logs import configure_logging
@@ -66,6 +71,9 @@ def parser() -> argparse.ArgumentParser:
     tardis = commands.add_parser("import-tardis", help="download and convert free Tardis days (first of month)")
     tardis.add_argument("from_", metavar="from", type=_day, help="first UTC day, a first of month")
     tardis.add_argument("to", type=_day, help="last UTC day, a first of month")
+    check = commands.add_parser("parity", help="compare a replay of the paper strategy with the paper decisions")
+    check.add_argument("runfile", type=Path, help="a run file with [paper]")
+    check.add_argument("csv", type=Path, help="the CSV from scripts/fetch-paper-decisions.sh")
     drop = commands.add_parser("prune", help="delete a source tree of the lab catalog")
     drop.add_argument("--source", choices=("tardis", "own"), help="the tree to delete (both without it)")
     return root
@@ -98,7 +106,7 @@ def _replay(args: argparse.Namespace) -> int:
         try:
             variants = expand_variants(
                 run.latency_ms,
-                registry_entry(run.strategy.name, test_strategies=test_strategies).entry_mode(run.strategy.config),
+                registry_entry(run.strategy.name, test_strategies=test_strategies).entry_mode(run.strategy_values()),
                 queue_bound=args.queue_bound,
                 sweep_latency=args.sweep_latency,
                 pair_entry=args.pair_entry,
@@ -134,6 +142,31 @@ def _import_tardis(args: argparse.Namespace) -> int:
     return import_tardis(started.settings, days)
 
 
+def _parity(args: argparse.Namespace) -> int:
+    configure_logging(process=PROCESS, env=os.environ.get("TRADING_ENV", ""))
+    problems: list[str] = []
+    loaded = None
+    paper = None
+    try:
+        loaded = load_run(args.runfile, Overrides())
+    except RunFileError as exc:
+        problems += exc.problems
+    if loaded is not None and loaded.run.paper is None:
+        problems.append(f"{args.runfile}: lab parity needs a run file with [paper]")
+    try:
+        paper = read_paper_csv(args.csv)
+    except ParityInputError as exc:
+        problems += exc.problems
+    if problems or loaded is None or paper is None:
+        for problem in problems:
+            print(f"lab parity: {problem}", file=sys.stderr)
+        log.error("lab_bad_input", extra={"fields": {"problems": problems}})
+        return EXIT_USAGE
+    started = boot("worker", settings_cls=LabSettings)
+    logging.getLogger("trading_core.node.recording").setLevel(logging.WARNING)
+    return parity(started.settings, loaded, paper)
+
+
 def _prune(args: argparse.Namespace) -> int:
     started = boot("worker", settings_cls=LabSettings)
     freed = prune(started.settings, args.source)
@@ -149,6 +182,8 @@ def main(argv: list[str] | None = None) -> NoReturn:
         sys.exit(_replay(args))
     if args.command == "import-tardis":
         sys.exit(_import_tardis(args))
+    if args.command == "parity":
+        sys.exit(_parity(args))
     if args.command == "prune":
         sys.exit(_prune(args))
     sys.exit(EXIT_USAGE)  # unreachable: the subparser is required

@@ -18,7 +18,8 @@ from nautilus_trader.config import StrategyConfig
 
 from lab.probes import RaiseProbe, RaiseProbeConfig
 from trading_core.node.maker_probe import MakerProbe, MakerProbeConfig
-from trading_core.node.placeholder import Record
+from trading_core.node.placeholder import STRATEGY_NAME as PLACEHOLDER
+from trading_core.node.placeholder import PlaceholderConfig, PlaceholderTimed, Record
 from trading_core.node.random_taker import RandomTaker, RandomTakerConfig
 from trading_core.node.strategy import KfsStrategy, PauseGate
 from trading_core.recording.enums import Env
@@ -123,6 +124,24 @@ def _random_taker_fields(context: RunContext) -> dict[str, object]:
     }
 
 
+def _placeholder_fields(context: RunContext) -> dict[str, object]:
+    # The trader's placeholder has no seed: its side comes from the bars (spec 0006).
+    return {
+        "env": context.env.value,
+        "run_id": str(context.run_id),
+        "instrument_id": context.instrument_id,
+        "max_order_notional_usd": str(context.risk.max_order_notional),
+        "max_leverage": str(context.risk.max_leverage),
+        "order_id_tag": context.order_id_tag,
+    }
+
+
+def _placeholder(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
+    if not isinstance(config, PlaceholderConfig):
+        raise TypeError(f"placeholder_timed needs a PlaceholderConfig, not {type(config).__name__}")
+    return PlaceholderTimed(config, gate, blocks, record)
+
+
 def _random_taker(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
     if not isinstance(config, RandomTakerConfig):
         raise TypeError(f"random_taker needs a RandomTakerConfig, not {type(config).__name__}")
@@ -154,6 +173,13 @@ REGISTRY: Final[Mapping[str, StrategyEntry]] = {
         factory=_maker_probe,
         run_fields=_random_taker_fields,
         default_entry_mode="maker",
+    ),
+    # The paper loop's own strategy, for the parity check (AC-15); its run file uses [paper].
+    PLACEHOLDER: StrategyEntry(
+        name=PLACEHOLDER,
+        config_cls=PlaceholderConfig,
+        factory=_placeholder,
+        run_fields=_placeholder_fields,
     ),
 }
 

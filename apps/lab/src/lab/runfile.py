@@ -11,11 +11,18 @@ from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
-from typing import Annotated, Literal, Self
+from typing import Annotated, Final, Literal, Self
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError, model_validator
 
 from lab.strategies import StrategyConfigError, registry_entry
+from trading_core.lab.parity import PaperStrategy, ParityInputError, paper_config
+from trading_core.node.placeholder import STRATEGY_NAME as PLACEHOLDER
+from trading_core.risk.check import RiskLimits
+from trading_core.settings import PaperLoopSettings
+
+# The paper loop's default stop accept timeout (spec 0006); the placeholder needs one in replay.
+STOP_ACCEPT_TIMEOUT_S: Final[Decimal] = PaperLoopSettings.model_fields["stop_accept_timeout_s"].default
 
 
 class RunFileError(Exception):
@@ -63,7 +70,11 @@ class StrategySection(_Section):
 
 
 class RunFile(_Section):
-    """A validated run file. ``from`` is a Python keyword, so the field is ``from_``."""
+    """A validated run file. ``from`` is a Python keyword, so the field is ``from_``.
+
+    The parity run file gives ``[paper]`` (the trader's ``strategy_config()``, verbatim) in place
+    of ``[risk]`` and ``[strategy.config]``, and only for ``placeholder_timed`` (AC-15).
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
@@ -77,8 +88,9 @@ class RunFile(_Section):
     latency_ms: int = Field(ge=0)
     starting_balance_usd: DecimalStr = Field(gt=0)
     leverage: DecimalStr = Field(gt=0)
-    risk: RiskSection
+    risk: RiskSection | None = None
     strategy: StrategySection
+    paper: dict[str, ConfigValue] | None = None
 
     @model_validator(mode="after")
     def _check(self) -> Self:
@@ -88,7 +100,47 @@ class RunFile(_Section):
                 raise ValueError(f"{name} must be in [0, 1), got {fee}")
         if self.from_ > self.to:
             raise ValueError(f"from {self.from_} is after to {self.to}")
+        if self.paper is None:
+            if self.risk is None:
+                raise ValueError("[risk] is missing")
+            return self
+        if self.strategy.name != PLACEHOLDER:
+            raise ValueError(f'[paper] is only for strategy.name = "{PLACEHOLDER}"')
+        if self.risk is not None or self.strategy.config:
+            raise ValueError("[paper] replaces [risk] and [strategy.config]; remove them")
         return self
+
+    def paper_strategy(self) -> PaperStrategy | None:
+        """The ``[paper]`` table as the paper loop's settings; None without one."""
+        return None if self.paper is None else paper_config(self.paper)
+
+    def risk_limits(self) -> RiskLimits:
+        """The ``check_entry`` limits, from ``[risk]`` or ``[paper]``."""
+        paper = self.paper_strategy()
+        if paper is not None:
+            return RiskLimits(max_order_notional=paper.max_order_notional, max_leverage=paper.max_leverage)
+        assert self.risk is not None  # the validator requires one of them
+        return RiskLimits(max_order_notional=self.risk.max_order_notional, max_leverage=self.risk.max_leverage)
+
+    def strategy_values(self) -> dict[str, ConfigValue]:
+        """The strategy's own settings: ``[strategy.config]``, or what ``[paper]`` gives the placeholder."""
+        paper = self.paper_strategy()
+        if paper is None:
+            return dict(self.strategy.config)
+        return {
+            "interval_min": paper.interval_min,
+            "hold_min": paper.hold_min,
+            "lookback_min": paper.lookback_min,
+            "stop_pct": str(paper.stop_pct),
+            "notional_usd": str(paper.notional_usd),
+            "stale_quote_s": str(paper.stale_quote_s),
+            # Not in strategy_config(), so not in the hash; it never changes an entry decision.
+            "stop_accept_timeout_s": str(STOP_ACCEPT_TIMEOUT_S),
+        }
+
+    def version_config(self) -> dict[str, ConfigValue]:
+        """The replay's strategy version config: ``[paper]`` as the trader stores it, else ``[strategy.config]``."""
+        return dict(self.strategy.config if self.paper is None else self.paper)
 
 
 @dataclass(frozen=True)
@@ -160,7 +212,11 @@ def load_run(path: Path, overrides: Overrides, *, test_strategies: bool = False)
     except StrategyConfigError as exc:
         raise RunFileError(exc.problems) from None
     try:
-        entry.check_config(run.strategy.config)
+        values = run.strategy_values()
+    except ParityInputError as exc:
+        raise RunFileError([f"paper: {p}" for p in exc.problems]) from None
+    try:
+        entry.check_config(values)
     except StrategyConfigError as exc:
         raise RunFileError([f"strategy.config: {p}" for p in exc.problems]) from None
     return LoadedRun(path=str(path), sha256=hashlib.sha256(data).hexdigest(), run=run, overrides=overrides.as_dict())

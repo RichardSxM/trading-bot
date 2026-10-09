@@ -52,7 +52,7 @@ from trading_core.lab.fill_stats import EntryFill, EntryOrder, SideStats, fill_s
 from trading_core.lab.funding import FundingPayment, FundingRate, PositionKey, apply_funding
 from trading_core.lab.loser_band import BandTrade, loser_band
 from trading_core.lab.metrics import ClosedTrade, FundingCash, run_metrics
-from trading_core.lab.segments import SegmentPlan, hours_of, plan_segments, required_days
+from trading_core.lab.segments import Segment, SegmentPlan, hours_of, plan_segments, required_days
 from trading_core.lab.variants import BASE, VariantSpec
 from trading_core.node.recording import instrument_row
 from trading_core.recording import repository
@@ -85,7 +85,6 @@ from trading_core.recording.rows import (
     RunRow,
     ns_to_utc,
 )
-from trading_core.risk.check import RiskLimits
 
 if TYPE_CHECKING:
     from _typeshed import DataclassInstance
@@ -133,11 +132,13 @@ class PostgresStore:
             repository.write_run_bundle(session, bundle)
 
 
-def plan_run(tree: SourceTree, loaded: LoadedRun) -> SegmentPlan:
-    """The clean segments of the run's range (AC-4)."""
+def plan_run(
+    tree: SourceTree, loaded: LoadedRun, hours_kept: Callable[[list[int]], list[int]] | None = None
+) -> SegmentPlan:
+    """The clean segments of the run's range (AC-4); ``hours_kept`` narrows the range's hours first (parity, AC-15)."""
     run = loaded.run
     days = required_days(run.source, run.from_, run.to)
-    hours = hours_of(days)
+    hours = hours_of(days) if hours_kept is None else hours_kept(hours_of(days))
     incomplete: set[int] = set()
     for day in days:
         incomplete |= tree.incomplete_hours(day)
@@ -228,8 +229,8 @@ def _run_config(batch: Batch, variant: VariantSpec, *, segment_end_partial: bool
         "starting_balance_usd": run.starting_balance_usd,
         "leverage": run.leverage,
         "risk_limits": {
-            "max_order_notional": run.risk.max_order_notional,
-            "max_leverage": run.risk.max_leverage,
+            "max_order_notional": run.risk_limits().max_order_notional,
+            "max_leverage": run.risk_limits().max_leverage,
         },
         "funding_source": "tardis" if run.source == "tardis" else "none",
         "segments": [[s.start_ns, s.end_ns] for s in batch.plan.segments],
@@ -240,21 +241,24 @@ def _run_config(batch: Batch, variant: VariantSpec, *, segment_end_partial: bool
     }
 
 
-def _strategy_config(batch: Batch, variant: VariantSpec) -> dict[str, ConfigValue]:
-    """``[strategy.config]`` with the variant's entry mode (``entry=taker`` changes only that, AC-6)."""
-    config = dict(batch.loaded.run.strategy.config)
+def _strategy_config(loaded: LoadedRun, variant: VariantSpec) -> dict[str, ConfigValue]:
+    """The strategy's settings with the variant's entry mode (``entry=taker`` changes only that, AC-6)."""
+    config = loaded.run.strategy_values()
     if variant.entry_mode is not None:
         config["entry_mode"] = variant.entry_mode
     return config
 
 
-def _unit_plans(batch: Batch, variant: VariantSpec) -> list[UnitPlan]:
-    run = batch.loaded.run
+def unit_plans(
+    settings: LabSettings, loaded: LoadedRun, segments: Sequence[Segment], variant: VariantSpec
+) -> list[UnitPlan]:
+    """One unit per segment for ``variant``, in segment order."""
+    run = loaded.run
     return [
         UnitPlan(
             variant=variant.name,
             segment=segment,
-            source_root=batch.settings.lab_catalog_dir / run.source,
+            source_root=settings.lab_catalog_dir / run.source,
             instrument_id=run.instrument_id,
             maker_fee=run.maker_fee,
             taker_fee=run.taker_fee,
@@ -262,15 +266,19 @@ def _unit_plans(batch: Batch, variant: VariantSpec) -> list[UnitPlan]:
             queue_position=variant.queue_position,
             starting_balance_usd=run.starting_balance_usd,
             leverage=run.leverage,
-            risk=RiskLimits(max_order_notional=run.risk.max_order_notional, max_leverage=run.risk.max_leverage),
+            risk=run.risk_limits(),
             seed=run.seed,
             strategy_name=run.strategy.name,
-            strategy_config=_strategy_config(batch, variant),
+            strategy_config=_strategy_config(loaded, variant),
             funding=run.source == "tardis",
-            test_strategies=batch.settings.lab_test_strategies,
+            test_strategies=settings.lab_test_strategies,
         )
-        for segment in batch.plan.segments
+        for segment in segments
     ]
+
+
+def _unit_plans(batch: Batch, variant: VariantSpec) -> list[UnitPlan]:
+    return unit_plans(batch.settings, batch.loaded, batch.plan.segments, variant)
 
 
 def build_bundle(
@@ -703,7 +711,7 @@ def replay(
         instrument_row(pinned_instrument(run.instrument_id)),
         run.strategy.name,
         settings.git_commit,
-        dict(run.strategy.config),
+        run.version_config(),
     )
     batch_id = uuid.uuid7()
     batch = Batch(

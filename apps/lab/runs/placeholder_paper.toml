@@ -1,0 +1,28 @@
+# The parity check (spec 0008 AC-15): the paper loop's placeholder_timed over the own recorder hours
+# the paper loop ran through. Run: lab parity apps/lab/runs/placeholder_paper.toml <csv>
+source = "own"                       # parity compares with paper, so own hours only
+instrument_id = "PF_XBTUSD.KRAKEN"
+from = 2026-10-08                    # UTC day, inclusive: days both in catalog-lab/own and the CSV
+to = 2026-10-08                      # UTC day, inclusive
+seed = 7                             # unused by the placeholder (it has no random draw)
+maker_fee = "0.0002"                 # the paper sandbox's fees (SANDBOX_*_FEE)
+taker_fee = "0.0005"
+latency_ms = 25
+starting_balance_usd = "1000"        # SANDBOX_STARTING_BALANCE_USD
+leverage = "2"
+
+[strategy]
+name = "placeholder_timed"
+
+# The VPS trader's strategy_config() verbatim: the same names, integers as integers, decimals as
+# the strings it stores. Copy it from strategy_versions.config (the CSV's run rows carry it), so
+# its sha256 equals the paper runs' config_sha256.
+[paper]
+placeholder_interval_min = 15
+placeholder_hold_min = 10
+placeholder_lookback_min = 5
+placeholder_stop_pct = "0.3"
+placeholder_notional_usd = "100"
+risk_max_order_notional_usd = "250"
+risk_max_leverage = "2"
+risk_stale_quote_s = "10"
