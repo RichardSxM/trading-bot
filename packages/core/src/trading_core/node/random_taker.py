@@ -32,7 +32,8 @@ from nautilus_trader.model.events import (
 )
 from nautilus_trader.model.identifiers import ClientOrderId, InstrumentId
 from nautilus_trader.model.instruments import Instrument
-from nautilus_trader.model.objects import Currency
+from nautilus_trader.model.objects import Currency, Quantity
+from nautilus_trader.model.orders.base import Order
 from nautilus_trader.model.position import Position
 
 from trading_core.node.placeholder import Record
@@ -82,6 +83,9 @@ class RandomTakerConfig(StrategyConfig, frozen=True):
 
 class RandomTaker(KfsStrategy):
     """Enters at market on a random side every boundary while flat, exits at market after ``hold_s``."""
+
+    # Timers of one round trip, cancelled when it ends (the boundary timer keeps running).
+    _round_trip_timers: tuple[str, ...] = (_HOLD, _EXIT_RETRY)
 
     def __init__(self, config: RandomTakerConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> None:
         super().__init__(config, gate)
@@ -177,17 +181,25 @@ class RandomTaker(KfsStrategy):
                 {"reason": reason},
             )
             return
-        order = self.order_factory.market(
-            self._instrument_id,
-            NautilusOrderSide.BUY if side == OrderSide.BUY else NautilusOrderSide.SELL,
-            instrument.make_qty(quantity),
-            time_in_force=TimeInForce.GTC,
-            tags=[f"{DECISION_TAG}{decision}"],
-        )
+        order = self._entry_order(side, instrument.make_qty(quantity), quote, decision)
         self.phase = Phase.ENTERING
         self._entry_decision = decision
         self._entry_id = order.client_order_id
         self.submit_order(order)
+        self._entry_submitted()
+
+    def _entry_order(self, side: OrderSide, quantity: Quantity, quote: QuoteTick, decision: UUID) -> Order:
+        """The entry: a market order (a subclass may enter otherwise)."""
+        return self.order_factory.market(
+            self._instrument_id,
+            NautilusOrderSide.BUY if side == OrderSide.BUY else NautilusOrderSide.SELL,
+            quantity,
+            time_in_force=TimeInForce.GTC,
+            tags=[f"{DECISION_TAG}{decision}"],
+        )
+
+    def _entry_submitted(self) -> None:
+        """Called right after the entry is submitted; a market entry needs nothing more."""
 
     # Order events ---------------------------------------------------------------------------
 
@@ -277,7 +289,7 @@ class RandomTaker(KfsStrategy):
     # Helpers --------------------------------------------------------------------------------
 
     def _back_to_flat(self) -> None:
-        for name in (_HOLD, _EXIT_RETRY):
+        for name in self._round_trip_timers:
             self._cancel_timer(name)
         self._reset()
 
