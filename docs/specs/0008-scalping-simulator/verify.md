@@ -69,3 +69,28 @@ _The `lab` service's entrypoint is `lab`, so its tests run with `--entrypoint py
 - [ ] Spread at submit: the loser band uses the quote at each order's creation; set `latency_ms = 0` and the expected value barely moves (spreads come from submit time, not fill time) → AC-14
 - [ ] Segments end with the data: no fill's `filled_ns` is after the last delta of the segment's last hour → AC-4
 - [ ] `run_config` carries `funding_source = "none"`, `queue_model = "pessimistic"`, the run file's sha256, and `nautilus_version` 1.231.0 → AC-9, AC-11
+
+## Milestone 3 result and Milestone 4 (fill realism and variants) · added 2026-10-09 by /develop
+_Task 13 ran 2026-10-09 on Tardis 2026-09-01: 1439 trades, net −1,446.54 USD, expected −1.0099 per trade, band −1.0597 to −0.9601, mean −1.0052, **pass**; the unit took 3,868 s for 40.5 M events with `ru_maxrss` 806 MB. It wrote no funding row: `random_taker` enters on whole minutes and holds 30 s, so it is flat at every hourly boundary. With the segment end close, the Milestone 2 step "no fill's `filled_ns` is after the last delta" now holds for every fill except the `segment_end` close, which fills at the last delta + latency._
+
+### Commands
+- [ ] `docker compose run --rm --no-deps -T -w /app/packages/core trader pytest -q tests/test_lab_variants.py tests/test_lab_markouts.py tests/test_lab_fill_stats.py` → all pass → AC-6, AC-10
+- [ ] `docker compose --profile lab run --rm --no-deps -T --entrypoint pytest lab -q` → 48 pass (adds the segment end close, the rest at the last mid, the final batch, and `maker_probe` with `entry=taker`) → AC-6, AC-8, AC-10, AC-18
+- [ ] `docker compose run --rm --no-deps lab replay /app/apps/lab/runs/random_taker.toml --pair-entry` → exit 64, "the strategy has no entry_mode setting" → AC-6
+- [ ] `maker_probe.toml` with `entry_mode = "taker"` and `--pair-entry` → exit 64, "already sets entry_mode" → AC-6
+- [ ] `random_taker_own.toml --sweep-latency` with `latency_ms = 0` → `lab_segment_planned` lists only `base` → AC-6
+
+### Real data
+- [ ] `lab replay /app/apps/lab/runs/maker_probe.toml --pair-entry` on 2026-09-01 → one `batch_id`, `base.md` and `entry-taker.md`; `index.md` shows net P&L, fees, trades, maker and taker fill rate, and markouts at 1 / 5 / 30 s side by side; `base` maker fill rate under 100 %, `entry=taker` taker fill rate 100 % → AC-6, AC-10, AC-18
+- [ ] `select liquidity, orders_placed, orders_filled, fill_rate, markout_1s_bps, markout_5s_bps, markout_30s_bps from run_fill_stats where run_id = '<base run>'` → a `maker` row (and a `taker` row only if some post only entry filled as taker) → AC-10
+- [ ] A Tardis run with `hold_s = 3600` (copy `random_taker.toml`) → a `funding_payments` row with source `computed` per hour held, and `positions.funding_total` equal to their sum → AC-9
+- [ ] In any replay, each segment's last decision with an open position is intent `exit`, reason `segment_end`, its order reduce only and filled; `positions` has no `open` row; `run_config.segment_end_partial` is `false` → AC-8
+
+### Value sourcing checks (Milestone 4 rows)
+- [ ] Maker or taker for an entry order: a post only entry that filled is `maker` in its fill's `liquidity`; an unfilled one counts in `orders_placed` of `maker` only → AC-10
+- [ ] Entry or exit: exit orders (`time` and `segment_end` decisions) never appear in `run_fill_stats` counts → AC-10
+- [ ] Mid at t: a markout uses the last quote at or before `fill_ns + h`; a fill less than 30 s before its segment's last delta is counted in the report's "Left out" column for 30 s → AC-10
+- [ ] Segment end close price: the close fills against the last book (its `price` within the last quote's spread); only when the book cannot fill it does a `-rest` fill at the last mid appear → AC-8
+
+### Acceptance criteria coverage (Milestone 4)
+- AC-6: variant tests (core), exit 64 steps, the `--sweep-latency` step · AC-8: the segment end tests and the real data step · AC-10: fill stats and markout tests, the `run_fill_stats` query · AC-18: the `--pair-entry` real day batch
