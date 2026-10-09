@@ -39,7 +39,7 @@ _Steps derived from spec 0008 acceptance criteria. `/check verify` runs these; `
 
 ## Parity
 - [ ] `scripts/fetch-paper-decisions.sh <from> <to>` over a period the paper loop ran → CSV in `lab-reports/paper/` with `decision` rows (with `risk_reason`) and `run` rows (with `config` and `config_sha256`) → AC-15
-- [ ] `fetch-catalog.sh --into catalog-lab/own <from> <to>`, then `lab parity apps/lab/runs/placeholder_paper.toml lab-reports/paper/<from>_<to>.csv` → ratio ≥ 0.95, unmatched decisions listed → AC-15
+- [ ] `fetch-catalog.sh --into catalog-lab/own <from> <to>`, set `from`/`to` in `apps/lab/runs/placeholder_paper.toml`, then `docker compose run --rm --no-deps -T lab parity runs/placeholder_paper.toml /lab-reports/paper/<from>_<to>.csv` → `parity` line with ratio ≥ 0.95, unmatched decisions listed, exit 0 → AC-15
 
 ## Safety
 - [ ] `docker compose run --rm -e TRADING_ENV=live lab replay apps/lab/runs/random_taker.toml` → exit 78 → AC-17
@@ -98,10 +98,10 @@ _Task 13 ran 2026-10-09 on Tardis 2026-09-01: 1439 trades, net −1,446.54 USD, 
 ## Milestone 5 (hardening, tasks 17, 18, 20) · added 2026-10-09 by /develop
 _Task 18 timing ran 2026-10-09 (batch `01a120b3…`): `maker_probe --pair-entry` on Tardis 2026-09-01 with 2 workers took 28.8 min wall clock (bound 85), each unit 40.5 M events in 1,621 s and 1,708 s side by side, `ru_maxrss` 699 MB and 706 MB (bound 1 GB), no OOM kill, exit 0. `base`: net −682.16 USD, 877 trades, maker fill rate 60.9 %, maker markouts −0.64 / −0.73 / −0.65 bps. `entry=taker`: net −1,446.54 USD, 1439 trades, taker markouts −0.15 / −0.14 / +0.07 bps; its P&L equals task 13's `random_taker` run, as the same seed and timing should give._
 
-_Task 19 (parity, AC-15) is not built yet. Its design was decided 2026-10-09 (excluded boundaries from paper refusals, a verbatim `[paper]` table for the config hash; see `rationale.md`), so it is ready to build. Its steps above stay open._
+_Task 19 (parity, AC-15) built 2026-10-09 (commit `5cf1f9f`). Real check the same day: `fetch-paper-decisions.sh 2026-10-08 2026-10-08` gave 4 paper runs (all with the run file's config hash) and 153 decisions (95 `enter`, 32 of them refused `paused`). `lab parity` over the own hours of 2026-10-08 (4 segments; skipped: 6 `missing` before the recorder started at 06:00, 3 `gap:reconnect`, 1 `gap:recorder_down`) printed `parity 1.0000 (17 matched; paper 17, replay 17; 27 boundaries excluded; 0 runs left out)`, exit 0, 15.2 min wall with 2 workers. The sample is small (warm up and gaps cut most boundaries); rerun over more days once they close. Caveat: 2026-10-08 has no VPS manifest (the compactor closes a day only when all 24 hours are covered, and recording began at 06:00), so the run used the local stand in manifest with the real hour files and gap file._
 
 ### Commands
-- [ ] `docker compose --profile lab run --rm --no-deps -T --entrypoint pytest lab -q` → 56 pass (adds `test_determinism`, `test_failure`, `test_pool`, `test_safety`) → AC-12, AC-13, AC-16, AC-17
+- [ ] `docker compose --profile lab run --rm --no-deps -T --entrypoint pytest lab -q` → 66 pass (adds `test_determinism`, `test_failure`, `test_pool`, `test_safety`, and task 19's `test_parity`) → AC-12, AC-13, AC-16, AC-17
 - [ ] `test_determinism`: the fixture batch with `--queue-bound` under `LAB_WORKERS=1` and `2` (with `base` held back 3 s) gives equal report and bundle JSON once ids and wall clock stamps are removed, and bundles land `base` first → AC-6, AC-12
 - [ ] `test_failure`: `raise_probe` (`LAB_TEST_STRATEGIES=1`) with `--pair-entry` fails `base` with `ProbeError`, no bundle, `entry=taker` completes, exit 1; a worker that exits without a result fails only its variant with `WorkerDiedError`; SIGTERM gives exit 130 and `interrupted` reports for both variants → AC-13
 - [ ] `docker compose run --rm --no-deps -T -w /app/packages/core trader pytest -q -m integration tests/integration/test_roles.py` → `lab_app` is refused UPDATE on `orders`, DELETE on `fills`, INSERT and SELECT on `control_commands` → AC-17
@@ -118,4 +118,10 @@ _Task 19 (parity, AC-15) is not built yet. Its design was decided 2026-10-09 (ex
 - [ ] Write order: reports and bundles land in variant order (`base` first) whatever order the units finish in; `strategy_runs.started_at` order matches → AC-6
 
 ### Acceptance criteria coverage (Milestone 5)
-- AC-12: `test_determinism` · AC-13: `test_failure`, `test_pool`, the Ctrl-C and kill steps · AC-16: `test_pool`, the two timings · AC-17: `test_roles`, `test_safety`, exit 78 (`test_runfile`) · AC-15: open (decided 2026-10-09, task 19 ready to build)
+- AC-12: `test_determinism` · AC-13: `test_failure`, `test_pool`, the Ctrl-C and kill steps · AC-16: `test_pool`, the two timings · AC-17: `test_roles`, `test_safety`, exit 78 (`test_runfile`) · AC-15: `test_lab_parity` (core), `test_parity`, the two Parity steps (passed 2026-10-09 on 2026-10-08)
+
+### Value sourcing checks (task 19, parity)
+- [ ] Paper decisions and run windows: the CSV's `run` rows match `strategy_runs` (mode `paper`, `placeholder_timed`) for the days, a run still going ends at the export time, and `decision` rows carry `risk_reason` → AC-15
+- [ ] Excluded boundaries: a paper `enter` refused `paused` or `blocked:*` counts under "boundaries excluded" and never shows as unmatched, and the replay decision at that boundary is gone too → AC-15
+- [ ] Config hash: change one `[paper]` value (for example `placeholder_stop_pct = "0.5"`) → `parity_config_mismatch` names that key per run, those runs are "left out", exit 2 when none is left → AC-15
+- [ ] Paper strategy config: `[paper]` beside `[risk]`, or with another `strategy.name`, exits 64; a run file without `[paper]` given to `lab parity` exits 64 → AC-15
