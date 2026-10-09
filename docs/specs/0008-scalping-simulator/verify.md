@@ -96,6 +96,8 @@ _Task 13 ran 2026-10-09 on Tardis 2026-09-01: 1439 trades, net −1,446.54 USD, 
 - AC-6: variant tests (core), exit 64 steps, the `--sweep-latency` step · AC-8: the segment end tests and the real data step · AC-10: fill stats and markout tests, the `run_fill_stats` query · AC-18: the `--pair-entry` real day batch
 
 ## Milestone 5 (hardening, tasks 17, 18, 20) · added 2026-10-09 by /develop
+_Task 18 timing ran 2026-10-09 (batch `01a120b3…`): `maker_probe --pair-entry` on Tardis 2026-09-01 with 2 workers took 28.8 min wall clock (bound 85), each unit 40.5 M events in 1,621 s and 1,708 s side by side, `ru_maxrss` 699 MB and 706 MB (bound 1 GB), no OOM kill, exit 0. `base`: net −682.16 USD, 877 trades, maker fill rate 60.9 %, maker markouts −0.64 / −0.73 / −0.65 bps. `entry=taker`: net −1,446.54 USD, 1439 trades, taker markouts −0.15 / −0.14 / +0.07 bps; its P&L equals task 13's `random_taker` run, as the same seed and timing should give._
+
 _Task 19 (parity, AC-15) is not built: the paper block windows have no end time in the database, and the run file to paper config hash mapping is unnamed. It is owed to `/architect` first. Its steps above stay open._
 
 ### Commands
