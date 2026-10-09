@@ -28,13 +28,15 @@ from lab.report import BandReport, ErrorInfo, LabReport, Results, index_markdown
 from lab.runfile import LoadedRun
 from lab.settings import LabSettings
 from lab.units import TRADER_ID, UnitPlan, UnitResult, run_unit
+from trading_core.lab.funding import FundingPayment, FundingRate, PositionKey, apply_funding
 from trading_core.lab.loser_band import BandTrade, loser_band
-from trading_core.lab.metrics import ClosedTrade, run_metrics
+from trading_core.lab.metrics import ClosedTrade, FundingCash, run_metrics
 from trading_core.lab.segments import SegmentPlan, hours_of, plan_segments, required_days
 from trading_core.node.recording import instrument_row
 from trading_core.recording import repository
 from trading_core.recording.enums import (
     Env,
+    FundingSource,
     OrderSide,
     PositionSide,
     PositionStatus,
@@ -45,6 +47,7 @@ from trading_core.recording.enums import (
 )
 from trading_core.recording.rows import (
     FillRow,
+    FundingRow,
     JsonValue,
     PositionRow,
     RunBundle,
@@ -104,7 +107,7 @@ def _merged[R](
 
 
 def _band_trades(
-    positions: Sequence[PositionRow], fills: Sequence[FillRow], spreads: dict[str, Decimal]
+    positions: Sequence[PositionRow], fills: Sequence[FillRow], spreads: dict[str, Decimal], funded: set[UUID]
 ) -> list[BandTrade]:
     by_position: dict[UUID, list[FillRow]] = {}
     for fill in fills:
@@ -128,6 +131,7 @@ def _band_trades(
                 entry_spread=spreads.get(entries[0].client_order_id, Decimal(0)),
                 exit_spread=spreads.get(exits[0].client_order_id, Decimal(0)),
                 net_pnl=position.realized_pnl + position.funding_total,
+                crosses_funding=position.id in funded,
             )
         )
     return trades
@@ -143,6 +147,8 @@ class Batch:
     plan: SegmentPlan
     version_id: UUID
     folder: Path
+    # The run's funding_rate_update rows (``tardis`` runs; none for ``own``), by time (AC-9).
+    funding_rates: tuple[FundingRate, ...] = ()
 
 
 def _run_config(batch: Batch, variant: Variant) -> dict[str, JsonValue]:
@@ -193,6 +199,7 @@ def _unit_plans(batch: Batch, variant: Variant) -> list[UnitPlan]:
             seed=run.seed,
             strategy_name=run.strategy.name,
             strategy_config=dict(run.strategy.config),
+            funding=run.source == "tardis",
         )
         for segment in batch.plan.segments
     ]
@@ -211,12 +218,14 @@ def build_bundle(
     fills = _stamp(_merged(units, lambda u: u.fills, lambda r: r.filled_ns), run_id)
     positions = _stamp(_merged(units, lambda u: u.positions, lambda r: r.opened_ns), run_id)
     spreads = {coid: spread for unit in units for coid, spread in unit.spreads.items()}
+    payments = apply_funding([s for unit in units for s in unit.funding_samples], batch.funding_rates)
+    positions, funding = _with_funding(positions, payments, run_id, run.instrument_id)
 
     closed = [p for p in positions if p.status == PositionStatus.CLOSED]
     metrics = run_metrics(
         run.starting_balance_usd,
-        [ClosedTrade(closed_ns=p.last_event_ns, realized_pnl=p.realized_pnl, fees=p.fees_total) for p in closed],
-        [],
+        [ClosedTrade(p.last_event_ns, p.realized_pnl, p.fees_total, p.funding_total) for p in closed],
+        [FundingCash(paid_ns=f.paid_ns, amount=f.amount) for f in funding],
         sum((f.fee for f in fills), Decimal(0)),
     )
     segments = batch.plan.segments
@@ -255,6 +264,7 @@ def build_bundle(
         order_events=order_events,
         fills=fills,
         positions=positions,
+        funding=funding,
         risk_events=risk_events,
     )
     results = Results(
@@ -269,7 +279,8 @@ def build_bundle(
     )
     band = None
     if run.strategy.name == LOSER_STRATEGY:
-        checked = loser_band(_band_trades(positions, fills, spreads), run.taker_fee)
+        funded = {f.position_id for f in funding if f.position_id is not None}
+        checked = loser_band(_band_trades(positions, fills, spreads, funded), run.taker_fee)
         band = BandReport(
             trades_used=checked.trades_used,
             total_net=checked.total_net,
@@ -281,6 +292,38 @@ def build_bundle(
             passed=checked.passed,
         )
     return bundle, results, band
+
+
+def _with_funding(
+    positions: Sequence[PositionRow], payments: Sequence[FundingPayment], run_id: UUID, instrument_id: str
+) -> tuple[list[PositionRow], list[FundingRow]]:
+    """Each payment as a ``computed`` funding row of its position, and each position's ``funding_total``.
+
+    ``realized_pnl`` stays before funding, as in paper (AC-9).
+    """
+    by_key = {PositionKey(p.position_ref, p.opened_ns): p for p in positions}
+    rows: list[FundingRow] = []
+    totals: dict[UUID, Decimal] = {}
+    for payment in payments:
+        position = by_key.get(payment.position)
+        if position is None:
+            raise LookupError(f"funding at {payment.boundary_ns} for a position not recorded: {payment.position}")
+        rows.append(
+            FundingRow(
+                env=Env.DEMO,
+                run_id=run_id,
+                position_id=position.id,
+                instrument_id=instrument_id,
+                amount=payment.amount,
+                currency="USD",
+                rate=payment.rate,
+                source=FundingSource.COMPUTED,
+                paid_ns=payment.boundary_ns,
+            )
+        )
+        totals[position.id] = totals.get(position.id, Decimal(0)) + payment.amount
+    updated = [replace(p, funding_total=totals[p.id]) if p.id in totals else p for p in positions]
+    return updated, rows
 
 
 def _report(
@@ -392,6 +435,7 @@ def replay(
 
     batch_id = uuid.uuid7()
     batch = Batch(
+        funding_rates=tuple(tree.funding_rates(days)) if run.source == "tardis" else (),
         batch_id=batch_id,
         loaded=loaded,
         settings=settings,

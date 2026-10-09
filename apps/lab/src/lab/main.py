@@ -1,10 +1,11 @@
 """The ``lab`` command (spec 0008, *API surface*): ``docker compose run --rm lab <command>``.
 
-Exit codes: 0 done, 1 a variant failed, 2 required days missing, 64 bad input (every problem
-listed), 78 ``TRADING_ENV=live`` (the lab only ever runs in demo, AC-17).
+Exit codes: 0 done, 1 a variant failed (``replay``) or a day could not be imported
+(``import-tardis``), 2 required days missing, 3 the catalog cap would be passed, 64 bad input
+(every problem listed), 78 ``TRADING_ENV=live`` (the lab only ever runs in demo, AC-17).
 
-Milestone 2 has ``replay`` with the ``base`` variant; ``import-tardis``, ``prune``, ``parity``,
-and the variant flags arrive in later milestones.
+``replay`` runs the ``base`` variant; ``parity`` and the variant flags arrive in later milestones.
+Only ``replay`` connects to Postgres, so the other commands run with ``--no-deps``.
 """
 
 import argparse
@@ -21,7 +22,9 @@ from sqlalchemy.orm import sessionmaker
 from lab.replay import replay
 from lab.runfile import Overrides, RunFileError, load_run
 from lab.settings import LabSettings
+from lab.tardis_import import import_tardis, prune
 from trading_core.boot import boot
+from trading_core.lab.tardis_days import import_days
 from trading_core.logs import configure_logging
 from trading_core.secrets import POSTGRES_PASSWORD
 
@@ -59,6 +62,11 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--queue-bound", action="store_true", help="add the queue=optimistic variant")
     run.add_argument("--sweep-latency", action="store_true", help="add the latency=0 and latency=4x variants")
     run.add_argument("--pair-entry", action="store_true", help="add the entry=taker variant")
+    tardis = commands.add_parser("import-tardis", help="download and convert free Tardis days (first of month)")
+    tardis.add_argument("from_", metavar="from", type=_day, help="first UTC day, a first of month")
+    tardis.add_argument("to", type=_day, help="last UTC day, a first of month")
+    drop = commands.add_parser("prune", help="delete a source tree of the lab catalog")
+    drop.add_argument("--source", choices=("tardis", "own"), help="the tree to delete (both without it)")
     return root
 
 
@@ -100,12 +108,35 @@ def _replay(args: argparse.Namespace) -> int:
         engine.dispose()
 
 
+def _import_tardis(args: argparse.Namespace) -> int:
+    configure_logging(process=PROCESS, env=os.environ.get("TRADING_ENV", ""))
+    try:
+        days = import_days(args.from_, args.to)
+    except ValueError as exc:
+        print(f"lab import-tardis: {exc}", file=sys.stderr)
+        log.error("lab_bad_input", extra={"fields": {"problems": [str(exc)]}})
+        return EXIT_USAGE
+    started = boot("worker", settings_cls=LabSettings)
+    return import_tardis(started.settings, days)
+
+
+def _prune(args: argparse.Namespace) -> int:
+    started = boot("worker", settings_cls=LabSettings)
+    freed = prune(started.settings, args.source)
+    print(f"freed {freed} bytes")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> NoReturn:
     """Entry point of the ``lab`` console script."""
     _refuse_live()
     args = parser().parse_args(argv)
     if args.command == "replay":
         sys.exit(_replay(args))
+    if args.command == "import-tardis":
+        sys.exit(_import_tardis(args))
+    if args.command == "prune":
+        sys.exit(_prune(args))
     sys.exit(EXIT_USAGE)  # unreachable: the subparser is required
 
 

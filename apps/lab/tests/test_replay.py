@@ -1,9 +1,11 @@
 """covers: spec 0008 AC-3 (missing days exit 2, nothing written), AC-4 and AC-7 (the fixture's back to back hours as one
-segment, S<n> order tags), AC-5 (fees, latency, quotes), AC-11 (bundle and reports), AC-14 (the band on real data).
+segment, S<n> order tags), AC-5 (fees, latency, quotes), AC-9 (funding samples and payments), AC-11 (bundle and
+reports), AC-14 (the band on real data).
 
 The fixture is 17:55 to 18:05 UTC of real own recorder data (see fixtures/make_fixtures.py).
 """
 
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from decimal import ROUND_HALF_EVEN, Decimal
 from pathlib import Path
@@ -17,8 +19,10 @@ from lab.catalog import SourceTree
 from lab.replay import BASE, Batch, Variant, _unit_plans, build_bundle, plan_run, replay
 from lab.runfile import LoadedRun, Overrides, load_run
 from lab.units import UNIT_RUN_ID, UnitResult, run_unit
+from trading_core.lab.errors import FundingRateMissingError
+from trading_core.lab.funding import FundingRate, FundingSample, PositionKey
 from trading_core.recording import models
-from trading_core.recording.enums import Intent, Liquidity, PositionStatus
+from trading_core.recording.enums import FundingSource, Intent, Liquidity, PositionSide, PositionStatus
 from trading_core.recording.mappers import decision_id
 from trading_core.secrets import POSTGRES_PASSWORD, read_secret
 from trading_core.settings import Settings
@@ -142,6 +146,72 @@ def test_the_bundle_stamps_one_run_id_and_scores_the_variant(batch, unit):
     assert band.trades_used == len(closed)
     for order in bundle.orders:
         assert decision_id([f"decision:{order.decision_id}"]) == order.decision_id
+
+
+def test_an_own_run_samples_no_funding(unit):
+    assert unit.funding_samples == ()
+
+
+def test_a_tardis_unit_samples_the_mid_and_position_at_each_boundary_inside_it(batch):
+    (plan,) = _unit_plans(batch, Variant(name=BASE, latency_ms=25, queue_position=True))
+
+    funded = run_unit(replace(plan, funding=True))
+
+    # The segment is 17:55 to 18:05 of data: 18:00 is its only boundary.
+    (sample,) = funded.funding_samples
+    assert sample.boundary_ns == H18
+    assert Decimal(50_000) < sample.mid < Decimal(200_000)
+    held = [
+        row
+        for _, row in funded.positions
+        if row.opened_ns <= H18 and (row.closed_at is None or row.last_event_ns > H18)
+    ]
+    if sample.position is None:
+        assert sample.signed_qty == 0
+    else:
+        (position,) = [p for p in held if PositionKey(p.position_ref, p.opened_ns) == sample.position]
+        sign = 1 if position.side == PositionSide.LONG else -1
+        assert sample.signed_qty == sign * position.peak_qty
+
+
+def _funded(batch, unit, rate_ts=0):
+    closed = next(row for _, row in unit.positions if row.status == PositionStatus.CLOSED)
+    sign = 1 if closed.side == PositionSide.LONG else -1
+    key = PositionKey(closed.position_ref, closed.opened_ns)
+    sample = FundingSample(closed.opened_ns + 1, Decimal(60_000), sign * closed.peak_qty, key)
+    rates = (FundingRate(rate_ts, Decimal("0.0001")),)
+    return closed, replace(batch, funding_rates=rates), replace(unit, funding_samples=(sample,))
+
+
+def test_funding_payments_go_into_the_bundle_the_position_and_the_results(batch, unit):
+    closed, funded_batch, funded_unit = _funded(batch, unit)
+    now = datetime.now(UTC)
+    variant = Variant(name=BASE, latency_ms=25, queue_position=True)
+    _, plain_results, plain_band = build_bundle(batch, variant, [unit], started_at=now, ended_at=now)
+
+    bundle, results, band = build_bundle(funded_batch, variant, [funded_unit], started_at=now, ended_at=now)
+
+    sign = 1 if closed.side == PositionSide.LONG else -1
+    amount = -sign * closed.peak_qty * Decimal(60_000) * Decimal("0.0001")
+    (row,) = bundle.funding
+    assert (row.source, row.rate, row.amount) == (FundingSource.COMPUTED, Decimal("0.0001"), amount)
+    assert row.run_id == bundle.run.id
+    (position,) = [p for p in bundle.positions if p.id == row.position_id]
+    assert (position.position_ref, position.funding_total) == (closed.position_ref, amount)
+    assert position.realized_pnl == closed.realized_pnl  # before funding, as in paper
+    assert results.funding_total == amount
+    assert results.net_pnl == plain_results.net_pnl + amount
+    assert band is not None
+    assert plain_band is not None
+    assert band.trades_used == plain_band.trades_used - 1  # a trade across a funding boundary leaves the band
+
+
+def test_a_boundary_without_an_earlier_rate_fails_the_bundle(batch, unit):
+    _, funded_batch, funded_unit = _funded(batch, unit, rate_ts=H18 + HOUR)
+    now = datetime.now(UTC)
+
+    with pytest.raises(FundingRateMissingError):
+        build_bundle(funded_batch, Variant(BASE, 25, True), [funded_unit], started_at=now, ended_at=now)
 
 
 @pytest.mark.postgres

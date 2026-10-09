@@ -34,6 +34,7 @@ from lab.instruments import with_fees
 from lab.strategies import ConfigValue, RunContext, registry_entry
 from lab.stream import SegmentStream, rss_bytes
 from trading_core.lab.errors import RecordingFailedError
+from trading_core.lab.funding import FundingSample, funding_boundaries
 from trading_core.lab.segments import Segment
 from trading_core.node.strategy import PauseGate
 from trading_core.recording.enums import Env
@@ -67,6 +68,8 @@ class UnitPlan:
     seed: int
     strategy_name: str
     strategy_config: Mapping[str, ConfigValue]
+    # Sample the funding boundaries inside the segment (``tardis`` runs; own days carry no funding).
+    funding: bool = False
     env: Env = Env.DEMO
 
 
@@ -75,7 +78,8 @@ type Sequenced[R] = tuple[tuple[int, R], ...]
 
 @dataclass(frozen=True)
 class UnitResult:
-    """A unit's rows with their sequence inside the unit, the spreads at order creation, and its cost.
+    """A unit's rows with their sequence inside the unit, the spreads at order creation, the funding
+    samples (AC-9), and its cost.
 
     ``wall_seconds`` and ``max_rss_bytes`` are for logs only: they differ run to run, so no
     report or row carries them (AC-12).
@@ -90,6 +94,7 @@ class UnitResult:
     fills: Sequenced[FillRow]
     positions: Sequenced[PositionRow]
     spreads: Mapping[str, Decimal]
+    funding_samples: tuple[FundingSample, ...]
     events: int
     last_ts_init: int | None
     wall_seconds: float
@@ -161,7 +166,17 @@ def run_unit(plan: UnitPlan) -> UnitResult:
         order_id_tag=f"S{segment.index}",
     )
     strategy = entry.build(entry.build_config(plan.strategy_config, context), gate, blocks, rows)
-    recorder = LabRecorder(env=plan.env, run_id=UNIT_RUN_ID, instrument_id=instrument_id, rows=rows, blocks=blocks)
+    # The run ends with the data: past it the engine would keep firing timers against a frozen
+    # book. (Milestone 4 moves the end to the final synthetic batch, AC-8.)
+    data_end = last_ts_init(tree.hour_file(DELTAS_TABLE, segment.hours[-1]))
+    recorder = LabRecorder(
+        env=plan.env,
+        run_id=UNIT_RUN_ID,
+        instrument_id=instrument_id,
+        rows=rows,
+        blocks=blocks,
+        funding_boundaries=funding_boundaries(segment.start_ns, data_end) if plan.funding else (),
+    )
 
     def hour_done(hour: int, events: int, seconds: float) -> None:
         log.info(
@@ -178,9 +193,6 @@ def run_unit(plan: UnitPlan) -> UnitResult:
         )
 
     stream = SegmentStream(tree, segment, on_hour=hour_done)
-    # The run ends with the data: past it the engine would keep firing timers against a frozen
-    # book. (Milestone 4 moves the end to the final synthetic batch, AC-8.)
-    data_end = last_ts_init(tree.hour_file(DELTAS_TABLE, segment.hours[-1]))
     engine = make_engine(plan)
     try:
         engine.add_actor(recorder)
@@ -208,6 +220,7 @@ def run_unit(plan: UnitPlan) -> UnitResult:
         fills=_sorted(rows.fills.values()),
         positions=_sorted(rows.positions.values()),
         spreads=dict(rows.spreads),
+        funding_samples=tuple(rows.funding_samples),
         events=stream.events,
         last_ts_init=stream.last_ts_init,
         wall_seconds=wall,

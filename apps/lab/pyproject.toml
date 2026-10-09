@@ -3,7 +3,8 @@ name = "lab"
 version = "0.1.0"
 description = "Laptop only replay lab: recorded order books through the Nautilus backtest engine (spec 0008)."
 requires-python = ">=3.14,<3.15"
-dependencies = ["trading-core[node]"]
+# tardis-dev downloads the free Tardis days (AC-1); it is only ever installed here.
+dependencies = ["trading-core[node]", "tardis-dev>=5.0,<6"]
 
 [project.scripts]
 lab = "lab.main:main"

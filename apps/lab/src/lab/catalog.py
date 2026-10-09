@@ -1,29 +1,44 @@
 """Reading one source tree of the lab catalog (spec 0008, *Catalog on the laptop*).
 
 The layout is spec 0007's: ``data/<table>/<instrument>/<hour interval>.parquet``,
-``gaps/<day>.parquet``, and ``manifests/<day>.json`` (the day's commit point). Milestone 3 moves
-the shared readers into ``trading_core.catalog``; until then the lab keeps its own.
+``gaps/<day>.parquet``, and ``manifests/<day>.json`` (the day's commit point), with the paths and
+gap rows from ``trading_core.catalog``, shared with the recorder's compactor.
 """
 
 import json
 from datetime import date, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Final
 
 import pyarrow.parquet as pq
-from nautilus_trader.model.data import OrderBookDelta, TradeTick
+from nautilus_trader.model.data import FundingRateUpdate
 from nautilus_trader.model.enums import BookAction
-from nautilus_trader.model.instruments import CryptoPerpetual
-from nautilus_trader.persistence.catalog.parquet import _timestamps_to_filename
-from nautilus_trader.persistence.funcs import class_to_filename, urisafe_identifier
+from nautilus_trader.serialization.arrow.serializer import ArrowSerializer
 
-from trading_core.lab.segments import HourFiles
-from trading_core.marketdata.gaps import Gap, gap_kind
-from trading_core.marketdata.hours import hour_last_ns
+from trading_core.catalog.days import read_gaps
+from trading_core.catalog.layout import (
+    DELTAS_TABLE,
+    FUNDING_TABLE,
+    INSTRUMENTS_TABLE,
+    TRADES_TABLE,
+    CatalogLayout,
+)
+from trading_core.lab.funding import FundingRate
+from trading_core.lab.segments import HourFiles, hours_of
+from trading_core.marketdata.gaps import Gap
 
-DELTAS_TABLE: Final = class_to_filename(OrderBookDelta)
-TRADES_TABLE: Final = class_to_filename(TradeTick)
-INSTRUMENTS_TABLE: Final = class_to_filename(CryptoPerpetual)
+__all__ = [
+    "DELTAS_TABLE",
+    "FUNDING_TABLE",
+    "INSTRUMENTS_TABLE",
+    "REPLAY_TABLES",
+    "TRADES_TABLE",
+    "ManifestError",
+    "SourceTree",
+    "last_ts_init",
+]
+
 # The streams whose incomplete hours a replay must skip (AC-4).
 REPLAY_TABLES: Final = (DELTAS_TABLE, TRADES_TABLE)
 
@@ -38,19 +53,19 @@ class SourceTree:
     def __init__(self, root: Path, instrument_id: str) -> None:
         self.root = root
         self.instrument_id = instrument_id
+        self.layout = CatalogLayout(root)
 
     def manifest_file(self, day: date) -> Path:
         """The day's manifest, written last as its commit point."""
-        return self.root / "manifests" / f"{day.isoformat()}.json"
+        return self.layout.manifest_file(day.isoformat())
 
     def gap_file(self, day: date) -> Path:
         """The gaps that start on ``day``."""
-        return self.root / "gaps" / f"{day.isoformat()}.parquet"
+        return self.layout.gap_file(day.isoformat())
 
     def hour_file(self, table: str, hour_ns: int) -> Path:
         """One hour of one stream, named like the compactor names it."""
-        name = _timestamps_to_filename(hour_ns, hour_last_ns(hour_ns))
-        return self.root / "data" / table / urisafe_identifier(self.instrument_id) / name
+        return self.layout.data_file(table, self.instrument_id, hour_ns)
 
     def missing_manifests(self, days: list[date]) -> list[date]:
         """The required days that have no manifest yet (AC-3)."""
@@ -76,13 +91,21 @@ class SourceTree:
             return []
         found: list[Gap] = []
         for day in [min(days) - timedelta(days=1), *sorted(days)]:
-            path = self.gap_file(day)
-            if not path.is_file():
-                continue
-            for row in pq.read_table(path).to_pylist():
-                if row["instrument_id"] == self.instrument_id:
-                    found.append(Gap(row["start_ns"], row["instrument_id"], gap_kind(row["kind"]), row["end_ns"]))
+            found.extend(g for g in read_gaps(self.layout, day.isoformat()) if g.instrument_id == self.instrument_id)
         return sorted(found)
+
+    def funding_rates(self, days: list[date]) -> list[FundingRate]:
+        """The ``funding_rate_update`` rows of the given days and the day before the first, by ``ts_init`` (AC-9)."""
+        if not days:
+            return []
+        rates: list[FundingRate] = []
+        for hour in hours_of([min(days) - timedelta(days=1), *days]):
+            path = self.hour_file(FUNDING_TABLE, hour)
+            if path.is_file():
+                for update in ArrowSerializer.deserialize(FundingRateUpdate, pq.read_table(path)):
+                    # The rate comes back from Parquet as text; money math needs a Decimal.
+                    rates.append(FundingRate(update.ts_init, Decimal(str(update.rate))))
+        return sorted(rates, key=lambda r: r.ts_ns)
 
     def hour_files(self, hour_ns: int) -> HourFiles:
         """Whether both stream files exist, and whether the deltas open with a ``CLEAR`` row."""
