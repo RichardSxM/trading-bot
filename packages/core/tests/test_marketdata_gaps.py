@@ -1,9 +1,11 @@
-"""covers: spec 0007 AC-4 (the three gap kinds and their dedupe), AC-5 (gap seconds clipped to a day)."""
+"""covers: spec 0007 AC-4 (the four gap kinds and their precedence), AC-5 (gap seconds clipped to a
+day), AC-16 (the sequence gap and where the book is cut)."""
 
 import pytest
 
-from trading_core.marketdata.gaps import Gap, GapDetector, GapState, gap_kind, seconds_within
+from trading_core.marketdata.gaps import Gap, GapDetector, GapState, PendingSequence, gap_kind, seconds_within
 from trading_core.marketdata.hours import HOUR_NS, SECOND_NS
+from trading_core.marketdata.sequence import NEVER_NS, UNKNOWN, RunHoles, SequenceHole
 
 T = 1_791_439_200 * SECOND_NS
 S = SECOND_NS
@@ -81,3 +83,122 @@ def test_seconds_within_clips_to_the_window():
     assert seconds_within(gap, T - HOUR_NS, T) == 600.0
     assert seconds_within(gap, T, T + HOUR_NS) == 1_200.0
     assert seconds_within(gap, T + HOUR_NS, T + 2 * HOUR_NS) == 0.0
+
+
+def _holes(*holes):
+    return RunHoles(holes=tuple(sorted(holes, key=lambda h: h.before_ns)), checked_to_ns=T + HOUR_NS)
+
+
+def _hole(before, after, missing=5):
+    return SequenceHole(100, 100 + missing - 1, missing, before, after)
+
+
+def test_a_hole_is_a_sequence_gap_up_to_the_first_clear_at_or_after_its_after_time():
+    detector = _detector()
+    holes = _holes(_hole(T + 2 * S, T + 3 * S))
+    ts = [T, T + S, T + 2 * S, T + 3 * S, T + 20 * S, T + 21 * S, T + 22 * S, T + 40 * S]
+    clear = [True, False, False, False, False, True, False, False]
+    scan = detector.scan_book("a", ts, clear, holes)
+    # The CLEAR at T + 21 s ends the gap and is not a reconnect; the 17 s pause inside the gap is
+    # not a silence, while the 18 s one after it is.
+    assert scan.gaps == [Gap(T + 2 * S, BTC, "sequence", T + 21 * S), Gap(T + 22 * S, BTC, "silence", T + 40 * S)]
+    assert scan.gaps[0].missing == 5
+    assert (scan.blocked, scan.cuts, scan.resumes) == (False, [3], [5])
+
+
+def test_a_clear_before_the_after_time_does_not_end_the_gap():
+    detector = _detector()
+    holes = _holes(_hole(T + S, T + 30 * S))
+    ts = [T, T + S, T + 2 * S, T + 3 * S, T + 31 * S]
+    clear = [True, False, False, True, True]
+    scan = detector.scan_book("a", ts, clear, holes)
+    assert scan.gaps == [Gap(T + S, BTC, "sequence", T + 31 * S)]
+    assert (scan.cuts, scan.resumes) == ([2], [4])
+
+
+def test_rows_at_the_before_time_are_still_trusted():
+    detector = _detector()
+    holes = _holes(_hole(T + S, T + 2 * S))
+    scan = detector.scan_book("a", [T, T + S, T + S, T + 2 * S], [True, False, False, False], holes)
+    assert scan.cuts == [3]
+
+
+def test_the_gap_stays_open_across_chunks_and_passes():
+    first = _detector()
+    holes = _holes(_hole(T + S, T + 50 * S))
+    assert first.scan_book("a", [T, T + S, T + 2 * S], [True, False, False], holes).cuts == [2]
+    assert first.state.sequence == PendingSequence(T + S, T + 50 * S, 5)
+    again = _detector(GapState.from_dict(first.state.to_dict()))
+    scan = again.scan_book("a", [T + 30 * S, T + 60 * S], [False, True], holes)
+    assert scan.blocked
+    assert scan.gaps == [Gap(T + S, BTC, "sequence", T + 60 * S)]
+    assert again.state.sequence is None
+
+
+def test_holes_inside_an_open_gap_extend_it_and_add_their_counts():
+    detector = _detector()
+    holes = _holes(_hole(T + S, T + 2 * S, missing=3), _hole(T + 3 * S, T + 9 * S, missing=4))
+    ts = [T, T + 2 * S, T + 4 * S, T + 5 * S, T + 9 * S]
+    scan = detector.scan_book("a", ts, [True, False, False, True, True], holes)
+    assert scan.gaps == [Gap(T + S, BTC, "sequence", T + 9 * S)]
+    assert scan.gaps[0].missing == 7
+    assert scan.cuts == [1]
+
+
+def test_without_a_clear_the_gap_ends_at_the_runs_last_row():
+    detector = _detector()
+    holes = _holes(_hole(T + S, T + 2 * S))
+    detector.scan_book("a", [T, T + S, T + 2 * S, T + 3 * S], [True, False, False, False], holes)
+    gaps = detector.scan("b", [T + 70 * S], [True])
+    assert gaps == [
+        Gap(T + S, BTC, "sequence", T + 3 * S),
+        Gap(T + 3 * S, BTC, "recorder_down", T + 70 * S),
+    ]
+
+
+def test_end_run_closes_an_open_gap_at_the_last_row():
+    detector = _detector()
+    detector.scan_book("a", [T, T + 2 * S], [True, False], _holes(_hole(T + S, T + 9 * S)))
+    assert detector.end_run() == [Gap(T + S, BTC, "sequence", T + 2 * S)]
+    assert detector.end_run() == []
+
+
+def test_an_instrument_quiet_after_the_hole_gets_no_sequence_gap():
+    detector = _detector()
+    scan = detector.scan_book("a", [T, T + S], [True, False], _holes(_hole(T + 5 * S, T + 6 * S)))
+    assert scan.gaps == []
+    assert scan.cuts == []
+    assert detector.end_run() == []
+
+
+def test_a_fail_safe_hole_over_the_whole_run_starts_at_its_first_row():
+    detector = _detector()
+    holes = RunHoles().with_fail_safe()
+    scan = detector.scan_book("a", [T, T + S, T + 2 * S], [True, False, True], holes)
+    assert scan.cuts == [0]
+    assert scan.resumes == []
+    gaps = detector.end_run()
+    assert gaps == [Gap(T, BTC, "sequence", T + 2 * S)]
+    assert gaps[0].missing == UNKNOWN
+    assert holes.holes[0].after_ns == NEVER_NS
+
+
+def test_a_hole_already_passed_is_not_read_again():
+    detector = _detector()
+    holes = _holes(_hole(T + S, T + 2 * S))
+    detector.scan_book("a", [T, T + S, T + 2 * S, T + 3 * S], [True, False, False, True], holes)
+    scan = detector.scan_book("a", [T + 4 * S, T + 5 * S], [False, False], holes)
+    assert scan.gaps == []
+    assert scan.cuts == []
+    assert not scan.blocked
+
+
+def test_a_cut_and_a_resume_can_share_a_row():
+    detector = _detector()
+    scan = detector.scan_book("a", [T, T + 3 * S], [True, True], _holes(_hole(T + S, T + 2 * S)))
+    assert scan.gaps == [Gap(T + S, BTC, "sequence", T + 3 * S)]
+    assert (scan.cuts, scan.resumes) == ([1], [1])
+
+
+def test_pending_counts_turn_unknown_with_a_fail_safe_hole():
+    assert PendingSequence(T, T, 3).merge(T + S, UNKNOWN) == PendingSequence(T, T + S, UNKNOWN)

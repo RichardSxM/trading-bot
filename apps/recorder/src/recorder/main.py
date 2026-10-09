@@ -92,7 +92,17 @@ def main() -> None:
     node.trader.add_actor(
         HeartbeatActor(HeartbeatConfig(path=os.environ.get("HEARTBEAT_FILE", "/run/heartbeat/alive")))
     )
-    node.trader.add_actor(RecordingActor(RecordingConfig(instrument_ids=settings.instrument_list)))
+    recording = RecordingActor(
+        RecordingConfig(
+            instrument_ids=settings.instrument_list,
+            catalog_path=settings.catalog_path,
+            sequence_confirm_s=settings.recorder_sequence_confirm_s,
+        ),
+        # Called in on_start, once the node is built: the streaming writer names the run folder
+        # after the instance id (spec 0007 Milestone 7 gate).
+        run_id=lambda: str(node.kernel.instance_id),
+    )
+    node.trader.add_actor(recording)
     node.trader.add_actor(
         QueueDepthActor(
             QueueDepthConfig(warn_pct=settings.recorder_queue_warn_pct),
@@ -109,7 +119,7 @@ def main() -> None:
         node.run()
     finally:
         node.dispose()
-    if disk_guard.guard.tripped:
+    if disk_guard.guard.tripped or recording.watch.tripped:
         sys.exit(EXIT_DISK_FULL)
 
 

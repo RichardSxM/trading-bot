@@ -15,6 +15,9 @@ class RecorderSettings(CatalogDiskSettings):
     catalog_require_marker: bool = False
     # The data queue depth, in percent of its capacity, that logs `recorder_queue_high` (AC-13).
     recorder_queue_warn_pct: int = Field(default=50, ge=1, le=99)
+    # How long a missing message number may be overtaken before it counts as lost (AC-15): the
+    # compactor's reorder window, so a row it would still put back in place is never called lost.
+    recorder_sequence_confirm_s: int = Field(default=600, ge=1)
 
     @property
     def instrument_list(self) -> list[str]:

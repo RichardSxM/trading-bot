@@ -6,12 +6,15 @@ the open hour's Parquet writer; book deltas are also applied to a carried
 ``nautilus_pyo3.OrderBook``. Once the stream's watermark passes the open hour's end, the hour is
 finished: Parquet renamed after a row count check, the book saved, late rows merged into
 quarantine, then ``done.json`` rewritten.
+
+Each run's holes file (AC-16) holds back rows past its ``checked_to_ns`` and the hours they are in,
+and every hole cuts the carried book until the feed's next ``CLEAR`` at or after the hole.
 """
 
 import logging
 import os
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Final
@@ -36,7 +39,7 @@ from recorder.compactor.store import (
 )
 from recorder.live_files import FeatherFile
 from trading_core.marketdata.errors import HourCountMismatch
-from trading_core.marketdata.gaps import Gap, GapDetector
+from trading_core.marketdata.gaps import BookScan, Gap, GapDetector
 from trading_core.marketdata.hours import (
     HOUR_NS,
     SECOND_NS,
@@ -49,6 +52,7 @@ from trading_core.marketdata.hours import (
     hours_inside,
     scan_rows,
 )
+from trading_core.marketdata.sequence import RunHoles, holes_ready, release_limit
 
 log = logging.getLogger(__name__)
 
@@ -182,8 +186,31 @@ class BookCarry:
         self.valid = False
         self.hour = None
 
-    def apply(self, table: Any) -> None:
-        """Apply a chunk of delta rows, starting at the first ``CLEAR`` when the book is invalid."""
+    def apply(self, table: Any, scan: BookScan | None = None) -> None:
+        """Apply a chunk of delta rows, starting at the first ``CLEAR`` when the book is invalid.
+
+        ``scan`` marks where ``sequence`` gaps cut the book (AC-16): from a cut, rows are not
+        applied, and only the ``CLEAR`` that ends the gap starts the book again.
+        """
+        if scan is None or not (scan.blocked or scan.cuts or scan.resumes):
+            self._apply(table)
+            return
+        events = sorted([(i, 0) for i in scan.cuts] + [(i, 1) for i in scan.resumes])
+        blocked, pos = scan.blocked, 0
+        for index, resume in events:
+            if not blocked and index > pos:
+                self._apply(table.slice(pos, index - pos))
+            pos = index
+            if resume:
+                blocked = False
+                self.valid = False  # the book restarts at this CLEAR
+            else:
+                blocked = True
+                self.invalidate()
+        if not blocked and pos < table.num_rows:
+            self._apply(table.slice(pos))
+
+    def _apply(self, table: Any) -> None:
         start = 0
         if not self.valid:
             clears = np.flatnonzero(table.column("action").to_numpy() == CLEAR)
@@ -261,6 +288,8 @@ class ReorderWindow:
         self.moved: dict[int, int] = {}
         self.max_late_ns: dict[int, int] = {}
         self.capped_logged = False
+        # The newest ts_init that may be released now, from the run's holes file (AC-16).
+        self.limit: int | None = None
 
     @property
     def held_rows(self) -> int:
@@ -288,6 +317,10 @@ class ReorderWindow:
         if good.num_rows:
             self._hold(good)
         return self._release(), late
+
+    def release(self) -> Any | None:
+        """The rows the watermark and the holes file's limit let go now, without new rows read."""
+        return self._release()
 
     def end_run(self) -> Any | None:
         """The run has ended: release every held row and raise the watermark past them."""
@@ -337,6 +370,10 @@ class ReorderWindow:
                     extra={"fields": {"code": "catalog_window_capped", "stream": self.key, "held_rows": held.num_rows}},
                 )
         assert watermark is not None
+        if self.limit is not None and held.num_rows <= self._max_rows:
+            # Rows past the holes file's checked time wait (AC-16). The row cap still wins: memory
+            # first, then a rerun may see a hole the first pass missed (logged as capped above).
+            watermark = min(watermark, self.limit)
         n = int(np.searchsorted(ts, watermark, side="right"))
         if n == 0:
             return None
@@ -397,6 +434,8 @@ class HourStream:
         self._beat = beat
         self.open: _OpenHour | None = None
         self._run: str | None = None
+        self._holes: Mapping[str, RunHoles | None] = {}
+        self._current: str | None = None
         self._started = False  # whether this process has read a file of the stream yet
         self._newest_hour: dict[str, int] = {}  # fed file -> the newest hour of a row read from it
         self.fed: set[str] = set()
@@ -405,6 +444,32 @@ class HourStream:
             book = store.book_file(instrument_id, carried)
             if book.exists():
                 carry.restore(pq.read_table(str(book)), carried)
+
+    def set_holes(self, holes: Mapping[str, RunHoles | None], current: str | None) -> None:
+        """This pass's holes files per run, and the run the recorder writes now (AC-16)."""
+        self._holes = holes
+        self._current = current
+        self._set_limit()
+
+    def _run_holes(self) -> RunHoles | None:
+        return None if self._run is None else self._holes.get(self._run)
+
+    def _run_over(self) -> bool:
+        return self._run is not None and self._run != self._current
+
+    def _set_limit(self) -> None:
+        self.window.limit = release_limit(self._run_holes(), run_ended=self._run_over())
+
+    def drain(self, done: DoneRecord, now_ns: int) -> None:
+        """Write the held rows a newer ``checked_to_ns`` lets go, and finish an hour now ready.
+
+        A file is read once, so without this a run's last read file would keep its rows held until
+        the recorder's next rotation (AC-16).
+        """
+        released = self.window.release()
+        if released is not None:
+            self._route(released, done)
+        self._finish_if_ready(done, now_ns, run_ended=False)
 
     def feed(self, file: FeatherFile, done: DoneRecord, now_ns: int) -> None:
         """Read one closed file from start to end, finishing every hour the watermark passes."""
@@ -426,6 +491,7 @@ class HourStream:
                 self.window.state = WatermarkState.from_dict(stored)
         self._run = file.run
         self._started = True
+        self._set_limit()
         done.watermarks.setdefault(rel, self.window.state.to_dict())
         for chunk in read_chunks(file.path, self._beat):
             newest = hour_of(int(pc.max(chunk.column("ts_init")).as_py()))
@@ -497,6 +563,8 @@ class HourStream:
             done.watermarks.setdefault(next_file, state)
         if held is not None:
             self._route(held, done)
+        if self.gaps is not None:
+            self._pending.extend(self.gaps.end_run())  # a sequence gap ends at the run's last row
         self._finish_if_ready(done, now_ns, run_ended=finish)
 
     def _finish_if_ready(self, done: DoneRecord, now_ns: int, *, run_ended: bool) -> None:
@@ -504,7 +572,11 @@ class HourStream:
         if open_hour is None:
             return
         watermark = self.window.state.watermark
-        if hour_ready(open_hour.hour, now_ns=now_ns, grace_ns=self._grace_ns, watermark=watermark, run_ended=run_ended):
+        if not hour_ready(
+            open_hour.hour, now_ns=now_ns, grace_ns=self._grace_ns, watermark=watermark, run_ended=run_ended
+        ):
+            return
+        if holes_ready(open_hour.hour, self._run_holes(), run_ended=run_ended or self._run_over()):
             self._finish(done)
 
     def _route(self, rows: Any, done: DoneRecord) -> None:
@@ -579,13 +651,15 @@ class HourStream:
             self._start(hour, rows.schema)
         assert self.open is not None
         open_hour = self.open
+        scan = None
         if self.gaps is not None and self._run is not None:
             clear = (rows.column("action").to_numpy() == CLEAR).tolist()
-            self._pending.extend(self.gaps.scan(self._run, ts.tolist(), clear))
+            scan = self.gaps.scan_book(self._run, ts.tolist(), clear, self._run_holes())
+            self._pending.extend(scan.gaps)
         open_hour.sink.write(rows)
         open_hour.source_rows += rows.num_rows
         if self.carry is not None:
-            self.carry.apply(rows)
+            self.carry.apply(rows, scan)
 
     def _start(self, hour: int, schema: Any) -> None:
         sink = HourSink(self._store.data_file(self.table, self.instrument_id, hour), schema, hour)
@@ -601,26 +675,39 @@ class HourStream:
             # Hours without rows lie between: the book is stale until the feed's next CLEAR.
             carry.invalidate()
 
-    def _commit_gaps(self, done: DoneRecord) -> None:
-        """Write the gaps found so far and the detector's state, ahead of the ``done.json`` commit."""
+    def _commit_gaps(self, done: DoneRecord, hour: int) -> None:
+        """Write the gaps found so far and the detector's state, ahead of the ``done.json`` commit.
+
+        Every hour a ``sequence`` gap touches is ``incomplete`` (AC-16), including the hour just
+        finished while a gap is still open.
+        """
         assert self.gaps is not None
         write_gaps(self._store, self._pending)
+        spoiled: list[tuple[int, int]] = []
         for gap in self._pending:
-            log.warning(
-                "book gap",
-                extra={
-                    "fields": {
-                        "code": "book_gap",
-                        "instrument_id": gap.instrument_id,
-                        "kind": gap.kind,
-                        "start_ns": gap.start_ns,
-                        "end_ns": gap.end_ns,
-                        "duration_s": round(gap.duration_s, 3),
-                    }
-                },
-            )
+            fields: dict[str, object] = {
+                "code": "book_gap",
+                "instrument_id": gap.instrument_id,
+                "kind": gap.kind,
+                "start_ns": gap.start_ns,
+                "end_ns": gap.end_ns,
+                "duration_s": round(gap.duration_s, 3),
+            }
+            if gap.missing is not None:
+                fields["missing"] = gap.missing
+            log.warning("book gap", extra={"fields": fields})
             if gap.kind == "recorder_down":
                 done.empty.setdefault(self.instrument_id, set()).update(hours_inside(gap.start_ns, gap.end_ns))
+            elif gap.kind == "sequence":
+                spoiled.append((gap.start_ns, gap.end_ns))
+        pending = self.gaps.pending
+        if pending is not None:
+            spoiled.append((pending.start_ns, hour))
+        if spoiled:
+            incomplete = done.incomplete.setdefault(self.key, {})
+            for start, end in spoiled:
+                for spoiled_hour in range(hour_of(start), hour_of(end) + 1, HOUR_NS):
+                    incomplete.setdefault(spoiled_hour, 0)
         done.streams[self.instrument_id] = self.gaps.state.to_dict()
 
     def _finish(self, done: DoneRecord) -> None:
@@ -662,7 +749,7 @@ class HourStream:
             done.carry[self.instrument_id] = hour if carry.valid else None
         self._mark_finished(done)
         if self.gaps is not None:
-            self._commit_gaps(done)
+            self._commit_gaps(done, hour)
         self._flush_late(done)
         self._store.save_done(done)
         self._pending = []

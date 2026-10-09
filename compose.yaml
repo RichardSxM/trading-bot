@@ -242,6 +242,7 @@ services:
       CATALOG_PATH: /data/catalog
       RECORDER_INSTRUMENTS: ${RECORDER_INSTRUMENTS:-PF_XBTUSD.KRAKEN}
       RECORDER_QUEUE_WARN_PCT: ${RECORDER_QUEUE_WARN_PCT:-50}
+      RECORDER_SEQUENCE_CONFIRM_S: ${RECORDER_SEQUENCE_CONFIRM_S:-600}
       # true on the VPS (compose.vps.yaml): refuse to start without the extra disk's marker (spec 0005).
       CATALOG_REQUIRE_MARKER: ${CATALOG_REQUIRE_MARKER:-false}
     volumes:

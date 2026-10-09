@@ -59,50 +59,63 @@ def _first(level):
     return order
 
 
-def _reference_samples(feed, sample_ts):
-    """Replay the raw feed from the start and take the book at each sample time."""
+def _reference_samples(feed, sample_ts, *, whole_messages=False):
+    """Replay the raw feed from the start; at each sample time, the book after the first row with
+    that ``ts_init`` (or after every message up to it, for the hour start's snapshot)."""
     book = p3.OrderBook(p3.InstrumentId.from_str(INSTRUMENT), p3.BookType.L2_MBP)
     out = {}
+    pending = sorted(sample_ts)
+
+    def take(ts):
+        out[ts] = _top(
+            [(lv.price, _first(lv).size) for lv in book.bids()],
+            [(lv.price, _first(lv).size) for lv in book.asks()],
+        )
+
     for message in feed.messages:
-        for delta in message:
-            book.apply_delta(delta)
         ts = message[0].ts_init
-        if ts in sample_ts:
-            out[ts] = _top(
-                [(lv.price, _first(lv).size) for lv in book.bids()],
-                [(lv.price, _first(lv).size) for lv in book.asks()],
-            )
+        while pending and pending[0] < ts:
+            take(pending.pop(0))
+        for i, delta in enumerate(message):
+            book.apply_delta(delta)
+            if i == 0 and not whole_messages and pending and pending[0] == ts:
+                take(pending.pop(0))
+    for ts in pending:
+        take(ts)
     return out
 
 
 class _Sampler(Actor):  # type: ignore[misc]
-    """Takes the engine's book at the first F_LAST after every 60 s of data, and at the last row."""
+    """Takes the engine's book at the first row at or after H + k * 60 s (k = 1 to 59), and at the
+    last row (AC-3). Kraken rows carry no ``F_LAST``, so the sample point is a row, not a flag; the
+    engine passes this actor one row at a time.
+
+    k = 0 is checked on the snapshot rows directly: the hour's first rows are the synthetic snapshot,
+    which the raw feed does not have.
+    """
 
     def __init__(self, instrument_id, start_ns):
         super().__init__()
         self._id = instrument_id
-        self._next = start_ns + SAMPLE_NS
+        self._hour_start = start_ns
+        self._k = 1
         self.samples = {}
-        self.last_ts = None
 
     def on_start(self):
         self.subscribe_order_book_deltas(self._id, BookType.L2_MBP)
 
     def on_order_book_deltas(self, deltas):
-        last = deltas.deltas[-1]
-        if not last.flags & F_LAST:
-            return
-        self.last_ts = last.ts_init
+        ts = deltas.deltas[-1].ts_init
         book = self.cache.order_book(self._id)
         top = _top(
             [(lv.price, lv.orders()[0].size) for lv in book.bids()],
             [(lv.price, lv.orders()[0].size) for lv in book.asks()],
         )
-        self.samples["last"] = (last.ts_init, top)
-        if last.ts_init >= self._next:
-            self.samples[last.ts_init] = top
-            while self._next <= last.ts_init:
-                self._next += SAMPLE_NS
+        self.samples["last"] = (ts, top)
+        if self._k < 60 and ts >= self._hour_start + self._k * SAMPLE_NS:
+            self.samples[ts] = top
+            while self._k < 60 and self._hour_start + self._k * SAMPLE_NS <= ts:
+                self._k += 1
 
 
 def test_hours_convert_with_a_snapshot_and_the_second_hour_replays_alone(tmp_path):
@@ -155,8 +168,19 @@ def test_hours_convert_with_a_snapshot_and_the_second_hour_replays_alone(tmp_pat
     engine.dispose()
 
     last_ts, last_top = sampler.samples.pop("last")
-    sampler.samples[last_ts] = last_top
-    assert len(sampler.samples) >= 55
+    assert len(sampler.samples) >= 59
+    # The hour's last row ends a message, so its book is the one after that whole message.
+    assert last_top == _reference_samples(feed, {last_ts}, whole_messages=True)[last_ts]
+    # k = 0 is the snapshot itself: its rows alone rebuild the raw feed's book at the hour start.
+    snapshot = convert.BookCarry(INSTRUMENT)
+    snapshot.restore(table.slice(0, hours[H0 + HOUR_NS]["snapshot_rows"]), H0 + HOUR_NS)
+    assert (
+        _top(
+            [(lv.price, _first(lv).size) for lv in snapshot.book.bids()],
+            [(lv.price, _first(lv).size) for lv in snapshot.book.asks()],
+        )
+        == _reference_samples(feed, {H0 + HOUR_NS}, whole_messages=True)[H0 + HOUR_NS]
+    )
     reference = _reference_samples(feed, set(sampler.samples))
     assert reference.keys() == sampler.samples.keys()
     for ts, top in sampler.samples.items():

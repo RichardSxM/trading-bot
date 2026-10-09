@@ -5,7 +5,7 @@
 
 ## Summary
 
-The recorder already captures the BTC perp order book (BTC and ETH until 2026-10-08), but only as raw files that grow without limit. On 2026-10-05 they filled the VPS disk. This spec turns the stream into compressed hourly Parquet files (a compact, column based format the backtester reads). Each hour starts with a full book snapshot, so a replay can begin at any hour. A new `compactor` service does the conversion. It also logs every gap, reports the size per day, and deletes old local hours only after they are safely in the B2 backup. The recorder becomes unhealthy, and stops, before it can fill the disk again. When the recorder falls behind and Nautilus delivers rows out of order, the compactor puts them back in order within a 10 minute window. Anything later than that is kept apart and backed up, never silently dropped (decided 2026-10-08). On 2026-10-08 the scope narrowed: the 2 CPU VPS could not keep up with BTC and ETH at 3.2 GB/h, so it records the BTC perp only, and backtests use the free Tardis days (the first day of each month, `PF_XBTUSD` since 2022-03-22) rather than our own history. The old backlog is dropped, not converted.
+The recorder already captures the BTC perp order book (BTC and ETH until 2026-10-08), but only as raw files that grow without limit. On 2026-10-05 they filled the VPS disk. This spec turns the stream into compressed hourly Parquet files (a compact, column based format the backtester reads). Each hour starts with a full book snapshot, so a replay can begin at any hour. A new `compactor` service does the conversion. It also logs every gap, reports the size per day, and deletes old local hours only after they are safely in the B2 backup. The recorder becomes unhealthy, and stops, before it can fill the disk again. When the recorder falls behind and Nautilus delivers rows out of order, the compactor puts them back in order within a 10 minute window. Anything later than that is kept apart and backed up, never silently dropped (decided 2026-10-08). On 2026-10-08 the scope narrowed: the 2 CPU VPS could not keep up with BTC and ETH at 3.2 GB/h, so it records the BTC perp only, and backtests use the free Tardis days (the first day of each month, `PF_XBTUSD` since 2022-03-22) rather than our own history. The old backlog is dropped, not converted. Also on 2026-10-08, `/check verify` found that the recorder had silently lost runs of book messages (up to 189k in one go) while it was overloaded, and the book after each hole went wrong until the next reconnect. So the recorder now watches the adapter's message counter, records every hole, and asks Kraken for a fresh book when one appears. The compactor turns each hole into a `sequence` gap and stops trusting the book until that fresh snapshot arrives.
 
 ## Requirements
 
@@ -23,11 +23,12 @@ The recorder already captures the BTC perp order book (BTC and ETH until 2026-10
   - One `CLEAR`, then one `ADD` per price level, for all levels on both sides: bids best first, then asks best first.
   - `order_id` 0, `sequence` = the last applied delta's sequence, `ts_event = ts_init = H`, and flag `F_SNAPSHOT` on every row, with `F_SNAPSHOT | F_LAST` on the final one.
   - Prices and sizes keep the instrument's precision.
-  - Test: one hour replays on its own through `ParquetDataCatalog` and a `BacktestEngine`. At the first `F_LAST` row after every 60 s of data, and at the hour's last row, its book equals the book from replaying the same raw feather from the run start. The comparison is the top 20 levels per side, with exact prices and sizes.
-- **AC-4**: Three kinds of gap are detected per instrument. Each is written to `gaps/<YYYY-MM-DD>.parquet` (the UTC day of its `start_ns`) and logged as WARNING `book_gap` with `instrument_id`, `kind`, `start_ns`, `end_ns`, and `duration_s`. Detection reads the rows in the order the reorder window (AC-12) writes them, and never reads late rows:
+  - Test: one hour replays on its own through `ParquetDataCatalog` and a `BacktestEngine`. At the first row with `ts_init` at or after H + k × 60 s (not the first `F_LAST` row: Kraken feed rows carry flags 0, measured 2026-10-08 on 2,980,636 rows), and at the hour's last row, its book equals the book from replaying the same raw feather from the run start. The comparison is the top 20 levels per side, with exact prices and sizes.
+- **AC-4**: Four kinds of gap are detected per instrument. Each is written to `gaps/<YYYY-MM-DD>.parquet` (the UTC day of its `start_ns`) and logged as WARNING `book_gap` with `instrument_id`, `kind`, `start_ns`, `end_ns`, and `duration_s`. Detection reads the rows in the order the reorder window (AC-12) writes them, and never reads late rows:
   - `reconnect`: a feed `CLEAR` delta after the run's first one. The gap runs from the previous delta's `ts_init` to the `CLEAR`'s `ts_init`. Synthetic snapshot rows are never read by detection, because detection runs on the feather.
   - `recorder_down`: from the last row of one run to the first row of the next run (for that instrument). A run that ends in a truncated batch counts from its last complete row.
-  - `silence`: two consecutive deltas of one instrument in one run that are `BOOK_SILENCE_GAP_S` (10 s) or more apart. A span already reported as `reconnect` is not reported again as `silence`.
+  - `silence`: two consecutive deltas of one instrument in one run that are `BOOK_SILENCE_GAP_S` (10 s) or more apart. A span already reported as `reconnect` or `sequence` is not reported again as `silence`.
+  - `sequence`: a hole in the run's message counter, from the recorder's holes file (AC-15, AC-16). It runs from the hole's `before_ns` to that instrument's first feed `CLEAR` at or after the hole's `after_ns`, or to the instrument's last row of the run when no `CLEAR` comes (AC-16 has the full rule). The `CLEAR` that ends a `sequence` gap is not also a `reconnect` gap. The `book_gap` log adds `missing` (the count of lost messages, summed when several holes fall in one gap).
 - **AC-5**: A UTC day is closed when the compactor's stream has passed the day's end and every hour of the day is in `done.json` (a converted hour, or an empty hour lying wholly inside a `recorder_down` gap). The compactor then writes `manifests/<YYYY-MM-DD>.json`. For each instrument and type, it holds rows, Parquet bytes, converted hours, late rows, and incomplete hours (hours with late rows, AC-12), taken from the per hour stats and `incomplete` in `done.json`. It also holds gap seconds by kind (each gap clipped to the day) and the day's total bytes. It logs INFO `catalog_day_closed` with the same totals.
 - **AC-6**: Retention runs after each conversion pass. While the Parquet catalog (`data/`) is over `CATALOG_CAP_GB` (30), or free space on its file system is under `CATALOG_FREE_FLOOR_GB` (8), the compactor deletes the oldest whole hour (all types and instruments of that hour together, with the hour's `quarantine/` files). It stops once both limits hold. It deletes only hours whose files all have an mtime before the `cutoff` in a valid backup state file. Valid means the JSON parses, `snapshot_id` is not empty, and `cutoff` is not after now. It logs INFO `catalog_retention_deleted` per hour. If it still needs space but nothing is eligible, it logs ERROR `catalog_retention_blocked` with the bytes still needed, at most once per pass. A missing or invalid state file makes nothing eligible, and an invalid one also logs ERROR `backup_state_invalid`.
 - **AC-7**: The recorder container is healthy only while three things hold: the heartbeat file is under 30 s old, the newest `order_book_deltas` feather file in the current run was modified under 60 s ago, and free space is at least `CATALOG_HARD_FLOOR_GB` (2). The existing 90 s `start_period` covers the time before the first file exists.
@@ -67,12 +68,31 @@ The recorder already captures the BTC perp order book (BTC and ETH until 2026-10
   - The throttle uses the actor's clock (`self.clock.timestamp_ns()`), passed to the pure rule as `now_ns`.
   - In its `on_stop`, it logs the depth: ERROR `recorder_stop_queue_full` at 99% of capacity or more (pending puts can exist just below full), else INFO `recorder_stop_queue`. Nautilus cancels the pending puts at shutdown, so those rows are lost, and this makes the loss visible.
 - **AC-14**: The compactor gets less CPU than every other service when the CPUs are busy, and a full core when they are idle. It runs with `cpu_shares: 256` (a quarter of the default cgroup weight), `cpus: 1.0`, and `nice -n 19`. Check on the VPS: the compactor's Compose config shows `cpu_shares: 256` and the host runs cgroup v2 (so the weight applies). The CPU check is that no row is lost or late: no `catalog_late_rows`, and no recorder restart from a stale heartbeat. `recorder_queue_high` is allowed, at peaks and during conversions alike; `recorder_queue_full` that lasts minutes is not. (Learned 2026-10-08: converting a 17 GB dead run kept the queue high for 15 minutes, with 11 hours reordered and none late. Later, at 3.2 GB/h of BTC and ETH with the compactor idle, the queue stayed full, the event loop starved the heartbeat, and `kfs-autoheal` restarted the recorder three times in an hour, dropping the queued rows. Recording BTC only (2.7 GB/h) stopped the restarts, though `recorder_queue_high` still shows at peaks. `cpus: 1.0` stays: the compactor was idle when it failed, so the recorder's own throughput on 2 shared CPUs is the limit.)
+- **AC-15**: The recorder finds every hole in the run's message counter (decided 2026-10-08). Every book delta carries `sequence`, one counter per recorder run: it starts at 1, is shared by every instrument of the run, and keeps counting through a websocket reconnect (measured on the VPS, see rationale.md). The `RecordingActor` reads `sequence` and `ts_init` of every delta it receives, for every recorded instrument, and feeds them to a pure `SequenceTracker` (core `marketdata/sequence.py`). `ts_init` and the actor's clock (`self.clock.timestamp_ns()`) are the same live node clock, so the actor's times and row times compare directly.
+  - **Start.** The tracker is created in `on_start` before the subscriptions, and starts at the first number it sees, whatever it is: no hole lies before it. Snapshot rows (a `CLEAR` with `F_SNAPSHOT` and its levels) carry numbers and count like any other row. A number below the first one seen, arriving later, is ignored.
+  - **Hole.** Any number not seen while a higher one was, however few are missing. A number counts as missing once `RECORDER_SEQUENCE_CONFIRM_S` (600) have passed on the actor's clock since the first higher number arrived; a number that arrives sooner (it was overtaken in the queue, AC-12) ends the suspicion with no record. A hole's `before_ns` is the `ts_init` of the delta numbered just below it, and its `after_ns` that of the delta just above it. The confirm time and the reorder window measure lateness differently (arrival time against row time), but either mismatch fails safe: a row the window keeps is still marked as a gap, or a row the actor accepts is still quarantined as late.
+  - **Record.** On confirming a hole the actor logs ERROR `book_sequence_hole` (`run`, `first_missing`, `last_missing`, `missing`, `before_ns`, `after_ns`) at once. The file `live/<run>/sequence_holes.jsonl` is written on the actor's 60 s timer, with one write and one fsync per tick: first the holes confirmed since the last tick (one JSON line each), then `{"checked_to_ns": X}`. X means every hole with `after_ns` below X is in the file: it is the actor's clock minus `RECORDER_SEQUENCE_CONFIRM_S`, lowered to the `before_ns` of the oldest open suspicion. The file's first line, written in `on_start`, is `{"started_ns": …}`. On stop, every open suspicion becomes a hole (fail safe), then `{"closed": true}` is written. A number that arrives after its hole was confirmed logs WARNING `book_sequence_late` and changes nothing (the compactor quarantines that row anyway, AC-12).
+  - **Resubscribe.** When the oldest open suspicion is `RECORDER_RESUBSCRIBE_AFTER_S` (60) old, the actor calls `unsubscribe_order_book_deltas(id)` then `subscribe_order_book_deltas(id, BookType.L2_MBP)` for every recorded instrument, at most once per `RECORDER_RESUBSCRIBE_EVERY_S` (300). Trade subscriptions are left alone. Rows already on their way are kept. Kraken then sends a fresh snapshot, which arrives as a feed `CLEAR` with `F_SNAPSHOT`, and its rows are counted like any other. The actor logs WARNING `recorder_book_resubscribed` with `first_missing` and `missing` (the total of numbers in open suspicions), and writes `{"resubscribed_ns": t}` in the next tick's lines. If the build gate (Milestone 7) shows a resubscribe brings no `CLEAR`, or stops the counter or the trades, this step is dropped and a hole stays marked until the next reconnect.
+  - **File failure.** If the holes file cannot be written, the actor logs CRITICAL `sequence_file_failed` and the recorder stops with exit code 75, the same path as the disk guard (AC-7). A run that keeps recording without its file would hold back every later hour.
+  - **Cost.** The tracker keeps seen numbers above the lowest unseen one as intervals, so memory stays small even across a hole of 189k. The gate measures its cost per delta; it must stay under 2% of one VPS core at the 4.3M rows per hour peak.
+- **AC-16**: The compactor applies the holes file. It reads only complete lines.
+  - **Ready rule.** Hour H of a run is ready only when, besides the existing rule, that run's holes file shows `checked_to_ns` at or after H + 1 h, or `closed`, or the run has ended. In practice this adds no delay, because the hour's feather file only closes at the next rotation. A stalled timer just makes the hour wait.
+  - **Fail safe hole.** A run that ended without `closed` (a crash or kill) gets one more hole, with `missing` unknown (logged as −1), from its last `checked_to_ns` to each instrument's last row; an instrument whose last row is before that time gets none. A holes file with no complete line counts as `checked_to_ns` = the run's first row, so the whole run becomes one `sequence` gap. A run with no holes file at all was recorded before this shipped: it converts as before, and INFO `sequence_unchecked_run` is logged once per run.
+  - **Every instrument.** A hole marks every instrument with a delta stream in that run, because the shared counter cannot tell whose messages were lost. An instrument with no written row after `before_ns` in that run gets no `sequence` gap (a `recorder_down` gap covers it).
+  - **Where the book is cut.** Detection reads the written rows, which the reorder window (AC-12) has already put in `ts_init` order. Rows with `ts_init` at or below `before_ns` are applied to the carried book. From the first row above `before_ns`, the book is invalid until the instrument's first feed `CLEAR` with `ts_init` at or after `after_ns`, which makes it valid again. Rows in between are still written to `data/` (they are real), but not applied, and the hours they touch get no synthetic snapshot.
+  - **The gap and the hours.** The `sequence` gap runs from `before_ns` to that `CLEAR`, or to the instrument's last row of the run when no `CLEAR` comes (the next run always starts with one). Every hour from the hour of `before_ns` to the hour of the gap's end is added to `incomplete` in `done.json` with 0 late rows, so the manifest lists it (AC-5). Precedence where spans overlap: `sequence` over `reconnect` over `silence`. A feed `CLEAR` within 30 s after a `resubscribed_ns` line that ends no `sequence` gap is not a `reconnect` gap either.
+  - **Reruns.** Every hole with `after_ns` below a `checked_to_ns` is already in the file, and later lines only add holes at or after it, so an hour finished under a given `checked_to_ns` always sees the same holes; the fail safe hole comes from an ended run, whose file no longer grows. `done.json` keeps, per run, how far the holes file was read and its last `checked_to_ns`, and per instrument the start of a `sequence` gap still waiting for its `CLEAR`. A rerun gives the same gaps and `incomplete` entries (AC-11).
+  - **Cleanup.** A dead run's holes file is deleted only after `done.json` lists every hour of that run, together with or after its last feather file.
+  - `missing` stays in the `book_gap` log and the holes file, not in the gap Parquet, whose schema is unchanged.
+- **AC-17**: On the VPS, a lone replay of every converted BTC hour of the 24 h after the deploy, sampled at the first row with `ts_init` at or after H + k × 60 s (k = 0 to 59), never shows a crossed book (best bid at or above best ask) or a one sided book. Samples are skipped inside a gap row's span (start and end included), in the first 1 s after a feed `CLEAR`, before the replay's first valid book (no snapshot at the hour start and no `CLEAR` yet), and in hours listed in `incomplete` with late rows (AC-12). This check is the proof that every hole which spoils the book is found.
 
 ## Decision
 
 **Chosen option**: Option 2: hourly feather rotation plus a separate compactor service (see [rationale.md](rationale.md)).
 
 The recorder keeps streaming feather, now filtered and rotated hourly. A new `compactor` Compose service turns each closed hour into zstd Parquet in the Nautilus catalog layout, with a book snapshot at its start. It writes gaps and a daily manifest, then deletes old local hours only once the B2 backup holds them.
+
+**Lost messages (2026-10-08)**: the recorder watches the run's message counter and is the detector of record, because it sees every instrument's messages in one order, while the compactor reads one stream at a time. It writes each hole to a small file in the run folder and resubscribes the book so the damage lasts about a minute. The compactor turns the holes into `sequence` gaps and incomplete hours (AC-15 to AC-17, see rationale.md).
 
 **Implementation skills**: `nautilus-trader` (`algoderiv/agent-skills`, `.claude/skills/nautilus-trader/`) · `docker-compose-skill` (`scientiacapital/skills`, `.claude/skills/docker-compose-skill/`)
 
@@ -104,6 +124,7 @@ Kraken WS ──► recorder (Nautilus node)
 | Path | Written by | Contents | Backed up |
 |---|---|---|---|
 | `live/<run uuid>/...feather` | recorder | the raw stream, hourly files | no |
+| `live/<run uuid>/sequence_holes.jsonl` | recorder | `started_ns`, then per 60 s tick the confirmed holes, any `resubscribed_ns`, and `checked_to_ns`, then `closed` (AC-15) | no |
 | `data/order_book_deltas/<instrument>/<interval>.parquet` (`class_to_filename(OrderBookDelta)`) | compactor | one hour of deltas, starting with the snapshot | yes |
 | `data/trade_tick/<instrument>/<interval>.parquet` | compactor | one hour of trades | yes |
 | `data/crypto_perpetual/<instrument>/<interval>.parquet` | compactor | one row per hour: the newest definition seen up to the end of that hour (carried forward when the hour has none), so any single hour or day is self contained | yes |
@@ -118,7 +139,8 @@ Kraken WS ──► recorder (Nautilus node)
 - `carry`: for each instrument, the last hour whose book file is valid, or `null` when the book is invalid.
 - `streams`: for each instrument, the last `ts_init` and run seen, so gap detection resumes across passes.
 - `watermarks`: for each file not yet finished, the stream's watermark when reading of that file began (AC-12).
-- `incomplete`: for each stream, the hours that had late rows, with the late row count (AC-12, AC-5).
+- `incomplete`: for each stream, the hours that had late rows, with the late row count (AC-12, AC-5), plus the hours a `sequence` hole spoiled, with 0 (AC-16).
+- `holes`: for each run, how far its `sequence_holes.jsonl` was read, and its last `checked_to_ns`; and in `streams`, per instrument, the start of a `sequence` gap still waiting for its `CLEAR` (AC-16).
 - `days`: the closed days.
 
 `incomplete` and `watermarks` replace the `overlaps` and `kept` fields of the Milestone 2 build. No `done.json` exists on the VPS yet, so there is nothing to migrate.
@@ -128,7 +150,7 @@ An hour counts as done only once its entry is in `done.json`. Parquet files and 
 
 `<interval>` is `_timestamps_to_filename(H, H + 3_599_999_999_999)` from `nautilus_trader.persistence.catalog.parquet`. Hours are disjoint and contiguous, so the catalog's disjoint interval check always passes.
 
-**Gap row** (Parquet schema): `instrument_id string`, `kind string` (`reconnect` | `recorder_down` | `silence`), `start_ns uint64`, `end_ns uint64`. Unique on `(instrument_id, kind, start_ns)`, and sorted by `start_ns`. Each new gap is merged into its day file (read, union, deduplicate, sort, write atomically), so a rerun gives the same rows (AC-11). A gap that crosses midnight stays whole in its start day's file. Manifests clip its seconds to each day, reading every gap file up to their own day, so a gap longer than a day counts on each day it covers. Known limit: the VPS's first day (2026-10-08) closes before the bridge gap is copied in, so its manifest leaves out that day's part of the bridge gap; the `gaps/` file stays the record.
+**Gap row** (Parquet schema): `instrument_id string`, `kind string` (`reconnect` | `recorder_down` | `silence` | `sequence`), `start_ns uint64`, `end_ns uint64`. Unique on `(instrument_id, kind, start_ns)`, and sorted by `start_ns`. Each new gap is merged into its day file (read, union, deduplicate, sort, write atomically), so a rerun gives the same rows (AC-11). A gap that crosses midnight stays whole in its start day's file. Manifests clip its seconds to each day, reading every gap file up to their own day, so a gap longer than a day counts on each day it covers. Known limit: the VPS's first day (2026-10-08) closes before the bridge gap is copied in, so its manifest leaves out that day's part of the bridge gap; the `gaps/` file stays the record.
 
 **Manifest** (JSON): `{"date": "YYYY-MM-DD", "total_bytes": int, "streams": [{"instrument_id", "type", "rows", "bytes", "hours", "late_rows", "incomplete_hours": [hour_ns]}], "gaps": [{"instrument_id", "kind", "seconds"}]}`. If `incomplete` changes for a day already closed (a late row found later), the compactor writes that day's manifest again, atomically.
 
@@ -197,6 +219,15 @@ An hour counts as done only once its entry is in `done.json`. Parquet files and 
 | bridge gap | end | the first `ts_init` of the earliest `data/order_book_deltas/<instrument>/` hour in `./catalog-vps` (the VPS catalog's first day, fetched with `--into`) |
 | bridge gap | empty hours | the hours wholly between start and end |
 | copy to the VPS | file mtime | the time of extraction (`tar -m`), never the laptop mtime |
+| sequence watch | counter and row time | `delta.sequence` and `delta.ts_init` of each `OrderBookDelta` in the batches `RecordingActor.on_order_book_deltas` receives |
+| sequence watch | confirm and resubscribe time | `self.clock.timestamp_ns()` of the actor, `RECORDER_SEQUENCE_CONFIRM_S`, `RECORDER_RESUBSCRIBE_AFTER_S`, `RECORDER_RESUBSCRIBE_EVERY_S` |
+| sequence watch | holes file path | `<catalog_path>/live/<node.kernel.instance_id>/sequence_holes.jsonl`, the run id passed to the actor from `recorder/main.py` after `node.build()` (the gate confirms the run folder is named by `instance_id`) |
+| sequence gap | start, end, missing | `before_ns` and `missing` from the holes file; end = `ts_init` of the instrument's first feed `CLEAR` at or after `after_ns` in its written rows, else its last row of the run |
+| sequence gap | book cut | the instrument's written rows (after the reorder window) against `before_ns` |
+| sequence gap | resubscribe `CLEAR` | `resubscribed_ns` lines in the holes file, 30 s after each |
+| fail safe hole | span | the run's last `checked_to_ns` (or its first row when the file has no complete line) to each instrument's last row |
+| sequence gap | instruments hit | every instrument with an `order_book_deltas` stream in the run |
+| sequence ready gate | checked time | the last `checked_to_ns` (or `closed`) in the run's holes file, kept in `done.json` `holes` |
 
 ### Code placement
 
@@ -204,9 +235,12 @@ An hour counts as done only once its entry is in `done.json`. Parquet files and 
   - `hours.py`: the hour math (hour of a `ts_init`, hour bounds, the interval for a file name), the ready rule (now, grace, stream position, window), the day close rule, the backlog space check, and the watermark rule with the late test (AC-12).
   - `queue_depth.py`: given depth, capacity, warn percent, and the time each code was last logged, it returns the code to log now, if any (AC-13).
   - `gaps.py`: given an ordered stream of `(ts_init, is_clear, run)` per instrument and the state carried from earlier passes, it returns the gap records and the new state. It streams across batches, and handles the dedupe of reconnect versus silence.
+  - `sequence.py`: the `SequenceTracker`. Given `(sequence, ts_init)` pairs in arrival order and `now_ns`, it returns the holes confirmed, whether to resubscribe now, and the `checked_to_ns` value; seen numbers are kept as intervals (AC-15). Also the rule that turns holes plus an instrument's `CLEAR` times into `sequence` gaps and incomplete hours (AC-16), used by `gaps.py`.
   - `retention.py`: given the hours with their bytes and newest mtime, the cutoff, catalog bytes, free bytes, cap, and floor, it returns the hours to delete and the bytes still needed when it is blocked. It also validates a parsed backup state.
   - Typed exceptions: `BackupStateInvalid`, `HourCountMismatch`. (`HourOverlapError` goes: late rows are a normal path now, not an error.)
 - `apps/recorder/src/recorder/compactor/` (adapter): `main.py` (loop, settings, logging), `convert.py` (pyarrow, the reorder window, and OrderBook), `store.py` (paths, atomic writes, `done.json`, quarantine merges, the backup state reader).
+- `apps/recorder/src/recorder/actor.py`: `RecordingActor` gains `on_order_book_deltas`, the tracker, the holes file writer (`sequence_holes.py` beside it), a 60 s timer for `checked_to_ns` and the resubscribe check, and the stop path that closes the file (AC-15). It owns the subscriptions, so it also resubscribes.
+- `apps/recorder/src/recorder/compactor/`: `store.py` reads a run's holes file up to its last complete line and ignores it in feather discovery; `main.py` passes each run's holes to the delta streams and applies the ready gate; `convert.py` invalidates the carry at a hole (AC-16).
 - `apps/recorder/src/recorder/queue_depth.py`: the `QueueDepthActor` (a 1 s timer, the probe injected from `main.py`, and the stop check). The build confirms that Nautilus stops actors before the data engine cancels its pending puts. If it does not, the stop check moves into `main.py` before `node.stop()`.
 - `apps/recorder/src/recorder/`: `main.py` (`StreamingConfig`, and the wait at start while below the floor), `disk.py` (the free space floor, next to `volume.py`), `health.py` (the container health check), and a `DiskGuardActor` that checks free space every 10 s. Below the floor it logs CRITICAL, flushes the logs, and stops the process with exit code 75 (by sending itself `SIGTERM`, so the node shuts down cleanly, with `os._exit(75)` after 20 s as a fallback). The restart then lands in the wait at start.
 
@@ -247,6 +281,9 @@ Through `trading_core.settings`, validated at start:
 - `COMPACTOR_REORDER_WINDOW_S` (compactor, default 600, at least 0): how late a row may be and still be put back in place (AC-12).
 - `COMPACTOR_REORDER_MAX_ROWS` (compactor, default 2,000,000, at least 1): the most rows one stream's window may hold (AC-12).
 - `RECORDER_QUEUE_WARN_PCT` (recorder, default 50, from 1 to 99): the queue depth that logs `recorder_queue_high` (AC-13).
+- `RECORDER_SEQUENCE_CONFIRM_S` (recorder, default 600, at least 1): how long a missing number may be overtaken before it counts as lost (AC-15). The same 600 s as the reorder window, so a row the compactor would still put back in place is never called lost.
+- `RECORDER_RESUBSCRIBE_AFTER_S` (recorder, default 60, at least 1, below the confirm time): how old a suspicion gets before the book is resubscribed (AC-15).
+- `RECORDER_RESUBSCRIBE_EVERY_S` (recorder, default 300, at least 60): the shortest time between two resubscribes (AC-15).
 - `BACKUP_STATE_PATH` (compactor, default `/state/catalog_backup.json`).
 
 ### Logs
@@ -272,6 +309,11 @@ Through `trading_core.settings`, validated at start:
 | `recorder_queue_full` | ERROR | recorder | the data queue is full, so rows are being reordered (AC-13) |
 | `recorder_stop_queue_full` | ERROR | recorder | the recorder stopped with the queue at 99% or more, so pending rows were likely lost (AC-13) |
 | `recorder_stop_queue` | INFO | recorder | the queue depth at stop, below 99% (AC-13) |
+| `book_sequence_hole` | ERROR | recorder | a confirmed hole in the run's message counter (AC-15) |
+| `book_sequence_late` | WARNING | recorder | a number arrived after its hole was confirmed (AC-15) |
+| `recorder_book_resubscribed` | WARNING | recorder | the book was resubscribed for a fresh snapshot (AC-15) |
+| `sequence_file_failed` | CRITICAL | recorder | the holes file could not be written; the recorder exits 75 (AC-15) |
+| `sequence_unchecked_run` | INFO | compactor | a run has no holes file (recorded before AC-15 shipped) (AC-16) |
 
 Feature 12 alerts on the ERROR and CRITICAL codes, and on `book_gap` with a duration over 60 s.
 
@@ -306,6 +348,15 @@ Feature 12 alerts on the ERROR and CRITICAL codes, and on `book_gap` with a dura
 - Bridge: after an offline conversion ending on day D, a fetched VPS hour on D + 2 gives one `recorder_down` gap per instrument, the empty hours of D + 1, and manifests for D and D + 1. A rerun changes nothing. An instrument on only one side logs `bridge_instrument_missing`. Verifies **AC-9**, **AC-5**.
 - Long gap: a `recorder_down` gap of 50 h is counted on each of the three days it covers. Verifies **AC-5**.
 - Backup: a run against a local restic repository creates the `catalog` tagged snapshot without `live/` and writes the state file. Verifies **AC-8**.
+- Sequence tracker: numbers 1 to 1,000 with 400 to 410 missing confirm one hole (`first_missing` 400, `missing` 11) only after 600 s on the fake clock; 400 to 410 arriving after 500 s confirm nothing; one missing number is a hole; two instruments' interleaved numbers with none missing give no hole; a hole of 189,000 keeps memory flat; a suspicion 60 s old asks for one resubscribe, and another only after 300 s. Verifies **AC-15**.
+- Holes file: a stop with an open suspicion writes it as a hole, then `closed`; `checked_to_ns` never passes the oldest open suspicion. Verifies **AC-15**.
+- Sequence gap: a fixture run of two instruments with a hole and a feed `CLEAR` 40 s later per instrument gives one `sequence` gap each, ending at that instrument's `CLEAR`, no `reconnect` gap at that `CLEAR`, no `silence` inside it, no snapshot in the hours it touches, and those hours in `incomplete`. Verifies **AC-16**, **AC-4**, **AC-5**.
+- Ready gate: an hour whose run's `checked_to_ns` is still below H + 1 h waits; a dead run without `closed` gets the fail safe hole. A run with no holes file converts as before and logs `sequence_unchecked_run`. Verifies **AC-16**.
+- Crash with holes: kill the pass mid gap, rerun; the gap rows and `incomplete` are identical. Verifies **AC-11**, **AC-16**.
+- Book cut: an instrument row 30 s before `before_ns` that the window put back in place is applied; the first row after `before_ns` is not; the book is valid again from the `CLEAR` at or after `after_ns`, and a `CLEAR` between `before_ns` and `after_ns` does not end the gap. Verifies **AC-16**.
+- Edges: a holes file with only a torn line makes the whole run one `sequence` gap; an instrument quiet after `before_ns` gets no `sequence` gap; a resubscribe `CLEAR` that ends no gap gives no `reconnect` gap; a tracker starting at 5,000 reports no hole below it. Verifies **AC-15**, **AC-16**.
+- File failure: a holes file write that raises logs `sequence_file_failed` and exits 75. Verifies **AC-15**.
+- Real data: the BTC 15:00 hour of 2026-10-08 (kept in the session evidence) replayed with its holes gives no crossed or one sided sample outside gaps. Verifies **AC-17**.
 
 ## Build plan
 
@@ -360,6 +411,21 @@ This milestone proves five assumptions on Nautilus 1.231.0, on the laptop, with 
 16. `scripts/fetch-catalog.sh` (with the day's quarantine files, `--into`, and `--backlog`) and the read only B2 key files under `secrets/b2/`. The compactor's `--offline` mode, `recorder.compactor.bridge`, day closing over `empty` days, and manifests reading every earlier gap file, with the Fetch, Offline, Bridge, and Long gap tests. Satisfies **AC-10**, **AC-9**, **AC-5**.
 17. Deploy to the VPS, after checking that `/srv/kfs/catalog/.compactor` does not exist yet. (Deployed 2026-10-08; the backlog steps below were dropped the same day, see AC-9.) After the VPS's first catalog snapshot: on the laptop, fetch the `backlog` runs from B2, convert them offline, fetch the VPS's first day into `./catalog-vps` and write the bridge gap, copy `./catalog` into the VPS catalog (space check, fresh mtime, sha256 check), and remove the `backlog` tag once a newer catalog snapshot fetches back identical. Then delete the laptop's `./catalog` and `./catalog-vps`. Confirm that `df -h /srv/kfs` stays flat over 24 h, that a manual backup writes the state file, and that no `catalog_late_rows` is logged while the compactor works through a dead run (AC-14). Satisfies **AC-9**, **AC-6**, **AC-8**, **AC-14**.
 
+**Milestone 7: lost messages (decided 2026-10-08)**
+
+Tracer Bullet again: one hole goes from the recorder's counter to a `sequence` gap in the catalog first, then the resubscribe and the edge cases thicken it.
+
+18. Gate (throwaway, on the laptop, brief run, then the stack down). Prove three things on Nautilus 1.231.0:
+    - Unsubscribing and resubscribing the book from the `RecordingActor` makes the Kraken feed send a `CLEAR` with `F_SNAPSHOT` within 10 s, `sequence` keeps counting up with no reset, and the trade stream keeps flowing. If not, drop the resubscribe (AC-15 says so) and carry on.
+    - The run folder under `live/` is named by `node.kernel.instance_id`.
+    - `on_order_book_deltas` plus the tracker costs under 2% of one core at 4.3M rows per hour (replay a recorded hour through the handler at that rate). If not, back to `/architect`.
+    Satisfies **AC-15** (as preconditions).
+19. Core `marketdata/sequence.py` (tracker and the gap rule) and the `sequence` kind in `gaps.py`, with unit tests. Satisfies **AC-15**, **AC-4**.
+20. Recorder: the tracker in `RecordingActor`, the holes file, the 60 s timer, the stop path, and the logs. Then the resubscribe. Satisfies **AC-15**.
+21. Compactor: read the holes file, the ready gate, `sequence` gaps for every instrument of the run, the carry invalid until the `CLEAR`, the `incomplete` hours, the fail safe hole, cleanup, and the rerun test. Satisfies **AC-16**, **AC-4**, **AC-5**, **AC-11**.
+22. The AC-3 replay test samples at the first row after every 60 s, and the real data test on the 15:00 hour. Satisfies **AC-3**, **AC-17**.
+23. Deploy. After 24 h, replay every converted BTC hour of that day and count crossed or one sided samples outside gaps; count `book_sequence_hole` and `recorder_book_resubscribed`. Satisfies **AC-17**, **AC-15**.
+
 ## Migration plan
 
 **Strategy**: in place, one deploy. The old run folders are just dead runs to the new compactor.
@@ -391,6 +457,11 @@ This milestone proves five assumptions on Nautilus 1.231.0, on the laptop, with 
 - Rows more than 600 s late make an incomplete hour, which is missing those rows in `data/`. The book carry then stays off until the next feed `CLEAR`, which only comes with a reconnect or a restart, so that can last a long time. The rows are safe in `quarantine/`, but nothing merges them back. A research reader has to check `incomplete` in the manifest.
 - Known limits of the repair (AC-12): two messages of one instrument with the same `ts_init` to the nanosecond keep the overtaking order; a clock step back of more than 600 s sends the following rows to quarantine; two identical late rows collapse into one in the quarantine dedupe.
 - Rows still waiting in the queue when the recorder stops are lost. `recorder_stop_queue_full` reports it, but the hole sits before the run's last row, so no gap covers it unless it lasts 10 s or more.
+- The sequence watch adds a Python call per delta batch to the recorder's event loop, the very loop that starved under BTC and ETH. The gate caps it at 2% of a core, but it is not free.
+- A hole on any instrument marks every instrument of the run, so a busy instrument's loss spoils a quiet one's data too. With BTC only this costs nothing.
+- A resubscribe pushes a snapshot burst (about 3,300 rows for BTC) into a queue that may already be full, which is exactly when holes happen. The 300 s minimum spacing bounds that.
+- A crash marks up to 10 minutes before its end as a `sequence` gap, whether or not anything was lost there.
+- The cause of the losses is still unknown: this design finds and limits them, it does not prevent them.
 - The catalog's file names and Arrow schema come from Nautilus internals (`_timestamps_to_filename`). An upgrade from 1.231.0 must run the replay test again.
 
 **Neutral**:
@@ -408,6 +479,10 @@ This milestone proves five assumptions on Nautilus 1.231.0, on the laptop, with 
 - [ ] Spec 0005: after this ships, run the soak sequence (kfs-soak smoke run, deploy during an open position, 72 h soak).
 - [ ] Revisit the 30 GB cap once the measured size per day is known: aim for at least 7 days of local hours.
 - [ ] Feature 15 (simulator): a converter from free Tardis days (`incremental_book_L2`, `trades` CSV, downloaded with the `tardis-dev` client) to hourly catalog files, since a whole day (about 45M rows) does not fit in memory at once. A trial on 2026-10-08 loaded and replayed 2M rows of 2026-10-01 with `TardisCSVDataLoader`.
+- [ ] `/debug` where the lost messages vanish between the adapter's counter and the stream writer (2026-10-08, BTC and ETH overload; BTC only showed none from 16:27 to 17:00). The `sequence` gaps then show whether a fix worked.
+- [ ] Feature 12: alert on `book_sequence_hole`, and on `recorder_book_resubscribed` more than a few times a day.
+- [ ] The 2026-10-08 hours converted before AC-16 ships carry holes that no gap row marks (the 15:00 hour lost 389,870 BTC and ETH messages). Once AC-16 ships, mark those hours `incomplete` by hand, or drop them.
+- [ ] Each instrument reload writes about 227 tiny `crypto_perpetual` files into the run folder (Nautilus 1.231.0 keeps a rotation timer per instrument but rotates one shared file). Harmless so far; revisit if the compactor slows on them.
 - [ ] Recorder headroom: BTC only still logs `recorder_queue_high` at peaks on the 2 CPU VPS. If restarts come back, raise the heartbeat limit or move to 4 CPUs (`/architect`).
 
 ## Rationale
