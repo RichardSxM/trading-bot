@@ -5,9 +5,7 @@ is not listed are leftovers of a crash, and the next pass overwrites them.
 """
 
 import json
-import os
 import shutil
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
@@ -16,25 +14,41 @@ from typing import Any, Final
 import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
-from nautilus_trader.model.data import OrderBookDelta, TradeTick
-from nautilus_trader.model.instruments import CryptoPerpetual
-from nautilus_trader.persistence.catalog.parquet import _parse_filename_timestamps, _timestamps_to_filename
-from nautilus_trader.persistence.funcs import class_to_filename, urisafe_identifier
+from nautilus_trader.persistence.funcs import urisafe_identifier
 
 from recorder.disk import free_bytes
 from recorder.sequence_holes import HOLES_FILE
+from trading_core.catalog.layout import (
+    DELTAS_TABLE,
+    INSTRUMENTS_TABLE,
+    TRADES_TABLE,
+    CatalogLayout,
+    hour_filename,
+    parse_hour_filename,
+)
+from trading_core.catalog.sink import COMPRESSION, TMP_SUFFIX, atomic_write
 from trading_core.marketdata.errors import BackupStateInvalid
-from trading_core.marketdata.hours import hour_last_ns
 from trading_core.marketdata.retention import HourFiles
 
-# Catalog folders, `class_to_filename(cls)`. For deltas and trades the recorder's stream folder
-# under `live/<run>/` has the same name; instruments are `live/<run>/crypto_perpetual_<ns>.feather`.
-DELTAS_TABLE: Final[str] = class_to_filename(OrderBookDelta)
-TRADES_TABLE: Final[str] = class_to_filename(TradeTick)
-INSTRUMENTS_TABLE: Final[str] = class_to_filename(CryptoPerpetual)
+__all__ = [
+    "BOOKS_KEPT",
+    "COMPRESSION",
+    "DELTAS_TABLE",
+    "INSTRUMENTS_TABLE",
+    "STREAM_TABLES",
+    "TMP_SUFFIX",
+    "TRADES_TABLE",
+    "CatalogStore",
+    "DoneRecord",
+    "atomic_write",
+    "merge_quarantine",
+    "read_backup_state",
+    "stream_key",
+]
+
+# For deltas and trades the recorder's stream folder under `live/<run>/` has the catalog table's
+# name; instruments are `live/<run>/crypto_perpetual_<ns>.feather`.
 STREAM_TABLES: Final = (DELTAS_TABLE, TRADES_TABLE)
-TMP_SUFFIX: Final = ".tmp"
-COMPRESSION: Final = "zstd"
 # Book files kept per instrument: the newest is the carry, the one before it a spare.
 BOOKS_KEPT: Final = 2
 
@@ -123,14 +137,6 @@ class DoneRecord:
         )
 
 
-def atomic_write(path: Path, write: Callable[[Path], object]) -> None:
-    """Write through ``<name>.tmp`` and a rename, so a reader never sees a half written file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + TMP_SUFFIX)
-    write(tmp)
-    os.replace(tmp, path)
-
-
 def merge_quarantine(path: Path, rows: Any) -> int:
     """Merge late rows into an hour's quarantine file (spec 0007 AC-12). Returns its row count.
 
@@ -154,11 +160,11 @@ def merge_quarantine(path: Path, rows: Any) -> int:
     return int(unique.num_rows)
 
 
-class CatalogStore:
+class CatalogStore(CatalogLayout):
     """Where everything lives under the catalog root (spec 0007, *Catalog layout*)."""
 
     def __init__(self, root: Path) -> None:
-        self.root = root
+        super().__init__(root)
         self.live = root / "live"
         self.state = root / ".compactor"
         self.done_path = self.state / "done.json"
@@ -167,11 +173,6 @@ class CatalogStore:
         """A path as ``done.json`` records it."""
         return str(path.relative_to(self.root))
 
-    def data_file(self, table: str, instrument_id: str, hour: int) -> Path:
-        """``data/<table>/<instrument>/<interval>.parquet``, the name ``ParquetDataCatalog`` reads."""
-        name: str = _timestamps_to_filename(hour, hour_last_ns(hour))
-        return self.root / "data" / table / urisafe_identifier(instrument_id) / name
-
     def quarantine_file(self, table: str, instrument_id: str, hour: int) -> Path:
         """``quarantine/<table>/<instrument>/<interval>.parquet``, the late rows of that hour (AC-12)."""
         return self.root / "quarantine" / self.data_file(table, instrument_id, hour).relative_to(self.root / "data")
@@ -179,14 +180,6 @@ class CatalogStore:
     def book_file(self, instrument_id: str, hour: int) -> Path:
         """The carried book at the end of ``hour``, stored as the snapshot rows for the next hour."""
         return self.state / "books" / urisafe_identifier(instrument_id) / f"{hour}.parquet"
-
-    def gap_file(self, day: str) -> Path:
-        """``gaps/<YYYY-MM-DD>.parquet``, the gaps that start on that UTC day."""
-        return self.root / "gaps" / f"{day}.parquet"
-
-    def manifest_file(self, day: str) -> Path:
-        """``manifests/<YYYY-MM-DD>.json``, the closed day's size and gap totals."""
-        return self.root / "manifests" / f"{day}.json"
 
     def prune_books(self, instrument_id: str) -> None:
         """Keep only the newest ``BOOKS_KEPT`` book files of an instrument."""
@@ -236,11 +229,11 @@ class CatalogStore:
         catalog_bytes = 0
         for folder in ("data", "quarantine"):
             for path in (self.root / folder).glob("*/*/*.parquet"):
-                interval = _parse_filename_timestamps(path.name)
-                if interval is None or interval[1] != hour_last_ns(interval[0]):
+                hour = parse_hour_filename(path.name)
+                if hour is None:
                     continue
                 stat = path.stat()
-                entry = found.setdefault(interval[0], [0, 0, 0])
+                entry = found.setdefault(hour, [0, 0, 0])
                 if folder == "data":
                     entry[0] += stat.st_size
                     catalog_bytes += stat.st_size
@@ -251,7 +244,7 @@ class CatalogStore:
 
     def delete_hour(self, hour: int) -> None:
         """Delete one whole catalog hour: every table and instrument, with its quarantine files."""
-        name: str = _timestamps_to_filename(hour, hour_last_ns(hour))
+        name = hour_filename(hour)
         for folder in ("data", "quarantine"):
             for path in (self.root / folder).glob(f"*/*/{name}"):
                 path.unlink(missing_ok=True)

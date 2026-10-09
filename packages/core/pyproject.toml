@@ -14,8 +14,9 @@ dependencies = [
 dev = ["pytest>=8"]
 
 [project.optional-dependencies]
-# Only the processes that run a Nautilus node (trader, recorder) install this.
-node = ["nautilus_trader==1.231.0"]
+# Only the processes that run a Nautilus node (trader, recorder, lab) install this. pyarrow and
+# numpy come with Nautilus; `trading_core.catalog` imports them directly, so they are named too.
+node = ["nautilus_trader==1.231.0", "pyarrow", "numpy"]
 
 [tool.pytest.ini_options]
 # Integration tests need the Compose Postgres; run them in the migrate service with
