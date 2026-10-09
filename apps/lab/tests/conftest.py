@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
+from uuid import uuid4
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -13,6 +14,7 @@ from nautilus_trader.core import nautilus_pyo3 as p3
 
 from lab.catalog import DELTAS_TABLE, TRADES_TABLE, SourceTree
 from lab.settings import LabSettings
+from trading_core.recording.rows import RunBundle
 from trading_core.secrets import reset_registry
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -115,3 +117,23 @@ def write_hour(root: Path, hour: int, rows: Sequence[Row], trades: Sequence[tupl
         table = pa.ipc.open_stream(pa.py_buffer(p3.trades_to_arrow_record_batch_bytes(ticks))).read_all()
         pq.write_table(table, path)
     return tree
+
+
+class MemoryStore:
+    """A replay ``Store`` that keeps the bundles in memory, in the order they were written."""
+
+    def __init__(self) -> None:
+        self.bundles: list[RunBundle] = []
+
+    def prepare(self, instrument, strategy, git_commit, config):
+        return uuid4()
+
+    def write_bundle(self, bundle) -> None:
+        self.bundles.append(bundle)
+
+
+def worker_settings(catalog: Path, reports: Path, workers: int, **extra) -> LabSettings:
+    """``lab_settings`` with a worker count (and any other ``LabSettings`` field)."""
+    return LabSettings(
+        trading_env="demo", lab_catalog_dir=catalog, lab_reports_dir=reports, lab_workers=workers, **extra
+    )

@@ -17,11 +17,11 @@ import pytest
 from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.enums import BookAction
 from sqlalchemy import create_engine, func, select
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import sessionmaker
 
 from lab.actors import SEGMENT_END, UnitRows
 from lab.catalog import SourceTree
-from lab.replay import Batch, _report, _unit_plans, build_bundle, plan_run, replay
+from lab.replay import Batch, PostgresStore, _report, _unit_plans, build_bundle, plan_run, replay
 from lab.report import index_markdown
 from lab.runfile import LoadedRun, Overrides, load_run
 from lab.stream import SegmentStream
@@ -44,8 +44,14 @@ H18 = H17 + HOUR
 DATA_END = H18 + 5 * 60 * 1_000_000_000
 
 
-def _boom() -> Session:
-    raise AssertionError("nothing may touch the database here")
+class _NoStore:
+    """A store nothing may touch: the replay must stop before any row."""
+
+    def prepare(self, *args, **kwargs):
+        raise AssertionError("nothing may touch the database here")
+
+    def write_bundle(self, bundle):
+        raise AssertionError("nothing may touch the database here")
 
 
 @pytest.fixture(scope="module")
@@ -77,7 +83,7 @@ def test_a_missing_day_exits_2_and_writes_nothing(tmp_path, loaded):
     (tmp_path / "own").mkdir()
     settings = lab_settings(tmp_path, tmp_path / "reports")
 
-    assert replay(settings, loaded, _boom) == 2
+    assert replay(settings, loaded, _NoStore()) == 2
     assert not (tmp_path / "reports").exists()
 
 
@@ -85,7 +91,7 @@ def test_a_tardis_range_without_a_first_of_month_day_exits_2(tmp_path, loaded):
     run = loaded.run.model_copy(update={"source": "tardis", "from_": date(2026, 9, 2), "to": date(2026, 9, 30)})
     settings = lab_settings(tmp_path, tmp_path / "reports")
 
-    assert replay(settings, LoadedRun(path="x", sha256="0" * 64, run=run), _boom) == 2
+    assert replay(settings, LoadedRun(path="x", sha256="0" * 64, run=run), _NoStore()) == 2
 
 
 def test_the_fixture_is_one_segment_across_the_hour_boundary(batch):
@@ -396,7 +402,7 @@ def test_replay_writes_one_bundle_and_the_reports(tmp_path, loaded):
     settings = lab_settings(FIXTURES, tmp_path)
     started = datetime.now(UTC)
     try:
-        assert replay(settings, loaded, sessions) == 0
+        assert replay(settings, loaded, PostgresStore(sessions)) == 0
         (folder,) = list(tmp_path.iterdir())
         assert sorted(p.name for p in folder.iterdir()) == ["base.bundle.json", "base.json", "base.md", "index.md"]
         with sessions() as session:

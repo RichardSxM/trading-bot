@@ -4,8 +4,20 @@ from decimal import Decimal
 from pathlib import Path
 
 from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from trading_core.settings import Settings
+
+
+class ProbeSwitch(BaseSettings):
+    """``LAB_TEST_STRATEGIES``: tests only, adds ``raise_probe`` to the strategy registry (spec 0008 AC-13).
+
+    Read on its own because a run file is validated (exit 64) before the process boots.
+    """
+
+    model_config = SettingsConfigDict(extra="ignore", case_sensitive=False)
+
+    lab_test_strategies: bool = False
 
 
 class LabSettings(Settings):
@@ -21,3 +33,5 @@ class LabSettings(Settings):
     lab_workers: int = Field(default=2, ge=1, le=4)
     # The expected size of one converted Tardis day, for the cap check (AC-2).
     lab_tardis_day_gb: Decimal = Field(default=Decimal(3), gt=0)
+    # Tests only: the registry also holds raise_probe (AC-13).
+    lab_test_strategies: bool = False

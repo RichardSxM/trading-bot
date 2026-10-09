@@ -2,7 +2,8 @@
 
 Exit codes: 0 done, 1 a variant failed (``replay``) or a day could not be imported
 (``import-tardis``), 2 required days missing, 3 the catalog cap would be passed, 64 bad input
-(every problem listed), 78 ``TRADING_ENV=live`` (the lab only ever runs in demo, AC-17).
+(every problem listed), 78 ``TRADING_ENV=live`` (the lab only ever runs in demo, AC-17), 130
+interrupted by SIGINT or SIGTERM (``replay``, AC-13).
 
 ``replay`` runs ``base`` plus the variants its flags add (AC-6); ``parity`` arrives in Milestone 5.
 Only ``replay`` connects to Postgres, so the other commands run with ``--no-deps``.
@@ -19,9 +20,9 @@ from typing import Final, NoReturn
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from lab.replay import replay
+from lab.replay import PostgresStore, replay
 from lab.runfile import Overrides, RunFileError, load_run
-from lab.settings import LabSettings
+from lab.settings import LabSettings, ProbeSwitch
 from lab.strategies import registry_entry
 from lab.tardis_import import import_tardis, prune
 from trading_core.boot import boot
@@ -85,8 +86,11 @@ def _replay(args: argparse.Namespace) -> int:
     problems: list[str] = []
     loaded = None
     variants: list[VariantSpec] = []
+    test_strategies = ProbeSwitch().lab_test_strategies
     try:
-        loaded = load_run(args.runfile, Overrides(from_=args.from_, to=args.to, seed=args.seed))
+        loaded = load_run(
+            args.runfile, Overrides(from_=args.from_, to=args.to, seed=args.seed), test_strategies=test_strategies
+        )
     except RunFileError as exc:
         problems += exc.problems
     if loaded is not None:
@@ -94,7 +98,7 @@ def _replay(args: argparse.Namespace) -> int:
         try:
             variants = expand_variants(
                 run.latency_ms,
-                registry_entry(run.strategy.name).entry_mode(run.strategy.config),
+                registry_entry(run.strategy.name, test_strategies=test_strategies).entry_mode(run.strategy.config),
                 queue_bound=args.queue_bound,
                 sweep_latency=args.sweep_latency,
                 pair_entry=args.pair_entry,
@@ -113,7 +117,7 @@ def _replay(args: argparse.Namespace) -> int:
     settings = started.settings
     engine = create_engine(settings.database_url(started.secrets[POSTGRES_PASSWORD]), pool_size=1, pool_pre_ping=True)
     try:
-        return replay(settings, loaded, sessionmaker(engine), variants=variants)
+        return replay(settings, loaded, PostgresStore(sessionmaker(engine)), variants=variants)
     finally:
         engine.dispose()
 

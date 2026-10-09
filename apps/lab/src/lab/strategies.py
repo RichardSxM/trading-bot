@@ -3,7 +3,8 @@
 Each entry names the paper loop's own strategy class, its config class, and how the run's
 values reach that config. A replay builds the strategy exactly as the trader does, with a
 pause gate, entry blocks, and a ``record`` callable (AC-7); nothing here subclasses or patches
-a strategy.
+a strategy. The one exception is the test only ``raise_probe`` (``lab.probes``), which exists only
+when the caller asks for the test strategies (``LAB_TEST_STRATEGIES=1``, AC-13).
 """
 
 from collections.abc import Callable, Mapping
@@ -15,6 +16,7 @@ from uuid import UUID
 import msgspec
 from nautilus_trader.config import StrategyConfig
 
+from lab.probes import RaiseProbe, RaiseProbeConfig
 from trading_core.node.maker_probe import MakerProbe, MakerProbeConfig
 from trading_core.node.placeholder import Record
 from trading_core.node.random_taker import RandomTaker, RandomTakerConfig
@@ -133,6 +135,12 @@ def _maker_probe(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, r
     return MakerProbe(config, gate, blocks, record)
 
 
+def _raise_probe(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
+    if not isinstance(config, RaiseProbeConfig):
+        raise TypeError(f"raise_probe needs a RaiseProbeConfig, not {type(config).__name__}")
+    return RaiseProbe(config, gate, blocks, record)
+
+
 REGISTRY: Final[Mapping[str, StrategyEntry]] = {
     "random_taker": StrategyEntry(
         name="random_taker",
@@ -150,9 +158,25 @@ REGISTRY: Final[Mapping[str, StrategyEntry]] = {
 }
 
 
-def registry_entry(name: str) -> StrategyEntry:
-    """The registered strategy called ``name``; ``StrategyConfigError`` when there is none."""
-    entry = REGISTRY.get(name)
+# Only with LAB_TEST_STRATEGIES=1 (tests): a maker_probe that raises at a set time (AC-13).
+TEST_REGISTRY: Final[Mapping[str, StrategyEntry]] = {
+    "raise_probe": StrategyEntry(
+        name="raise_probe",
+        config_cls=RaiseProbeConfig,
+        factory=_raise_probe,
+        run_fields=_random_taker_fields,
+        default_entry_mode="maker",
+    ),
+}
+
+
+def registry_entry(name: str, *, test_strategies: bool = False) -> StrategyEntry:
+    """The registered strategy called ``name``; ``StrategyConfigError`` when there is none.
+
+    ``test_strategies`` adds the test only entries (``LAB_TEST_STRATEGIES=1``).
+    """
+    known = {**REGISTRY, **TEST_REGISTRY} if test_strategies else REGISTRY
+    entry = known.get(name)
     if entry is None:
-        raise StrategyConfigError([f"strategy.name {name!r} is not registered (known: {sorted(REGISTRY)})"])
+        raise StrategyConfigError([f"strategy.name {name!r} is not registered (known: {sorted(known)})"])
     return entry

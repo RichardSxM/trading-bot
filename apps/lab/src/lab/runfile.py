@@ -136,9 +136,10 @@ def _location(loc: tuple[int | str, ...]) -> str:
     return ".".join("from" if part == "from_" else str(part) for part in loc) or "run file"
 
 
-def load_run(path: Path, overrides: Overrides) -> LoadedRun:
+def load_run(path: Path, overrides: Overrides, *, test_strategies: bool = False) -> LoadedRun:
     """Read, override, and validate a run file, including its strategy's own config.
 
+    ``test_strategies`` also accepts the test only strategies (``LAB_TEST_STRATEGIES=1``).
     Raises ``RunFileError`` listing every problem found.
     """
     try:
@@ -155,7 +156,7 @@ def load_run(path: Path, overrides: Overrides) -> LoadedRun:
         problems = [f"{_location(e['loc'])}: {e['msg']}" for e in exc.errors(include_url=False, include_input=False)]
         raise RunFileError(problems) from None
     try:
-        entry = registry_entry(run.strategy.name)
+        entry = registry_entry(run.strategy.name, test_strategies=test_strategies)
     except StrategyConfigError as exc:
         raise RunFileError(exc.problems) from None
     try:

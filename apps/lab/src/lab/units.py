@@ -92,6 +92,8 @@ class UnitPlan:
     # Sample the funding boundaries inside the segment (``tardis`` runs; own days carry no funding).
     funding: bool = False
     env: Env = Env.DEMO
+    # The test only strategies are registered (LAB_TEST_STRATEGIES=1, AC-13).
+    test_strategies: bool = False
 
 
 type Sequenced[R] = tuple[tuple[int, R], ...]
@@ -287,7 +289,7 @@ def run_unit(plan: UnitPlan) -> UnitResult:
     gate.unpause()  # loaded, not paused: the lab never pauses
     blocks = EntryBlocks()
     rows = UnitRows()
-    entry = registry_entry(plan.strategy_name)
+    entry = registry_entry(plan.strategy_name, test_strategies=plan.test_strategies)
     context = RunContext(
         env=plan.env,
         run_id=UNIT_RUN_ID,

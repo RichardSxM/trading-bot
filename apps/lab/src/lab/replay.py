@@ -6,19 +6,25 @@ ensured; then every variant runs its units in plan order, and the parent merges 
 stamps the run id, scores them, and writes the bundle in one transaction. A variant that fails
 writes no row, only a ``failed`` report. ``index.md`` is always written.
 
-Variants (AC-6) run one after another in plan order, ``base`` first, all under one ``batch_id``;
-units still run in process until the worker pool (task 18).
+Variants (AC-6) share one ``batch_id``. Their units run in spawned workers (``lab.pool``, AC-16),
+started in plan order, ``base`` first. A variant is written (bundle, then report) only once every
+variant before it is written, so bundles and reports keep the variant order whatever order the
+units finish in. A unit that fails fails only its variant (AC-13). SIGINT or SIGTERM stops every
+unit; variants not complete get an ``interrupted`` report and no bundle, and the exit is 130.
 """
 
 import logging
+import signal
 import uuid
-from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass, replace
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from importlib.metadata import version
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
+from types import FrameType
+from typing import TYPE_CHECKING, Final, Protocol
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -26,11 +32,22 @@ from sqlalchemy.orm import Session
 from lab.actors import SEGMENT_END
 from lab.catalog import SourceTree
 from lab.instruments import pinned_instrument
-from lab.report import BandReport, ErrorInfo, FillStatsReport, LabReport, Results, index_markdown, write_variant
+from lab.pool import Target, UnitDone, UnitPool
+from lab.report import (
+    BandReport,
+    ErrorInfo,
+    FillStatsReport,
+    LabReport,
+    Results,
+    Status,
+    index_markdown,
+    write_variant,
+)
 from lab.runfile import LoadedRun
 from lab.settings import LabSettings
 from lab.strategies import ConfigValue
 from lab.units import TRADER_ID, UnitPlan, UnitResult, run_unit
+from trading_core.lab.errors import ReplayInterruptedError, UnitFailedError
 from trading_core.lab.fill_stats import EntryFill, EntryOrder, SideStats, fill_stats
 from trading_core.lab.funding import FundingPayment, FundingRate, PositionKey, apply_funding
 from trading_core.lab.loser_band import BandTrade, loser_band
@@ -57,6 +74,8 @@ from trading_core.recording.rows import (
     DecisionRow,
     FillRow,
     FundingRow,
+    InstrumentRow,
+    JsonObject,
     JsonValue,
     OrderRow,
     PositionRow,
@@ -76,9 +95,42 @@ log = logging.getLogger(__name__)
 EXIT_OK: Final = 0
 EXIT_VARIANT_FAILED: Final = 1
 EXIT_MISSING_DAYS: Final = 2
+EXIT_INTERRUPTED: Final = 130
 LOSER_STRATEGY: Final = "random_taker"
 
-type RunUnit = Callable[[UnitPlan], UnitResult]
+
+class Store(Protocol):
+    """Where a replay keeps its rows: the laptop Postgres as ``lab_app`` (AC-11), or memory in tests."""
+
+    def prepare(self, instrument: InstrumentRow, strategy: str, git_commit: str | None, config: JsonObject) -> UUID:
+        """Ensure the instrument and strategy version rows; return the version id."""
+        ...
+
+    def write_bundle(self, bundle: RunBundle) -> None:
+        """Write one completed variant in one transaction."""
+        ...
+
+
+class PostgresStore:
+    """The ``Store`` over Postgres sessions, through the spec 0002 repository."""
+
+    def __init__(self, sessions: Callable[[], Session]) -> None:
+        self._sessions = sessions
+
+    def prepare(self, instrument: InstrumentRow, strategy: str, git_commit: str | None, config: JsonObject) -> UUID:
+        """Upsert the instrument and ensure the strategy version, in one commit."""
+        with self._sessions() as session:
+            repository.upsert_instrument(session, instrument)
+            version_id = repository.ensure_strategy_version(
+                session, strategy, StrategyKind.SCALPING, git_commit, config
+            )
+            session.commit()
+        return version_id
+
+    def write_bundle(self, bundle: RunBundle) -> None:
+        """``write_run_bundle`` in its own session."""
+        with self._sessions() as session:
+            repository.write_run_bundle(session, bundle)
 
 
 def plan_run(tree: SourceTree, loaded: LoadedRun) -> SegmentPlan:
@@ -215,6 +267,7 @@ def _unit_plans(batch: Batch, variant: VariantSpec) -> list[UnitPlan]:
             strategy_name=run.strategy.name,
             strategy_config=_strategy_config(batch, variant),
             funding=run.source == "tardis",
+            test_strategies=batch.settings.lab_test_strategies,
         )
         for segment in batch.plan.segments
     ]
@@ -409,10 +462,12 @@ def _report(
     results: Results | None = None,
     band: BandReport | None = None,
     error: Exception | None = None,
+    interrupted: bool = False,
 ) -> LabReport:
+    status: Status = "interrupted" if interrupted else "completed" if error is None else "failed"
     return LabReport(
-        status="completed" if error is None else "failed",
-        error=None if error is None else ErrorInfo(type=type(error).__name__, message=str(error)),
+        status=status,
+        error=None if error is None else _error_info(error),
         run_id=None if bundle is None else str(bundle.run.id),
         batch_id=str(batch.batch_id),
         variant=variant.name,
@@ -428,25 +483,38 @@ def _report(
     )
 
 
-def run_variant(
-    batch: Batch, variant: VariantSpec, sessions: Callable[[], Session], *, unit_runner: RunUnit = run_unit
+def _error_info(error: Exception) -> ErrorInfo:
+    """The failure as the report shows it: a worker's exception keeps its own type name (AC-13)."""
+    if isinstance(error, UnitFailedError):
+        return ErrorInfo(type=error.error_type, message=str(error))
+    return ErrorInfo(type=type(error).__name__, message=str(error))
+
+
+def _failed(batch: Batch, variant: VariantSpec, error: Exception, *, started_at: datetime) -> LabReport:
+    log.error(
+        "lab_variant_failed",
+        extra={"fields": {"variant": variant.name, "error": f"{_error_info(error).type}: {error}"}},
+    )
+    report = _report(batch, variant, started_at=started_at, ended_at=datetime.now(UTC), error=error)
+    write_variant(batch.folder, report, None)
+    return report
+
+
+def finish_variant(
+    batch: Batch,
+    variant: VariantSpec,
+    units: Sequence[UnitResult],
+    store: Store,
+    *,
+    started_at: datetime,
+    ended_at: datetime,
 ) -> LabReport:
-    """Run one variant's units in plan order, then write its bundle and report; a failure writes only the report."""
-    started_at = datetime.now(UTC)
+    """Score a variant's units, write its bundle, then its report; a failure writes only the report."""
     try:
-        units = [unit_runner(plan) for plan in _unit_plans(batch, variant)]
-        ended_at = datetime.now(UTC)
         bundle, results, band = build_bundle(batch, variant, units, started_at=started_at, ended_at=ended_at)
-        with sessions() as session:
-            repository.write_run_bundle(session, bundle)
+        store.write_bundle(bundle)
     except Exception as exc:
-        log.exception(
-            "lab_variant_failed",
-            extra={"fields": {"variant": variant.name, "error": f"{type(exc).__name__}: {exc}"}},
-        )
-        failed = _report(batch, variant, started_at=started_at, ended_at=datetime.now(UTC), error=exc)
-        write_variant(batch.folder, failed, None)
-        return failed
+        return _failed(batch, variant, exc, started_at=started_at)
     report = _report(
         batch, variant, started_at=started_at, ended_at=ended_at, bundle=bundle, results=results, band=band
     )
@@ -465,13 +533,139 @@ def run_variant(
     return report
 
 
+@dataclass
+class _VariantState:
+    """What the parent knows of one variant while its units run."""
+
+    spec: VariantSpec
+    plans: int
+    units: list[UnitResult] = field(default_factory=list)
+    error: Exception | None = None
+    ended_at: datetime | None = None
+
+    @property
+    def resolved(self) -> bool:
+        return self.error is not None or len(self.units) == self.plans
+
+
+class _Interrupts:
+    """SIGINT and SIGTERM raise ``ReplayInterruptedError`` in the parent, except inside ``shield``.
+
+    A signal during a write is held until the write ends, so a variant is never half written:
+    its bundle and its report land together, or neither does.
+    """
+
+    def __init__(self) -> None:
+        self.pending = False
+        self._shielded = False
+
+    def handle(self, signum: int, frame: FrameType | None) -> None:
+        self.pending = True
+        if not self._shielded:
+            self._shielded = True  # a second signal during the cleanup changes nothing
+            raise ReplayInterruptedError(signal.Signals(signum).name)
+
+    def hold(self) -> None:
+        """From now on a signal is only noted: the batch is already stopping."""
+        self._shielded = True
+
+    @contextmanager
+    def shield(self) -> Iterator[None]:
+        self._shielded = True
+        try:
+            yield
+        finally:
+            self._shielded = False
+        if self.pending:
+            self._shielded = True
+            raise ReplayInterruptedError("interrupted during a write")
+
+
+@contextmanager
+def _handling(interrupts: _Interrupts) -> Iterator[None]:
+    previous = {sig: signal.signal(sig, interrupts.handle) for sig in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        yield
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
+def run_batch(
+    batch: Batch, variants: Sequence[VariantSpec], store: Store, *, target: Target = run_unit
+) -> tuple[list[LabReport], bool]:
+    """Run every variant's units in the worker pool and write each variant in order.
+
+    Returns the reports in variant order and whether the batch was interrupted.
+    """
+    plans = {v.name: _unit_plans(batch, v) for v in variants}
+    states: Mapping[str, _VariantState] = {v.name: _VariantState(v, len(plans[v.name])) for v in variants}
+    started_at = datetime.now(UTC)
+    reports: list[LabReport] = []
+    interrupts = _Interrupts()
+    pool = UnitPool(
+        [plan for v in variants for plan in plans[v.name]],
+        batch.settings.lab_workers,
+        target=target,
+        env=batch.settings.trading_env,
+    )
+
+    def write_ready() -> None:
+        while len(reports) < len(variants) and states[variants[len(reports)].name].resolved:
+            state = states[variants[len(reports)].name]
+            with interrupts.shield():
+                if state.error is not None:
+                    reports.append(_failed(batch, state.spec, state.error, started_at=started_at))
+                else:
+                    reports.append(
+                        finish_variant(
+                            batch,
+                            state.spec,
+                            state.units,
+                            store,
+                            started_at=started_at,
+                            ended_at=state.ended_at or datetime.now(UTC),
+                        )
+                    )
+
+    interrupted = False
+    with _handling(interrupts):
+        try:
+            write_ready()  # a variant with no unit at all is complete at once
+            for outcome in pool.outcomes():
+                state = states[outcome.plan.variant]
+                if state.error is not None:
+                    continue
+                if isinstance(outcome, UnitDone):
+                    state.units.append(outcome.result)
+                else:
+                    state.error = outcome.error
+                    pool.fail_variant(state.spec.name)
+                if state.resolved:
+                    state.ended_at = datetime.now(UTC)
+                write_ready()
+        except ReplayInterruptedError:
+            interrupted = True
+            log.warning("lab_batch_interrupted", extra={"fields": {"batch_id": str(batch.batch_id)}})
+        finally:
+            interrupts.hold()
+            pool.terminate_all()
+    if interrupted:
+        now = datetime.now(UTC)
+        for v in variants[len(reports) :]:
+            report = _report(batch, v, started_at=started_at, ended_at=now, interrupted=True)
+            write_variant(batch.folder, report, None)
+            reports.append(report)
+    return reports, interrupted
+
+
 def replay(
     settings: LabSettings,
     loaded: LoadedRun,
-    sessions: Callable[[], Session],
+    store: Store,
     *,
     variants: Sequence[VariantSpec] = (),
-    unit_runner: RunUnit = run_unit,
+    target: Target = run_unit,
 ) -> int:
     """Run ``lab replay`` after validation; returns the exit code.
 
@@ -505,13 +699,12 @@ def replay(
         },
     )
 
-    with sessions() as session:
-        repository.upsert_instrument(session, instrument_row(pinned_instrument(run.instrument_id)))
-        version_id = repository.ensure_strategy_version(
-            session, run.strategy.name, StrategyKind.SCALPING, settings.git_commit, dict(run.strategy.config)
-        )
-        session.commit()
-
+    version_id = store.prepare(
+        instrument_row(pinned_instrument(run.instrument_id)),
+        run.strategy.name,
+        settings.git_commit,
+        dict(run.strategy.config),
+    )
     batch_id = uuid.uuid7()
     batch = Batch(
         funding_rates=tuple(tree.funding_rates(days)) if run.source == "tardis" else (),
@@ -522,11 +715,21 @@ def replay(
         version_id=version_id,
         folder=settings.lab_reports_dir / str(batch_id),
     )
-    reports = [run_variant(batch, variant, sessions, unit_runner=unit_runner) for variant in variants]
     batch.folder.mkdir(parents=True, exist_ok=True)
+    reports, interrupted = run_batch(batch, variants, store, target=target)
     (batch.folder / "index.md").write_text(index_markdown(str(batch_id), reports), encoding="utf-8")
-    failed = [r.variant for r in reports if r.status != "completed"]
+    failed = [r.variant for r in reports if r.status == "failed"]
     log.info(
-        "lab_batch_done", extra={"fields": {"batch_id": str(batch_id), "variants": len(reports), "failed": failed}}
+        "lab_batch_done",
+        extra={
+            "fields": {
+                "batch_id": str(batch_id),
+                "variants": len(reports),
+                "failed": failed,
+                "interrupted": interrupted,
+            }
+        },
     )
+    if interrupted:
+        return EXIT_INTERRUPTED
     return EXIT_VARIANT_FAILED if failed else EXIT_OK
