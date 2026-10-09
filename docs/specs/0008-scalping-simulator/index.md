@@ -30,7 +30,7 @@ The scalping simulator replays recorded BTC order book data (the free Tardis fir
 - **AC-12**: Two runs with the same run file, overrides, data, and seed give identical report JSON (except `run_id`, `batch_id`, `started_at`, and `ended_at`), and identical rows apart from ids and those timestamps. This holds with `LAB_WORKERS=1` and `LAB_WORKERS=2` alike: the unit list and the `S<n>` tags come from the plan, the image sets `PYTHONHASHSEED=0`, the parent merges a variant's rows sorted by (segment, `ts`, sequence within the unit), and the parent stamps `run_id` on the merged rows (units return rows without it).
 - **AC-13**: A variant fails when an exception escapes `engine.run` or the lab's runner in any of its units, or a worker process dies (a strategy that catches and logs its own error does not fail the variant). Its units not yet started are dropped, and its units still running are terminated. On SIGINT or SIGTERM the parent terminates every running unit, writes no bundle for any variant that is not complete, writes their reports and `index.md` rows with `status: interrupted`, and exits 130. `index.md` is always written, and it marks failed and interrupted variants (it still lists the others when `base` failed). A failed variant writes no database row (the `instruments` and `strategy_versions` rows of AC-11 are idempotent, hold no results, and may stay). Its JSON and Markdown report carry `status: failed` with the exception's type and message, and it logs ERROR `lab_variant_failed`. The other variants of the batch still run. The command exits 1 if any variant failed, else 0.
 - **AC-14** (the loser check): `random_taker` with `apps/lab/runs/random_taker.toml` over one Tardis day loses money in total. Its mean net P&L per closed trade lies within `expected ± max(3 × standard error, 0.5 bps of mean notional)`, where expected is `−(taker_fee × (entry notional + exit notional) + qty × (entry spread + exit spread) ÷ 2)` in USD, averaged over trades. Each spread is the quoted spread (best ask − best bid, in USD) on the book at the moment the order was submitted (not when it filled), and the standard error comes from the per trade net P&L values. Trades that cross a funding boundary or close at `segment_end` are left out of the band (and still count in the total). The report prints the expected value, the band, the trades used, and pass or fail. Unit tests check the band math; the full check runs on real data (verify.md).
-- **AC-15** (the parity check): `placeholder_timed`, replayed with the paper loop's config over every clean `own` hour that lies wholly inside a paper run window and outside any pause, makes decisions matching the paper ones. A pair matches when both have intent `enter`, the same side, and `decided_ns` within 1 s of each other, whether approved or rejected. Matches ÷ max(paper decisions, replay decisions) is at least 0.95. Only boundaries at least `lookback_min + hold_min` minutes after a segment start count (paper may hold a position the replay does not), and boundaries inside a `stale_feed` or `stop_not_accepted` block window are left out (paper was blocked there for reasons the replay cannot see). Paper decisions, run windows, pause windows, block windows, and each paper run's config hash come from the CSV written by `scripts/fetch-paper-decisions.sh`. Hours of a paper run whose config hash differs from the run file's are left out. `lab parity <runfile> <csv>` prints the ratio and every unmatched decision, exits 1 under 0.95, and exits 2 when no decision is left to compare.
+- **AC-15** (the parity check): `placeholder_timed`, replayed with the paper loop's config over every clean `own` hour that lies wholly inside a paper run window, makes decisions matching the paper ones. A pair matches when both have intent `enter`, the same side, and `decided_ns` within 1 s of each other, whether approved or rejected. Matches ÷ max(paper decisions, replay decisions) is at least 0.95. Only boundaries at least `lookback_min + hold_min` minutes after a segment start count (paper may hold a position the replay does not). A paper `enter` decision refused with `risk_reason` `paused` or starting `blocked:` is an excluded boundary: it is left out, and so is any replay `enter` decision within 1 s of it (paper was blocked there for reasons the replay cannot see, and because `hold_min` is below `interval_min` the next boundary is unaffected). Paper decisions (with `risk_reason`), run windows, and each paper run's config and config hash come from the CSV written by `scripts/fetch-paper-decisions.sh`. Hours of a paper run whose config hash differs from the run file's are left out. `lab parity <runfile> <csv>` prints the ratio and every unmatched decision, exits 1 under 0.95, and exits 2 when no decision is left to compare.
 - **AC-16**: Work runs as units (one variant over one segment). The parent schedules them itself: one spawned `multiprocessing.Process` per unit, at most `LAB_WORKERS` (default 2) at a time, each sending its `UnitResult` back over a pipe. A killed child fails only its own variant. With the `lab` container under `mem_limit: 3g` there is no OOM kill, and each unit's `ru_maxrss` stays under 1 GB. `lab_hour_replayed` logs the current RSS each hour, and `lab_unit_done` logs `ru_maxrss`; the lab does not enforce the 1 GB itself (the container limit does), and verify.md checks it. A Tardis day is usually one segment, so a single variant gains nothing from the workers; only variants and days run side by side. One full clean Tardis day of `random_taker` (one variant) replays in under 75 minutes, and one full clean own day in under 135 minutes. A `--pair-entry` batch of `maker_probe` over one Tardis day (two variants) finishes in under 85 minutes wall clock with 2 workers. Each segment's engine is fed through `BacktestEngine.add_data_iterator` by a generator that yields one hour at a time, so at no point is more than the current hour's data in memory. The mid series for markouts is a rolling buffer of the last 30 s plus the pending fills' horizons.
 - **AC-17**: The lab exits 78 at startup with `TRADING_ENV=live` (the env guard). It imports no Kraken execution client factory and mounts no Kraken key secret. It connects to Postgres only as `lab_app`, which has SELECT and INSERT on the bundle tables and nothing else. On a host without `postgres_lab_password` (the VPS), the migration creates `lab_app` as `NOLOGIN`, so the role exists but cannot connect.
 - **AC-18**: A `--pair-entry` batch (for example `maker_probe` over one Tardis day) has an `index.md` that shows `base` (post only entries) and `entry=taker` side by side: net P&L, fees, trade count, fill rate, and maker and taker markouts at 1 s, 5 s, and 30 s.
@@ -113,7 +113,7 @@ PK `(run_id, liquidity)`. The composite FK index covers `run_id`. No UPDATE path
 | `catalog-lab/tardis/.raw/<day>/` | `lab import-tardis` | the downloaded CSV, deleted after the day commits |
 | `catalog-lab/own/...` | `scripts/fetch-catalog.sh --into catalog-lab/own <from> <to>` | the VPS catalog's days, unchanged |
 | `lab-reports/<batch_id>/` | `lab replay` | reports and bundle files |
-| `lab-reports/paper/<from>_<to>.csv` | `scripts/fetch-paper-decisions.sh` | paper decisions, run windows with config hash, pause windows, block windows |
+| `lab-reports/paper/<from>_<to>.csv` | `scripts/fetch-paper-decisions.sh` | paper decisions with `risk_reason`, and run windows with config and config hash |
 
 `catalog-lab/` and `lab-reports/` are added to `.gitignore`. Tardis days and own days live in separate trees, because a first of month day can exist in both.
 
@@ -146,6 +146,34 @@ notional_usd = "1000"                # quantity = notional ÷ mid, floored to si
 ```
 
 It is validated by a pydantic model in `lab.runfile` (extra keys forbidden, `from` ≤ `to`, fees in [0, 1), latency ≥ 0, `[risk]` keys exactly the `RiskLimits` fields). `[strategy.config]` is validated by building the strategy's own `StrategyConfig`. CLI overrides replace the matching keys before validation. `run_file_sha256` hashes the file bytes, and `overrides` records what changed.
+
+**The parity run file** (`apps/lab/runs/placeholder_paper.toml`) uses a `[paper]` table in place of `[risk]` and `[strategy.config]`. `[paper]` is allowed only with `strategy.name = "placeholder_timed"`, and the model refuses it next to `[risk]` or `[strategy.config]`. Its keys are exactly the trader's `PaperLoopSettings.strategy_config()` (every `placeholder_*` and `risk_*` setting) with the same names and values (decimals as strings, integers as integers), copied from the VPS trader's settings. Its hash is `sha256(canonical_json(table))`, using `trading_core.recording.rows.canonical_json`, the same canonical form the export uses for `strategy_versions.config`. The pure function `paper_config(table)` in `trading_core/lab/parity.py` maps the table to the `PlaceholderConfig` fields and `RiskLimits` (`placeholder_interval_min` → `interval_min`, `risk_max_order_notional_usd` → `max_order_notional`, and so on). It raises on a missing or unknown key. `stop_accept_timeout_s` is not part of `strategy_config()`, never changes an entry decision, and takes the `PaperLoopSettings` default.
+
+```toml
+source = "own"
+instrument_id = "PF_XBTUSD.KRAKEN"
+from = 2026-10-08
+to = 2026-10-08
+seed = 7
+maker_fee = "0.0002"
+taker_fee = "0.0005"
+latency_ms = 25
+starting_balance_usd = "1000"
+leverage = "2"
+
+[strategy]
+name = "placeholder_timed"
+
+[paper]                              # verbatim strategy_config() of the VPS trader
+placeholder_interval_min = 15
+placeholder_hold_min = 10
+placeholder_lookback_min = 5
+placeholder_stop_pct = "0.3"
+placeholder_notional_usd = "100"
+risk_max_order_notional_usd = "250"
+risk_max_leverage = "2"
+risk_stale_quote_s = "10"
+```
 
 **Strategy registry** (`lab.strategies`): `random_taker` → `RandomTaker` and `maker_probe` → `MakerProbe` (both new, in `trading_core/node/random_taker.py` and `trading_core/node/maker_probe.py`, sharing the pure timing and side rule in `trading_core/strategy/random_taker.py`); `placeholder_timed` → `PlaceholderTimed`. Each entry names the class, its config class, and its factory, using the same constructor arguments the trader passes. With `LAB_TEST_STRATEGIES=1` only (tests), the registry also holds `raise_probe`, a `random_taker` that raises out of `on_quote_tick` at a configured hour, for AC-13.
 
@@ -199,8 +227,10 @@ Only `replay` connects to Postgres, so `import-tardis`, `parity`, and `prune` ru
 | replay | `return_after_costs`, `max_drawdown`, `win_rate`, `trade_count`, `fees_total`, `funding_total` | pure `trading_core.lab.metrics` on the variant's closed positions and fills, in USD `Decimal`; `max_drawdown` on the realized equity after each closed trade; `risk_adjusted_ratio` and `ratio_kind` NULL (feature 15 owns them) |
 | replay | strategy version | `ensure_strategy_version(name, "scalping", git_commit, config)`; `git_commit` from the image's `GIT_COMMIT` build arg |
 | replay | `trader_id` | `BACKTESTER-LAB` |
-| parity | paper decisions, run windows, pauses, blocks | the CSV, one `kind` column per row type: `decision` (`decided_ns`, `intent`, `side`, `risk_verdict`, `run_id`) for `paper` runs; `run` (`started_at`, `ended_at`, and the sha256 of the canonical `strategy_versions.config`); `pause` (`control_commands` `pause`/`unpause` with `outcome = 'executed'`); `block` (`risk_events` of kind `stale_feed`, and the `stop_not_accepted` events, with start and end from their `details`) |
-| parity | paper strategy config | the run file `apps/lab/runs/placeholder_paper.toml`, copied from the VPS trader's settings (`PLACEHOLDER_*`) |
+| parity | paper decisions, run windows | the CSV, one `kind` column per row type: `decision` (`decided_ns`, `intent`, `side`, `risk_verdict`, `risk_reason`, `run_id`) for `paper` runs; `run` (`run_id`, `started_at`, `ended_at`, `config` as `canonical_json` of `strategy_versions.config`, and `config_sha256`, its sha256) |
+| parity | excluded boundaries | the paper `decision` rows whose `risk_reason` is `paused` or starts with `blocked:` (spec 0006 `check_entry` writes these for every pause and block reason) |
+| parity | paper strategy config | the run file's `[paper]` table (`apps/lab/runs/placeholder_paper.toml`), hashed as `sha256(canonical_json(table))` and mapped to the replay config by `paper_config` |
+| parity | config mismatch detail | the keys whose values differ between the run row's `config` and `[paper]`, logged per run (`parity_config_mismatch`) |
 
 ### Code placement
 
@@ -225,6 +255,7 @@ The new service `lab` uses `profiles: ["lab"]` (never started by `up`), the imag
 - The lab never has a Kraken execution client, a Kraken key, or `TRADING_ENV=live` (AC-17).
 - The same inputs give the same outputs (AC-12): no wall clock in replay logic, and every random draw comes from the seed.
 - At most one hour of market data in memory per engine (AC-16).
+- Parity compares only boundaries where paper was free to enter: a paper refusal for `paused` or `blocked:*` removes that boundary from both sides (AC-15).
 
 ### Security model
 
@@ -265,7 +296,7 @@ There is no new external credential: Tardis free days need no key. `lab_app` has
 - Worker count: the fixture batch with `LAB_WORKERS=1` and `LAB_WORKERS=2` gives equal report JSON after removing the four allowed fields. Verifies **AC-12**, **AC-16**
 - Import: the Tardis CSV sample converts to hours that start with snapshots; a second snapshot block becomes level changes with no `CLEAR`; a rerun is skipped; a non first of month day exits 64; a cap breach exits 3. Verifies **AC-1**, **AC-2**
 - Auth/permission: `lab_app` gets `permission denied` on UPDATE of `orders` and on INSERT into `control_commands`; the lab with `TRADING_ENV=live` exits 78. Verifies **AC-17**
-- Parity: a CSV built from a replay's own decisions scores 1.0; removing 10 % of rows scores under 0.95 and exits 1. Verifies **AC-15**
+- Parity: a CSV built from a replay's own decisions scores 1.0; removing 10 % of rows scores under 0.95 and exits 1; a paper decision refused `blocked:stale_feed` is left out with its replay twin and does not lower the ratio; a run row whose config hash differs drops that run's hours and logs the differing keys; `[paper]` beside `[risk]` is refused. Verifies **AC-15**
 
 ## Build plan
 
@@ -298,7 +329,7 @@ Tracer Bullet: Milestone 2 pushes one real hour through every layer (run file, e
 **Milestone 5: Hardening and parity**
 17. Determinism test (also across `LAB_WORKERS` 1 and 2), and failure isolation per variant with exit codes, using `raise_probe` behind `LAB_TEST_STRATEGIES=1`. Satisfies **AC-12**, **AC-13**
 18. Speed and memory: the unit scheduler (one spawned `multiprocessing.Process` per unit, at most `LAB_WORKERS`, results over pipes), terminating a failed variant's units, SIGINT and SIGTERM handling with exit 130, RSS logging, Python stream speedups (bulk `from_pyo3_list`, row group batches), and the AC-16 timings on the laptop. The 19,000 events a second was measured on one engine. If two engines side by side miss AC-16's bounds, stop and route back to `/architect` rather than loosening them in the build. Satisfies **AC-6**, **AC-13**, **AC-16**
-19. `scripts/fetch-paper-decisions.sh`, `apps/lab/runs/placeholder_paper.toml`, `lab parity`, and the parity check on real paper hours. Satisfies **AC-15**
+19. `scripts/fetch-paper-decisions.sh` (decision rows with `risk_reason`, run rows with config and hash), the `[paper]` table in the run file model, `paper_config` and the matching in `trading_core/lab/parity.py`, `apps/lab/runs/placeholder_paper.toml`, `lab parity`, and the parity check on real paper hours. Satisfies **AC-15**
 20. Permission tests for `lab_app`, the live env refusal, and `verify.md` complete. Satisfies **AC-17**
 
 ## Consequences
