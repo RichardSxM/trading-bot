@@ -4,7 +4,7 @@ Exit codes: 0 done, 1 a variant failed (``replay``) or a day could not be import
 (``import-tardis``), 2 required days missing, 3 the catalog cap would be passed, 64 bad input
 (every problem listed), 78 ``TRADING_ENV=live`` (the lab only ever runs in demo, AC-17).
 
-``replay`` runs the ``base`` variant; ``parity`` and the variant flags arrive in later milestones.
+``replay`` runs ``base`` plus the variants its flags add (AC-6); ``parity`` arrives in Milestone 5.
 Only ``replay`` connects to Postgres, so the other commands run with ``--no-deps``.
 """
 
@@ -22,9 +22,11 @@ from sqlalchemy.orm import sessionmaker
 from lab.replay import replay
 from lab.runfile import Overrides, RunFileError, load_run
 from lab.settings import LabSettings
+from lab.strategies import registry_entry
 from lab.tardis_import import import_tardis, prune
 from trading_core.boot import boot
 from trading_core.lab.tardis_days import import_days
+from trading_core.lab.variants import VariantError, VariantSpec, expand_variants
 from trading_core.logs import configure_logging
 from trading_core.secrets import POSTGRES_PASSWORD
 
@@ -33,8 +35,6 @@ log = logging.getLogger(__name__)
 PROCESS: Final = "lab"
 EXIT_USAGE: Final = 64
 EXIT_CONFIG: Final = 78
-# Variant flags parse now and are refused until Milestone 4 builds them, so none is silently ignored.
-VARIANT_FLAGS: Final = ("queue_bound", "sweep_latency", "pair_entry")
 
 
 class _Parser(argparse.ArgumentParser):
@@ -84,13 +84,23 @@ def _replay(args: argparse.Namespace) -> int:
     configure_logging(process=PROCESS, env=os.environ.get("TRADING_ENV", ""))
     problems: list[str] = []
     loaded = None
+    variants: list[VariantSpec] = []
     try:
         loaded = load_run(args.runfile, Overrides(from_=args.from_, to=args.to, seed=args.seed))
     except RunFileError as exc:
         problems += exc.problems
-    for flag in VARIANT_FLAGS:
-        if getattr(args, flag):
-            problems.append(f"--{flag.replace('_', '-')}: variants are not built yet (spec 0008 Milestone 4)")
+    if loaded is not None:
+        run = loaded.run
+        try:
+            variants = expand_variants(
+                run.latency_ms,
+                registry_entry(run.strategy.name).entry_mode(run.strategy.config),
+                queue_bound=args.queue_bound,
+                sweep_latency=args.sweep_latency,
+                pair_entry=args.pair_entry,
+            )
+        except VariantError as exc:
+            problems.append(str(exc))
     if problems or loaded is None:
         for problem in problems:
             print(f"lab replay: {problem}", file=sys.stderr)
@@ -103,7 +113,7 @@ def _replay(args: argparse.Namespace) -> int:
     settings = started.settings
     engine = create_engine(settings.database_url(started.secrets[POSTGRES_PASSWORD]), pool_size=1, pool_pre_ping=True)
     try:
-        return replay(settings, loaded, sessionmaker(engine))
+        return replay(settings, loaded, sessionmaker(engine), variants=variants)
     finally:
         engine.dispose()
 

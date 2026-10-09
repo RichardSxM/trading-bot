@@ -6,7 +6,8 @@ ensured; then every variant runs its units in plan order, and the parent merges 
 stamps the run id, scores them, and writes the bundle in one transaction. A variant that fails
 writes no row, only a ``failed`` report. ``index.md`` is always written.
 
-Milestone 2 runs the ``base`` variant only, with units in process.
+Variants (AC-6) run one after another in plan order, ``base`` first, all under one ``batch_id``;
+units still run in process until the worker pool (task 18).
 """
 
 import logging
@@ -22,22 +23,29 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from lab.actors import SEGMENT_END
 from lab.catalog import SourceTree
 from lab.instruments import pinned_instrument
-from lab.report import BandReport, ErrorInfo, LabReport, Results, index_markdown, write_variant
+from lab.report import BandReport, ErrorInfo, FillStatsReport, LabReport, Results, index_markdown, write_variant
 from lab.runfile import LoadedRun
 from lab.settings import LabSettings
+from lab.strategies import ConfigValue
 from lab.units import TRADER_ID, UnitPlan, UnitResult, run_unit
+from trading_core.lab.fill_stats import EntryFill, EntryOrder, SideStats, fill_stats
 from trading_core.lab.funding import FundingPayment, FundingRate, PositionKey, apply_funding
 from trading_core.lab.loser_band import BandTrade, loser_band
 from trading_core.lab.metrics import ClosedTrade, FundingCash, run_metrics
 from trading_core.lab.segments import SegmentPlan, hours_of, plan_segments, required_days
+from trading_core.lab.variants import BASE, VariantSpec
 from trading_core.node.recording import instrument_row
 from trading_core.recording import repository
 from trading_core.recording.enums import (
     Env,
     FundingSource,
+    Intent,
+    Liquidity,
     OrderSide,
+    OrderType,
     PositionSide,
     PositionStatus,
     RunMode,
@@ -46,11 +54,14 @@ from trading_core.recording.enums import (
     StrategyKind,
 )
 from trading_core.recording.rows import (
+    DecisionRow,
     FillRow,
     FundingRow,
     JsonValue,
+    OrderRow,
     PositionRow,
     RunBundle,
+    RunFillStatsRow,
     RunResultRow,
     RunRow,
     ns_to_utc,
@@ -65,19 +76,9 @@ log = logging.getLogger(__name__)
 EXIT_OK: Final = 0
 EXIT_VARIANT_FAILED: Final = 1
 EXIT_MISSING_DAYS: Final = 2
-BASE: Final = "base"
 LOSER_STRATEGY: Final = "random_taker"
 
 type RunUnit = Callable[[UnitPlan], UnitResult]
-
-
-@dataclass(frozen=True)
-class Variant:
-    """One variant of a batch: the run with one thing changed (only ``base`` until Milestone 4)."""
-
-    name: str
-    latency_ms: int
-    queue_position: bool
 
 
 def plan_run(tree: SourceTree, loaded: LoadedRun) -> SegmentPlan:
@@ -107,7 +108,11 @@ def _merged[R](
 
 
 def _band_trades(
-    positions: Sequence[PositionRow], fills: Sequence[FillRow], spreads: dict[str, Decimal], funded: set[UUID]
+    positions: Sequence[PositionRow],
+    fills: Sequence[FillRow],
+    spreads: dict[str, Decimal],
+    funded: set[UUID],
+    segment_end_orders: set[str],
 ) -> list[BandTrade]:
     by_position: dict[UUID, list[FillRow]] = {}
     for fill in fills:
@@ -132,6 +137,7 @@ def _band_trades(
                 exit_spread=spreads.get(exits[0].client_order_id, Decimal(0)),
                 net_pnl=position.realized_pnl + position.funding_total,
                 crosses_funding=position.id in funded,
+                segment_end=any(f.client_order_id in segment_end_orders for f in exits),
             )
         )
     return trades
@@ -151,11 +157,12 @@ class Batch:
     funding_rates: tuple[FundingRate, ...] = ()
 
 
-def _run_config(batch: Batch, variant: Variant) -> dict[str, JsonValue]:
+def _run_config(batch: Batch, variant: VariantSpec, *, segment_end_partial: bool = False) -> dict[str, JsonValue]:
     run = batch.loaded.run
     return {
         "batch_id": str(batch.batch_id),
         "variant": variant.name,
+        "entry_mode": variant.entry_mode,
         "run_file": batch.loaded.path,
         "run_file_sha256": batch.loaded.sha256,
         "overrides": dict(batch.loaded.overrides),
@@ -175,13 +182,21 @@ def _run_config(batch: Batch, variant: Variant) -> dict[str, JsonValue]:
         "funding_source": "tardis" if run.source == "tardis" else "none",
         "segments": [[s.start_ns, s.end_ns] for s in batch.plan.segments],
         "skipped_hours": [[h.hour_ns, h.reason] for h in batch.plan.skipped],
-        "segment_end_partial": False,
+        "segment_end_partial": segment_end_partial,
         "nautilus_version": version("nautilus_trader"),
         "git_commit": batch.settings.git_commit,
     }
 
 
-def _unit_plans(batch: Batch, variant: Variant) -> list[UnitPlan]:
+def _strategy_config(batch: Batch, variant: VariantSpec) -> dict[str, ConfigValue]:
+    """``[strategy.config]`` with the variant's entry mode (``entry=taker`` changes only that, AC-6)."""
+    config = dict(batch.loaded.run.strategy.config)
+    if variant.entry_mode is not None:
+        config["entry_mode"] = variant.entry_mode
+    return config
+
+
+def _unit_plans(batch: Batch, variant: VariantSpec) -> list[UnitPlan]:
     run = batch.loaded.run
     return [
         UnitPlan(
@@ -198,7 +213,7 @@ def _unit_plans(batch: Batch, variant: Variant) -> list[UnitPlan]:
             risk=RiskLimits(max_order_notional=run.risk.max_order_notional, max_leverage=run.risk.max_leverage),
             seed=run.seed,
             strategy_name=run.strategy.name,
-            strategy_config=dict(run.strategy.config),
+            strategy_config=_strategy_config(batch, variant),
             funding=run.source == "tardis",
         )
         for segment in batch.plan.segments
@@ -206,7 +221,7 @@ def _unit_plans(batch: Batch, variant: Variant) -> list[UnitPlan]:
 
 
 def build_bundle(
-    batch: Batch, variant: Variant, units: Sequence[UnitResult], *, started_at: datetime, ended_at: datetime
+    batch: Batch, variant: VariantSpec, units: Sequence[UnitResult], *, started_at: datetime, ended_at: datetime
 ) -> tuple[RunBundle, Results, BandReport | None]:
     """Merge a variant's units, stamp its run id, and score it; nothing is written here."""
     run = batch.loaded.run
@@ -229,7 +244,7 @@ def build_bundle(
         sum((f.fee for f in fills), Decimal(0)),
     )
     segments = batch.plan.segments
-    config = _run_config(batch, variant)
+    config = _run_config(batch, variant, segment_end_partial=any(u.segment_end_partial for u in units))
     run_row = RunRow(
         id=run_id,
         env=Env.DEMO,
@@ -256,6 +271,23 @@ def build_bundle(
         currency="USD",
         computed_at=ended_at,
     )
+    sides = _fill_stats(units, decisions, orders)
+    stats_rows = [
+        RunFillStatsRow(
+            run_id=run_id,
+            env=Env.DEMO,
+            liquidity=s.liquidity,
+            orders_placed=s.orders_placed,
+            orders_filled=s.orders_filled,
+            fill_rate=s.fill_rate,
+            fill_count=s.fill_count,
+            markout_1s_bps=s.markouts[1],
+            markout_5s_bps=s.markouts[5],
+            markout_30s_bps=s.markouts[30],
+            computed_at=ended_at,
+        )
+        for s in sides
+    ]
     bundle = RunBundle(
         run=run_row,
         results=[result],
@@ -266,6 +298,7 @@ def build_bundle(
         positions=positions,
         funding=funding,
         risk_events=risk_events,
+        fill_stats=stats_rows,
     )
     results = Results(
         net_pnl=metrics.net_pnl,
@@ -276,11 +309,25 @@ def build_bundle(
         fees_total=metrics.fees_total,
         funding_total=metrics.funding_total,
         open_positions=len(positions) - len(closed),
+        fill_stats=[
+            FillStatsReport(
+                liquidity=s.liquidity.value,
+                orders_placed=s.orders_placed,
+                orders_filled=s.orders_filled,
+                fill_count=s.fill_count,
+                fill_rate=s.fill_rate,
+                markouts_bps={f"{h}s": v for h, v in s.markouts.items()},
+                left_out={f"{h}s": n for h, n in s.left_out.items()},
+            )
+            for s in sides
+        ],
     )
     band = None
     if run.strategy.name == LOSER_STRATEGY:
         funded = {f.position_id for f in funding if f.position_id is not None}
-        checked = loser_band(_band_trades(positions, fills, spreads, funded), run.taker_fee)
+        closes = {d.id for d in decisions if d.reason == SEGMENT_END}
+        segment_end_orders = {o.client_order_id for o in orders if o.decision_id in closes}
+        checked = loser_band(_band_trades(positions, fills, spreads, funded, segment_end_orders), run.taker_fee)
         band = BandReport(
             trades_used=checked.trades_used,
             total_net=checked.total_net,
@@ -292,6 +339,32 @@ def build_bundle(
             passed=checked.passed,
         )
     return bundle, results, band
+
+
+def _fill_stats(
+    units: Sequence[UnitResult], decisions: Sequence[DecisionRow], orders: Sequence[OrderRow]
+) -> list[SideStats]:
+    """AC-10 over the variant's entry orders (orders whose decision is an ``enter``), with each
+    fill's markouts taken from its own unit (trade ids repeat across segments, client order ids do not)."""
+    enters = {d.id for d in decisions if d.intent == Intent.ENTER}
+    entry_orders = [
+        EntryOrder(
+            o.client_order_id,
+            Liquidity.MAKER if o.post_only or o.order_type == OrderType.LIMIT else Liquidity.TAKER,
+        )
+        for o in orders
+        if o.decision_id in enters
+    ]
+    entry_ids = {o.client_order_id for o in entry_orders}
+    entry_fills: list[EntryFill] = []
+    for unit in units:
+        marks = {m.trade_id: m.markouts for m in unit.markouts}
+        entry_fills += [
+            EntryFill(f.client_order_id, f.liquidity, f.quantity, marks.get(f.trade_id, {}))
+            for _, f in unit.fills
+            if f.client_order_id in entry_ids
+        ]
+    return fill_stats(entry_orders, entry_fills)
 
 
 def _with_funding(
@@ -328,7 +401,7 @@ def _with_funding(
 
 def _report(
     batch: Batch,
-    variant: Variant,
+    variant: VariantSpec,
     *,
     started_at: datetime,
     ended_at: datetime,
@@ -346,7 +419,7 @@ def _report(
         strategy=batch.loaded.run.strategy.name,
         started_at=started_at.isoformat(),
         ended_at=ended_at.isoformat(),
-        run_config=_run_config(batch, variant),
+        run_config=_run_config(batch, variant) if bundle is None else dict(bundle.run.run_config),
         segments=[(s.start_ns, s.end_ns) for s in batch.plan.segments],
         skipped_hours=[(h.hour_ns, h.reason) for h in batch.plan.skipped],
         results=results,
@@ -356,7 +429,7 @@ def _report(
 
 
 def run_variant(
-    batch: Batch, variant: Variant, sessions: Callable[[], Session], *, unit_runner: RunUnit = run_unit
+    batch: Batch, variant: VariantSpec, sessions: Callable[[], Session], *, unit_runner: RunUnit = run_unit
 ) -> LabReport:
     """Run one variant's units in plan order, then write its bundle and report; a failure writes only the report."""
     started_at = datetime.now(UTC)
@@ -397,10 +470,16 @@ def replay(
     loaded: LoadedRun,
     sessions: Callable[[], Session],
     *,
+    variants: Sequence[VariantSpec] = (),
     unit_runner: RunUnit = run_unit,
 ) -> int:
-    """Run ``lab replay`` after validation; returns the exit code."""
+    """Run ``lab replay`` after validation; returns the exit code.
+
+    ``variants`` come from ``expand_variants`` (AC-6), ``base`` first; none means ``base`` alone.
+    """
     run = loaded.run
+    if not variants:
+        variants = [VariantSpec(BASE, run.latency_ms, True)]
     tree = SourceTree(settings.lab_catalog_dir / run.source, run.instrument_id)
     days = required_days(run.source, run.from_, run.to)
     if not days:
@@ -414,11 +493,11 @@ def replay(
         return EXIT_MISSING_DAYS
 
     plan = plan_run(tree, loaded)
-    variants = [Variant(name=BASE, latency_ms=run.latency_ms, queue_position=True)]
     log.info(
         "lab_segment_planned",
         extra={
             "fields": {
+                "variants": [v.name for v in variants],
                 "segments": len(plan.segments),
                 "units": len(plan.segments) * len(variants),
                 "skipped_hours": plan.skipped_by_reason(),

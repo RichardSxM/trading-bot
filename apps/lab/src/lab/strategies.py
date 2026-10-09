@@ -15,6 +15,7 @@ from uuid import UUID
 import msgspec
 from nautilus_trader.config import StrategyConfig
 
+from trading_core.node.maker_probe import MakerProbe, MakerProbeConfig
 from trading_core.node.placeholder import Record
 from trading_core.node.random_taker import RandomTaker, RandomTakerConfig
 from trading_core.node.strategy import KfsStrategy, PauseGate
@@ -67,8 +68,14 @@ class StrategyEntry:
     config_cls: type[StrategyConfig]
     factory: Factory
     run_fields: Callable[[RunContext], dict[str, object]]
-    # True when the config has an ``entry_mode`` (``--pair-entry`` needs one, AC-6).
-    has_entry_mode: bool = False
+    # The config's ``entry_mode`` default, or None when it has no ``entry_mode`` (``--pair-entry`` needs one, AC-6).
+    default_entry_mode: str | None = None
+
+    def entry_mode(self, user: Mapping[str, ConfigValue]) -> str | None:
+        """The entry mode ``[strategy.config]`` gives, else the default; None for a strategy without one."""
+        if self.default_entry_mode is None:
+            return None
+        return str(user.get("entry_mode", self.default_entry_mode))
 
     def user_fields(self) -> frozenset[str]:
         """The keys ``[strategy.config]`` may set: the config's own fields, minus the run's."""
@@ -120,12 +127,25 @@ def _random_taker(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, 
     return RandomTaker(config, gate, blocks, record)
 
 
+def _maker_probe(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
+    if not isinstance(config, MakerProbeConfig):
+        raise TypeError(f"maker_probe needs a MakerProbeConfig, not {type(config).__name__}")
+    return MakerProbe(config, gate, blocks, record)
+
+
 REGISTRY: Final[Mapping[str, StrategyEntry]] = {
     "random_taker": StrategyEntry(
         name="random_taker",
         config_cls=RandomTakerConfig,
         factory=_random_taker,
         run_fields=_random_taker_fields,
+    ),
+    "maker_probe": StrategyEntry(
+        name="maker_probe",
+        config_cls=MakerProbeConfig,
+        factory=_maker_probe,
+        run_fields=_random_taker_fields,
+        default_entry_mode="maker",
     ),
 }
 

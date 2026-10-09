@@ -23,6 +23,7 @@ from pydantic import BaseModel, ConfigDict
 from trading_core.recording.rows import JsonValue, RunBundle
 
 Status = Literal["completed", "failed", "interrupted"]
+HORIZON_KEYS = ("1s", "5s", "30s")
 
 
 class _Model(BaseModel):
@@ -36,8 +37,21 @@ class ErrorInfo(_Model):
     message: str
 
 
+class FillStatsReport(_Model):
+    """One liquidity side's fill rate and markouts (AC-10); horizons keyed ``1s``, ``5s``, ``30s``."""
+
+    liquidity: str
+    orders_placed: int
+    orders_filled: int
+    fill_count: int
+    fill_rate: Decimal
+    markouts_bps: dict[str, Decimal | None]
+    # Fills left out of each horizon's mean because it passed their segment's last delta.
+    left_out: dict[str, int]
+
+
 class Results(_Model):
-    """The variant's ``run_results`` numbers, plus its net P&L."""
+    """The variant's ``run_results`` numbers, its net P&L, and its fill stats per side."""
 
     net_pnl: Decimal
     return_after_costs: Decimal
@@ -46,8 +60,9 @@ class Results(_Model):
     trade_count: int
     fees_total: Decimal
     funding_total: Decimal
-    # Positions still open when the data ended; Milestone 4's segment end close brings this to 0.
+    # Positions still open after the segment end close (AC-8); 0 unless something went wrong.
     open_positions: int
+    fill_stats: list[FillStatsReport] = []
 
 
 class BandReport(_Model):
@@ -112,6 +127,20 @@ def _pct(value: Decimal) -> str:
     return f"{value * 100:.3f} %"
 
 
+def _bps(value: Decimal | None) -> str:
+    return "n/a" if value is None else f"{value:.2f}"
+
+
+def _side(results: Results, liquidity: str) -> FillStatsReport | None:
+    return next((s for s in results.fill_stats if s.liquidity == liquidity), None)
+
+
+def _side_cells(side: FillStatsReport | None) -> str:
+    if side is None:
+        return "n/a | n/a"
+    return f"{_pct(side.fill_rate)} | " + " / ".join(_bps(side.markouts_bps.get(h)) for h in HORIZON_KEYS)
+
+
 def report_markdown(report: LabReport) -> str:
     """The report as a short Markdown page."""
     lines = [f"# Replay `{report.variant}` · {report.strategy}", ""]
@@ -124,9 +153,12 @@ def report_markdown(report: LabReport) -> str:
         f"- Source: {report.run_config.get('source')}, {len(report.segments)} segment(s), "
         f"{len(report.skipped_hours)} skipped hour(s)",
         f"- Fees: maker {report.run_config.get('maker_fee')}, taker {report.run_config.get('taker_fee')}; "
-        f"latency {report.run_config.get('latency_ms')} ms; queue {report.run_config.get('queue_model')}",
-        "",
+        f"latency {report.run_config.get('latency_ms')} ms; queue {report.run_config.get('queue_model')}"
+        + (f"; entry {report.run_config['entry_mode']}" if report.run_config.get("entry_mode") else ""),
     ]
+    if report.run_config.get("segment_end_partial"):
+        lines.append("- Segment end: the last book could not close every position; the rest closed at the last mid")
+    lines.append("")
     results = report.results
     if results is not None:
         headline = "Net P&L before funding" if report.before_funding else "Net P&L"
@@ -145,6 +177,21 @@ def report_markdown(report: LabReport) -> str:
             f"| Positions open at data end | {results.open_positions} |",
             "",
         ]
+    if results is not None and results.fill_stats:
+        lines += [
+            "## Entry fills (AC-10)",
+            "",
+            "| Side | Placed | Filled | Fills | Fill rate | Markout 1 s (bps) | 5 s | 30 s | Left out (1/5/30 s) |",
+            "|---|---|---|---|---|---|---|---|---|",
+        ]
+        for s in results.fill_stats:
+            marks = " | ".join(_bps(s.markouts_bps.get(h)) for h in HORIZON_KEYS)
+            left = "/".join(str(s.left_out.get(h, 0)) for h in HORIZON_KEYS)
+            lines.append(
+                f"| {s.liquidity} | {s.orders_placed} | {s.orders_filled} | {s.fill_count} | "
+                f"{_pct(s.fill_rate)} | {marks} | {left} |"
+            )
+        lines.append("")
     band = report.loser_band
     if band is not None:
         lines += [
@@ -166,22 +213,28 @@ def report_markdown(report: LabReport) -> str:
 
 
 def index_markdown(batch_id: str, reports: Sequence[LabReport]) -> str:
-    """Every variant of the batch side by side (failed and interrupted ones marked)."""
+    """Every variant of the batch side by side (failed and interrupted ones marked): net P&L, fees,
+    trades, and each side's fill rate and markouts at 1, 5, and 30 s (AC-18)."""
     lines = [
         f"# Replay batch `{batch_id}`",
         "",
-        "| Variant | Status | Net P&L (USD) | Fees (USD) | Trades | Win rate | Max drawdown |",
-        "|---|---|---|---|---|---|---|",
+        "Markouts are in bps at 1 s / 5 s / 30 s after each entry fill, weighted by fill size.",
+        "",
+        "| Variant | Status | Net P&L (USD) | Fees (USD) | Trades | Maker fill rate | Maker markouts | "
+        "Taker fill rate | Taker markouts |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for report in reports:
         r = report.results
         name = report.variant.replace("=", "-")
         if r is None:
-            lines.append(f"| [{report.variant}]({name}.md) | {report.status} | n/a | n/a | n/a | n/a | n/a |")
+            lines.append(
+                f"| [{report.variant}]({name}.md) | {report.status} | n/a | n/a | n/a | n/a | n/a | n/a | n/a |"
+            )
         else:
             lines.append(
                 f"| [{report.variant}]({name}.md) | {report.status} | {_money(r.net_pnl)} | {_money(r.fees_total)} | "
-                f"{r.trade_count} | {_pct(r.win_rate)} | {_pct(r.max_drawdown)} |"
+                f"{r.trade_count} | {_side_cells(_side(r, 'maker'))} | {_side_cells(_side(r, 'taker'))} |"
             )
     return "\n".join(lines) + "\n"
 

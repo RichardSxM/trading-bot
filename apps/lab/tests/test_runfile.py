@@ -9,9 +9,11 @@ import pytest
 
 from lab.main import main
 from lab.runfile import Overrides, RunFileError, load_run
+from lab.strategies import REGISTRY
 
 RUNS = Path(__file__).parents[1] / "runs"
 GOOD = (RUNS / "random_taker_own.toml").read_text()
+MAKER = (RUNS / "maker_probe.toml").read_text()
 
 
 def _write(tmp_path: Path, text: str) -> Path:
@@ -23,7 +25,7 @@ def _write(tmp_path: Path, text: str) -> Path:
 def test_the_committed_run_files_are_valid():
     for path in sorted(RUNS.glob("*.toml")):
         loaded = load_run(path, Overrides())
-        assert loaded.run.strategy.name == "random_taker"
+        assert loaded.run.strategy.name in REGISTRY
         assert len(loaded.sha256) == 64
 
 
@@ -94,9 +96,23 @@ def test_bad_arguments_exit_64(argv):
     assert _exit_code(argv) == 64
 
 
-def test_variant_flags_are_refused_until_they_are_built(tmp_path, capsys):
+def test_pair_entry_is_refused_for_a_strategy_without_an_entry_mode(tmp_path, capsys):
     assert _exit_code(["replay", str(_write(tmp_path, GOOD)), "--pair-entry"]) == 64
-    assert "--pair-entry" in capsys.readouterr().err
+    assert "no entry_mode" in capsys.readouterr().err
+
+
+def test_pair_entry_is_refused_when_the_run_file_already_takes(tmp_path, capsys):
+    text = MAKER.replace('entry_mode = "maker"', 'entry_mode = "taker"')
+
+    assert _exit_code(["replay", str(_write(tmp_path, text)), "--pair-entry"]) == 64
+    assert 'already sets entry_mode = "taker"' in capsys.readouterr().err
+
+
+def test_a_bad_entry_mode_is_refused(tmp_path):
+    with pytest.raises(RunFileError) as raised:
+        load_run(_write(tmp_path, MAKER.replace('entry_mode = "maker"', 'entry_mode = "sometimes"')), Overrides())
+
+    assert "strategy.config" in raised.value.problems[0]
 
 
 def test_the_lab_refuses_live_with_exit_78(tmp_path, monkeypatch):

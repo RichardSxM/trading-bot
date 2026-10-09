@@ -11,6 +11,10 @@ carried so far. That run of rows (from its ``CLEAR`` to the next ``F_LAST``, at 
 ``ts_init``) is dropped: the book is already right there, and replaying it would move resting
 orders to the front of their queues. Any other ``CLEAR`` or snapshot row after the segment's
 first batch raises ``UnexpectedSnapshotError``.
+
+With ``final_ts_init`` set, the stream ends with one more batch at that time that leaves the book
+as it is, so the runner's segment end cancel and close reach the venue and fill against the
+last book (AC-8).
 """
 
 import heapq
@@ -19,6 +23,7 @@ import os
 import resource
 import time
 from collections.abc import Callable, Iterator
+from decimal import Decimal
 from pathlib import Path
 from typing import Final
 
@@ -26,8 +31,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from nautilus_trader.core.data import Data
 from nautilus_trader.model.book import OrderBook
-from nautilus_trader.model.data import OrderBookDelta, OrderBookDeltas, QuoteTick, TradeTick
-from nautilus_trader.model.enums import BookAction, BookType
+from nautilus_trader.model.data import BookOrder, OrderBookDelta, OrderBookDeltas, QuoteTick, TradeTick
+from nautilus_trader.model.enums import BookAction, BookType, OrderSide
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.serialization.arrow.serializer import ArrowSerializer
 
@@ -89,9 +94,11 @@ class SegmentStream:
         *,
         on_hour: Callable[[int, int, float], None] | None = None,
         chunk: int = CHUNK,
+        final_ts_init: int | None = None,
     ) -> None:
         self._tree = tree
         self._segment = segment
+        self._final_ts_init = final_ts_init
         self._instrument_id = InstrumentId.from_str(tree.instrument_id)
         self._book = OrderBook(self._instrument_id, BookType.L2_MBP)
         self._top: Top | None = None
@@ -118,6 +125,38 @@ class SegmentStream:
             self.events += count
             if self._on_hour is not None:
                 self._on_hour(hour, count, time.monotonic() - started)
+        final = self._final_batch()
+        if final is not None:
+            yield [final]
+
+    def last_mid(self) -> Decimal | None:
+        """The mid of the last book, or None while either side is empty."""
+        bid, ask = self._book.best_bid_price(), self._book.best_ask_price()
+        if bid is None or ask is None:
+            return None
+        mid: Decimal = (bid.as_decimal() + ask.as_decimal()) / 2
+        return mid
+
+    def _final_batch(self) -> OrderBookDeltas | None:
+        """The segment end batch (AC-8): one ``UPDATE`` of the best level to the size it has, at
+        ``final_ts_init``, so the engine reaches that time with the last book unchanged. The engine
+        refuses an empty batch, so this is the smallest batch that changes nothing."""
+        if self._final_ts_init is None:
+            return None
+        if self._final_ts_init <= (self.last_ts_init or 0):
+            raise ValueError(f"final batch at {self._final_ts_init} is not after the last delta {self.last_ts_init}")
+        bid, ask = self._book.best_bid_price(), self._book.best_ask_price()
+        if bid is not None:
+            order = BookOrder(OrderSide.BUY, bid, self._book.best_bid_size(), 0)
+        elif ask is not None:
+            order = BookOrder(OrderSide.SELL, ask, self._book.best_ask_size(), 0)
+        else:
+            return None
+        ts = self._final_ts_init
+        delta = OrderBookDelta(self._instrument_id, BookAction.UPDATE, order, F_LAST, 0, ts, ts)
+        batch = OrderBookDeltas(self._instrument_id, [delta])
+        self._book.apply_deltas(batch)
+        return batch
 
     def _hour_events(self, hour: int, *, inner: bool) -> Iterator[Data]:
         deltas = self._book_events(read_deltas(self._tree.hour_file(DELTAS_TABLE, hour)), inner=inner)
