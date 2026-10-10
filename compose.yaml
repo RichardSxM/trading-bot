@@ -492,8 +492,10 @@ secrets:
     file: ${SECRETS_DIR:-./secrets}/postgres_dashboard_password
   postgres_backup_password:
     file: ${SECRETS_DIR:-./secrets}/postgres_backup_password
+  # Laptop only (spec 0008), so not under SECRETS_DIR: the VPS deploy requires every
+  # ${SECRETS_DIR}/<name> file it finds here (deploy/host/lib.sh kfs_secret_names).
   postgres_lab_password:
-    file: ${SECRETS_DIR:-./secrets}/postgres_lab_password
+    file: ./secrets/postgres_lab_password
   redis_trader_password:
     file: ${SECRETS_DIR:-./secrets}/redis_trader_password
   redis_dashboard_password:
