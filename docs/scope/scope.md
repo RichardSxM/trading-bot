@@ -225,7 +225,7 @@ code in `apps/lab`, `packages/core/src/trading_core/lab`
   - [x] Hardening and parity: determinism, failure isolation, the worker pool and the day timings, `fetch-paper-decisions.sh` and the parity check, permission tests (AC-12, AC-13, AC-15, AC-16, AC-17). Built 2026-10-09: tasks 17, 18, 20, and parity (task 19, ratio 1.0 on the 2026-10-08 paper hours). The own day timing stays a verify.md step
 - [ ] Verify it: `/check verify scalping simulator`
 - [x] Test it: `/test scalping simulator`
-- [ ] Review it (fresh model): `/check review scalping simulator`
+- [x] Review it (fresh model): `/check review scalping simulator`
 - [ ] Document it: `/document scalping simulator`
 
 ### 15. Strategy scoring & promotion gate · needs a decision
