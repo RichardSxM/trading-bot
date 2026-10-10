@@ -226,7 +226,7 @@ code in `apps/lab`, `packages/core/src/trading_core/lab`
 - [ ] Verify it: `/check verify scalping simulator`
 - [x] Test it: `/test scalping simulator`
 - [x] Review it (fresh model): `/check review scalping simulator`
-- [ ] Document it: `/document scalping simulator`
+- [x] Document it: `/document scalping simulator`
 
 ### 15. Strategy scoring & promotion gate · needs a decision
 Score every strategy on return after costs, max drawdown, and a risk adjusted ratio (win rate shown, never ranked on), with out of sample testing to catch overfitting. Only strategies that pass move to paper, and only paper winners can go live.
