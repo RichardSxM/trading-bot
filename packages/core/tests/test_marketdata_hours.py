@@ -166,3 +166,16 @@ def test_hours_before_the_first_recorded_hour_do_not_count():
     assert day_closed(DAY, {"BTC": _hours(0, 23), "ETH": _hours(30, 40)})
     assert not day_closed(DAY, {"BTC": _hours(30, 40)})
     assert not day_closed(DAY, {})
+
+
+def test_an_instrument_no_longer_recorded_does_not_hold_any_day_back():
+    # The VPS on 2026-10-08: ETH recorded 06:00 to 16:00, then BTC only.
+    covered = {"BTC": _hours(6, 71), "ETH": _hours(6, 16)}
+    assert not day_closed(DAY, covered)
+    assert not day_closed(DAY + DAY_NS, covered)
+
+    assert day_closed(DAY, covered, recorded={"BTC"})
+    assert day_closed(DAY + DAY_NS, covered, recorded={"BTC"})
+    # BTC itself still has to be complete.
+    assert not day_closed(DAY, {"BTC": _hours(6, 22), "ETH": _hours(6, 16)}, recorded={"BTC"})
+    assert not day_closed(DAY, {"ETH": _hours(0, 23)}, recorded={"BTC"})

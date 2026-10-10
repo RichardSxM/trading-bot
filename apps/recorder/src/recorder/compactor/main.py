@@ -59,6 +59,10 @@ class CompactorSettings(CatalogDiskSettings):
     # The wait after a file's last write before it is read, so an hour is never finished early.
     compactor_grace_s: int = Field(default=300, ge=0)
     compactor_interval_s: int = Field(default=60, gt=0)
+    # The recorder's instruments (the same RECORDER_INSTRUMENTS): only these must cover a day for it
+    # to close, so one dropped from recording no longer holds every later day back (AC-5). Unset
+    # means every instrument in the catalog.
+    recorder_instruments: str | None = None
     # Two book deltas of one instrument this far apart are a `silence` gap (spec 0007 AC-4).
     book_silence_gap_s: int = Field(default=10, gt=0)
     # How late a row may be and still be put back in place; 0 means no reordering (AC-12).
@@ -97,8 +101,10 @@ class Compactor:
         max_rows: int = 2_000_000,
         beat: Beat | None = None,
         offline: bool = False,
+        recorded: frozenset[str] | None = None,
     ) -> None:
         self._store = store
+        self._recorded = recorded
         # Offline (the laptop backlog, AC-9): no run is the current one, so every run ends.
         self._offline = offline
         self._grace_ns = grace_ns
@@ -138,7 +144,7 @@ class Compactor:
         for stream in self.streams.values():
             changed = stream.end_pass(self.done) or changed
         changed = self.definitions.write_hours(instruments, self.done, STREAM_TABLES) or changed
-        if close_days(self._store, self.done) or changed:
+        if close_days(self._store, self.done, self._recorded) or changed:
             self._store.save_done(self.done)
         self._delete_converted(found, current, instruments)
 
@@ -384,6 +390,10 @@ def main() -> None:
     store = CatalogStore(root)
     heartbeat = Heartbeat(Path(os.environ.get("HEARTBEAT_FILE", "/run/heartbeat/alive")))
 
+    names = settings.recorder_instruments
+    # Offline converts the old backlog, recorded with whatever instruments were set back then.
+    recorded = None if offline or names is None else frozenset(n.strip() for n in names.split(",") if n.strip())
+
     def fresh() -> Compactor:
         return Compactor(
             store,
@@ -396,6 +406,7 @@ def main() -> None:
             max_rows=settings.compactor_reorder_max_rows,
             beat=heartbeat,
             offline=offline,
+            recorded=recorded,
         )
 
     if offline:
