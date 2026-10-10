@@ -10,7 +10,7 @@ _Steps derived from spec 0008 acceptance criteria. `/check verify` runs these; `
 - [x] `docker compose config lab` → `profiles: [lab]`, `mem_limit: 3g`, mounts `catalog-lab` and `lab-reports`, secret `postgres_lab_password` only, `TRADING_ENV: demo` → AC-16, AC-17
 
 ## Real data
-- [ ] On the VPS after deploy: `docker compose run --rm migrate` passes without `postgres_lab_password`, and `\du lab_app` shows `Cannot login` → AC-17
+- [x] On the VPS after deploy: `docker compose run --rm migrate` passes without `postgres_lab_password`, and `\du lab_app` shows `Cannot login` → AC-17
 - [ ] `docker compose run --rm --no-deps lab import-tardis 2026-09-01 2026-09-01` → `catalog-lab/tardis/manifests/2026-09-01.json` exists, 24 delta hours each starting with snapshot rows, `.raw/2026-09-01/` gone → AC-1
 - [x] The same command again → `lab_import_day_skipped`, no file changes → AC-1
 - [x] `lab import-tardis 2026-10-01 2026-10-01` → `lab_import_day_done` shows `snapshot_diffs` near 51, no `CLEAR` row after any hour's start, a `reconnect` gap only around the 924 s outage; a replay's `lab_segment_planned` keeps about 22 of 24 hours → AC-1, AC-4
