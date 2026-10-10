@@ -1,14 +1,16 @@
 """covers: spec 0008 AC-3 (the run file and overrides are validated at startup, every problem listed, exit 64)
-and AC-17 (exit 78 in live)."""
+and AC-17 (exit 78 in live, or for a replay from an image built without GIT_COMMIT)."""
 
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from lab.main import main
 from lab.runfile import Overrides, RunFileError, load_run
+from lab.settings import LabSettings
 from lab.strategies import REGISTRY
 
 RUNS = Path(__file__).parents[1] / "runs"
@@ -119,3 +121,13 @@ def test_the_lab_refuses_live_with_exit_78(tmp_path, monkeypatch):
     monkeypatch.setenv("TRADING_ENV", "live")
 
     assert _exit_code(["replay", str(_write(tmp_path, GOOD))]) == 78
+
+
+@pytest.mark.parametrize("commit", ["unknown", ""])
+def test_a_replay_from_an_image_without_a_commit_exits_78_before_connecting(tmp_path, monkeypatch, capsys, commit):
+    settings = LabSettings(trading_env="demo", git_commit=commit)
+    monkeypatch.setattr("lab.main.boot", lambda *a, **k: SimpleNamespace(settings=settings, secrets={}))
+    monkeypatch.setattr("lab.main.create_engine", lambda *a, **k: pytest.fail("connected to Postgres"))
+
+    assert _exit_code(["replay", str(_write(tmp_path, GOOD))]) == 78
+    assert "GIT_COMMIT" in capsys.readouterr().err

@@ -3,7 +3,8 @@
 Exit codes: 0 done, 1 a variant failed (``replay``), the parity ratio is under 0.95 (``parity``),
 or a day could not be imported (``import-tardis``), 2 required days missing (or, for ``parity``, no
 decision left to compare), 3 the catalog cap would be passed, 64 bad input (every problem listed),
-78 ``TRADING_ENV=live`` (the lab only ever runs in demo, AC-17), 130 interrupted by SIGINT or
+78 ``TRADING_ENV=live`` (the lab only ever runs in demo, AC-17) or, for ``replay``, an image built
+without ``GIT_COMMIT``, 130 interrupted by SIGINT or
 SIGTERM (``replay``, ``parity``, AC-13).
 
 ``replay`` runs ``base`` plus the variants its flags add (AC-6); ``parity`` replays the paper loop's
@@ -89,6 +90,22 @@ def _refuse_live() -> None:
         sys.exit(EXIT_CONFIG)
 
 
+def _unknown_commit(settings: LabSettings) -> bool:
+    """A replay records its strategy version by commit, so without one every code revision shares a version."""
+    if settings.git_commit.strip().lower() not in ("", "unknown"):
+        return False
+    print(
+        "lab replay: the image has no commit; build it with `GIT_COMMIT=$(git rev-parse HEAD) "
+        "docker compose --profile lab build lab`",
+        file=sys.stderr,
+    )
+    log.critical(
+        "the image was built without GIT_COMMIT, refusing to record a replay",
+        extra={"fields": {"code": "lab_unknown_commit"}},
+    )
+    return True
+
+
 def _replay(args: argparse.Namespace) -> int:
     configure_logging(process=PROCESS, env=os.environ.get("TRADING_ENV", ""))
     problems: list[str] = []
@@ -123,6 +140,8 @@ def _replay(args: argparse.Namespace) -> int:
     # The paper loop's recorder logs every fill at INFO; a replay makes thousands.
     logging.getLogger("trading_core.node.recording").setLevel(logging.WARNING)
     settings = started.settings
+    if _unknown_commit(settings):
+        return EXIT_CONFIG
     engine = create_engine(settings.database_url(started.secrets[POSTGRES_PASSWORD]), pool_size=1, pool_pre_ping=True)
     try:
         return replay(settings, loaded, PostgresStore(sessionmaker(engine)), variants=variants)
@@ -169,7 +188,12 @@ def _parity(args: argparse.Namespace) -> int:
 
 def _prune(args: argparse.Namespace) -> int:
     started = boot("worker", settings_cls=LabSettings)
-    freed = prune(started.settings, args.source)
+    try:
+        freed = prune(started.settings, args.source)
+    except OSError as exc:
+        print(f"lab prune: {exc}", file=sys.stderr)
+        log.error("lab_prune_failed", extra={"fields": {"error": str(exc)}})
+        return 1
     print(f"freed {freed} bytes")
     return 0
 

@@ -543,11 +543,17 @@ def write_instruments(layout: CatalogLayout, instrument: CryptoPerpetual, counts
 
 
 def prune(settings: LabSettings, source: str | None) -> int:
-    """Delete one source tree (both with no source) and return the bytes freed (AC-2)."""
+    """Delete one source tree (both with no source) and return the bytes freed (AC-2).
+
+    A file that cannot be deleted raises ``OSError``: the cap check trusts these bytes to be gone.
+    """
     roots = [settings.lab_catalog_dir / name for name in ((source,) if source else ("tardis", "own"))]
     freed = 0
     for root in roots:
-        freed += tree_bytes(root)
-        shutil.rmtree(root, ignore_errors=True)
+        if not root.exists():
+            continue
+        size = tree_bytes(root)
+        shutil.rmtree(root)
+        freed += size
     log.info("lab_pruned", extra={"fields": {"roots": [str(r) for r in roots], "bytes": freed}})
     return freed

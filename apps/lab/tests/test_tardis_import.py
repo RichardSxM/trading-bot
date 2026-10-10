@@ -265,3 +265,16 @@ def test_prune_deletes_one_tree_and_counts_its_bytes(tmp_path):
     assert (s.lab_catalog_dir / "own").exists()
     assert prune(s, None) == 50
     assert not (s.lab_catalog_dir / "own").exists()
+
+
+def test_prune_reports_a_tree_it_could_not_delete(tmp_path, monkeypatch):
+    s = settings(tmp_path)
+    (s.lab_catalog_dir / "tardis").mkdir(parents=True)
+
+    def refuse(path, ignore_errors=False, **kwargs):
+        if not ignore_errors:  # like shutil.rmtree, which then skips what it could not delete
+            raise PermissionError(13, "Permission denied", str(path))
+
+    monkeypatch.setattr("lab.tardis_import.shutil.rmtree", refuse)
+    with pytest.raises(PermissionError):
+        prune(s, "tardis")
