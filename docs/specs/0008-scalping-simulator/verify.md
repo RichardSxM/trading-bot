@@ -81,7 +81,7 @@ _Task 13 ran 2026-10-09 on Tardis 2026-09-01: 1439 trades, net −1,446.54 USD, 
 - [x] `random_taker_own.toml --sweep-latency` with `latency_ms = 0` → `lab_segment_planned` lists only `base` → AC-6
 
 ### Real data
-- [ ] `lab replay /app/apps/lab/runs/maker_probe.toml --pair-entry` on 2026-09-01 → one `batch_id`, `base.md` and `entry-taker.md`; `index.md` shows net P&L, fees, trades, maker and taker fill rate, and markouts at 1 / 5 / 30 s side by side; `base` maker fill rate under 100 %, `entry=taker` taker fill rate 100 % → AC-6, AC-10, AC-18
+- [x] `lab replay /app/apps/lab/runs/maker_probe.toml --pair-entry` on 2026-09-01 → one `batch_id`, `base.md` and `entry-taker.md`; `index.md` shows net P&L, fees, trades, maker and taker fill rate, and markouts at 1 / 5 / 30 s side by side; `base` maker fill rate under 100 %, `entry=taker` taker fill rate 100 % → AC-6, AC-10, AC-18
 - [x] `select liquidity, orders_placed, orders_filled, fill_rate, markout_1s_bps, markout_5s_bps, markout_30s_bps from run_fill_stats where run_id = '<base run>'` → a `maker` row (and a `taker` row only if some post only entry filled as taker) → AC-10
 - [x] A Tardis run with `hold_s = 3600` (copy `random_taker.toml`) → a `funding_payments` row with source `computed` per hour held, and `positions.funding_total` equal to their sum → AC-9
 - [x] In any replay, each segment's last decision with an open position is intent `exit`, reason `segment_end`, its order reduce only and filled; `positions` has no `open` row; `run_config.segment_end_partial` is `false` → AC-8
@@ -107,7 +107,7 @@ _Task 19 (parity, AC-15) built 2026-10-09 (commit `5cf1f9f`). Real check the sam
 - [ ] `docker compose run --rm --no-deps -T -w /app/packages/core trader pytest -q -m integration tests/integration/test_roles.py` → `lab_app` is refused UPDATE on `orders`, DELETE on `fills`, INSERT and SELECT on `control_commands` → AC-17
 
 ### Real data
-- [ ] `lab replay /app/apps/lab/runs/maker_probe.toml --pair-entry` (2026-09-01, `LAB_WORKERS=2`) → wall clock under 85 min, every `lab_unit_done` `ru_maxrss` under 1 GB, no OOM kill, both units run side by side (their `lab_hour_replayed` lines interleave) → AC-16
+- [x] `lab replay /app/apps/lab/runs/maker_probe.toml --pair-entry` (2026-09-01, `LAB_WORKERS=2`) → wall clock under 85 min, every `lab_unit_done` `ru_maxrss` under 1 GB, no OOM kill, both units run side by side (their `lab_hour_replayed` lines interleave) → AC-16
 - [ ] Fetch a real own day (`scripts/fetch-catalog.sh --into catalog-lab/own <day> <day>`, replacing the local stand in manifest of 2026-10-08), then `lab replay /app/apps/lab/runs/random_taker_own.toml --from <day> --to <day>` → under 135 min → AC-16
 - [x] Press Ctrl-C during a real batch → exit 130 within seconds, no `lab-*` worker process left (`docker top`), `index.md` marks the unfinished variants `interrupted`, no new `strategy_runs` row for them → AC-13
 - [x] During a `--pair-entry` batch, `kill -9` one worker inside the container → only its variant reports `failed` (`WorkerDiedError`), the other completes, exit 1 → AC-13
