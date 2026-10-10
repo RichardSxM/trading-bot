@@ -20,13 +20,14 @@ from trading_core.lab.parity import (
     paper_config,
 )
 from trading_core.marketdata.hours import HOUR_NS
+from trading_core.recording.rows import JsonObject
 from trading_core.settings import PaperLoopSettings
 
 MIN = 60_000_000_000
 T0 = 1_791_446_400_000_000_000  # 2026-10-08 08:00 UTC
 DELAY = 2_000_000_000  # decisions come 2 s after the boundary
 
-PAPER = {
+PAPER: JsonObject = {
     "placeholder_interval_min": 15,
     "placeholder_hold_min": 10,
     "placeholder_lookback_min": 5,

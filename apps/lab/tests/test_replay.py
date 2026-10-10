@@ -387,6 +387,22 @@ def test_maker_probe_posts_at_the_touch_and_pair_entry_measures_both_sides(maker
     assert "Maker fill rate" in index
 
 
+def test_risk_event_keys_are_scoped_to_the_run_so_a_rerun_can_be_written(maker_batch):
+    """``risk_events`` is unique on ``(env, event_key)``, and a replay's client order ids repeat run to run."""
+    variant = VariantSpec(name=BASE, latency_ms=25, queue_position=True, entry_mode="maker")
+    (plan,) = _unit_plans(maker_batch, variant)
+    unit = run_unit(plan)
+    now = datetime.now(UTC)
+
+    first, _, _ = build_bundle(maker_batch, variant, [unit], started_at=now, ended_at=now)
+    again, _, _ = build_bundle(maker_batch, variant, [unit], started_at=now, ended_at=now)
+
+    assert first.risk_events
+    for bundle in (first, again):
+        assert all(r.event_key.endswith(f"@{bundle.run.id}") for r in bundle.risk_events)
+    assert not {r.event_key for r in first.risk_events} & {r.event_key for r in again.risk_events}
+
+
 def _report_of(batch, name, bundle, results):
     variant = next(v for v in expand_variants(25, "maker", pair_entry=True) if v.name == name)
     now = datetime.now(UTC)

@@ -79,6 +79,7 @@ from trading_core.recording.rows import (
     JsonValue,
     OrderRow,
     PositionRow,
+    RiskEventRow,
     RunBundle,
     RunFillStatsRow,
     RunResultRow,
@@ -149,6 +150,16 @@ def plan_run(
 def _stamp[R: DataclassInstance](rows: Iterable[R], run_id: UUID) -> list[R]:
     """The rows with the variant's run id in place of the unit placeholder (AC-12)."""
     return [replace(row, run_id=run_id) for row in rows]
+
+
+def _scoped(rows: Iterable[RiskEventRow], run_id: UUID) -> list[RiskEventRow]:
+    """The risk events with the run id added to each ``event_key``.
+
+    ``risk_events`` is unique on ``(env, event_key)``, and a replay's client order ids follow the
+    replay clock, so a key like ``order_rejected:<client_order_id>`` repeats in every variant and in
+    every rerun of the same day; the run id keeps each run's keys apart.
+    """
+    return [replace(row, run_id=run_id, event_key=f"{row.event_key}@{run_id}") for row in rows]
 
 
 def _merged[R](
@@ -288,7 +299,7 @@ def build_bundle(
     run = batch.loaded.run
     run_id = uuid.uuid4()
     decisions = _stamp(_merged(units, lambda u: u.decisions, lambda r: r.decided_ns), run_id)
-    risk_events = _stamp(_merged(units, lambda u: u.risk_events, lambda r: r.occurred_ns), run_id)
+    risk_events = _scoped(_merged(units, lambda u: u.risk_events, lambda r: r.occurred_ns), run_id)
     orders = _stamp(_merged(units, lambda u: u.orders, lambda r: r.last_event_ns), run_id)
     order_events = _stamp(_merged(units, lambda u: u.order_events, lambda r: r.occurred_ns), run_id)
     fills = _stamp(_merged(units, lambda u: u.fills, lambda r: r.filled_ns), run_id)
