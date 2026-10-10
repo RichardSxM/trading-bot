@@ -10,7 +10,7 @@ import pytest
 from feed_fixture import H0, HOUR_NS, INSTRUMENT, SECOND_NS, make_feed, write_run
 from test_compactor_lifecycle import _snapshot
 
-from recorder.compactor.days import read_gaps
+from recorder.compactor.days import close_days, read_gaps
 from recorder.compactor.main import Compactor
 from recorder.compactor.store import DELTAS_TABLE, CatalogStore, stream_key
 from trading_core.marketdata.gaps import Gap
@@ -196,3 +196,21 @@ def test_a_pass_killed_after_a_commit_reruns_to_the_same_gaps_and_manifests(tmp_
     _compactor(CatalogStore(crashed), silence_ns=HOUR_NS).run_pass(_later())
     assert not list(crashed.rglob("*.tmp"))
     assert _snapshot(crashed) == _snapshot(clean)
+
+
+def test_an_instrument_dropped_from_recording_no_longer_holds_days_back(tmp_path):
+    """covers: spec 0007 AC-5. The VPS on 2026-10-08: ETH recorded 06:00 to 16:00, then BTC only."""
+    store = CatalogStore(tmp_path)
+    done = store.load_done()
+    eth = stream_key(DELTAS_TABLE, "PF_ETHUSD.KRAKEN")
+    stats = {"rows": 1, "bytes": 1}
+    done.hours[DELTAS] = {DAY + h * HOUR_NS: dict(stats) for h in range(6, 24 + 24 + 14)}
+    done.hours[eth] = {DAY + h * HOUR_NS: dict(stats) for h in range(6, 17)}
+
+    assert not close_days(store, done)
+    assert done.days == set()
+
+    assert close_days(store, done, recorded=frozenset({INSTRUMENT}))
+    assert done.days == {"2026-10-08", "2026-10-09"}
+    day_one = json.loads(store.manifest_file("2026-10-08").read_text())
+    assert {s["instrument_id"]: s["hours"] for s in day_one["streams"]} == {INSTRUMENT: 18, "PF_ETHUSD.KRAKEN": 11}

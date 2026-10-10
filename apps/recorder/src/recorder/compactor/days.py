@@ -7,6 +7,7 @@ are found later for a closed day, its manifest is written again.
 """
 
 import logging
+from collections.abc import Collection
 from functools import partial
 from typing import Any
 
@@ -27,10 +28,11 @@ __all__ = ["GAP_SCHEMA", "close_days", "gap_days", "read_gaps", "write_gaps"]
 log = logging.getLogger(__name__)
 
 
-def close_days(store: CatalogStore, done: DoneRecord) -> bool:
+def close_days(store: CatalogStore, done: DoneRecord, recorded: Collection[str] | None = None) -> bool:
     """Write the manifest of every day that has closed since the last pass. Returns whether any did.
 
     A day already closed is written again when its ``incomplete`` entries changed its manifest.
+    Only the ``recorded`` instruments (all when ``None``) must cover a day for it to close.
     """
     covered: dict[str, set[int]] = {}
     prefix = f"{DELTAS_TABLE}/"
@@ -47,7 +49,7 @@ def close_days(store: CatalogStore, done: DoneRecord) -> bool:
     closed = False
     for day in range(day_of(min(every_hour)), day_of(last) + 1, DAY_NS):
         name = day_name(day)
-        if name in done.days or not day_closed(day, covered):
+        if name in done.days or not day_closed(day, covered, recorded):
             continue
         manifest = _manifest(store, done, day)
         text = manifest_text(manifest)

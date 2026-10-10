@@ -156,16 +156,20 @@ def hours_inside(start_ns: int, end_ns: int) -> list[int]:
     return list(range(first, end_ns - HOUR_NS + 1, HOUR_NS))
 
 
-def day_closed(day: int, covered: Mapping[str, Collection[int]]) -> bool:
+def day_closed(day: int, covered: Mapping[str, Collection[int]], recorded: Collection[str] | None = None) -> bool:
     """Whether every hour of the UTC day that starts at ``day`` is accounted for (spec 0007 AC-5).
 
     ``covered`` holds, per instrument, its converted delta hours plus the empty hours inside a
     ``recorder_down`` gap. Hours before an instrument's first covered hour are before it was
     recorded at all, so they do not count; an instrument that starts after the day is skipped.
+    ``recorded`` names the instruments the recorder records now (all of them when ``None``); one
+    dropped from it would otherwise hold back every day after it stopped.
     """
     end = day + DAY_NS
     started = False
-    for hours in covered.values():
+    for instrument, hours in covered.items():
+        if recorded is not None and instrument not in recorded:
+            continue
         if not hours or min(hours) >= end:
             continue
         started = True

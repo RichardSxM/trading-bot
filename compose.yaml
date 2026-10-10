@@ -286,6 +286,8 @@ services:
       BOOK_SILENCE_GAP_S: ${BOOK_SILENCE_GAP_S:-10}
       COMPACTOR_REORDER_WINDOW_S: ${COMPACTOR_REORDER_WINDOW_S:-600}
       COMPACTOR_REORDER_MAX_ROWS: ${COMPACTOR_REORDER_MAX_ROWS:-2000000}
+      # The recorder's list: only these instruments must cover a day for it to close (spec 0007 AC-5).
+      RECORDER_INSTRUMENTS: ${RECORDER_INSTRUMENTS:-PF_XBTUSD.KRAKEN}
     volumes:
       - catalog:/data/catalog
       - backup-state:/state:ro
