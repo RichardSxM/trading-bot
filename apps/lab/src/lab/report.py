@@ -1,0 +1,249 @@
+"""Reports of a replay batch (spec 0008 AC-11, AC-13).
+
+Per variant JSON, Markdown, and the exact bundle, plus the batch's ``index.md``.
+
+``LabReport`` is dumped with ``model_dump(mode="json")``: Decimals as strings, nanosecond times
+as integers, keys sorted. The Markdown renders the same model. Nothing that differs between two
+runs of the same inputs goes in, except ``run_id``, ``batch_id``, ``started_at``, and
+``ended_at`` (AC-12).
+"""
+
+import dataclasses
+import json
+from collections.abc import Sequence
+from datetime import datetime
+from decimal import Decimal
+from enum import Enum
+from pathlib import Path
+from typing import Literal
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict
+
+from trading_core.recording.rows import JsonValue, RunBundle
+
+Status = Literal["completed", "failed", "interrupted"]
+HORIZON_KEYS = ("1s", "5s", "30s")
+
+
+class _Model(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class ErrorInfo(_Model):
+    """Why a variant failed."""
+
+    type: str
+    message: str
+
+
+class FillStatsReport(_Model):
+    """One liquidity side's fill rate and markouts (AC-10); horizons keyed ``1s``, ``5s``, ``30s``."""
+
+    liquidity: str
+    orders_placed: int
+    orders_filled: int
+    fill_count: int
+    fill_rate: Decimal
+    markouts_bps: dict[str, Decimal | None]
+    # Fills left out of each horizon's mean because it passed their segment's last delta.
+    left_out: dict[str, int]
+
+
+class Results(_Model):
+    """The variant's ``run_results`` numbers, its net P&L, and its fill stats per side."""
+
+    net_pnl: Decimal
+    return_after_costs: Decimal
+    max_drawdown: Decimal
+    win_rate: Decimal
+    trade_count: int
+    fees_total: Decimal
+    funding_total: Decimal
+    # Positions still open after the segment end close (AC-8); 0 unless something went wrong.
+    open_positions: int
+    fill_stats: list[FillStatsReport] = []
+
+
+class BandReport(_Model):
+    """The loser check (AC-14), printed for ``random_taker`` runs."""
+
+    trades_used: int
+    total_net: Decimal
+    expected: Decimal | None
+    mean_net: Decimal | None
+    std_error: Decimal | None
+    low: Decimal | None
+    high: Decimal | None
+    passed: bool
+
+
+class LabReport(_Model):
+    """One variant's report."""
+
+    status: Status
+    error: ErrorInfo | None = None
+    run_id: str | None = None
+    batch_id: str
+    variant: str
+    strategy: str
+    started_at: str
+    ended_at: str
+    run_config: dict[str, JsonValue]
+    segments: list[tuple[int, int]]
+    skipped_hours: list[tuple[int, str]]
+    results: Results | None = None
+    loser_band: BandReport | None = None
+    before_funding: bool
+
+
+def _plain(value: object) -> object:
+    if isinstance(value, Decimal):
+        return format(value, "f")
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, Enum):
+        return value.value
+    raise TypeError(f"{type(value).__name__} is not JSON serializable")
+
+
+def report_json(report: LabReport) -> str:
+    """The report as JSON with sorted keys."""
+    return json.dumps(report.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
+
+
+def bundle_json(bundle: RunBundle) -> str:
+    """The exact bundle written to Postgres, in the report's encoding, for feature 15."""
+    return json.dumps(dataclasses.asdict(bundle), indent=2, sort_keys=True, default=_plain) + "\n"
+
+
+def _money(value: Decimal | None, places: int = 2) -> str:
+    return "n/a" if value is None else f"{value:,.{places}f}"
+
+
+def _pct(value: Decimal) -> str:
+    return f"{value * 100:.3f} %"
+
+
+def _bps(value: Decimal | None) -> str:
+    return "n/a" if value is None else f"{value:.2f}"
+
+
+def _side(results: Results, liquidity: str) -> FillStatsReport | None:
+    return next((s for s in results.fill_stats if s.liquidity == liquidity), None)
+
+
+def _side_cells(side: FillStatsReport | None) -> str:
+    if side is None:
+        return "n/a | n/a"
+    return f"{_pct(side.fill_rate)} | " + " / ".join(_bps(side.markouts_bps.get(h)) for h in HORIZON_KEYS)
+
+
+def report_markdown(report: LabReport) -> str:
+    """The report as a short Markdown page."""
+    lines = [f"# Replay `{report.variant}` · {report.strategy}", ""]
+    lines.append(f"- Status: **{report.status}**")
+    if report.error is not None:
+        lines.append(f"- Error: `{report.error.type}`: {report.error.message}")
+    lines += [
+        f"- Batch: `{report.batch_id}`",
+        f"- Run: `{report.run_id or 'not written'}`",
+        f"- Source: {report.run_config.get('source')}, {len(report.segments)} segment(s), "
+        f"{len(report.skipped_hours)} skipped hour(s)",
+        f"- Fees: maker {report.run_config.get('maker_fee')}, taker {report.run_config.get('taker_fee')}; "
+        f"latency {report.run_config.get('latency_ms')} ms; queue {report.run_config.get('queue_model')}"
+        + (f"; entry {report.run_config['entry_mode']}" if report.run_config.get("entry_mode") else ""),
+    ]
+    if report.run_config.get("segment_end_partial"):
+        lines.append("- Segment end: the last book could not close every position; the rest closed at the last mid")
+    lines.append("")
+    results = report.results
+    if results is not None:
+        headline = "Net P&L before funding" if report.before_funding else "Net P&L"
+        lines += [
+            "## Results",
+            "",
+            "| Measure | Value |",
+            "|---|---|",
+            f"| {headline} (USD) | {_money(results.net_pnl)} |",
+            f"| Return after costs | {_pct(results.return_after_costs)} |",
+            f"| Max drawdown | {_pct(results.max_drawdown)} |",
+            f"| Win rate | {_pct(results.win_rate)} |",
+            f"| Closed trades | {results.trade_count} |",
+            f"| Fees (USD) | {_money(results.fees_total)} |",
+            f"| Funding (USD) | {_money(results.funding_total)} |",
+            f"| Positions open at data end | {results.open_positions} |",
+            "",
+        ]
+    if results is not None and results.fill_stats:
+        lines += [
+            "## Entry fills (AC-10)",
+            "",
+            "| Side | Placed | Filled | Fills | Fill rate | Markout 1 s (bps) | 5 s | 30 s | Left out (1/5/30 s) |",
+            "|---|---|---|---|---|---|---|---|---|",
+        ]
+        for s in results.fill_stats:
+            marks = " | ".join(_bps(s.markouts_bps.get(h)) for h in HORIZON_KEYS)
+            left = "/".join(str(s.left_out.get(h, 0)) for h in HORIZON_KEYS)
+            lines.append(
+                f"| {s.liquidity} | {s.orders_placed} | {s.orders_filled} | {s.fill_count} | "
+                f"{_pct(s.fill_rate)} | {marks} | {left} |"
+            )
+        lines.append("")
+    band = report.loser_band
+    if band is not None:
+        lines += [
+            "## Loser check (AC-14)",
+            "",
+            f"- Trades used: {band.trades_used}; total net P&L {_money(band.total_net)} USD",
+            f"- Expected mean per trade: {_money(band.expected, 4)} USD; "
+            f"band {_money(band.low, 4)} to {_money(band.high, 4)}",
+            f"- Mean net per trade: {_money(band.mean_net, 4)} USD (standard error {_money(band.std_error, 4)})",
+            f"- Result: **{'pass' if band.passed else 'fail'}**",
+            "",
+        ]
+    if report.skipped_hours:
+        reasons: dict[str, int] = {}
+        for _, reason in report.skipped_hours:
+            reasons[reason] = reasons.get(reason, 0) + 1
+        lines += ["## Skipped hours", ""] + [f"- {reason}: {count}" for reason, count in sorted(reasons.items())] + [""]
+    return "\n".join(lines)
+
+
+def index_markdown(batch_id: str, reports: Sequence[LabReport]) -> str:
+    """Every variant of the batch side by side (failed and interrupted ones marked): net P&L, fees,
+    trades, and each side's fill rate and markouts at 1, 5, and 30 s (AC-18)."""
+    lines = [
+        f"# Replay batch `{batch_id}`",
+        "",
+        "Markouts are in bps at 1 s / 5 s / 30 s after each entry fill, weighted by fill size.",
+        "",
+        "| Variant | Status | Net P&L (USD) | Fees (USD) | Trades | Maker fill rate | Maker markouts | "
+        "Taker fill rate | Taker markouts |",
+        "|---|---|---|---|---|---|---|---|---|",
+    ]
+    for report in reports:
+        r = report.results
+        name = report.variant.replace("=", "-")
+        if r is None:
+            lines.append(
+                f"| [{report.variant}]({name}.md) | {report.status} | n/a | n/a | n/a | n/a | n/a | n/a | n/a |"
+            )
+        else:
+            lines.append(
+                f"| [{report.variant}]({name}.md) | {report.status} | {_money(r.net_pnl)} | {_money(r.fees_total)} | "
+                f"{r.trade_count} | {_side_cells(_side(r, 'maker'))} | {_side_cells(_side(r, 'taker'))} |"
+            )
+    return "\n".join(lines) + "\n"
+
+
+def write_variant(folder: Path, report: LabReport, bundle: RunBundle | None) -> None:
+    """Write ``<variant>.md``, ``<variant>.json``, and ``<variant>.bundle.json`` when a bundle was written."""
+    folder.mkdir(parents=True, exist_ok=True)
+    name = report.variant.replace("=", "-")
+    (folder / f"{name}.json").write_text(report_json(report), encoding="utf-8")
+    (folder / f"{name}.md").write_text(report_markdown(report), encoding="utf-8")
+    if bundle is not None:
+        (folder / f"{name}.bundle.json").write_text(bundle_json(bundle), encoding="utf-8")

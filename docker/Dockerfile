@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # One image recipe for every Python service. Build args pick the workspace package:
-#   PACKAGE  uv workspace package to install (trader, recorder, dashboard, trading-core)
+#   PACKAGE  uv workspace package to install (trader, recorder, dashboard, lab, trading-core)
 #   APP_DIR  its folder, used as the working directory (tests and alembic.ini live there)
 #   GIT_COMMIT  the commit being built (`GIT_COMMIT=$(git rev-parse HEAD) docker compose build`)
 
@@ -34,6 +34,7 @@ COPY packages/core/pyproject.toml packages/core/
 COPY apps/trader/pyproject.toml apps/trader/
 COPY apps/recorder/pyproject.toml apps/recorder/
 COPY apps/dashboard/pyproject.toml apps/dashboard/
+COPY apps/lab/pyproject.toml apps/lab/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --package "$PACKAGE" --no-install-workspace
 

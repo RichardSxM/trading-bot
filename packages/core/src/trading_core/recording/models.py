@@ -1,4 +1,4 @@
-"""The 18 Postgres tables of spec 0002, on ``trading_core.db.Base``.
+"""The 18 Postgres tables of spec 0002 plus ``run_fill_stats`` (spec 0008), on ``trading_core.db.Base``.
 
 Market data never lands here (it stays in the Parquet catalog). Env scoped tables link to
 their parents with a composite ``(<parent>_id, env)`` foreign key against the parent's
@@ -250,6 +250,35 @@ class RunResult(Base):
     currency: Mapped[str]
     computed_at: Mapped[datetime]
     created_at: Mapped[datetime] = _created()
+
+
+class RunFillStats(Base):
+    """Fill rate and markouts of a replay's entry orders, one row per liquidity side (spec 0008 AC-10)."""
+
+    __tablename__ = "run_fill_stats"
+    __table_args__ = (
+        PrimaryKeyConstraint("run_id", "liquidity"),
+        _env_fk("run_id", "strategy_runs"),
+        _env_check(),
+        # Only the two sides an order can fill on; no_liquidity never gets a row.
+        CheckConstraint("liquidity IN ('maker', 'taker')", name="liquidity_valid"),
+        CheckConstraint("orders_placed >= 1", name="orders_placed_positive"),
+        CheckConstraint("orders_filled BETWEEN 0 AND orders_placed", name="orders_filled_range"),
+        CheckConstraint("fill_rate BETWEEN 0 AND 1", name="fill_rate_range"),
+        CheckConstraint("fill_count >= 0", name="fill_count_nonnegative"),
+    )
+
+    run_id: Mapped[uuid.UUID]
+    env: Mapped[str]
+    liquidity: Mapped[str]
+    orders_placed: Mapped[int]
+    orders_filled: Mapped[int]
+    fill_rate: Mapped[Decimal]
+    fill_count: Mapped[int]
+    markout_1s_bps: Mapped[Decimal | None]
+    markout_5s_bps: Mapped[Decimal | None]
+    markout_30s_bps: Mapped[Decimal | None]
+    computed_at: Mapped[datetime]
 
 
 class Decision(Base):

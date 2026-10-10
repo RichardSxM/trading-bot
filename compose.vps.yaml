@@ -6,6 +6,16 @@
 # named volume, so it survives a lost Docker data root and the backup can read it.
 
 services:
+  # The lab never runs on the VPS (spec 0008), so its password file does not exist here and
+  # role setup creates lab_app NOLOGIN. Same list as compose.yaml, minus postgres_lab_password.
+  migrate:
+    secrets: !override
+      - source: postgres_owner_password
+        target: postgres_password
+      - postgres_trader_password
+      - postgres_dashboard_password
+      - postgres_backup_password
+
   recorder:
     environment:
       CATALOG_REQUIRE_MARKER: "true"

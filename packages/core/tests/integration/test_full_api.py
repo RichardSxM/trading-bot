@@ -1,4 +1,5 @@
-"""covers: spec 0002 AC-5 (replays of every record type), AC-10 (run bundles), AC-15 (promotions, live gate)."""
+"""covers: spec 0002 AC-5 (replays of every record type), AC-10 (run bundles), AC-15 (promotions, live gate);
+spec 0008 AC-11 (a replay bundle with fill stats and risk events)."""
 
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -17,6 +18,7 @@ from trading_core.recording.enums import (
     DecidedBy,
     Env,
     FundingSource,
+    Liquidity,
     OrderEventKind,
     OrderOrigin,
     RiskEventKind,
@@ -47,6 +49,7 @@ from trading_core.recording.rows import (
     PromotionRow,
     RiskEventRow,
     RunBundle,
+    RunFillStatsRow,
     RunResultRow,
     RunRow,
 )
@@ -302,6 +305,62 @@ def test_a_run_bundle_lands_whole_and_commits(engine, session: Session, world: W
     with Session(engine) as check:
         assert _count(check, models.Fill, run_id=run.id) == 1
         assert _count(check, models.OrderEvent, env="demo", order_id=order.id) == 1
+
+
+def test_a_replay_bundle_carries_fill_stats_and_risk_events(engine, session: Session, world: World):
+    run = _sim_run(world, RunMode.REPLAY)
+    on_run = replace(world, run_id=run.id)
+    decision = on_run.decision()
+    order = on_run.order(decision_id=decision.id)
+    stats = RunFillStatsRow(
+        run_id=run.id,
+        env=Env.DEMO,
+        liquidity=Liquidity.MAKER,
+        orders_placed=4,
+        orders_filled=1,
+        fill_rate=Decimal("0.25"),
+        fill_count=1,
+        markout_1s_bps=Decimal("-1.5"),
+        computed_at=datetime(2026, 1, 2, tzinfo=UTC),
+    )
+    refused = RiskEventRow(
+        env=Env.DEMO,
+        event_key=f"limit_hit:{decision.id}",
+        kind=RiskEventKind.LIMIT_HIT,
+        severity=Severity.INFO,
+        message="entry refused: max_order_notional",
+        run_id=run.id,
+        decision_id=decision.id,
+        occurred_ns=on_run.tick(),
+    )
+    bundle = RunBundle(run=run, decisions=[decision], orders=[order], fill_stats=[stats], risk_events=[refused])
+
+    repository.write_run_bundle(session, bundle)
+
+    with Session(engine) as check:
+        stored = check.get(models.RunFillStats, (run.id, "maker"))
+        assert stored is not None
+        assert (stored.orders_placed, stored.fill_rate, stored.markout_5s_bps) == (4, Decimal("0.25"), None)
+        assert _count(check, models.RiskEvent, run_id=run.id, decision_id=decision.id) == 1
+
+
+def test_a_risk_event_of_another_run_keeps_the_bundle_out(engine, session: Session, world: World):
+    run = _sim_run(world, RunMode.REPLAY)
+    stray = RiskEventRow(
+        env=Env.DEMO,
+        event_key=f"stray:{uuid7()}",
+        kind=RiskEventKind.LIMIT_HIT,
+        severity=Severity.INFO,
+        message="stray",
+        run_id=world.run_id,
+        occurred_ns=world.tick(),
+    )
+
+    with pytest.raises(ForeignRunError):
+        repository.write_run_bundle(session, RunBundle(run=run, risk_events=[stray]))
+
+    with Session(engine) as check:
+        assert check.get(models.StrategyRun, run.id) is None
 
 
 def test_a_bad_row_rolls_back_the_whole_bundle(engine, session: Session, world: World):

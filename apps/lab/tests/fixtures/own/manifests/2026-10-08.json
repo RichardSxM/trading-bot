@@ -1,0 +1,25 @@
+{
+ "date": "2026-10-08",
+ "gaps": [],
+ "streams": [
+  {
+   "bytes": 11114921,
+   "hours": 2,
+   "incomplete_hours": [],
+   "instrument_id": "PF_XBTUSD.KRAKEN",
+   "late_rows": 0,
+   "rows": 682284,
+   "type": "order_book_deltas"
+  },
+  {
+   "bytes": 105051,
+   "hours": 2,
+   "incomplete_hours": [],
+   "instrument_id": "PF_XBTUSD.KRAKEN",
+   "late_rows": 0,
+   "rows": 3391,
+   "type": "trade_tick"
+  }
+ ],
+ "total_bytes": 11219972
+}

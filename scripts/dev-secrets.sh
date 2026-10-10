@@ -16,6 +16,7 @@ postgres_owner_password
 postgres_trader_password
 postgres_dashboard_password
 postgres_backup_password
+postgres_lab_password
 redis_trader_password
 redis_dashboard_password
 restic_password

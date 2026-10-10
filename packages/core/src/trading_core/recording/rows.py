@@ -172,6 +172,39 @@ class RunResultRow(_Row):
 
 
 @dataclass(frozen=True, kw_only=True)
+class RunFillStatsRow(_Row):
+    """Fill rate and markouts of a replay's entry orders on one liquidity side (``run_fill_stats``, spec 0008).
+
+    ``liquidity`` is ``maker`` or ``taker`` only; a row exists only when ``orders_placed >= 1``.
+    A markout is NULL when no fill was left in that horizon.
+    """
+
+    run_id: UUID
+    env: Env
+    liquidity: Liquidity
+    orders_placed: int
+    orders_filled: int
+    fill_rate: Decimal
+    fill_count: int
+    markout_1s_bps: Decimal | None = None
+    markout_5s_bps: Decimal | None = None
+    markout_30s_bps: Decimal | None = None
+    computed_at: datetime
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.liquidity == Liquidity.NO_LIQUIDITY:
+            raise ValueError("run_fill_stats rows are for maker or taker only")
+        if self.orders_placed < 1 or not 0 <= self.orders_filled <= self.orders_placed or self.fill_count < 0:
+            raise ValueError(
+                f"inconsistent counts: placed {self.orders_placed}, filled {self.orders_filled},"
+                f" fills {self.fill_count}"
+            )
+        if not Decimal(0) <= self.fill_rate <= Decimal(1):
+            raise ValueError(f"fill_rate {self.fill_rate} is outside [0, 1]")
+
+
+@dataclass(frozen=True, kw_only=True)
 class DecisionRow(_Row):
     """A strategy decision and its risk verdict (``decisions``); the strategy sets ``id``."""
 
@@ -401,3 +434,6 @@ class RunBundle:
     fills: Sequence[FillRow] = ()
     positions: Sequence[PositionRow] = ()
     funding: Sequence[FundingRow] = ()
+    # Spec 0008: a replay's fill stats, and the risk events its strategy emitted.
+    fill_stats: Sequence[RunFillStatsRow] = ()
+    risk_events: Sequence[RiskEventRow] = ()

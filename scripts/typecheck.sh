@@ -11,7 +11,7 @@ fi
 
 # Tests get a second pass with only the annotation rules relaxed; their bodies are still checked.
 status=0
-for pkg in packages/core apps/trader apps/recorder apps/dashboard; do
+for pkg in packages/core apps/trader apps/recorder apps/dashboard apps/lab; do
     echo "mypy: $pkg"
     mypy "$pkg/src" || status=1
     mypy --allow-untyped-defs --allow-incomplete-defs --allow-untyped-calls "$pkg/tests" || status=1

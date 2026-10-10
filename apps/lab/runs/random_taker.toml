@@ -1,0 +1,22 @@
+# The loser check (spec 0008 AC-14) over one free Tardis day. Needs `lab import-tardis` (Milestone 3).
+source = "tardis"                    # "tardis" | "own"
+instrument_id = "PF_XBTUSD.KRAKEN"
+from = 2026-09-01                    # UTC day, inclusive
+to = 2026-09-01                      # UTC day, inclusive
+seed = 7
+maker_fee = "0.0002"                 # strings, parsed as Decimal
+taker_fee = "0.0005"
+latency_ms = 25
+starting_balance_usd = "10000"
+leverage = "2"
+
+[risk]                               # RiskLimits (spec 0006 check_entry), same field names
+max_order_notional = "2000"
+max_leverage = "2"
+
+[strategy]
+name = "random_taker"                # a key of the lab strategy registry
+[strategy.config]                    # fields of that strategy's StrategyConfig
+interval_s = 60
+hold_s = 30
+notional_usd = "1000"                # quantity = notional ÷ mid, floored to size_increment
