@@ -2,7 +2,7 @@
 
 ## Stack
 
-- **Language / Runtime**: Python 3.14 (CPython), uv workspace: `packages/core` + `apps/trader`, `apps/recorder`, `apps/dashboard`
+- **Language / Runtime**: Python 3.14 (CPython), uv workspace: `packages/core` + `apps/trader`, `apps/recorder`, `apps/dashboard`, plus the laptop only `apps/lab` (Compose profile `lab`, never deployed)
 - **Framework**: NautilusTrader 1.231.0 (pinned exactly) with its Kraken Futures adapter; FastAPI + HTMX + SSE for the dashboard
 - **Key dependencies**: PostgreSQL via SQLAlchemy 2 + Alembic; Redis (Nautilus cache, `snapshot` keys, `control` stream); Parquet catalog + DuckDB for research; pydantic-settings
 - **Package manager**: uv (host only locks). Runs in Docker Compose, same file on laptop and the London VPS, reached only over Tailscale. NautilusTrader has no Intel Mac wheel, so anything that imports it, tests included, runs in containers.
@@ -71,5 +71,6 @@ Ruff (lint + format; its version is pinned in both `pyproject.toml` and `.pre-co
 - [apps/trader/AGENTS.md](apps/trader/AGENTS.md): the Nautilus node that holds positions
 - [apps/recorder/AGENTS.md](apps/recorder/AGENTS.md): the Nautilus node that records market data, and the compactor that turns it into the hourly Parquet catalog
 - [apps/dashboard/AGENTS.md](apps/dashboard/AGENTS.md): the private FastAPI + HTMX dashboard
+- [apps/lab/AGENTS.md](apps/lab/AGENTS.md): the laptop only replay lab that runs recorded order books through the Nautilus backtest engine
 
 _Drafted by /audit from the repo, worth a quick human pass. Edit freely: once a line stops matching this draft, later runs treat it as curated and will flag rather than overwrite it._

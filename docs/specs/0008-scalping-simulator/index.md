@@ -1,7 +1,7 @@
 # 0008. Replay recorded BTC order books through the Nautilus matching engine with a pessimistic queue, latency, and fill quality measured
 
 **Date**: 2026-10-08
-**Status**: In Progress
+**Status**: Accepted
 
 ## Summary
 
