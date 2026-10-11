@@ -142,7 +142,7 @@ Record BTC and ETH perp order book updates and trades continuously, because scal
 **Carried over from spec 0005:** local catalog retention on the 50 GB disk (B2 holds the history), and which catalog paths the nightly backup should skip while an hour is still open.
 spec [0007](../specs/0007-order-book-recorder/index.md)
 - [x] Design it (spec): `/architect order book recorder`
-- [ ] Build it: `/develop order book recorder`
+- [x] Build it: `/develop order book recorder`
   - [x] Gate: rotation and types, pyarrow Parquet read by the catalog, feed `CLEAR`, carry speed, 512 MB memory (M0)
   - [x] Thin thread: hourly rotation, BTC delta conversion with the hour start snapshot, replay check, Parquet ratio measured (AC-1, AC-2, AC-3)
   - [x] Conversion and backlog: all types, closed file rule, `done.json`, space checked backlog, idempotent reruns, overlap (AC-2, AC-9, AC-11, AC-12)
@@ -150,7 +150,7 @@ spec [0007](../specs/0007-order-book-recorder/index.md)
   - [x] Out of order rows: 600 s reorder window, late rows to a backed up quarantine, recorder queue depth warning, compactor CPU weight (AC-12, AC-13, AC-14). The laptop stress check (task 12) was skipped on 2026-10-08; the VPS checks in the last milestone cover AC-13 and AC-14 live.
   - [x] Disk safety and backup: retention gated on the backup, recorder health and hard floor, `catalog` snapshots kept by the drill (AC-6, AC-7, AC-8). The drill also restores only main snapshots now, since a catalog snapshot holds no dump.
   - [x] Laptop fetch and VPS deploy: `fetch-catalog.sh`, compactor `--offline` and bridge gap, deployed 2026-10-08 (AC-5, AC-9, AC-10). The backlog conversion was dropped the same day, and the recorder now records BTC only (spec 0007 Summary, AC-9, AC-14).
-  - [ ] Lost messages (from `/check verify`, 2026-10-08): gate (resubscribe brings a `CLEAR`, run folder name, CPU cost), the recorder's sequence watch with the holes file and resubscribe, the compactor's `sequence` gaps and incomplete hours, the AC-3 sample point, then deploy and the 24 h replay check (AC-3, AC-4, AC-15, AC-16, AC-17). Built 2026-10-08 on `feat/recorder-lost-messages` (tasks 18 to 22). Gate: the run folder is the instance id and the watch costs 0.13% of a core, but a resubscribe brought no `CLEAR`, so it is dropped as AC-15 allows. The real 15:00 hour showed 137 bad samples with the old rules and none with `sequence` gaps. Deploy and the 24 h check (task 23) remain.
+  - [x] Lost messages (from `/check verify`, 2026-10-08): gate (resubscribe brings a `CLEAR`, run folder name, CPU cost), the recorder's sequence watch with the holes file and resubscribe, the compactor's `sequence` gaps and incomplete hours, the AC-3 sample point, then deploy and the 24 h replay check (AC-3, AC-4, AC-15, AC-16, AC-17). Built 2026-10-08 on `feat/recorder-lost-messages` (tasks 18 to 22). Gate: the run folder is the instance id and the watch costs 0.13% of a core, but a resubscribe brought no `CLEAR`, so it is dropped as AC-15 allows. The real 15:00 hour showed 137 bad samples with the old rules and none with `sequence` gaps. Deployed 2026-10-09 (#26); the 24 h check passed 2026-10-11 on 2026-10-10 (1,440 samples, 0 bad, 0 holes).
 - [ ] Verify it: `/check verify order book recorder`
 - [ ] Test it: `/test order book recorder`
 - [ ] Review it (fresh model): `/check review order book recorder`
