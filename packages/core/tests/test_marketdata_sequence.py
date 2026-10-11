@@ -145,6 +145,27 @@ def test_parse_holes_counts_bad_lines():
     parsed = parse_holes(["{", "[]", json.dumps({"first_missing": 1}), json.dumps({"checked_to_ns": T})])
     assert parsed.bad_lines == 3
     assert parsed.checked_to_ns == T
+    # Bad lines before the first tick: a fail safe hole from the start of the run to that tick.
+    assert parsed.holes == (SequenceHole(UNKNOWN, UNKNOWN, UNKNOWN, 0, T),)
+
+
+def test_a_garbled_line_becomes_a_hole_between_the_ticks_around_it():
+    real = SequenceHole(3, 4, 2, T + 61 * S, T + 62 * S)
+    lines = _lines({"started_ns": T}, {"checked_to_ns": T + 60 * S}, real.to_dict(), {"checked_to_ns": T + 120 * S})
+    lines[2] = lines[2][:10] + "#" + lines[2][11:]  # the real hole is lost
+    parsed = parse_holes(lines)
+    assert parsed.bad_lines == 1
+    assert parsed.holes == (SequenceHole(UNKNOWN, UNKNOWN, UNKNOWN, T + 60 * S, T + 120 * S),)
+    assert parsed.checked_to_ns == T + 120 * S
+
+
+def test_a_garbled_last_tick_waits_unless_the_run_is_closed():
+    tick, close = _lines({"checked_to_ns": T + 60 * S}, {"closed": True})
+    open_run = parse_holes([tick, '{"checked_to'])
+    assert open_run.holes == ()
+    assert open_run.checked_to_ns == T + 60 * S  # rows above it stay held back
+    closed = parse_holes([tick, "garbage", close])
+    assert closed.holes == (SequenceHole(UNKNOWN, UNKNOWN, UNKNOWN, T + 60 * S, NEVER_NS),)
 
 
 def test_the_fail_safe_hole_covers_the_unchecked_tail():

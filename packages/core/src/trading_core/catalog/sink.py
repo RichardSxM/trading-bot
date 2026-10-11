@@ -16,12 +16,30 @@ COMPRESSION: Final = "zstd"
 ROW_GROUP_ROWS: Final = 8_192
 
 
+def durable_replace(tmp: Path, path: Path) -> None:
+    """Rename ``tmp`` over ``path`` so both survive a host crash: the file's bytes are flushed
+    before the rename and the folder entry after, since the compactor deletes the source feather
+    once the commit is written."""
+    fd = os.open(tmp, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(tmp, path)
+    fd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def atomic_write(path: Path, write: Callable[[Path], object]) -> None:
-    """Write through ``<name>.tmp`` and a rename, so a reader never sees a half written file."""
+    """Write through ``<name>.tmp`` and a durable rename, so a reader never sees a half written
+    file and a crash never loses a written one."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + TMP_SUFFIX)
     write(tmp)
-    os.replace(tmp, path)
+    durable_replace(tmp, path)
 
 
 class HourSink:
@@ -67,7 +85,7 @@ class HourSink:
         if written != expected:
             self._tmp.unlink(missing_ok=True)
             raise HourCountMismatch(self.hour, expected, written)
-        os.replace(self._tmp, self.path)
+        durable_replace(self._tmp, self.path)
         return self.path.stat().st_size
 
     def abort(self) -> None:

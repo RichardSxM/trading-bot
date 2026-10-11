@@ -69,7 +69,10 @@ ask() {
 }
 
 RESTIC_HOST=kfs-vps
-RETENTION=(--host "$RESTIC_HOST" --group-by host --keep-daily 14 --keep-weekly 8 --keep-monthly 24 --keep-tag catalog --keep-tag backlog)
+# Grouped by paths too: a catalog snapshot is taken a minute after the dump on the same day, so in
+# one group it would take every daily, weekly and monthly slot and the dumps would be forgotten.
+# Not by tags, since the sha tag changes on every deploy and old groups would never thin out.
+RETENTION=(--host "$RESTIC_HOST" --group-by host,paths --keep-daily 14 --keep-weekly 8 --keep-monthly 24 --keep-tag catalog --keep-tag backlog)
 STALE_H=36
 MAX_FORGET=40
 RECENT_DAYS=15

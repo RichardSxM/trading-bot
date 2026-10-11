@@ -184,6 +184,28 @@ def test_a_holes_file_with_only_a_torn_line_makes_the_whole_run_one_gap(tmp_path
     assert store.load_done().incomplete[BTC_DELTAS] == {H0: 0}
 
 
+def test_a_garbled_holes_line_is_a_sequence_gap_and_logs_one_error(tmp_path, caplog):
+    store = CatalogStore(tmp_path)
+    btc = make_feed(H0 + 7 * S, H0 + 20 * MINUTE_NS).messages
+    write_run(store.live, "a-dead", btc, rotate_at=[])
+    _write_holes(store, "a-dead", {"started_ns": H0}, {"checked_to_ns": H0 + 5 * MINUTE_NS})
+    with store.holes_file("a-dead").open("a") as file:
+        file.write('{"first_missing": 100, "last_m#\n')  # a hole the reader cannot see
+    _append_holes(store, "a-dead", {"checked_to_ns": H0 + 15 * MINUTE_NS}, {"closed": True})
+    _current_run(store)
+    compactor = _compactor(store)
+    with caplog.at_level(logging.INFO):
+        compactor.run_pass(_later())
+        compactor.run_pass(_later())
+
+    assert [g for g in read_gaps(store, DAY) if g.kind == "sequence"] == [
+        Gap(H0 + 5 * MINUTE_NS, INSTRUMENT, "sequence", _first_last(btc)[1])
+    ]
+    assert _codes(caplog, "sequence_file_bad_lines") == [
+        {"code": "sequence_file_bad_lines", "run": "a-dead", "bad_lines": 1}
+    ]
+
+
 def test_a_run_without_a_holes_file_converts_as_before_and_logs_once(tmp_path, caplog):
     store = CatalogStore(tmp_path)
     write_run(store.live, "a-dead", make_feed(H0 + 7 * S, H0 + 20 * MINUTE_NS).messages, rotate_at=[])

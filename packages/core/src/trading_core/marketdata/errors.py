@@ -15,6 +15,17 @@ class HourCountMismatch(CatalogError):
         self.written = written
 
 
+class FeatherUnreadable(CatalogError):
+    """A feather file failed to read before its end, so it is not a torn tail and rows would be lost (AC-2)."""
+
+    def __init__(self, path: str, position: int, size: int, reason: str) -> None:
+        super().__init__(f"{path}: read failed at byte {position} of {size}: {reason}")
+        self.path = path
+        self.position = position
+        self.size = size
+        self.reason = reason
+
+
 class BackupStateInvalid(CatalogError):
     """The backup state file is unreadable or wrong, so no catalog hour counts as backed up (AC-6)."""
 
