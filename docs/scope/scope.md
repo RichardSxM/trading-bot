@@ -25,7 +25,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 11 | Restart & outage safety | Slice 4 | planned |
 | 12 | Phone alerts & health checks | Slice 5 | planned |
 | 13 | Candle backtest lab | Slice 6 | planned |
-| 14 | Scalping simulator | Slice 6 | in-progress |
+| 14 | Scalping simulator | Slice 6 | done |
 | 15 | Strategy scoring & promotion gate | Slice 6 | planned |
 | 16 | Scalping strategy candidates | Slice 7 | planned |
 | 17 | Hour level strategy candidates | Slice 7 | planned |
@@ -142,7 +142,7 @@ Record BTC and ETH perp order book updates and trades continuously, because scal
 **Carried over from spec 0005:** local catalog retention on the 50 GB disk (B2 holds the history), and which catalog paths the nightly backup should skip while an hour is still open.
 spec [0007](../specs/0007-order-book-recorder/index.md)
 - [x] Design it (spec): `/architect order book recorder`
-- [ ] Build it: `/develop order book recorder`
+- [x] Build it: `/develop order book recorder`
   - [x] Gate: rotation and types, pyarrow Parquet read by the catalog, feed `CLEAR`, carry speed, 512 MB memory (M0)
   - [x] Thin thread: hourly rotation, BTC delta conversion with the hour start snapshot, replay check, Parquet ratio measured (AC-1, AC-2, AC-3)
   - [x] Conversion and backlog: all types, closed file rule, `done.json`, space checked backlog, idempotent reruns, overlap (AC-2, AC-9, AC-11, AC-12)
@@ -150,7 +150,7 @@ spec [0007](../specs/0007-order-book-recorder/index.md)
   - [x] Out of order rows: 600 s reorder window, late rows to a backed up quarantine, recorder queue depth warning, compactor CPU weight (AC-12, AC-13, AC-14). The laptop stress check (task 12) was skipped on 2026-10-08; the VPS checks in the last milestone cover AC-13 and AC-14 live.
   - [x] Disk safety and backup: retention gated on the backup, recorder health and hard floor, `catalog` snapshots kept by the drill (AC-6, AC-7, AC-8). The drill also restores only main snapshots now, since a catalog snapshot holds no dump.
   - [x] Laptop fetch and VPS deploy: `fetch-catalog.sh`, compactor `--offline` and bridge gap, deployed 2026-10-08 (AC-5, AC-9, AC-10). The backlog conversion was dropped the same day, and the recorder now records BTC only (spec 0007 Summary, AC-9, AC-14).
-  - [ ] Lost messages (from `/check verify`, 2026-10-08): gate (resubscribe brings a `CLEAR`, run folder name, CPU cost), the recorder's sequence watch with the holes file and resubscribe, the compactor's `sequence` gaps and incomplete hours, the AC-3 sample point, then deploy and the 24 h replay check (AC-3, AC-4, AC-15, AC-16, AC-17). Built 2026-10-08 on `feat/recorder-lost-messages` (tasks 18 to 22). Gate: the run folder is the instance id and the watch costs 0.13% of a core, but a resubscribe brought no `CLEAR`, so it is dropped as AC-15 allows. The real 15:00 hour showed 137 bad samples with the old rules and none with `sequence` gaps. Deploy and the 24 h check (task 23) remain.
+  - [x] Lost messages (from `/check verify`, 2026-10-08): gate (resubscribe brings a `CLEAR`, run folder name, CPU cost), the recorder's sequence watch with the holes file and resubscribe, the compactor's `sequence` gaps and incomplete hours, the AC-3 sample point, then deploy and the 24 h replay check (AC-3, AC-4, AC-15, AC-16, AC-17). Built 2026-10-08 on `feat/recorder-lost-messages` (tasks 18 to 22). Gate: the run folder is the instance id and the watch costs 0.13% of a core, but a resubscribe brought no `CLEAR`, so it is dropped as AC-15 allows. The real 15:00 hour showed 137 bad samples with the old rules and none with `sequence` gaps. Deployed 2026-10-09 (#26); the 24 h check passed 2026-10-11 on 2026-10-10 (1,440 samples, 0 bad, 0 holes).
 - [ ] Verify it: `/check verify order book recorder`
 - [ ] Test it: `/test order book recorder`
 - [ ] Review it (fresh model): `/check review order book recorder`
@@ -161,6 +161,7 @@ Record the perp market's own context next to prices: funding rate, open interest
 **Done when:** the context values are recorded continuously with gaps logged, a backtest can read them at the time each one was known (no look ahead), and a strategy can read the same values live.
 **Carried over from research (2026-10-04):** the idea came from the `tracking-crypto-derivatives` skill (ideas only, nothing installed). Optional extras for the design to weigh: a news or event blackout filter, the Fear & Greed index as a regime tag, and later Deribit options implied volatility and put/call ratio.
 **Carried over from an article (2026-10-04, a OneBullEx post, promotional, rules of thumb only):** a funding rate above +0.05 % per period reads as crowded longs and reversal risk, below −0.02 % as crowded shorts. Rising open interest while price sits in a tight range reads as pressure building before a breakout. Treat both as hypotheses for the backtest to test on our own data, not as thresholds to hard code.
+**Carried over from spec 0008:** own recorder days carry no funding, so the scalping simulator labels own runs "before funding". Once this feed records funding, the simulator can apply it to own days and drop that label.
 - [ ] Design it (spec): `/architect market context feed`
 
 ## Slice 4: Safety guards (all required before live)
@@ -210,7 +211,7 @@ Test hour level strategies on Kraken candle history with realistic fees, funding
 **Carried over from research (2026-10-04):** guard against look ahead. A swing high or low is only known some bars after it happens (it needs the bars that follow it), so a signal must fire on the bar where the swing is confirmed, never on the swing bar itself. Public price action scripts often get this wrong, and it makes a backtest look far better than live.
 - [ ] Design it (spec): `/architect candle backtest lab`
 
-### 14. Scalping simulator · in-progress
+### 14. Scalping simulator · done
 Replay recorded order book data to test scalping honestly: maker and taker fees, queue position, latency, and partial fills.
 **Done when:** a scalping strategy replays over recorded days, results account for fees, queue position, and latency, and a known losing strategy shows a loss.
 **Carried over from an article (2026-10-08, `strategy.md`), for the design to weigh:** post only maker entries pay the lower maker fee, but a resting limit order often never fills, and when it does it is often because price is running through it (adverse selection). The simulator should model both: the fills a limit order misses, and the worse average outcome of the fills it gets.
@@ -236,6 +237,7 @@ Score every strategy on return after costs, max drawdown, and a risk adjusted ra
 - **Buy and hold benchmark:** most standard indicator rules did not beat simply holding the coin (Ahmed et al. 2020, Finance Research Letters 35:101495). Score every candidate next to holding BTC over the same period, and fail it if it does not beat that.
 - **Overfitting test:** a backtest can look good only because it fits noise. Consider the probability of backtest overfitting test (Gort et al. 2022, arXiv 2209.05559) alongside the out of sample windows.
 - **Maker or taker entries** (from an article, 2026-10-08, `strategy.md`): score each scalping candidate twice, once entering with taker orders and once with post only maker orders. The maker fee lowers the fee hurdle, but only the simulator's fill model (feature 14) says whether the missed fills and adverse selection eat that saving.
+- **Carried over from spec 0008:** decide how the laptop's replay results reach the VPS dashboard (load the `.bundle.json` files, or another path). About 55 free Tardis days exist, enough to reject strategies but thin for tuning, so guard against overfitting. A five variant day takes about 2 h 20 min on the laptop. If the day counts need more speed, a depth band filter is an option, but it needs its own fidelity proof.
 - [ ] Design it (spec): `/architect strategy scoring & promotion gate`
 
 ## Slice 7: First strategies
@@ -314,6 +316,7 @@ Switch one promoted strategy from paper trading in demo to your live Kraken futu
 - **The live canary step:** with the smallest size, place and cancel a far off order, then open and close a position with a stop. Every state must match Kraken's records.
 - **Stops:** choose the live stop trigger type (mark or last price), and decide whether a partial entry needs a resized stop.
 - **Fees and funding:** check the current fee tier, and record funding from Kraken's account log.
+- **Latency (from spec 0008):** the canary should measure real insert and cancel latency and replace the 25 ms default in the lab's run files.
 - [ ] Design it (spec): `/architect go live with small capital`
 
 ## Deferred
