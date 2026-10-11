@@ -1,7 +1,7 @@
 # 0007. Record the order book as hourly Parquet with a book snapshot per hour, gaps logged, and a bounded disk
 
 **Date**: 2026-10-05
-**Status**: In Progress
+**Status**: Accepted
 
 ## Summary
 

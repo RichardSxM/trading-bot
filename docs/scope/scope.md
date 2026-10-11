@@ -18,7 +18,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 5 | Design system & dashboard shell | Foundation | done |
 | 6 | Core paper trading loop | Slice 1 | done |
 | 7 | Always on cloud deployment | Slice 2 | in-progress |
-| 8 | Order book recorder | Slice 3 | in-progress |
+| 8 | Order book recorder | Slice 3 | done |
 | 20 | Market context feed | Slice 3 | planned |
 | 9 | Kill switch & loss limits | Slice 4 | planned |
 | 10 | Leverage & liquidation guard | Slice 4 | planned |
@@ -136,7 +136,7 @@ spec [0005](../specs/0005-always-on-cloud-deployment/index.md) · code in [deplo
 
 ## Slice 3: Start the data clock
 
-### 8. Order book recorder · in-progress
+### 8. Order book recorder · done
 Record BTC and ETH perp order book updates and trades continuously, because scalping can only be tested on this data and it takes weeks to collect.
 **Done when:** the recorder runs 24/7, detects and logs gaps, and stored data can be replayed in order at a known size cost per day.
 **Carried over from spec 0005:** local catalog retention on the 50 GB disk (B2 holds the history), and which catalog paths the nightly backup should skip while an hour is still open.
@@ -154,7 +154,7 @@ spec [0007](../specs/0007-order-book-recorder/index.md)
 - [x] Verify it: `/check verify order book recorder`
 - [x] Test it: `/test order book recorder`
 - [x] Review it (fresh model): `/check review order book recorder`
-- [ ] Document it: `/document order book recorder`
+- [x] Document it: `/document order book recorder`
 
 ### 20. Market context feed · needs a decision
 Record the perp market's own context next to prices: funding rate, open interest, mark versus index basis, and liquidations. Strategies can then use them as inputs and regime filters, in backtests and live alike. Much of this history cannot be downloaded later, so recording starts early.
