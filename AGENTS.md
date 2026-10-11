@@ -69,7 +69,7 @@ Ruff (lint + format; its version is pinned in both `pyproject.toml` and `.pre-co
 
 - [packages/core/AGENTS.md](packages/core/AGENTS.md): shared settings, logging, clock check, naming, env guard, DB and migrations
 - [apps/trader/AGENTS.md](apps/trader/AGENTS.md): the Nautilus node that holds positions
-- [apps/recorder/AGENTS.md](apps/recorder/AGENTS.md): the Nautilus node that records market data
+- [apps/recorder/AGENTS.md](apps/recorder/AGENTS.md): the Nautilus node that records market data, and the compactor that turns it into the hourly Parquet catalog
 - [apps/dashboard/AGENTS.md](apps/dashboard/AGENTS.md): the private FastAPI + HTMX dashboard
 
 _Drafted by /audit from the repo, worth a quick human pass. Edit freely: once a line stops matching this draft, later runs treat it as curated and will flag rather than overwrite it._
