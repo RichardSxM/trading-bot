@@ -36,7 +36,7 @@ from recorder.live_files import FeatherFile
 from trading_core.catalog.book import CLEAR, F_LAST, F_SNAPSHOT, BookCarry
 from trading_core.catalog.reorder import LateRows, ReorderWindow
 from trading_core.catalog.sink import ROW_GROUP_ROWS, HourSink
-from trading_core.marketdata.errors import HourCountMismatch
+from trading_core.marketdata.errors import FeatherUnreadable, HourCountMismatch
 from trading_core.marketdata.gaps import Gap, GapDetector
 from trading_core.marketdata.hours import (
     HOUR_NS,
@@ -80,7 +80,9 @@ def read_chunks(path: Path, beat: Beat | None = None) -> Iterator[Any]:
     """The rows of a feather stream as Arrow tables of about ``CHUNK_ROWS`` rows, in file order.
 
     A truncated final message (a killed recorder, or a file still being written) ends the file at
-    its last complete batch.
+    its last complete batch. pyarrow raises either ``ArrowInvalid`` or ``OSError`` for it, with the
+    file read to its end; a failure before the end is a read error or damage, and raises
+    ``FeatherUnreadable`` so the pass fails instead of dropping the rest of the file.
     """
     with pa.OSFile(str(path), "rb") as source:
         try:
@@ -95,6 +97,9 @@ def read_chunks(path: Path, beat: Beat | None = None) -> Iterator[Any]:
             except StopIteration:
                 break
             except (pa.ArrowInvalid, OSError) as exc:
+                position, size = source.tell(), source.size()
+                if position < size:
+                    raise FeatherUnreadable(str(path), position, size, str(exc)) from exc
                 log.info(
                     "feather file ends in a truncated batch",
                     extra={"fields": {"code": "feather_truncated", "path": str(path), "error": str(exc)}},

@@ -152,8 +152,8 @@ spec [0007](../specs/0007-order-book-recorder/index.md)
   - [x] Laptop fetch and VPS deploy: `fetch-catalog.sh`, compactor `--offline` and bridge gap, deployed 2026-10-08 (AC-5, AC-9, AC-10). The backlog conversion was dropped the same day, and the recorder now records BTC only (spec 0007 Summary, AC-9, AC-14).
   - [x] Lost messages (from `/check verify`, 2026-10-08): gate (resubscribe brings a `CLEAR`, run folder name, CPU cost), the recorder's sequence watch with the holes file and resubscribe, the compactor's `sequence` gaps and incomplete hours, the AC-3 sample point, then deploy and the 24 h replay check (AC-3, AC-4, AC-15, AC-16, AC-17). Built 2026-10-08 on `feat/recorder-lost-messages` (tasks 18 to 22). Gate: the run folder is the instance id and the watch costs 0.13% of a core, but a resubscribe brought no `CLEAR`, so it is dropped as AC-15 allows. The real 15:00 hour showed 137 bad samples with the old rules and none with `sequence` gaps. Deployed 2026-10-09 (#26); the 24 h check passed 2026-10-11 on 2026-10-10 (1,440 samples, 0 bad, 0 holes).
 - [x] Verify it: `/check verify order book recorder`
-- [ ] Test it: `/test order book recorder`
-- [ ] Review it (fresh model): `/check review order book recorder`
+- [x] Test it: `/test order book recorder`
+- [x] Review it (fresh model): `/check review order book recorder`
 - [ ] Document it: `/document order book recorder`
 
 ### 20. Market context feed · needs a decision
@@ -224,6 +224,7 @@ code in `apps/lab`, `packages/core/src/trading_core/lab`
   - [x] Tardis data and funding: shared hour writer moved to core, `lab import-tardis`, cap and prune, funding payments, the full loser check on a Tardis day (AC-1, AC-2, AC-9, AC-14)
   - [x] Fill realism and variants: `maker_probe`, queue bound, latency sweep, pair entry, segment end close, fill rate and markouts (AC-6, AC-8, AC-10, AC-18)
   - [x] Hardening and parity: determinism, failure isolation, the worker pool and the day timings, `fetch-paper-decisions.sh` and the parity check, permission tests (AC-12, AC-13, AC-15, AC-16, AC-17). Built 2026-10-09: tasks 17, 18, 20, and parity (task 19, ratio 1.0 on the 2026-10-08 paper hours). The own day timing stays a verify.md step
+  - [x] Core boundary guard (amended 2026-10-11 from the order book recorder review, finding 5): `test_core_boundary.py` keeps Nautilus in `node/` and `catalog/`, and `pyarrow` and `numpy` in `catalog/` (spec 0008 task 21). A small follow-up; it does not reopen the feature. Built 2026-10-11
 - [x] Verify it: `/check verify scalping simulator`
 - [x] Test it: `/test scalping simulator`
 - [x] Review it (fresh model): `/check review scalping simulator`

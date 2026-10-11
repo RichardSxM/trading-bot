@@ -32,7 +32,7 @@ Stored in `docs/specs/`. Format: `docs/specs/NNNN-title/index.md` (plus `rationa
 
 ## Rules
 
-- Clean Architecture: pure domain and risk logic lives in `packages/core` with no I/O, framework, or ORM imports. NautilusTrader, Postgres, Redis, and FastAPI are adapters at the edges; Nautilus Strategy and Actor classes stay thin and call pure core logic. Dependencies point inward only. Inside each package, group code by feature (`risk/`, `execution/`, `recording/`).
+- Clean Architecture: pure domain and risk logic lives in `packages/core` with no I/O, framework, or ORM imports. NautilusTrader, Postgres, Redis, and FastAPI are adapters at the edges; Nautilus Strategy and Actor classes stay thin and call pure core logic. Dependencies point inward only. Inside each package, group code by feature (`risk/`, `execution/`, `recording/`). In core, `marketdata/`, `lab/`, `strategy/`, and `risk/` are the pure folders; `node/` and `catalog/` carry the Nautilus extra (see packages/core/AGENTS.md).
 - Strict types: mypy strict on all our code, no untyped defs, no bare `Any`. Tests are type checked too but need no annotations. A Nautilus stub gap gets a narrow `# type: ignore[code]` with a reason.
 - Errors: typed exceptions from core, never swallow one. Anything touching orders fails closed (refuse the action, log, alert).
 - Every public function and class in `packages/core` has a docstring.
@@ -69,7 +69,7 @@ Ruff (lint + format; its version is pinned in both `pyproject.toml` and `.pre-co
 
 - [packages/core/AGENTS.md](packages/core/AGENTS.md): shared settings, logging, clock check, naming, env guard, DB and migrations
 - [apps/trader/AGENTS.md](apps/trader/AGENTS.md): the Nautilus node that holds positions
-- [apps/recorder/AGENTS.md](apps/recorder/AGENTS.md): the Nautilus node that records market data
+- [apps/recorder/AGENTS.md](apps/recorder/AGENTS.md): the Nautilus node that records market data, and the compactor that turns it into the hourly Parquet catalog
 - [apps/dashboard/AGENTS.md](apps/dashboard/AGENTS.md): the private FastAPI + HTMX dashboard
 
 _Drafted by /audit from the repo, worth a quick human pass. Edit freely: once a line stops matching this draft, later runs treat it as curated and will flag rather than overwrite it._

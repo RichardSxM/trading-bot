@@ -126,8 +126,8 @@ Gaps come from three signals the data itself carries: a feed `CLEAR` in the midd
 **Why the existing design missed it.** Gap detection reads time only. A hole with traffic around it looks like nothing, and a long one looks like a quiet market (`silence`), after which the carried book is trusted again. The book then keeps stale levels until the next feed `CLEAR`, which only comes with a reconnect. The first design left the counter out because the adapter's handling of Kraken's `seq` was unverified; the measurement above settles that.
 
 **Options weighed.**
-- **Recorder detects and resubscribes, the compactor marks (chosen).** The recorder sees every instrument's messages in one order, which a shared counter needs, and it is the only process that can ask for a fresh book. The compactor stays the place where gaps and `incomplete` are decided. Con: new code in the recorder's event loop, the process that starved, and a small file handshake between the two services.
-- **Mark only, no resubscribe.** Simpler. But one lost delete spoils the book until the next reconnect, which can be hours, and with a healthy BTC only feed reconnects are rare.
+- **Recorder detects and resubscribes, the compactor marks (chosen, then the resubscribe half was dropped on the build gate 2026-10-08: it brought no `CLEAR`, see verify.md. What shipped is the next option).** The recorder sees every instrument's messages in one order, which a shared counter needs, and it is the only process that can ask for a fresh book. The compactor stays the place where gaps and `incomplete` are decided. Con: new code in the recorder's event loop, the process that starved, and a small file handshake between the two services.
+- **Mark only, no resubscribe (what shipped after the gate).** Simpler. But one lost delete spoils the book until the next reconnect, which can be hours, and with a healthy BTC only feed reconnects are rare.
 - **Detect in the compactor alone.** It reads one stream at a time, so with more than one instrument per run it would need a second read of every delta file merged across instruments, on a 2 CPU box where the compactor is meant to stay light. It also cannot resubscribe.
 - **Ignore holes under a threshold.** Fewer flagged hours, but a single lost delete is enough to leave a stale level, so any threshold lets wrong books through.
 - **Mark only the instrument whose rows sit around the hole.** The counter is shared, so the lost messages may belong to another instrument; this guesses wrong in exactly the cases that matter.
@@ -135,7 +135,7 @@ Gaps come from three signals the data itself carries: a feed `CLEAR` in the midd
 
 **Smaller calls.**
 - **Confirm after 600 s,** the reorder window, so a row the compactor would still put back in place is never called lost; a later arrival is quarantined by AC-12 anyway.
-- **Resubscribe after 60 s, at most every 300 s:** overtaken messages arrived up to 45 s late on the VPS, so 60 s rarely resubscribes for nothing, and the spacing bounds the snapshot bursts.
+- **Resubscribe after 60 s, at most every 300 s (dropped with the resubscribe):** overtaken messages arrived up to 45 s late on the VPS, so 60 s rarely resubscribes for nothing, and the spacing bounds the snapshot bursts.
 - **A JSON lines file in the run folder** rather than logs or Postgres: the recorder has no database by design, logs are not a data channel, and the file lives and dies with the run's feather.
 - **A crash makes a fail safe hole** over the unchecked tail, because holes there may never have been confirmed.
 - **The AC-3 test samples the first row after each 60 s,** since real Kraken rows never carry `F_LAST`; the book equality it checks holds at any row.

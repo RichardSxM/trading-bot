@@ -197,6 +197,12 @@ class Compactor:
                 continue
             lines, read_bytes = read
             parsed = parse_holes(lines)
+            seen_bad = self.done.holes.get(run, {}).get("bad_lines", 0)
+            if parsed.bad_lines > (seen_bad if isinstance(seen_bad, int) else 0):
+                log.error(
+                    "sequence holes file has unreadable lines, each covered by a fail safe hole",
+                    extra={"fields": {"code": "sequence_file_bad_lines", "run": run, "bad_lines": parsed.bad_lines}},
+                )
             if run == current:
                 holes[run] = parsed
             else:
@@ -205,6 +211,7 @@ class Compactor:
                 "read_bytes": read_bytes,
                 "checked_to_ns": parsed.checked_to_ns,
                 "closed": parsed.closed,
+                "bad_lines": parsed.bad_lines,
             }
         return holes
 

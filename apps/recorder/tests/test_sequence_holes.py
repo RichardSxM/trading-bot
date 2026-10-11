@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -10,7 +11,7 @@ from pydantic import ValidationError
 import recorder.main as recorder_main
 from recorder.actor import RecordingActor
 from recorder.disk import EXIT_DISK_FULL
-from recorder.sequence_holes import HOLES_FILE, SequenceWatch
+from recorder.sequence_holes import HOLES_FILE, HolesFile, SequenceWatch
 from recorder.settings import RecorderSettings
 
 S = 1_000_000_000
@@ -104,6 +105,24 @@ def test_a_failed_write_logs_critical_and_stops_once(tmp_path, caplog):
     assert watch.tripped
     assert stops == [1]
     assert _codes(caplog) == [("CRITICAL", "sequence_file_failed")]
+
+
+def test_a_short_write_is_continued_so_no_line_is_torn(tmp_path, monkeypatch):
+    real_write = os.write
+
+    def short_write(fd, data):
+        return real_write(fd, bytes(data[:5]))  # the disk takes at most five bytes per call
+
+    monkeypatch.setattr(os, "write", short_write)
+    path = tmp_path / HOLES_FILE
+    holes_file = HolesFile(path)
+    holes_file.append([{"started_ns": T}])
+    holes_file.append([{"checked_to_ns": T + 60 * S}, {"closed": True}])
+    assert [json.loads(line) for line in path.read_text().splitlines()] == [
+        {"started_ns": T},
+        {"checked_to_ns": T + 60 * S},
+        {"closed": True},
+    ]
 
 
 def test_the_confirm_time_setting_is_validated():

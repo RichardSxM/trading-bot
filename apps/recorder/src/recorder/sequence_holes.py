@@ -30,12 +30,17 @@ class HolesFile:
         self.path = path
 
     def append(self, lines: list[Mapping[str, object]]) -> None:
-        """Write ``lines`` as JSON lines and fsync them. Raises ``OSError`` when that fails."""
-        data = "".join(json.dumps(line, separators=(",", ":")) + "\n" for line in lines)
+        """Write ``lines`` as JSON lines and fsync them. Raises ``OSError`` when that fails.
+
+        A short write is continued until every byte is written, so a line is never left torn while
+        the recorder keeps running (a torn line would swallow the next one).
+        """
+        data = memoryview("".join(json.dumps(line, separators=(",", ":")) + "\n" for line in lines).encode())
         self.path.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
         try:
-            os.write(fd, data.encode())
+            while data:
+                data = data[os.write(fd, data) :]
             os.fsync(fd)
         finally:
             os.close(fd)

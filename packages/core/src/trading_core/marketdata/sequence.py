@@ -229,23 +229,40 @@ class RunHoles:
 
 
 def parse_holes(lines: Iterable[str]) -> RunHoles:
-    """Parse the complete lines of a holes file. A line that is not valid JSON of a known shape is
-    counted in ``bad_lines`` and skipped."""
+    """Parse the complete lines of a holes file.
+
+    A line that is not valid JSON of a known shape is counted in ``bad_lines``, and since it may
+    have held a hole, a fail safe hole replaces it: from the last ``checked_to_ns`` before it (the
+    start of the run when none) to the first one after it. With no ``checked_to_ns`` after it, the
+    hole reaches ``NEVER_NS`` once the file says ``closed``; until then rows above the last
+    ``checked_to_ns`` wait anyway, and the next tick bounds it.
+    """
     holes: list[SequenceHole] = []
     checked: int | None = None
     closed = False
     count = bad = 0
+    bad_from: int | None = None  # where the fail safe hole of unresolved bad lines starts
+
+    def mark_bad() -> None:
+        nonlocal bad, bad_from
+        bad += 1
+        if bad_from is None:
+            bad_from = checked if checked is not None else 0
+
     for line in lines:
         count += 1
         try:
             raw = json.loads(line)
         except ValueError:
-            bad += 1
+            mark_bad()
             continue
         if not isinstance(raw, dict):
-            bad += 1
+            mark_bad()
         elif "checked_to_ns" in raw and isinstance(raw["checked_to_ns"], int):
             checked = raw["checked_to_ns"]
+            if bad_from is not None:
+                holes.append(SequenceHole(UNKNOWN, UNKNOWN, UNKNOWN, bad_from, checked))
+                bad_from = None
         elif raw.get("closed") is True:
             closed = True
         elif "started_ns" in raw:
@@ -254,7 +271,9 @@ def parse_holes(lines: Iterable[str]) -> RunHoles:
             try:
                 holes.append(SequenceHole.from_dict(raw))
             except ValueError:
-                bad += 1
+                mark_bad()
+    if bad_from is not None and closed:
+        holes.append(SequenceHole(UNKNOWN, UNKNOWN, UNKNOWN, bad_from, NEVER_NS))
     holes.sort(key=lambda h: h.before_ns)
     return RunHoles(tuple(holes), checked, closed, count, bad)
 

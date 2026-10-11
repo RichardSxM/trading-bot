@@ -8,7 +8,7 @@ The shared library every process imports: settings, JSON logging, the startup cl
 
 - Python 3.14, built with hatchling as `trading_core`
 - pydantic-settings, SQLAlchemy 2, Alembic, psycopg 3
-- Optional extra `node` pins `nautilus_trader==1.231.0`; only trader and recorder install it
+- Optional extra `node` pins `nautilus_trader==1.231.0` and names `pyarrow` and `numpy`; only trader, recorder, and lab install it
 
 ## Key files
 
@@ -25,6 +25,8 @@ The shared library every process imports: settings, JSON logging, the startup cl
 | `src/trading_core/control/` | The control command and result formats on the `{env}:control` and `{env}:control:results` Redis streams (spec 0004) |
 | `src/trading_core/snapshot/` | The `{env}:snapshot:<name>` key and its JSON envelope (`schema_version`, `ts_ns`, `data`) that every snapshot writer and reader shares |
 | `src/trading_core/migrations/` | Alembic env and versions (`alembic.ini` at package root) |
+| `src/trading_core/catalog/` | The Parquet catalog adapter shared by recorder and lab (spec 0007, 0008): `BookCarry`, `HourSink`, `ReorderWindow`, interval naming, gap and manifest files; every write goes through `atomic_write`/`durable_replace` (fsync, then rename) |
+| `src/trading_core/marketdata/` | Pure recorder logic (spec 0007): gaps, hours, the sequence tracker and holes file parsing, retention, queue depth, and the typed `CatalogError` family |
 | `src/trading_core/node/` | Nautilus helpers (Kraken data and live execution client configs, heartbeat and key age actors); the only Nautilus imports in core |
 
 ## Commands
@@ -38,7 +40,7 @@ docker compose run --rm -T migrate pytest -q -m integration         # integratio
 ## Conventions
 
 - A new secret gets a name constant in `secrets.py`, a file in `scripts/dev-secrets.sh`, and a `secrets:` grant in `compose.yaml` for only the services that need it; load it with `load_required`, never from settings or env.
-- Only `node/` may import NautilusTrader; everything else in core stays importable on the Intel Mac host.
+- Only `node/` and `catalog/` may import NautilusTrader, and only `catalog/` may import `pyarrow` or `numpy`; everything else in core stays importable without the `node` extra (spec 0008 Code placement, enforced by `tests/test_core_boundary.py`). The existing I/O adapters (`secrets`, `recording/`, `control/`, `db*`, `clock`, `health`, `logs`) may use files, `sqlalchemy`, `psycopg`, and `redis`.
 - New tables go through `db.py`'s metadata so constraint names follow the naming convention.
 - Every schema change ships as an Alembic migration.
 - Writes go through `recording.repository`, never raw ORM inserts: it checks `env`, keeps writes idempotent, and raises `RecordConflictError` on a contradiction.
