@@ -53,6 +53,13 @@ def _missing(caplog):
     return [r.fields for r in caplog.records if getattr(r, "fields", {}).get("code") == "instrument_definition_missing"]
 
 
+def _at(defs, ts, done):
+    """The definition at ``ts``, which these tests always expect to exist."""
+    definition = defs.definition_at(INSTRUMENT, ts, done)
+    assert definition is not None
+    return definition
+
+
 def test_only_the_wanted_instruments_are_kept(tmp_path):
     store = CatalogStore(tmp_path)
     defs = InstrumentDefinitions(store)
@@ -79,8 +86,8 @@ def test_reading_a_file_again_reads_only_rows_added_since(tmp_path):
 
     done = store.load_done()
     assert defs.newest_ts[rel] == H0 + HOUR_NS
-    assert defs.definition_at(INSTRUMENT, H0 + HOUR_NS, done)["max_quantity"] == "5000.000"
-    assert defs.definition_at(INSTRUMENT, H0 + HOUR_NS - 1, done)["max_quantity"] != "5000.000"
+    assert _at(defs, H0 + HOUR_NS, done)["max_quantity"] == "5000.000"
+    assert _at(defs, H0 + HOUR_NS - 1, done)["max_quantity"] != "5000.000"
 
 
 def test_an_unchanged_hourly_refresh_adds_no_new_definition(tmp_path):
@@ -89,7 +96,7 @@ def test_an_unchanged_hourly_refresh_adds_no_new_definition(tmp_path):
 
     defs.read(_file(store, [_btc(H0), _btc(H0 + HOUR_NS), _btc(H0 + 2 * HOUR_NS)]), {INSTRUMENT})
 
-    definition = defs.definition_at(INSTRUMENT, H0 + 3 * HOUR_NS, store.load_done())
+    definition = _at(defs, H0 + 3 * HOUR_NS, store.load_done())
     assert definition["ts_init"] == H0  # still the first one, the repeats were dropped
 
 
@@ -100,8 +107,8 @@ def test_the_newest_definition_at_or_before_the_end_is_used(tmp_path):
     defs.read(_file(store, [_btc(H0), _btc(change, max_quantity="5000.000")]), {INSTRUMENT})
     done = store.load_done()
 
-    assert defs.definition_at(INSTRUMENT, change - 1, done)["ts_init"] == H0
-    assert defs.definition_at(INSTRUMENT, change, done)["ts_init"] == change
+    assert _at(defs, change - 1, done)["ts_init"] == H0
+    assert _at(defs, change, done)["ts_init"] == change
 
 
 def test_without_a_read_definition_the_carried_one_is_used_else_none(tmp_path):

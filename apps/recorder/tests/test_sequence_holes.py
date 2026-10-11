@@ -9,7 +9,6 @@ import pytest
 from pydantic import ValidationError
 
 import recorder.main as recorder_main
-from recorder import sequence_holes
 from recorder.actor import RecordingActor
 from recorder.disk import EXIT_DISK_FULL
 from recorder.sequence_holes import HOLES_FILE, HolesFile, SequenceWatch
@@ -114,7 +113,7 @@ def test_a_short_write_is_continued_so_no_line_is_torn(tmp_path, monkeypatch):
     def short_write(fd, data):
         return real_write(fd, bytes(data[:5]))  # the disk takes at most five bytes per call
 
-    monkeypatch.setattr(sequence_holes.os, "write", short_write)
+    monkeypatch.setattr(os, "write", short_write)
     path = tmp_path / HOLES_FILE
     holes_file = HolesFile(path)
     holes_file.append([{"started_ns": T}])

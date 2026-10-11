@@ -5,7 +5,6 @@ import os
 import pyarrow as pa
 import pytest
 
-from trading_core.catalog import sink
 from trading_core.catalog.sink import HourSink, atomic_write
 from trading_core.marketdata.errors import HourCountMismatch
 
@@ -30,9 +29,9 @@ def calls(monkeypatch):
         log.append(("replace", os.fspath(src)))
         real_replace(src, dst)
 
-    monkeypatch.setattr(sink.os, "open", fake_open)
-    monkeypatch.setattr(sink.os, "fsync", fake_fsync)
-    monkeypatch.setattr(sink.os, "replace", fake_replace)
+    monkeypatch.setattr(os, "open", fake_open)
+    monkeypatch.setattr(os, "fsync", fake_fsync)
+    monkeypatch.setattr(os, "replace", fake_replace)
     return log
 
 
