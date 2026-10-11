@@ -1,7 +1,7 @@
 # 0009. Record funding, mark, index, open interest, and liquidations in the recorder, and read them the same way live and in replay
 
 **Date**: 2026-10-11
-**Status**: Proposed
+**Status**: In Progress
 
 ## Summary
 
