@@ -105,10 +105,12 @@ kfs_control() {
 }
 
 # 0 when every service of the current release is healthy (migrate: exited 0); prints the ones
-# that are not.
+# that are not. One off `kfs-compose run` containers (kfs_control, the soak's samples) share
+# their service's name and health check but serve nothing, so they are left out.
 kfs_services_healthy() {
     local compose="$KFS_ROOT/current/deploy/host/kfs-compose" ps expected bad
-    ps=$("$compose" ps -a --format json | jq -sc 'if length == 1 and (.[0] | type) == "array" then .[0] else . end')
+    ps=$("$compose" ps -a --format json | jq -sc 'if length == 1 and (.[0] | type) == "array" then .[0] else . end
+        | map(select((.Labels // "") | split(",") | index("com.docker.compose.oneoff=True") | not))')
     expected=$("$compose" config --services)
     bad=$(jq -r --arg expected "$expected" '
         ($expected | split("\n") | map(select(. != ""))) as $want
