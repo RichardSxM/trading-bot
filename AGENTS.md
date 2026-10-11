@@ -32,7 +32,7 @@ Stored in `docs/specs/`. Format: `docs/specs/NNNN-title/index.md` (plus `rationa
 
 ## Rules
 
-- Clean Architecture: pure domain and risk logic lives in `packages/core` with no I/O, framework, or ORM imports. NautilusTrader, Postgres, Redis, and FastAPI are adapters at the edges; Nautilus Strategy and Actor classes stay thin and call pure core logic. Dependencies point inward only. Inside each package, group code by feature (`risk/`, `execution/`, `recording/`).
+- Clean Architecture: pure domain and risk logic lives in `packages/core` with no I/O, framework, or ORM imports. NautilusTrader, Postgres, Redis, and FastAPI are adapters at the edges; Nautilus Strategy and Actor classes stay thin and call pure core logic. Dependencies point inward only. Inside each package, group code by feature (`risk/`, `execution/`, `recording/`). In core, `marketdata/`, `lab/`, `strategy/`, and `risk/` are the pure folders; `node/` and `catalog/` carry the Nautilus extra (see packages/core/AGENTS.md).
 - Strict types: mypy strict on all our code, no untyped defs, no bare `Any`. Tests are type checked too but need no annotations. A Nautilus stub gap gets a narrow `# type: ignore[code]` with a reason.
 - Errors: typed exceptions from core, never swallow one. Anything touching orders fails closed (refuse the action, log, alert).
 - Every public function and class in `packages/core` has a docstring.
