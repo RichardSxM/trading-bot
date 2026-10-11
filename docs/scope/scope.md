@@ -152,7 +152,7 @@ spec [0007](../specs/0007-order-book-recorder/index.md)
   - [x] Laptop fetch and VPS deploy: `fetch-catalog.sh`, compactor `--offline` and bridge gap, deployed 2026-10-08 (AC-5, AC-9, AC-10). The backlog conversion was dropped the same day, and the recorder now records BTC only (spec 0007 Summary, AC-9, AC-14).
   - [x] Lost messages (from `/check verify`, 2026-10-08): gate (resubscribe brings a `CLEAR`, run folder name, CPU cost), the recorder's sequence watch with the holes file and resubscribe, the compactor's `sequence` gaps and incomplete hours, the AC-3 sample point, then deploy and the 24 h replay check (AC-3, AC-4, AC-15, AC-16, AC-17). Built 2026-10-08 on `feat/recorder-lost-messages` (tasks 18 to 22). Gate: the run folder is the instance id and the watch costs 0.13% of a core, but a resubscribe brought no `CLEAR`, so it is dropped as AC-15 allows. The real 15:00 hour showed 137 bad samples with the old rules and none with `sequence` gaps. Deployed 2026-10-09 (#26); the 24 h check passed 2026-10-11 on 2026-10-10 (1,440 samples, 0 bad, 0 holes).
 - [x] Verify it: `/check verify order book recorder`
-- [ ] Test it: `/test order book recorder`
+- [x] Test it: `/test order book recorder`
 - [ ] Review it (fresh model): `/check review order book recorder`
 - [ ] Document it: `/document order book recorder`
 
