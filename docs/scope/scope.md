@@ -20,7 +20,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 7 | Always on cloud deployment | Slice 2 | in-progress |
 | 8 | Order book recorder | Slice 3 | done |
 | 20 | Market context feed | Slice 3 | in-progress |
-| 9 | Kill switch & loss limits | Slice 4 | planned |
+| 9 | Kill switch & loss limits | Slice 4 | in-progress |
 | 10 | Leverage & liquidation guard | Slice 4 | planned |
 | 11 | Restart & outage safety | Slice 4 | planned |
 | 12 | Phone alerts & health checks | Slice 5 | planned |
@@ -178,13 +178,23 @@ code in [packages/core/src/trading_core/marketdata/context.py](../../packages/co
 
 ## Slice 4: Safety guards (all required before live)
 
-### 9. Kill switch & loss limits · needs a decision
+### 9. Kill switch & loss limits · in-progress
 One action closes all positions, cancels all orders, and stops trading; automatic halt after a daily or total loss threshold.
 **Done when:** the dashboard stop button and an automatic loss limit each flatten everything in demo within seconds, and trading stays halted until you resume it.
 **Carried over from spec 0005:** build `stop`, `resume`, and `flatten` on the existing ControlActor, decide how stop and pause combine, and reword spec 0004 verify step 21 (stop answers `not_implemented` until then).
 **Carried over from an article (2026-10-04, monkeytrade scalping guide, forex focused), for the design to weigh:** besides the daily loss limit (the article suggests 2 to 3 % of the account), a losing streak stop: halt new entries for the day after three losses in a row, shown as one more `entries_blocked` reason (spec 0006).
 **Also from an article (2026-10-04, NinjaTrader 1 minute scalping), for the design to weigh:** two guards against overtrading, each one more `entries_blocked` reason. A cap on trades per day, since a fast strategy always finds a signal and every trade pays fees. And a short cooldown after any loss (somewhere around 5 to 15 minutes, tuned in testing), a softer cousin of the losing streak stop.
-- [ ] Design it (spec): `/architect kill switch & loss limits`
+spec [0010](../specs/0010-kill-switch-loss-limits/index.md)
+- [x] Design it (spec): `/architect kill switch & loss limits`
+- [ ] Build it: `/develop kill switch & loss limits`
+  - [ ] Thin stop, end to end: halt key and gate, one trading state owner, `check_entry` halted, strategy `flatten` hook with tags and late fill handling, origin aware mapper, `KillSwitch.stop` waiting for flat, restart flatten, the demo drill (AC-1, AC-3, AC-5, AC-6, AC-7, AC-15)
+  - [ ] Flatten and resume: the commands, dashboard buttons with a confirm and failure reasons, `control_cli` stop, flatten, resume (AC-2, AC-4, AC-18, AC-19, AC-20)
+  - [ ] Loss limits: pure `risk/limits.py` and `LossLimitSettings`, the Postgres seed, `LossLimitActor` with its 1 s timer, automatic halts, trade cap and cooldown blocks (AC-8 to AC-14, AC-21)
+  - [ ] Snapshot and dashboard view: `trader_state` fields, HALTED badge, loss meters, trades and cooldown, plain words (AC-16, AC-17)
+- [ ] Verify it: `/check verify kill switch & loss limits`
+- [ ] Test it: `/test kill switch & loss limits`
+- [ ] Review it (fresh model): `/check review kill switch & loss limits`
+- [ ] Document it: `/document kill switch & loss limits`
 
 ### 10. Leverage & liquidation guard · needs a decision
 Hard caps on position size, total exposure, and leverage (2x at first), plus a minimum distance between entry and liquidation price; funding costs counted in every decision.
