@@ -121,9 +121,14 @@ class RandomTaker(KfsStrategy):
         super().on_stop()
 
     def flatten(self, halt_id: UUID) -> None:
-        """Cancel the entry and close any position at market, tagged for the kill switch (spec 0010)."""
-        self._kill_switch_tags = [f"{ORIGIN_TAG}{OrderOrigin.KILL_SWITCH}", f"{HALT_TAG}{halt_id}"]
-        if self._position() is not None and self.phase != Phase.EXITING:
+        """Cancel the entry and close any position at market, tagged for the kill switch (spec 0010).
+
+        While flat nothing is tagged, since no round trip end would clear the tags.
+        """
+        position = self._position()
+        if position is not None or self.phase != Phase.FLAT:
+            self._kill_switch_tags = [f"{ORIGIN_TAG}{OrderOrigin.KILL_SWITCH}", f"{HALT_TAG}{halt_id}"]
+        if position is not None and self.phase != Phase.EXITING:
             self._cancel_timer(_HOLD)
             self.phase = Phase.EXITING
             self._submit_exit()

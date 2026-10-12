@@ -183,10 +183,13 @@ class PlaceholderTimed(KfsStrategy):
         """Close the position through the exit loop, or cancel an entry in flight (spec 0010 AC-1, AC-3).
 
         Idempotent: an exit loop already running is adopted (its next retries carry the tags), and
-        the kill switch may call this again on every poll until flat.
+        the kill switch may call this again on every poll until flat. While flat it only cancels
+        stray entries; nothing is tagged, since no round trip end would clear the tags.
         """
-        self._kill_switch_tags = [f"{ORIGIN_TAG}{OrderOrigin.KILL_SWITCH}", f"{HALT_TAG}{halt_id}"]
-        if self._position() is not None:
+        position = self._position()
+        if position is not None or self.phase != Phase.FLAT:
+            self._kill_switch_tags = [f"{ORIGIN_TAG}{OrderOrigin.KILL_SWITCH}", f"{HALT_TAG}{halt_id}"]
+        if position is not None:
             self._cancel_timer(_PARTIAL)
             self._start_exit_loop()
         elif self.phase == Phase.ENTERING:

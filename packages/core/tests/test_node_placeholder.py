@@ -773,6 +773,21 @@ def test_an_entry_cancelled_by_the_flatten_logs_info_and_records_no_rejection(ca
     assert strategy._kill_switch_tags is None
 
 
+def test_a_flatten_while_flat_leaves_the_next_round_trip_its_own_tags():
+    """covers: spec 0010 AC-1 (the record: only the kill switch's orders say kill_switch), AC-2 (enters
+    again once flat). A stop or flatten while flat, or the restart flatten, must not tag later exits."""
+    _FlattenAt.at = 5.0  # flat: before the 12:15 boundary
+    engine, strategy, rows = _run(ONE_TRIP, strategy_cls=_FlattenAt)
+
+    enter, exit_ = _decisions(rows)
+    assert (enter.intent, exit_.intent, exit_.reason) == (Intent.ENTER, Intent.EXIT, "time")
+    _, exit_order = _by_type(engine, OrderType.MARKET)
+    assert exit_order.tags == [f"{DECISION_TAG}{exit_.id}"]
+    order_rows = [r for r in rows if isinstance(r, OrderRow) and r.client_order_id == str(exit_order.client_order_id)]
+    assert {(r.origin, r.decision_id) for r in order_rows} == {(OrderOrigin.STRATEGY, exit_.id)}
+    assert strategy._kill_switch_tags is None
+
+
 def test_a_halted_gate_refuses_the_entry_as_halted_and_records_an_info_limit_hit():
     """covers: spec 0010 AC-15"""
     gate = PauseGate()
