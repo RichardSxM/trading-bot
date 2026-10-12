@@ -7,6 +7,7 @@ rows), and a 17 s pause between updates (a ``silence`` gap).
 """
 
 import gzip
+import json
 import logging
 from datetime import date
 from decimal import Decimal
@@ -186,7 +187,12 @@ def test_a_day_converts_into_hours_that_start_with_snapshots(tmp_path, caplog):
     ]
     assert [pq.read_table(t.hour_file(TRADES_TABLE, hour)).num_rows for hour in (H00, H01)] == [1, 1]
     rates = [(r.ts_ns, r.rate) for r in t.funding_rates([DAY])]
-    assert rates == [(ns(0, 59, 50), Decimal("0.0001")), (ns(1, 0, 2), Decimal("0.0002"))]  # the repeat is left out
+    # Every row, repeats too, so its age matches our own funding (spec 0009 AC-15).
+    assert rates == [
+        (ns(0, 59, 50), Decimal("0.0001")),
+        (ns(0, 59, 51), Decimal("0.0001")),
+        (ns(1, 0, 2), Decimal("0.0002")),
+    ]
     assert pq.read_table(t.hour_file(INSTRUMENTS_TABLE, H01)).num_rows == 1
 
     done = next(r for r in caplog.records if r.getMessage() == "lab_import_day_done")
@@ -278,3 +284,95 @@ def test_prune_reports_a_tree_it_could_not_delete(tmp_path, monkeypatch):
     monkeypatch.setattr("lab.tardis_import.shutil.rmtree", refuse)
     with pytest.raises(PermissionError):
         prune(s, "tardis")
+
+
+def test_the_ticker_gives_mark_index_and_open_interest_rows(tmp_path):
+    """covers: spec 0009 AC-15."""
+    from nautilus_trader.model.data import IndexPriceUpdate, MarkPriceUpdate
+
+    from lab.catalog import INDEX_TABLE, MARK_TABLE, OPEN_INTEREST_TABLE
+    from trading_core.catalog.context import read_price_updates
+    from trading_core.node.context_types import OpenInterestUpdate
+
+    import_tardis(settings(tmp_path), [DAY], download=Downloads())
+
+    t = tree(tmp_path)
+    marks = [
+        u for h in (H00, H01) for u in read_price_updates(MarkPriceUpdate, pq.read_table(t.hour_file(MARK_TABLE, h)))
+    ]
+    assert [(u.ts_init, u.ts_event, str(u.value)) for u in marks] == [
+        (ns(0, 59, 50), ns(0, 59, 50) - 1_000, "100"),
+        (ns(0, 59, 51), ns(0, 59, 51) - 1_000, "100"),
+        (ns(1, 0, 2), ns(1, 0, 2) - 1_000, "100"),
+    ]
+    index = read_price_updates(IndexPriceUpdate, pq.read_table(t.hour_file(INDEX_TABLE, H01)))
+    assert [str(u.value) for u in index] == ["100"]
+    oi = ArrowSerializer.deserialize(OpenInterestUpdate, pq.read_table(t.hour_file(OPEN_INTEREST_TABLE, H00)))
+    assert [str(u.value) for u in oi] == ["1.0000", "1.0000"]
+    manifest = json.loads(t.manifest_file(DAY).read_text())
+    assert {s["type"] for s in manifest["streams"]} >= {MARK_TABLE, INDEX_TABLE, OPEN_INTEREST_TABLE}
+
+
+def test_context_backfill_rewrites_only_the_context_of_a_done_day(tmp_path, caplog):
+    """covers: spec 0009 AC-15 (the --context backfill, its commit point, reruns)."""
+    from lab.catalog import MARK_TABLE
+    from lab.tardis_import import context_manifest_file, import_context
+
+    import_tardis(settings(tmp_path), [DAY], download=Downloads())
+    t = tree(tmp_path)
+    for hour in (H00, H01):
+        t.hour_file(MARK_TABLE, hour).unlink()  # as a day imported before spec 0009
+    gap_before = t.layout.gap_file(DAY.isoformat()).read_bytes()
+    manifest_before = t.manifest_file(DAY).read_bytes()
+    downloads = Downloads()
+
+    assert import_context(settings(tmp_path), [DAY], download=downloads) == EXIT_OK
+
+    assert t.hour_file(MARK_TABLE, H00).is_file()
+    assert t.layout.gap_file(DAY.isoformat()).read_bytes() == gap_before
+    assert t.manifest_file(DAY).read_bytes() == manifest_before
+    context = json.loads(context_manifest_file(t, DAY).read_text())
+    assert context["day"] == DAY.isoformat()
+    assert context["tables"][MARK_TABLE]["rows"] == 3
+    assert context["tables"]["funding_rate_update"]["rows"] == 3
+    assert not (t.root / ".raw").exists() or not any((t.root / ".raw").iterdir())
+    after = every_file(tmp_path / "catalog")
+
+    caplog.set_level(logging.INFO)
+    assert import_context(settings(tmp_path), [DAY], download=downloads) == EXIT_OK
+    assert downloads.calls == 1
+    assert "lab_import_day_skipped" in [r.getMessage() for r in caplog.records]
+
+    context_manifest_file(t, DAY).unlink()  # killed before the commit point
+    assert import_context(settings(tmp_path), [DAY], download=Downloads()) == EXIT_OK
+    assert every_file(tmp_path / "catalog") == after
+
+
+def test_context_backfill_skips_a_day_not_imported(tmp_path, caplog):
+    """covers: spec 0009 AC-15."""
+    from lab.tardis_import import import_context
+
+    downloads = Downloads()
+
+    assert import_context(settings(tmp_path), [DAY], download=downloads) == EXIT_OK
+    assert downloads.calls == 0
+    assert "lab_context_day_not_imported" in [r.getMessage() for r in caplog.records]
+
+
+def test_a_failed_context_download_leaves_the_days_funding_in_place(tmp_path):
+    """covers: spec 0009 AC-15 (a backfill never leaves a done day without its funding)."""
+    from lab.tardis_import import context_manifest_file, import_context_day
+
+    import_tardis(settings(tmp_path), [DAY], download=Downloads())
+    t = tree(tmp_path)
+    funding = t.hour_file("funding_rate_update", H00)
+    before = funding.read_bytes()
+
+    def fail(day, raw_dir):
+        raise OSError("download failed")
+
+    with pytest.raises(OSError, match="download failed"):
+        import_context_day(t, DAY, download=fail)
+
+    assert funding.read_bytes() == before
+    assert not context_manifest_file(t, DAY).exists()

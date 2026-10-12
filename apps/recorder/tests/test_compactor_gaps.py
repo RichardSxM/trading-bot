@@ -5,6 +5,7 @@ import json
 import logging
 import shutil
 import time
+from dataclasses import replace
 
 import pytest
 from feed_fixture import H0, HOUR_NS, INSTRUMENT, SECOND_NS, make_feed, write_run
@@ -12,7 +13,8 @@ from test_compactor_lifecycle import _snapshot
 
 from recorder.compactor.days import close_days, read_gaps
 from recorder.compactor.main import Compactor
-from recorder.compactor.store import DELTAS_TABLE, CatalogStore, stream_key
+from recorder.compactor.store import CONTEXT_TABLES, DELTAS_TABLE, FUNDING_TABLE, CatalogStore, stream_key
+from trading_core.catalog.days import write_gaps
 from trading_core.marketdata.gaps import Gap
 from trading_core.marketdata.hours import DAY_NS, day_of
 
@@ -62,6 +64,8 @@ def test_a_restart_and_a_reconnect_each_give_one_gap(tmp_path, caplog):
         Gap(_first_last(b1)[1], INSTRUMENT, "reconnect", _first_last(b2)[0]),
     ]
     assert read_gaps(store, "2026-10-08") == expected
+    # The restart is a recorder outage for the context streams too; the reconnect is the book's own.
+    assert read_gaps(store, "2026-10-08", stream=FUNDING_TABLE) == [replace(expected[0], stream=FUNDING_TABLE)]
     logged = [r.fields for r in caplog.records if getattr(r, "fields", {}).get("code") == "book_gap"]
     assert [(f["kind"], f["start_ns"], f["end_ns"]) for f in logged] == [
         (g.kind, g.start_ns, g.end_ns) for g in expected
@@ -128,10 +132,14 @@ def test_a_gap_across_midnight_lies_in_its_start_day_and_each_manifest_counts_it
     one = json.loads(store.manifest_file("2026-10-08").read_text())
     two = json.loads(store.manifest_file("2026-10-09").read_text())
     midnight = DAY + DAY_NS
-    [gap_one] = one["gaps"]
-    assert (gap_one["instrument_id"], gap_one["kind"]) == (INSTRUMENT, "recorder_down")
+    # Each stream counts its own seconds; the context streams share the book's recorder_down.
+    by_stream = {g["stream"]: g for g in one["gaps"]}
+    assert set(by_stream) == {DELTAS_TABLE, *CONTEXT_TABLES}
+    gap_one, funding_one = by_stream[DELTAS_TABLE], by_stream[FUNDING_TABLE]
+    assert (gap_one["instrument_id"], gap_one["stream"], gap_one["kind"]) == (INSTRUMENT, DELTAS_TABLE, "recorder_down")
     assert gap_one["seconds"] == pytest.approx((midnight - first_down.start_ns) / SECOND_NS)
-    [gap_two] = two["gaps"]
+    assert (funding_one["stream"], funding_one["seconds"]) == (FUNDING_TABLE, gap_one["seconds"])
+    (gap_two,) = [g for g in two["gaps"] if g["stream"] == DELTAS_TABLE]
     two_ns = first_down.end_ns - midnight + second_down.end_ns - second_down.start_ns
     assert gap_two["seconds"] == pytest.approx(two_ns / SECOND_NS)
 
@@ -214,3 +222,56 @@ def test_an_instrument_dropped_from_recording_no_longer_holds_days_back(tmp_path
     assert done.days == {"2026-10-08", "2026-10-09"}
     day_one = json.loads(store.manifest_file("2026-10-08").read_text())
     assert {s["instrument_id"]: s["hours"] for s in day_one["streams"]} == {INSTRUMENT: 18, "PF_ETHUSD.KRAKEN": 11}
+
+
+def test_a_gap_file_from_before_the_stream_column_reads_as_book_gaps(tmp_path):
+    """covers: spec 0009 AC-7."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    store = CatalogStore(tmp_path)
+    old = pa.table(
+        {"instrument_id": [INSTRUMENT], "kind": ["silence"], "start_ns": [H0], "end_ns": [H0 + MINUTE_NS]},
+        schema=pa.schema(
+            [
+                pa.field("instrument_id", pa.string(), nullable=False),
+                pa.field("kind", pa.string(), nullable=False),
+                pa.field("start_ns", pa.uint64(), nullable=False),
+                pa.field("end_ns", pa.uint64(), nullable=False),
+            ]
+        ),
+    )
+    store.gap_file("2026-10-08").parent.mkdir(parents=True)
+    pq.write_table(old, store.gap_file("2026-10-08"))
+
+    book = Gap(H0, INSTRUMENT, "silence", H0 + MINUTE_NS)
+    assert read_gaps(store, "2026-10-08") == [book]
+    assert read_gaps(store, "2026-10-08", stream=FUNDING_TABLE) == []
+
+    # A later write keeps the old row, now with its stream.
+    write_gaps(store, [replace(book, kind="recorder_down", stream=FUNDING_TABLE)])
+    assert pq.read_table(store.gap_file("2026-10-08")).column("stream").to_pylist() == [
+        "funding_rate_update",
+        "order_book_deltas",
+    ]
+
+
+def test_one_start_in_five_streams_keeps_five_rows_and_book_reads_only_its_own(tmp_path):
+    """covers: spec 0009 AC-7."""
+    store = CatalogStore(tmp_path)
+    streams = [
+        "order_book_deltas",
+        "mark_price_update",
+        "index_price_update",
+        "funding_rate_update",
+        "custom_open_interest_update",
+        "custom_liquidation_tick",
+    ]
+    gaps = [Gap(H0, INSTRUMENT, "recorder_down", H0 + MINUTE_NS, stream=s) for s in streams]
+
+    write_gaps(store, gaps)
+    write_gaps(store, gaps)  # a rerun adds nothing
+
+    assert read_gaps(store, "2026-10-08", stream=None) == sorted(gaps)
+    assert [g.stream for g in sorted(gaps)] == sorted(streams)
+    assert read_gaps(store, "2026-10-08") == [gaps[0]]

@@ -17,12 +17,13 @@ The manifest is written last, as the day's commit point; then the CSV files go. 
 manifest is converted again from scratch, to the same bytes.
 """
 
+import json
 import logging
 import shutil
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import date, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from functools import partial
 from itertools import pairwise
 from pathlib import Path
@@ -35,13 +36,22 @@ import pyarrow.csv as pacsv
 import pyarrow.parquet as pq
 from nautilus_trader.adapters.tardis.loaders import TardisCSVDataLoader
 from nautilus_trader.core import nautilus_pyo3 as p3
-from nautilus_trader.model.data import FundingRateUpdate, OrderBookDelta
+from nautilus_trader.model.data import FundingRateUpdate, IndexPriceUpdate, MarkPriceUpdate, OrderBookDelta
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.instruments import CryptoPerpetual
 from nautilus_trader.serialization.arrow.serializer import ArrowSerializer
 
-from lab.catalog import DELTAS_TABLE, FUNDING_TABLE, INSTRUMENTS_TABLE, TRADES_TABLE, SourceTree
+from lab.catalog import (
+    DELTAS_TABLE,
+    FUNDING_TABLE,
+    INDEX_TABLE,
+    INSTRUMENTS_TABLE,
+    MARK_TABLE,
+    OPEN_INTEREST_TABLE,
+    TRADES_TABLE,
+    SourceTree,
+)
 from lab.instruments import pinned_instrument
 from lab.settings import LabSettings
 from trading_core.catalog.book import CLEAR, F_LAST, BookCarry
@@ -54,6 +64,7 @@ from trading_core.lab.segments import day_start_ns
 from trading_core.lab.tardis_days import fits_under_cap
 from trading_core.marketdata.gaps import Gap, GapKind
 from trading_core.marketdata.hours import GB, HOUR_NS, SECOND_NS
+from trading_core.node.context_types import OpenInterestUpdate
 
 log = logging.getLogger(__name__)
 
@@ -64,6 +75,8 @@ BOOK_CSV: Final = "incremental_book_L2"
 TRADES_CSV: Final = "trades"
 TICKER_CSV: Final = "derivative_ticker"
 DATA_TYPES: Final = (BOOK_CSV, TRADES_CSV, TICKER_CSV)
+# The tables a Tardis day's ticker CSV gives (spec 0009 AC-15): Tardis has no liquidations.
+CONTEXT_TABLES: Final = (FUNDING_TABLE, MARK_TABLE, INDEX_TABLE, OPEN_INTEREST_TABLE)
 
 EXIT_OK: Final = 0
 EXIT_FAILED: Final = 1
@@ -121,6 +134,88 @@ def download_day(day: date, raw_dir: Path) -> None:
     missing = [t for t in DATA_TYPES if not raw_file(raw_dir, t, day).is_file()]
     if missing:
         raise ImportFailedError(f"download of {day} gave no file for {', '.join(missing)}")
+
+
+def download_ticker(day: date, raw_dir: Path) -> None:
+    """Download only the day's ``derivative_ticker`` CSV (the ``--context`` backfill, spec 0009 AC-15)."""
+    import tardis_dev  # type: ignore[import-not-found, import-untyped, unused-ignore]
+
+    try:
+        tardis_dev.download_datasets(
+            exchange=EXCHANGE,
+            data_types=[TICKER_CSV],
+            symbols=[SYMBOL],
+            from_date=day.isoformat(),
+            to_date=(day + timedelta(days=1)).isoformat(),
+            download_dir=str(raw_dir),
+        )
+    except Exception as exc:  # the client raises plain exceptions for HTTP and network errors
+        raise ImportFailedError(f"download of {day} failed: {exc}") from exc
+    if not raw_file(raw_dir, TICKER_CSV, day).is_file():
+        raise ImportFailedError(f"download of {day} gave no file for {TICKER_CSV}")
+
+
+def context_manifest_file(tree: SourceTree, day: date) -> Path:
+    """``manifests/context/<day>.json``: the ``--context`` backfill's commit point, in a subfolder so
+    the day manifest globs never read it (spec 0009 AC-15)."""
+    return tree.root / "manifests" / "context" / f"{day.isoformat()}.json"
+
+
+def import_context(settings: LabSettings, days: Iterable[date], *, download: Downloader = download_ticker) -> int:
+    """Backfill the context tables of days already imported (``--context``). Returns the exit code.
+
+    A day without its day manifest is not imported yet (a plain import writes its context) and is
+    skipped with a warning; a day with a context manifest is done and skipped.
+    """
+    tree = SourceTree(settings.lab_catalog_dir / "tardis", INSTRUMENT_ID)
+    for day in days:
+        if not tree.manifest_file(day).is_file():
+            log.warning("lab_context_day_not_imported", extra={"fields": {"day": day.isoformat()}})
+            continue
+        if context_manifest_file(tree, day).is_file():
+            log.info("lab_import_day_skipped", extra={"fields": {"day": day.isoformat(), "context": True}})
+            continue
+        try:
+            import_context_day(tree, day, download=download)
+        except ImportFailedError as exc:
+            log.error("lab_import_failed", extra={"fields": {"day": day.isoformat(), "error": str(exc)}})
+            return EXIT_FAILED
+    return EXIT_OK
+
+
+def import_context_day(tree: SourceTree, day: date, *, download: Downloader = download_ticker) -> None:
+    """Rewrite one imported day's context tables from its ticker CSV, then commit its context manifest.
+
+    The day's deltas, trades, gap file, and day manifest stay untouched.
+    """
+    instrument = pinned_instrument(INSTRUMENT_ID)
+    raw_dir = tree.root / ".raw" / f"{day.isoformat()}-context"
+    if not raw_file(raw_dir, TICKER_CSV, day).is_file():
+        shutil.rmtree(raw_dir, ignore_errors=True)
+        raw_dir.mkdir(parents=True)
+        download(day, raw_dir)
+    # Removed only once the download is in, so a failed one leaves the day's funding in place.
+    _remove_hours(tree, day, CONTEXT_TABLES)
+    loader = TardisCSVDataLoader(
+        price_precision=instrument.price_precision,
+        size_precision=instrument.size_precision,
+        instrument_id=InstrumentId.from_str(INSTRUMENT_ID),
+    )
+    counts = DayCounts()
+    ticker = raw_file(raw_dir, TICKER_CSV, day)
+    convert_funding(tree.layout, loader, ticker, counts)
+    convert_ticker_context(tree.layout, instrument, ticker, counts)
+    tables = {}
+    for table in CONTEXT_TABLES:
+        stats = counts.hours.get(f"{table}/{INSTRUMENT_ID}", {}).values()
+        tables[table] = {"rows": sum(s["rows"] for s in stats), "bytes": sum(s["bytes"] for s in stats)}
+    manifest = {"day": day.isoformat(), "tables": tables}
+    atomic_write(
+        context_manifest_file(tree, day),
+        partial(write_text, json.dumps(manifest, indent=1, sort_keys=True)),
+    )
+    shutil.rmtree(raw_dir, ignore_errors=True)
+    log.info("lab_import_context_done", extra={"fields": {"day": day.isoformat(), "tables": tables}})
 
 
 def tree_bytes(root: Path) -> int:
@@ -193,6 +288,7 @@ def import_day(tree: SourceTree, day: date, *, download: Downloader = download_d
     convert_deltas(tree.layout, loader, raw_file(raw_dir, BOOK_CSV, day), counts)
     convert_trades(tree.layout, loader, raw_file(raw_dir, TRADES_CSV, day), counts)
     convert_funding(tree.layout, loader, raw_file(raw_dir, TICKER_CSV, day), counts)
+    convert_ticker_context(tree.layout, instrument, raw_file(raw_dir, TICKER_CSV, day), counts)
     write_instruments(tree.layout, instrument, counts)
     write_gaps(tree.layout, counts.gaps)
     manifest = build_manifest(tree.layout, day_start_ns(day), counts.hours, counts.incomplete)
@@ -215,13 +311,17 @@ def import_day(tree: SourceTree, day: date, *, download: Downloader = download_d
 
 def _remove_leftovers(tree: SourceTree, day: date) -> None:
     """Delete what a killed run of this day may have left, so it converts again from scratch."""
+    _remove_hours(tree, day, (DELTAS_TABLE, TRADES_TABLE, INSTRUMENTS_TABLE, *CONTEXT_TABLES))
+    tree.layout.gap_file(day.isoformat()).unlink(missing_ok=True)
+
+
+def _remove_hours(tree: SourceTree, day: date, tables: Iterable[str]) -> None:
     start = day_start_ns(day)
-    for table in (DELTAS_TABLE, TRADES_TABLE, INSTRUMENTS_TABLE, FUNDING_TABLE):
+    for table in tables:
         for hour in range(start, start + 24 * HOUR_NS, HOUR_NS):
             path = tree.layout.data_file(table, INSTRUMENT_ID, hour)
             path.unlink(missing_ok=True)
             path.with_name(path.name + TMP_SUFFIX).unlink(missing_ok=True)
-    tree.layout.gap_file(day.isoformat()).unlink(missing_ok=True)
 
 
 def check_ticks(instrument: CryptoPerpetual, book_csv: Path, trades_csv: Path) -> None:
@@ -501,29 +601,92 @@ def convert_trades(layout: CatalogLayout, loader: TardisCSVDataLoader, path: Pat
 
 
 def convert_funding(layout: CatalogLayout, loader: TardisCSVDataLoader, path: Path, counts: DayCounts) -> None:
-    """The ticker CSV's funding rates into ``funding_rate_update`` hour files, only where the rate changes."""
+    """The ticker CSV's funding rates into ``funding_rate_update`` hour files, every row, so its age
+    matches our own recorded funding (spec 0009 AC-15)."""
     files = HourFiles(layout, FUNDING_TABLE, counts)
-    last: list[Decimal] = []
 
-    def changes() -> Iterator[Any]:
+    def rows() -> Iterator[Any]:
         for chunk in loader.stream_funding_rates(path, chunk_size=CHUNK_ROWS):
-            kept = []
             for update in chunk:
                 if not isinstance(update, FundingRateUpdate):
                     raise TypeError(f"unexpected funding row {type(update).__name__}")
-                if not last or update.rate != last[0]:
-                    kept.append(update)
-                    last[:] = [update.rate]
-            if kept:
+            if chunk:
                 # The funding serializer takes one update at a time.
-                yield pa.Table.from_batches([ArrowSerializer.serialize(u) for u in kept])
+                yield pa.Table.from_batches([ArrowSerializer.serialize(u) for u in chunk])
 
-    for table in in_order(changes(), files.key, counts):
+    for table in in_order(rows(), files.key, counts):
         for hour, part in by_hour(table):
             if files.hour != hour:
                 files.open(hour, table.schema)
             files.write(part)
     files.close()
+
+
+def _ticker_values(path: Path, column: str) -> Iterator[tuple[int, int, str]]:
+    """``(ts_event, ts_init, text)`` of every ticker row with a value in ``column``, in file order.
+
+    ``timestamp`` and ``local_timestamp`` are microseconds; the value stays text, never a float.
+    """
+    times = ("timestamp", "local_timestamp")
+    options = pacsv.ConvertOptions(
+        include_columns=[*times, column],
+        column_types={"timestamp": pa.int64(), "local_timestamp": pa.int64(), column: pa.string()},
+        strings_can_be_null=False,
+    )
+    reader = pacsv.open_csv(path, convert_options=options, read_options=pacsv.ReadOptions(block_size=16 << 20))
+    for batch in reader:
+        events = batch.column("timestamp").to_pylist()
+        inits = batch.column("local_timestamp").to_pylist()
+        for event, init, text in zip(events, inits, batch.column(column).to_pylist(), strict=True):
+            if text:
+                yield event * 1_000, init * 1_000, text
+
+
+def convert_ticker_context(layout: CatalogLayout, instrument: CryptoPerpetual, path: Path, counts: DayCounts) -> None:
+    """The ticker CSV's mark price, index price, and open interest into their hour files, one row per
+    CSV row that has the value (spec 0009 AC-15).
+
+    Mark and index are at the instrument's price precision, as the Kraken adapter gives them live (the
+    spec 0009 gate); open interest at its size precision, as the context feed records it.
+    """
+    instrument_id = InstrumentId.from_str(INSTRUMENT_ID)
+
+    def mark(text: str, event: int, init: int) -> Any:
+        return MarkPriceUpdate(instrument_id, instrument.make_price(Decimal(text)), event, init)
+
+    def index(text: str, event: int, init: int) -> Any:
+        return IndexPriceUpdate(instrument_id, instrument.make_price(Decimal(text)), event, init)
+
+    def open_interest(text: str, event: int, init: int) -> Any:
+        return OpenInterestUpdate(instrument_id, instrument.make_qty(Decimal(text)), event, init)
+
+    streams: tuple[tuple[str, str, type, Callable[[str, int, int], Any]], ...] = (
+        (MARK_TABLE, "mark_price", MarkPriceUpdate, mark),
+        (INDEX_TABLE, "index_price", IndexPriceUpdate, index),
+        (OPEN_INTEREST_TABLE, "open_interest", OpenInterestUpdate, open_interest),
+    )
+    for table_name, column, cls, make in streams:
+        files = HourFiles(layout, table_name, counts)
+
+        def tables(column: str = column, cls: type = cls, make: Callable[[str, int, int], Any] = make) -> Iterator[Any]:
+            batch: list[Any] = []
+            for event, init, text in _ticker_values(path, column):
+                try:
+                    batch.append(make(text, event, init))
+                except (InvalidOperation, ValueError) as exc:
+                    raise ImportFailedError(f"{path.name}: {column} {text!r} is not a number") from exc
+                if len(batch) >= CHUNK_ROWS:
+                    yield ArrowSerializer.serialize_batch(batch, data_cls=cls)
+                    batch = []
+            if batch:
+                yield ArrowSerializer.serialize_batch(batch, data_cls=cls)
+
+        for table in in_order(tables(), files.key, counts):
+            for hour, part in by_hour(table):
+                if files.hour != hour:
+                    files.open(hour, table.schema)
+                files.write(part)
+        files.close()
 
 
 def write_instruments(layout: CatalogLayout, instrument: CryptoPerpetual, counts: DayCounts) -> None:

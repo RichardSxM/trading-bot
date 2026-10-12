@@ -121,6 +121,8 @@ def _run(
     start_offset_min=0,
     latency_s=0,
     strategy_cls=None,
+    extra_data=(),
+    custom_data=(),
     **overrides,
 ):
     engine = BacktestEngine(BacktestEngineConfig(logging=LoggingConfig(bypass_logging=True)))
@@ -135,6 +137,12 @@ def _run(
     engine.add_instrument(INSTRUMENT)
     ticks = _quotes(prices)
     engine.add_data(ticks[int(start_offset_min * 6) :])
+    if extra_data:
+        engine.add_data(list(extra_data))
+    if custom_data:
+        from nautilus_trader.model.identifiers import ClientId
+
+        engine.add_data(list(custom_data), client_id=ClientId("KRAKEN"))
     run_id = uuid.uuid7()
     values = {
         "env": "demo",

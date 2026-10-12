@@ -20,7 +20,11 @@ from trading_core.catalog.days import read_gaps
 from trading_core.catalog.layout import (
     DELTAS_TABLE,
     FUNDING_TABLE,
+    INDEX_TABLE,
     INSTRUMENTS_TABLE,
+    LIQUIDATION_TABLE,
+    MARK_TABLE,
+    OPEN_INTEREST_TABLE,
     TRADES_TABLE,
     CatalogLayout,
 )
@@ -31,7 +35,11 @@ from trading_core.marketdata.gaps import Gap
 __all__ = [
     "DELTAS_TABLE",
     "FUNDING_TABLE",
+    "INDEX_TABLE",
     "INSTRUMENTS_TABLE",
+    "LIQUIDATION_TABLE",
+    "MARK_TABLE",
+    "OPEN_INTEREST_TABLE",
     "REPLAY_TABLES",
     "TRADES_TABLE",
     "ManifestError",

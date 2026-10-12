@@ -160,7 +160,13 @@ def replayed(fast, tmp_path_factory) -> list[Decided]:
     """The fixture's enter decisions, replayed once with the fast beat."""
     settings = _settings(tmp_path_factory.mktemp("reports"))
     plan = plan_run(SourceTree(FIXTURES / "own", fast.run.instrument_id), fast)
-    plans = unit_plans(settings, fast, plan.segments, VariantSpec("parity", fast.run.latency_ms, True))
+    plans = unit_plans(
+        settings,
+        fast,
+        plan.segments,
+        VariantSpec("parity", fast.run.latency_ms, True),
+        funding=fast.run.source == "tardis",
+    )
     units = run_units(plans, settings, run_unit)
     return [
         Decided(r.decided_ns, r.intent, r.side, r.risk_verdict == "approved", r.risk_reason)

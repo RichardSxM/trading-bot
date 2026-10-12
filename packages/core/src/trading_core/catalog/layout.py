@@ -7,17 +7,23 @@
 from pathlib import Path
 from typing import Final
 
-from nautilus_trader.model.data import FundingRateUpdate, OrderBookDelta, TradeTick
+from nautilus_trader.model.data import FundingRateUpdate, IndexPriceUpdate, MarkPriceUpdate, OrderBookDelta, TradeTick
 from nautilus_trader.model.instruments import CryptoPerpetual
 from nautilus_trader.persistence.catalog.parquet import _parse_filename_timestamps, _timestamps_to_filename
 from nautilus_trader.persistence.funcs import class_to_filename, urisafe_identifier
 
 from trading_core.marketdata.hours import hour_last_ns
+from trading_core.node.context_types import LiquidationTick, OpenInterestUpdate
 
 DELTAS_TABLE: Final[str] = class_to_filename(OrderBookDelta)
 TRADES_TABLE: Final[str] = class_to_filename(TradeTick)
 INSTRUMENTS_TABLE: Final[str] = class_to_filename(CryptoPerpetual)
 FUNDING_TABLE: Final[str] = class_to_filename(FundingRateUpdate)
+MARK_TABLE: Final[str] = class_to_filename(MarkPriceUpdate)
+INDEX_TABLE: Final[str] = class_to_filename(IndexPriceUpdate)
+# The raw feed's custom types (spec 0009): `custom_open_interest_update`, `custom_liquidation_tick`.
+OPEN_INTEREST_TABLE: Final[str] = class_to_filename(OpenInterestUpdate)
+LIQUIDATION_TABLE: Final[str] = class_to_filename(LiquidationTick)
 
 
 def hour_filename(hour: int) -> str:

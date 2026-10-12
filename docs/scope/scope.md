@@ -19,7 +19,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 6 | Core paper trading loop | Slice 1 | done |
 | 7 | Always on cloud deployment | Slice 2 | in-progress |
 | 8 | Order book recorder | Slice 3 | done |
-| 20 | Market context feed | Slice 3 | planned |
+| 20 | Market context feed | Slice 3 | in-progress |
 | 9 | Kill switch & loss limits | Slice 4 | planned |
 | 10 | Leverage & liquidation guard | Slice 4 | planned |
 | 11 | Restart & outage safety | Slice 4 | planned |
@@ -156,13 +156,25 @@ spec [0007](../specs/0007-order-book-recorder/index.md)
 - [x] Review it (fresh model): `/check review order book recorder`
 - [x] Document it: `/document order book recorder`
 
-### 20. Market context feed · needs a decision
+### 20. Market context feed · in-progress
 Record the perp market's own context next to prices: funding rate, open interest, mark versus index basis, and liquidations. Strategies can then use them as inputs and regime filters, in backtests and live alike. Much of this history cannot be downloaded later, so recording starts early.
 **Done when:** the context values are recorded continuously with gaps logged, a backtest can read them at the time each one was known (no look ahead), and a strategy can read the same values live.
 **Carried over from research (2026-10-04):** the idea came from the `tracking-crypto-derivatives` skill (ideas only, nothing installed). Optional extras for the design to weigh: a news or event blackout filter, the Fear & Greed index as a regime tag, and later Deribit options implied volatility and put/call ratio.
 **Carried over from an article (2026-10-04, a OneBullEx post, promotional, rules of thumb only):** a funding rate above +0.05 % per period reads as crowded longs and reversal risk, below −0.02 % as crowded shorts. Rising open interest while price sits in a tight range reads as pressure building before a breakout. Treat both as hypotheses for the backtest to test on our own data, not as thresholds to hard code.
 **Carried over from spec 0008:** own recorder days carry no funding, so the scalping simulator labels own runs "before funding". Once this feed records funding, the simulator can apply it to own days and drop that label.
-- [ ] Design it (spec): `/architect market context feed`
+spec [0009](../specs/0009-market-context-feed/index.md)
+code in [packages/core/src/trading_core/marketdata/context.py](../../packages/core/src/trading_core/marketdata/context.py), [packages/core/src/trading_core/node/context_feed.py](../../packages/core/src/trading_core/node/context_feed.py), [apps/recorder/src/recorder/compactor/](../../apps/recorder/src/recorder/compactor/), [apps/lab/src/lab/stream.py](../../apps/lab/src/lab/stream.py)
+- [x] Design it (spec): `/architect market context feed`
+- [ ] Build it: `/develop market context feed`
+  - [x] Gate: funding rate meaning and period, stream cadence and precision, Kraken's `ticker` and `trade` fields and fixtures, custom types through the feather writer and the engine, size per day (AC-1, AC-2, AC-3, AC-5, AC-9, AC-13, AC-14, AC-17)
+  - [x] Thin thread, funding end to end: `ContextSettings`, recorder and compactor funding, pure `ContextBook`, `KfsStrategy` context hook and the placeholder log, own replay funding all or nothing, gap `stream` column (AC-1, AC-2, AC-7, AC-8, AC-9, AC-11, AC-14, AC-16)
+  - [x] Mark, index, basis: recording with silence gaps, basis on read, lab hour stream with warmup and the look ahead test (AC-1, AC-2, AC-7, AC-8, AC-11, AC-13)
+  - [x] Raw client: `websockets` actor for open interest and liquidations, parsers, dedupe, reconnect and idle watchdog, outages file and `reconnect` gaps, liquidation window (AC-3 to AC-8, AC-10, AC-11, AC-13)
+  - [ ] Live read, Tardis history, deploy: trader actor, Tardis mark, index, open interest and the `--context` backfill, retention and boundary checks, the VPS 24 h check (AC-12, AC-15, AC-16, AC-17)
+- [ ] Verify it: `/check verify market context feed`
+- [x] Test it: `/test market context feed`
+- [x] Review it (fresh model): `/check review market context feed`
+- [ ] Document it: `/document market context feed`
 
 ## Slice 4: Safety guards (all required before live)
 
@@ -326,6 +338,7 @@ Out of scope for the current build pass, kept so the plan stays honest.
 - **AI or ML strategies**: model based predictions, only after the lab can catch overfitting · needs a decision
 - **Scale up**: larger capital or leverage after a long profitable live record · needs a decision
 - **Spot or other exchanges**: diversify venues · needs a decision
+- **Market context extras** (from spec 0009): a Fear & Greed regime tag, a news or event blackout filter, Deribit options implied volatility and put/call · needs a decision
 
 ## Legend
 

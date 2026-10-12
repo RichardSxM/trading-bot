@@ -11,11 +11,15 @@ Four kinds, from the ``ts_init`` of neighbouring rows and the run's holes file:
 
 Where spans overlap, ``sequence`` wins over ``reconnect``, which wins over ``silence``. The detector
 streams across chunks and passes; its state is kept in ``done.json``.
+
+Each gap names its ``stream`` (the catalog table): the book's own gaps are ``order_book_deltas``,
+and the market context streams have theirs (spec 0009 AC-7).
 """
 
 import bisect
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from functools import total_ordering
 from typing import Final, Literal, get_args
 
 from trading_core.marketdata.hours import SECOND_NS
@@ -23,11 +27,14 @@ from trading_core.marketdata.sequence import UNKNOWN, RunHoles
 
 GapKind = Literal["reconnect", "recorder_down", "silence", "sequence"]
 GAP_KINDS: Final[tuple[GapKind, ...]] = get_args(GapKind)
+# The book's stream, which every gap had before the context streams (``DELTAS_TABLE``'s name).
+BOOK_STREAM: Final = "order_book_deltas"
 
 
-@dataclass(frozen=True, order=True)
+@total_ordering
+@dataclass(frozen=True)
 class Gap:
-    """One gap. Gaps sort by start, then instrument and kind, as the gap files keep them.
+    """One gap. Gaps sort by start, then stream, instrument, and kind, as the gap files keep them.
 
     ``missing`` is the count of lost messages of a ``sequence`` gap (``UNKNOWN`` for a fail safe
     one), for the log only: the gap files do not store it.
@@ -38,6 +45,13 @@ class Gap:
     kind: GapKind
     end_ns: int
     missing: int | None = field(default=None, compare=False)
+    stream: str = BOOK_STREAM
+
+    def __lt__(self, other: Gap) -> bool:
+        return self._key() < other._key()
+
+    def _key(self) -> tuple[int, str, str, str, int]:
+        return (self.start_ns, self.stream, self.instrument_id, self.kind, self.end_ns)
 
     @property
     def duration_s(self) -> float:
@@ -98,6 +112,79 @@ class GapState:
             cleared=raw.get("cleared") is True,
             sequence=sequence,
         )
+
+
+# Within one stream, a gap of a lower rank wins over an overlapping gap of a higher one (spec 0007
+# AC-16, spec 0009 AC-7). The book's own detector never makes overlapping gaps.
+_GAP_RANK: Final[dict[GapKind, int]] = {"recorder_down": 0, "sequence": 1, "reconnect": 2, "silence": 3}
+
+
+def resolve_overlaps(gaps: Sequence[Gap]) -> list[Gap]:
+    """The gaps without any that overlap a stronger gap of the same instrument and stream, sorted.
+
+    ``recorder_down`` wins over ``sequence``, which wins over ``reconnect``, which wins over
+    ``silence``; the weaker gap is dropped whole.
+    """
+    kept: list[Gap] = []
+    for gap in gaps:
+        rank = _GAP_RANK[gap.kind]
+        if not any(
+            _GAP_RANK[other.kind] < rank
+            and other.instrument_id == gap.instrument_id
+            and other.stream == gap.stream
+            and other.start_ns < gap.end_ns
+            and gap.start_ns < other.end_ns
+            for other in gaps
+        ):
+            kept.append(gap)
+    return sorted(kept)
+
+
+@dataclass(frozen=True)
+class SilenceState:
+    """Where silence detection stands for one context stream: the last row seen and its run."""
+
+    last_ts: int | None = None
+    run: str | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        """The state as ``done.json`` stores it."""
+        return {"last_ts": self.last_ts, "run": self.run}
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, object]) -> SilenceState:
+        """Parse a state written by ``to_dict``."""
+        last_ts, run = raw.get("last_ts"), raw.get("run")
+        return cls(last_ts if isinstance(last_ts, int) else None, run if isinstance(run, str) else None)
+
+
+class SilenceDetector:
+    """``silence`` gaps of one context stream (mark, index, open interest): two rows of one run
+    ``silence_ns`` or more apart (spec 0009 AC-7). Gaps between runs are the book's ``recorder_down``."""
+
+    def __init__(self, instrument_id: str, stream: str, state: SilenceState, *, silence_ns: int) -> None:
+        self.instrument_id = instrument_id
+        self.stream = stream
+        self._silence_ns = silence_ns
+        self._last_ts = state.last_ts
+        self._run = state.run
+
+    @property
+    def state(self) -> SilenceState:
+        """The state to store, so detection resumes in the next pass."""
+        return SilenceState(self._last_ts, self._run)
+
+    def scan(self, run: str, ts_init: Sequence[int]) -> list[Gap]:
+        """The ``silence`` gaps a chunk of one run's rows (in ``ts_init`` order) closes."""
+        gaps: list[Gap] = []
+        last = self._last_ts if self._run == run else None
+        for ts in ts_init:
+            if last is not None and ts - last >= self._silence_ns:
+                gaps.append(Gap(last, self.instrument_id, "silence", ts, stream=self.stream))
+            last = ts
+        if ts_init:
+            self._last_ts, self._run = last, run
+        return gaps
 
 
 @dataclass(frozen=True)

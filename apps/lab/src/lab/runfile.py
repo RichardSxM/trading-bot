@@ -15,7 +15,7 @@ from typing import Annotated, Final, Literal, Self
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError, model_validator
 
-from lab.strategies import StrategyConfigError, registry_entry
+from lab.strategies import MarketContextValues, StrategyConfigError, registry_entry
 from trading_core.lab.parity import PaperStrategy, ParityInputError, paper_config
 from trading_core.node.placeholder import STRATEGY_NAME as PLACEHOLDER
 from trading_core.risk.check import RiskLimits
@@ -62,6 +62,31 @@ class RiskSection(_Section):
     max_leverage: DecimalStr = Field(gt=0)
 
 
+class ContextSection(_Section):
+    """The market context a replayed strategy reads (spec 0009 AC-13), with ``ContextSettings``' defaults.
+
+    ``warmup_s`` is how far before each segment its context rows start.
+    """
+
+    warmup_s: int = Field(default=7_200, ge=0)
+    max_age_mark_s: int = Field(default=30, ge=1)
+    max_age_index_s: int = Field(default=30, ge=1)
+    max_age_open_interest_s: int = Field(default=30, ge=1)
+    max_age_funding_s: int = Field(default=7_200, ge=1)
+    liquidation_window_s: int = Field(default=60, ge=1)
+
+    def values(self, source: str) -> MarketContextValues:
+        """The values a strategy is built with; only ``own`` data holds liquidations."""
+        return MarketContextValues(
+            max_age_mark_s=self.max_age_mark_s,
+            max_age_index_s=self.max_age_index_s,
+            max_age_open_interest_s=self.max_age_open_interest_s,
+            max_age_funding_s=self.max_age_funding_s,
+            liquidation_window_s=self.liquidation_window_s,
+            liquidations_available=source == "own",
+        )
+
+
 class StrategySection(_Section):
     """Which registered strategy to run, and its own settings."""
 
@@ -91,6 +116,7 @@ class RunFile(_Section):
     risk: RiskSection | None = None
     strategy: StrategySection
     paper: dict[str, ConfigValue] | None = None
+    context: ContextSection = Field(default_factory=ContextSection)
 
     @model_validator(mode="after")
     def _check(self) -> Self:

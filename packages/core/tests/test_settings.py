@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from pydantic import SecretStr, ValidationError
 
-from trading_core.settings import CatalogDiskSettings, Settings
+from trading_core.settings import CatalogDiskSettings, ContextSettings, Settings
 
 
 def test_trading_env_is_required():
@@ -221,3 +221,40 @@ def test_hard_floor_must_be_below_the_free_floor(monkeypatch, hard):
 
     with pytest.raises(ValidationError, match="CATALOG_HARD_FLOOR_GB"):
         CatalogDiskSettings()
+
+
+def test_context_settings_default_to_the_spec(monkeypatch):
+    """covers: spec 0009 Configuration, AC-9."""
+    monkeypatch.setenv("TRADING_ENV", "demo")
+
+    settings = ContextSettings()
+
+    assert settings.context_ws_url == "wss://futures.kraken.com/ws/v1"
+    assert (settings.context_reconnect_max_s, settings.context_idle_s, settings.context_silence_s) == (60, 30, 60)
+    assert (
+        settings.context_max_age_mark_s,
+        settings.context_max_age_index_s,
+        settings.context_max_age_open_interest_s,
+        settings.context_max_age_funding_s,
+        settings.context_liquidation_window_s,
+    ) == (30, 30, 30, 7_200, 60)
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("CONTEXT_WS_URL", "ws://futures.kraken.com/ws/v1"),
+        ("CONTEXT_WS_URL", "https://futures.kraken.com"),
+        ("CONTEXT_RECONNECT_MAX_S", "0"),
+        ("CONTEXT_IDLE_S", "4"),
+        ("CONTEXT_LIQUIDATION_WINDOW_S", "0"),
+        ("CONTEXT_MAX_AGE_MARK_S", "0"),
+    ],
+)
+def test_context_settings_refuse_a_bad_value(monkeypatch, name, value):
+    """covers: spec 0009 AC-16 (only wss://), Configuration bounds."""
+    monkeypatch.setenv("TRADING_ENV", "demo")
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ValidationError, match=name if name == "CONTEXT_WS_URL" else name.lower()):
+        ContextSettings()

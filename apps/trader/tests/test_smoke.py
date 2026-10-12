@@ -843,3 +843,29 @@ def test_the_demo_config_builds_a_real_node_with_the_fee_sandbox(monkeypatch):
         node.dispose()
         asyncio.set_event_loop(None)
         loop.close()
+
+
+def test_the_placeholder_reads_the_market_context_with_the_trader_settings():
+    """covers: spec 0009 AC-11 (the placeholder logs the context, ages from ContextSettings)."""
+    from uuid import uuid4
+
+    from trader.main import placeholder_config
+
+    settings = _settings("demo")
+
+    config = placeholder_config(settings, uuid4())
+
+    assert config.use_market_context is True
+    assert (
+        config.context_max_age_mark_s,
+        config.context_max_age_index_s,
+        config.context_max_age_open_interest_s,
+        config.context_max_age_funding_s,
+        config.context_liquidation_window_s,
+    ) == (
+        settings.context_max_age_mark_s,
+        settings.context_max_age_index_s,
+        settings.context_max_age_open_interest_s,
+        settings.context_max_age_funding_s,
+        settings.context_liquidation_window_s,
+    )

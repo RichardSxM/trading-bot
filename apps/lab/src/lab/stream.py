@@ -15,6 +15,11 @@ first batch raises ``UnexpectedSnapshotError``.
 With ``final_ts_init`` set, the stream ends with one more batch at that time that leaves the book
 as it is, so the runner's segment end cancel and close reach the venue and fill against the
 last book (AC-8).
+
+The market context tables (spec 0009 AC-13) merge in too. At one nanosecond the order is book,
+trades, then mark, index, funding, open interest, liquidations, and within one table the file
+order. ``warmup`` gives the context rows from before the segment, for the strategy to fold before
+the engine starts (its clock cannot go back before the segment start).
 """
 
 import heapq
@@ -31,14 +36,35 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from nautilus_trader.core.data import Data
 from nautilus_trader.model.book import OrderBook
-from nautilus_trader.model.data import BookOrder, OrderBookDelta, OrderBookDeltas, QuoteTick, TradeTick
+from nautilus_trader.model.data import (
+    BookOrder,
+    CustomData,
+    IndexPriceUpdate,
+    MarkPriceUpdate,
+    OrderBookDelta,
+    OrderBookDeltas,
+    QuoteTick,
+    TradeTick,
+)
 from nautilus_trader.model.enums import BookAction, BookType, OrderSide
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.serialization.arrow.serializer import ArrowSerializer
 
-from lab.catalog import DELTAS_TABLE, TRADES_TABLE, SourceTree
+from lab.catalog import (
+    DELTAS_TABLE,
+    FUNDING_TABLE,
+    INDEX_TABLE,
+    LIQUIDATION_TABLE,
+    MARK_TABLE,
+    OPEN_INTEREST_TABLE,
+    TRADES_TABLE,
+    SourceTree,
+)
+from trading_core.catalog.context import read_funding_updates, read_price_updates
 from trading_core.lab.errors import UnexpectedSnapshotError
 from trading_core.lab.segments import Segment
+from trading_core.marketdata.hours import HOUR_NS
+from trading_core.node.context_types import LiquidationTick, OpenInterestUpdate, context_data_type
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +75,17 @@ CHUNK: Final = 20_000
 _PAGE: Final = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096
 
 type Top = tuple[int, int, int, int]
+type Keyed = tuple[int, int, int, Data]
+
+# The context tables in their tie order after book (0) and trades (1) at one nanosecond (AC-13).
+CONTEXT_RANKS: Final = (
+    (MARK_TABLE, 2),
+    (INDEX_TABLE, 3),
+    (FUNDING_TABLE, 4),
+    (OPEN_INTEREST_TABLE, 5),
+    (LIQUIDATION_TABLE, 6),
+)
+_CUSTOM: Final = {OPEN_INTEREST_TABLE: OpenInterestUpdate, LIQUIDATION_TABLE: LiquidationTick}
 
 
 def rss_bytes() -> int:
@@ -73,6 +110,21 @@ def read_trades(path: Path) -> list[TradeTick]:
     """The hour's trades (a small file, read whole)."""
     trades: list[TradeTick] = TradeTick.from_pyo3_list(ArrowSerializer.deserialize(TradeTick, pq.read_table(path)))
     return trades
+
+
+def read_context(path: Path, table: str) -> list[Data]:
+    """One hour of one context table, in file order (a small file, read whole)."""
+    parquet = pq.read_table(path)
+    if table == MARK_TABLE:
+        return list(read_price_updates(MarkPriceUpdate, parquet))
+    if table == INDEX_TABLE:
+        return list(read_price_updates(IndexPriceUpdate, parquet))
+    if table == FUNDING_TABLE:
+        return list(read_funding_updates(parquet))
+    if table in _CUSTOM:
+        rows: list[Data] = ArrowSerializer.deserialize(_CUSTOM[table], parquet)
+        return rows
+    raise ValueError(f"not a context table: {table}")
 
 
 def _is_snapshot_row(delta: OrderBookDelta) -> bool:
@@ -129,6 +181,18 @@ class SegmentStream:
         if final is not None:
             yield [final]
 
+    def warmup(self, warmup_ns: int) -> list[Data]:
+        """The context rows with ``ts_init`` in ``[segment start - warmup_ns, segment start)``, in stream order."""
+        start = self._segment.start_ns
+        first_hour = (start - warmup_ns) - (start - warmup_ns) % HOUR_NS
+        keyed = [
+            row
+            for hour in range(first_hour, start, HOUR_NS)
+            for row in self._context_rows(hour)
+            if start - warmup_ns <= row[0] < start
+        ]
+        return [event for _, _, _, event in sorted(keyed, key=lambda r: r[:3])]
+
     def last_mid(self) -> Decimal | None:
         """The mid of the last book, or None while either side is empty."""
         bid, ask = self._book.best_bid_price(), self._book.best_ask_price()
@@ -163,8 +227,21 @@ class SegmentStream:
         trades = read_trades(self._tree.hour_file(TRADES_TABLE, hour))
         keyed_book = ((e.ts_init, 0, n, e) for n, e in enumerate(deltas))
         keyed_trades = ((t.ts_init, 1, n, t) for n, t in enumerate(trades))
-        for _, _, _, event in heapq.merge(keyed_book, keyed_trades):
-            yield event
+        context = sorted(self._context_rows(hour), key=lambda r: r[:3])
+        for _, _, _, event in heapq.merge(keyed_book, keyed_trades, context, key=lambda r: r[:3]):
+            # The engine routes custom data by its DataType, the same one the live feed publishes with.
+            if isinstance(event, OpenInterestUpdate | LiquidationTick):
+                yield CustomData(context_data_type(type(event), self._instrument_id), event)
+            else:
+                yield event
+
+    def _context_rows(self, hour: int) -> list[Keyed]:
+        rows: list[Keyed] = []
+        for table, rank in CONTEXT_RANKS:
+            path = self._tree.hour_file(table, hour)
+            if path.is_file():
+                rows.extend((event.ts_init, rank, n, event) for n, event in enumerate(read_context(path, table)))
+        return rows
 
     def _book_events(self, deltas: Iterator[OrderBookDelta], *, inner: bool) -> Iterator[Data]:
         for batch in self._batches(deltas, drop_hour_snapshot=inner):

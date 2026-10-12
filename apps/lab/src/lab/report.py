@@ -20,7 +20,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
-from trading_core.recording.rows import JsonValue, RunBundle
+from trading_core.recording.rows import JsonValue, RunBundle, ns_to_utc
 
 Status = Literal["completed", "failed", "interrupted"]
 HORIZON_KEYS = ("1s", "5s", "30s")
@@ -95,6 +95,8 @@ class LabReport(_Model):
     results: Results | None = None
     loser_band: BandReport | None = None
     before_funding: bool
+    # An ``own`` run whose rates missed this boundary applies no funding at all (spec 0009 AC-14).
+    funding_skipped_ns: int | None = None
 
 
 def _plain(value: object) -> object:
@@ -117,6 +119,10 @@ def report_json(report: LabReport) -> str:
 def bundle_json(bundle: RunBundle) -> str:
     """The exact bundle written to Postgres, in the report's encoding, for feature 15."""
     return json.dumps(dataclasses.asdict(bundle), indent=2, sort_keys=True, default=_plain) + "\n"
+
+
+def _utc(ns: int) -> str:
+    return ns_to_utc(ns).strftime("%Y-%m-%d %H:%M UTC")
 
 
 def _money(value: Decimal | None, places: int = 2) -> str:
@@ -156,6 +162,8 @@ def report_markdown(report: LabReport) -> str:
         f"latency {report.run_config.get('latency_ms')} ms; queue {report.run_config.get('queue_model')}"
         + (f"; entry {report.run_config['entry_mode']}" if report.run_config.get("entry_mode") else ""),
     ]
+    if report.funding_skipped_ns is not None:
+        lines.append(f"- funding skipped: no rate before {_utc(report.funding_skipped_ns)}")
     if report.run_config.get("segment_end_partial"):
         lines.append("- Segment end: the last book could not close every position; the rest closed at the last mid")
     lines.append("")

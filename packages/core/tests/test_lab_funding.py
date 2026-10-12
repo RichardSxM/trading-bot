@@ -11,6 +11,7 @@ from trading_core.lab.funding import (
     PositionKey,
     apply_funding,
     funding_boundaries,
+    own_funding_gap,
     rate_at,
 )
 from trading_core.marketdata.hours import HOUR_NS
@@ -62,3 +63,32 @@ def test_a_boundary_without_an_earlier_rate_raises_even_when_flat():
 
     with pytest.raises(FundingRateMissingError):
         apply_funding(samples, [FundingRate(T0 + HOUR_NS + 1, D("0.1"))])
+
+
+B = 10 * HOUR_NS
+
+
+@pytest.mark.parametrize(
+    ("rate_ts", "gap"),
+    [
+        ([B], None),  # a rate exactly at the boundary covers it
+        ([B - HOUR_NS + 1], None),  # one ns less than a period old
+        ([B - HOUR_NS], B),  # exactly one period old is too old
+        ([B + 1], B),  # only a rate after the boundary
+        ([], B),
+        ([B - HOUR_NS + 1, B + 1], None),  # rate_at picks the one before
+    ],
+)
+def test_own_funding_covers_a_boundary_only_with_a_rate_from_the_last_period(rate_ts, gap):
+    """covers: spec 0009 AC-14."""
+    rates = [FundingRate(ts, Decimal("0.0001")) for ts in rate_ts]
+
+    assert own_funding_gap(rates, [B]) == gap
+
+
+def test_own_funding_gap_names_the_first_uncovered_boundary():
+    """covers: spec 0009 AC-14."""
+    rates = [FundingRate(B - 10, Decimal(1)), FundingRate(B + 2 * HOUR_NS - 10, Decimal(1))]
+
+    assert own_funding_gap(rates, [B + 2 * HOUR_NS, B + HOUR_NS, B]) == B + HOUR_NS
+    assert own_funding_gap(rates, []) is None

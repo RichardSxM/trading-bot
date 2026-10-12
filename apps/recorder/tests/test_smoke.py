@@ -87,3 +87,11 @@ def test_recording_actor_rejects_a_malformed_instrument_id():
 
     with pytest.raises(ValueError, match=r"missing '\.' separator"):
         RecordingActor(RecordingConfig(instrument_ids=["PF_XBTUSD"], catalog_path="/tmp"), lambda: "run")
+
+
+def test_the_context_outages_file_is_where_the_compactor_reads_it(tmp_path):
+    """covers: spec 0009 AC-6 (a wrong run folder would lose every reconnect gap)."""
+    from recorder.compactor.store import CatalogStore
+    from recorder.main import outages_path
+
+    assert outages_path(str(tmp_path), "run-1") == CatalogStore(tmp_path).outages_file("run-1")

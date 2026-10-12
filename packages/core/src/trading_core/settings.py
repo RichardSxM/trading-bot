@@ -87,6 +87,36 @@ class CatalogDiskSettings(Settings):
         return self
 
 
+class ContextSettings(Settings):
+    """The market context feed and its readers (spec 0009): the raw websocket, the compactor's silence
+    rule, and the max ages and liquidation window a ``ContextBook`` is built with.
+
+    The recorder, the trader, and the compactor subclass this; the lab takes the same values from its
+    run file instead (AC-13).
+    """
+
+    context_ws_url: str = "wss://futures.kraken.com/ws/v1"
+    # Backoff ceiling between reconnects (AC-6).
+    context_reconnect_max_s: int = Field(default=60, ge=1)
+    # No message at all for this long forces a reconnect (AC-6).
+    context_idle_s: int = Field(default=30, ge=5)
+    # Two rows of mark, index, or open interest this far apart give a ``silence`` gap (AC-7).
+    context_silence_s: int = Field(default=60, ge=1)
+    # A value older than its max age is stale (AC-9).
+    context_max_age_mark_s: int = Field(default=30, ge=1)
+    context_max_age_index_s: int = Field(default=30, ge=1)
+    context_max_age_open_interest_s: int = Field(default=30, ge=1)
+    context_max_age_funding_s: int = Field(default=7_200, ge=1)
+    context_liquidation_window_s: int = Field(default=60, ge=1)
+
+    @field_validator("context_ws_url")
+    @classmethod
+    def _secure_websocket(cls, value: str) -> str:
+        if not value.startswith("wss://"):
+            raise ValueError("CONTEXT_WS_URL must start with wss://")
+        return value
+
+
 class PaperLoopSettings(Settings):
     """The placeholder strategy, risk caps, sandbox, and recording settings of the paper loop (spec 0006).
 

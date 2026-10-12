@@ -21,7 +21,6 @@ from enum import StrEnum
 from typing import Final
 from uuid import UUID
 
-from nautilus_trader.config import StrategyConfig
 from nautilus_trader.model.data import Bar, BarType, QuoteTick
 from nautilus_trader.model.enums import OrderSide as NautilusOrderSide
 from nautilus_trader.model.enums import OrderStatus as NautilusOrderStatus
@@ -42,7 +41,8 @@ from nautilus_trader.model.objects import Currency
 from nautilus_trader.model.orders.base import Order
 from nautilus_trader.model.position import Position
 
-from trading_core.node.strategy import KfsStrategy, PauseGate
+from trading_core.marketdata.context import context_log_fields
+from trading_core.node.strategy import KfsStrategy, KfsStrategyConfig, PauseGate
 from trading_core.recording.enums import (
     Env,
     Intent,
@@ -95,12 +95,11 @@ class Phase(StrEnum):
     EXITING = "exiting"
 
 
-class PlaceholderConfig(StrategyConfig, frozen=True):
+class PlaceholderConfig(KfsStrategyConfig, frozen=True):
     """The placeholder's settings (``PLACEHOLDER_*``, ``RISK_*``) plus the run it records under."""
 
     env: str
     run_id: str
-    instrument_id: str
     interval_min: int
     hold_min: int
     lookback_min: int
@@ -160,6 +159,7 @@ class PlaceholderTimed(KfsStrategy):
 
     def on_start(self) -> None:
         """Subscribe to quotes and 1 minute mid bars, then arm the boundary and stale feed timers."""
+        super().on_start()
         self._started_ns = self.clock.timestamp_ns()
         self.subscribe_quote_ticks(self._instrument_id)
         self.subscribe_bars(self._bar_type)
@@ -174,7 +174,14 @@ class PlaceholderTimed(KfsStrategy):
         """Quotes drive the sandbox and the stale check; nothing to do here."""
 
     def on_bar(self, bar: Bar) -> None:
-        """Bars are read from the cache at the boundary; nothing to do here."""
+        """Bars are read from the cache at the boundary; with the market context on, log it once per bar.
+
+        No entry or exit rule reads the context yet (spec 0009 AC-11).
+        """
+        if self._cfg.use_market_context:
+            now_ns = self.clock.timestamp_ns()
+            fields = context_log_fields(self.market_context(), now_ns)
+            log.info("market context", extra={"fields": {"code": "market_context", **fields}})
 
     # Entry ----------------------------------------------------------------------------------
 

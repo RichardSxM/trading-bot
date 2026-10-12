@@ -29,7 +29,7 @@ from lab.replay import PostgresStore, replay
 from lab.runfile import Overrides, RunFileError, load_run
 from lab.settings import LabSettings, ProbeSwitch
 from lab.strategies import registry_entry
-from lab.tardis_import import import_tardis, prune
+from lab.tardis_import import import_context, import_tardis, prune
 from trading_core.boot import boot
 from trading_core.lab.parity import ParityInputError
 from trading_core.lab.tardis_days import import_days
@@ -72,6 +72,11 @@ def parser() -> argparse.ArgumentParser:
     tardis = commands.add_parser("import-tardis", help="download and convert free Tardis days (first of month)")
     tardis.add_argument("from_", metavar="from", type=_day, help="first UTC day, a first of month")
     tardis.add_argument("to", type=_day, help="last UTC day, a first of month")
+    tardis.add_argument(
+        "--context",
+        action="store_true",
+        help="backfill only the market context tables of days already imported (spec 0009)",
+    )
     check = commands.add_parser("parity", help="compare a replay of the paper strategy with the paper decisions")
     check.add_argument("runfile", type=Path, help="a run file with [paper]")
     check.add_argument("csv", type=Path, help="the CSV from scripts/fetch-paper-decisions.sh")
@@ -158,6 +163,8 @@ def _import_tardis(args: argparse.Namespace) -> int:
         log.error("lab_bad_input", extra={"fields": {"problems": [str(exc)]}})
         return EXIT_USAGE
     started = boot("worker", settings_cls=LabSettings)
+    if args.context:
+        return import_context(started.settings, days)
     return import_tardis(started.settings, days)
 
 

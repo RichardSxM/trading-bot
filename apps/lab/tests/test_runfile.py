@@ -131,3 +131,42 @@ def test_a_replay_from_an_image_without_a_commit_exits_78_before_connecting(tmp_
 
     assert _exit_code(["replay", str(_write(tmp_path, GOOD))]) == 78
     assert "GIT_COMMIT" in capsys.readouterr().err
+
+
+def test_context_defaults_match_the_trader_settings():
+    """covers: spec 0009 AC-13 (the run file's [context] defaults are ContextSettings')."""
+    from trading_core.settings import ContextSettings
+
+    context = load_run(RUNS / "random_taker_own.toml", Overrides()).run.context
+    defaults = ContextSettings(trading_env="demo")
+
+    assert context.warmup_s == 7_200
+    assert context.values("own").config_fields() == {
+        "context_max_age_mark_s": defaults.context_max_age_mark_s,
+        "context_max_age_index_s": defaults.context_max_age_index_s,
+        "context_max_age_open_interest_s": defaults.context_max_age_open_interest_s,
+        "context_max_age_funding_s": defaults.context_max_age_funding_s,
+        "context_liquidation_window_s": defaults.context_liquidation_window_s,
+        "context_liquidations_available": True,
+    }
+    assert context.values("tardis").liquidations_available is False
+
+
+def test_a_context_table_sets_its_values_and_refuses_unknown_or_bad_ones(tmp_path):
+    """covers: spec 0009 AC-13."""
+    run = load_run(_write(tmp_path, GOOD + "\n[context]\nwarmup_s = 600\nmax_age_mark_s = 5\n"), Overrides()).run
+    assert (run.context.warmup_s, run.context.max_age_mark_s, run.context.max_age_index_s) == (600, 5, 30)
+
+    with pytest.raises(RunFileError) as exc:
+        load_run(_write(tmp_path, GOOD + "\n[context]\nwarmup = 1\nmax_age_mark_s = 0\n"), Overrides())
+    text = str(exc.value)
+    assert "context.warmup" in text
+    assert "context.max_age_mark_s" in text
+
+
+def test_market_context_is_a_strategy_setting_but_its_ages_come_from_the_run():
+    """covers: spec 0009 AC-11, AC-13 (use_market_context in [strategy.config]; the ages from [context])."""
+    entry = REGISTRY["random_taker"]
+
+    assert "use_market_context" in entry.user_fields()
+    assert not any(name.startswith("context_") for name in entry.user_fields())

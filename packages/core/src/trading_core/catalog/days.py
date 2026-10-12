@@ -17,7 +17,7 @@ import pyarrow.parquet as pq
 
 from trading_core.catalog.layout import CatalogLayout
 from trading_core.catalog.sink import COMPRESSION, atomic_write
-from trading_core.marketdata.gaps import Gap, gap_kind, seconds_within
+from trading_core.marketdata.gaps import BOOK_STREAM, Gap, gap_kind, resolve_overlaps, seconds_within
 from trading_core.marketdata.hours import DAY_NS, day_name, day_of
 
 GAP_SCHEMA: Final = pa.schema(
@@ -26,6 +26,8 @@ GAP_SCHEMA: Final = pa.schema(
         pa.field("kind", pa.string(), nullable=False),
         pa.field("start_ns", pa.uint64(), nullable=False),
         pa.field("end_ns", pa.uint64(), nullable=False),
+        # The catalog table the gap is in (spec 0009 AC-7); files from before it hold book gaps only.
+        pa.field("stream", pa.string(), nullable=False),
     ]
 )
 
@@ -35,15 +37,25 @@ HourStats = Mapping[str, Mapping[int, Mapping[str, int]]]
 IncompleteHours = Mapping[str, Mapping[int, int]]
 
 
-def read_gaps(layout: CatalogLayout, day: str) -> list[Gap]:
-    """The gaps that start on ``day``, or none when it has no gap file."""
+def read_gaps(layout: CatalogLayout, day: str, stream: str | None = BOOK_STREAM) -> list[Gap]:
+    """The gaps of ``stream`` that start on ``day`` (every stream's for ``None``), or none without a gap file.
+
+    A file written before the ``stream`` column holds book gaps only (spec 0009 AC-7).
+    """
     path = layout.gap_file(day)
     if not path.exists():
         return []
-    return [
-        Gap(row["start_ns"], row["instrument_id"], gap_kind(row["kind"]), row["end_ns"])
+    gaps = [
+        Gap(
+            row["start_ns"],
+            row["instrument_id"],
+            gap_kind(row["kind"]),
+            row["end_ns"],
+            stream=row.get("stream") or BOOK_STREAM,
+        )
         for row in pq.read_table(str(path)).to_pylist()
     ]
+    return [g for g in gaps if stream is None or g.stream == stream]
 
 
 def gap_days(layout: CatalogLayout, *, until: str) -> list[str]:
@@ -55,16 +67,24 @@ def gap_days(layout: CatalogLayout, *, until: str) -> list[str]:
 
 
 def write_gaps(layout: CatalogLayout, gaps: Iterable[Gap]) -> None:
-    """Merge gaps into their day files: union, one row per (instrument, kind, start), sorted."""
+    """Merge gaps into their day files: union, one row per (instrument, stream, kind, start), weaker
+    overlapping gaps dropped (``resolve_overlaps``), sorted."""
     by_day: dict[str, list[Gap]] = defaultdict(list)
     for gap in gaps:
         by_day[day_name(day_of(gap.start_ns))].append(gap)
     for day, new in sorted(by_day.items()):
-        merged = {(g.instrument_id, g.kind, g.start_ns): g for g in [*read_gaps(layout, day), *new]}
-        rows = sorted(merged.values())
+        old = read_gaps(layout, day, stream=None)
+        merged = {(g.instrument_id, g.stream, g.kind, g.start_ns): g for g in [*old, *new]}
+        rows = resolve_overlaps(list(merged.values()))
         table = pa.Table.from_pylist(
             [
-                {"instrument_id": g.instrument_id, "kind": g.kind, "start_ns": g.start_ns, "end_ns": g.end_ns}
+                {
+                    "instrument_id": g.instrument_id,
+                    "kind": g.kind,
+                    "start_ns": g.start_ns,
+                    "end_ns": g.end_ns,
+                    "stream": g.stream,
+                }
                 for g in rows
             ],
             schema=GAP_SCHEMA,
@@ -92,20 +112,21 @@ def build_manifest(layout: CatalogLayout, day: int, hours: HourStats, incomplete
                     "incomplete_hours": sorted(late),
                 }
             )
-    seconds: dict[tuple[str, str], float] = defaultdict(float)
+    seconds: dict[tuple[str, str, str], float] = defaultdict(float)
     # A gap lies whole in its start day's file and may span several days, so every earlier file
     # is read too (one small file per day).
-    for gap in [g for earlier in gap_days(layout, until=day_name(day)) for g in read_gaps(layout, earlier)]:
+    days = gap_days(layout, until=day_name(day))
+    for gap in [g for earlier in days for g in read_gaps(layout, earlier, stream=None)]:
         inside = seconds_within(gap, day, end)
         if inside > 0:
-            seconds[(gap.instrument_id, gap.kind)] += inside
+            seconds[(gap.instrument_id, gap.stream, gap.kind)] += inside
     return {
         "date": day_name(day),
         "total_bytes": sum(s["bytes"] for s in streams),
         "streams": streams,
         "gaps": [
-            {"instrument_id": instrument, "kind": kind, "seconds": round(value, 9)}
-            for (instrument, kind), value in sorted(seconds.items())
+            {"instrument_id": instrument, "stream": stream, "kind": kind, "seconds": round(value, 9)}
+            for (instrument, stream, kind), value in sorted(seconds.items())
         ],
     }
 

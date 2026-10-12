@@ -17,7 +17,6 @@ from enum import StrEnum
 from typing import Final
 from uuid import UUID
 
-from nautilus_trader.config import StrategyConfig
 from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.enums import OrderSide as NautilusOrderSide
 from nautilus_trader.model.enums import PositionSide as NautilusPositionSide
@@ -37,7 +36,7 @@ from nautilus_trader.model.orders.base import Order
 from nautilus_trader.model.position import Position
 
 from trading_core.node.placeholder import Record
-from trading_core.node.strategy import KfsStrategy, PauseGate
+from trading_core.node.strategy import KfsStrategy, KfsStrategyConfig, PauseGate
 from trading_core.recording.enums import Env, Intent, OrderSide, RiskEventKind, RiskVerdict, Severity
 from trading_core.recording.mappers import DECISION_TAG
 from trading_core.recording.rows import DecisionRow, JsonObject, RiskEventRow
@@ -67,12 +66,11 @@ class Phase(StrEnum):
     EXITING = "exiting"
 
 
-class RandomTakerConfig(StrategyConfig, frozen=True):
+class RandomTakerConfig(KfsStrategyConfig, frozen=True):
     """The random taker's ``[strategy.config]`` settings, the run's seed and risk caps, and the run it records under."""
 
     env: str
     run_id: str
-    instrument_id: str
     seed: int
     max_order_notional_usd: Decimal
     max_leverage: Decimal
@@ -110,6 +108,7 @@ class RandomTaker(KfsStrategy):
 
     def on_start(self) -> None:
         """Subscribe to quotes and arm the first boundary."""
+        super().on_start()
         self.subscribe_quote_ticks(self._instrument_id)
         self._arm_boundary()
 

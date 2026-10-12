@@ -139,7 +139,9 @@ def parity(
         },
     )
 
-    plans = unit_plans(settings, loaded, plan.segments, VariantSpec(VARIANT, run.latency_ms, True))
+    plans = unit_plans(
+        settings, loaded, plan.segments, VariantSpec(VARIANT, run.latency_ms, True), funding=run.source == "tardis"
+    )
     try:
         with _interruptible():
             units = run_units(plans, settings, target)
