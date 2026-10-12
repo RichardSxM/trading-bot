@@ -213,3 +213,99 @@ def test_a_failed_outage_append_is_only_logged(tmp_path, caplog):
     assert len(feed.outages) == 1
     assert len(_codes(caplog, "context_outage_write_failed")) == 1
     assert feed.state == "subscribed"
+
+
+def test_a_liquidation_skipped_before_its_instrument_loads_is_published_when_resent():
+    """covers: spec 0009 AC-5 (only a published uid counts as seen)."""
+    server = Server([[INFO, snapshot("a"), "close"], [INFO, snapshot("a")]])
+    calls = []
+
+    def emit(record, ts_init):
+        calls.append(record)
+        return "instrument_not_loaded" if len(calls) == 1 else None
+
+    asyncio.run(_run(server, lambda f, e, w: len(calls) == 2, emit=emit))
+
+    assert [r.trade_id for r in calls] == ["a", "a"]
+
+
+def _actor(*, loaded=True):
+    """A ``ContextFeedActor`` on a real message bus and cache, and what it publishes per data type."""
+    from nautilus_trader.common.component import LiveClock
+    from nautilus_trader.test_kit.stubs.component import TestComponentStubs
+    from test_node_placeholder import INSTRUMENT, INSTRUMENT_ID
+
+    from trading_core.node.context_feed import ContextFeedActor, ContextFeedConfig
+    from trading_core.node.context_types import LiquidationTick, OpenInterestUpdate, context_data_type
+
+    actor = ContextFeedActor(ContextFeedConfig(ws_url="wss://example", instrument_ids=[INSTRUMENT_ID.value]))
+    msgbus = TestComponentStubs.msgbus()
+    cache = TestComponentStubs.cache()
+    if loaded:
+        cache.add_instrument(INSTRUMENT)
+    actor.register_base(TestComponentStubs.portfolio(), msgbus, cache, LiveClock())
+    published: dict[type, list[object]] = {OpenInterestUpdate: [], LiquidationTick: []}
+    for cls, got in published.items():
+        # The exact topic a strategy or the backtest subscribes with (AC-3).
+        topic = f"data.{context_data_type(cls, INSTRUMENT_ID).topic}"
+        msgbus.subscribe(topic=topic, handler=lambda m, got=got: got.append(getattr(m, "data", m)))
+    return actor, published
+
+
+def test_the_actor_publishes_open_interest_at_the_instruments_size_precision():
+    """covers: spec 0009 AC-3."""
+    from nautilus_trader.model.objects import Quantity
+
+    from trading_core.marketdata.context_feed import OpenInterest
+    from trading_core.node.context_types import OpenInterestUpdate
+
+    actor, published = _actor()
+
+    skipped = actor._publish(OpenInterest("PF_XBTUSD", Decimal("2423.1378"), 1_791_758_735_536_000_000), 7)
+
+    assert skipped is None
+    (update,) = published[OpenInterestUpdate]
+    assert update.value == Quantity.from_str("2423.1378")
+    assert (update.instrument_id.value, update.ts_event, update.ts_init) == (
+        "PF_XBTUSD.KRAKEN",
+        1_791_758_735_536_000_000,
+        7,
+    )
+
+
+def test_the_actor_publishes_a_liquidation_at_the_instruments_precisions():
+    """covers: spec 0009 AC-3."""
+    from nautilus_trader.model.objects import Price, Quantity
+
+    from trading_core.marketdata.context import AggressorSide, LiquidationKind
+    from trading_core.node.context_types import LiquidationTick
+
+    actor, published = _actor()
+    trade = ForcedTrade(
+        "PF_XBTUSD", "u1", LiquidationKind.LIQUIDATION, AggressorSide.SELL, Decimal("83512.0"), Decimal("0.5"), 11
+    )
+
+    assert actor._publish(trade, 12) is None
+
+    (tick,) = published[LiquidationTick]
+    assert (tick.trade_id, tick.price, tick.size, tick.ts_event, tick.ts_init) == (
+        "u1",
+        Price.from_str("83512"),
+        Quantity.from_str("0.5000"),
+        11,
+        12,
+    )
+
+
+@pytest.mark.parametrize(
+    ("product", "loaded", "reason"),
+    [("PF_ETHUSD", True, "unknown_product"), ("PF_XBTUSD", False, "instrument_not_loaded")],
+)
+def test_the_actor_skips_what_it_cannot_publish(product, loaded, reason):
+    """covers: spec 0009 AC-3, AC-4."""
+    from trading_core.marketdata.context_feed import OpenInterest
+
+    actor, published = _actor(loaded=loaded)
+
+    assert actor._publish(OpenInterest(product, Decimal("1"), 1), 2) == reason
+    assert all(not got for got in published.values())

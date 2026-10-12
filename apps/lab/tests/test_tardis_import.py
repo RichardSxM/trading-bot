@@ -357,3 +357,22 @@ def test_context_backfill_skips_a_day_not_imported(tmp_path, caplog):
     assert import_context(settings(tmp_path), [DAY], download=downloads) == EXIT_OK
     assert downloads.calls == 0
     assert "lab_context_day_not_imported" in [r.getMessage() for r in caplog.records]
+
+
+def test_a_failed_context_download_leaves_the_days_funding_in_place(tmp_path):
+    """covers: spec 0009 AC-15 (a backfill never leaves a done day without its funding)."""
+    from lab.tardis_import import context_manifest_file, import_context_day
+
+    import_tardis(settings(tmp_path), [DAY], download=Downloads())
+    t = tree(tmp_path)
+    funding = t.hour_file("funding_rate_update", H00)
+    before = funding.read_bytes()
+
+    def fail(day, raw_dir):
+        raise OSError("download failed")
+
+    with pytest.raises(OSError, match="download failed"):
+        import_context_day(t, DAY, download=fail)
+
+    assert funding.read_bytes() == before
+    assert not context_manifest_file(t, DAY).exists()

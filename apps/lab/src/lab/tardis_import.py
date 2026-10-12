@@ -190,11 +190,12 @@ def import_context_day(tree: SourceTree, day: date, *, download: Downloader = do
     """
     instrument = pinned_instrument(INSTRUMENT_ID)
     raw_dir = tree.root / ".raw" / f"{day.isoformat()}-context"
-    _remove_hours(tree, day, CONTEXT_TABLES)
     if not raw_file(raw_dir, TICKER_CSV, day).is_file():
         shutil.rmtree(raw_dir, ignore_errors=True)
         raw_dir.mkdir(parents=True)
         download(day, raw_dir)
+    # Removed only once the download is in, so a failed one leaves the day's funding in place.
+    _remove_hours(tree, day, CONTEXT_TABLES)
     loader = TardisCSVDataLoader(
         price_precision=instrument.price_precision,
         size_precision=instrument.size_precision,

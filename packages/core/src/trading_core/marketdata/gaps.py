@@ -19,6 +19,7 @@ and the market context streams have theirs (spec 0009 AC-7).
 import bisect
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from functools import total_ordering
 from typing import Final, Literal, get_args
 
 from trading_core.marketdata.hours import SECOND_NS
@@ -30,6 +31,7 @@ GAP_KINDS: Final[tuple[GapKind, ...]] = get_args(GapKind)
 BOOK_STREAM: Final = "order_book_deltas"
 
 
+@total_ordering
 @dataclass(frozen=True)
 class Gap:
     """One gap. Gaps sort by start, then stream, instrument, and kind, as the gap files keep them.

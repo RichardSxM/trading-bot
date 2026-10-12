@@ -121,7 +121,7 @@ class UnitRows:
 
 class LabRecorder(RecordingActor):
     """The paper loop's recording actor, minus snapshots, plus the spread at order creation and
-    the funding samples at ``funding_boundaries`` (none on ``own`` runs)."""
+    the funding samples at ``funding_boundaries`` (none when the run applies no funding)."""
 
     def __init__(
         self,

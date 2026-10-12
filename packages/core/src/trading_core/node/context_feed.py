@@ -166,11 +166,14 @@ class ContextFeed:
             for bad in parsed.bad:
                 self._count(bad, now_ns)
             for record in parsed.records:
-                if isinstance(record, ForcedTrade) and not self._recent.add(record.trade_id):
+                if isinstance(record, ForcedTrade) and record.trade_id in self._recent:
                     continue  # a resubscribe snapshot resends recent trades (AC-5)
                 skipped = self._emit(record, now_ns)
                 if skipped is not None:
                     self._count(BadRow("ticker" if isinstance(record, OpenInterest) else "trade", skipped), now_ns)
+                elif isinstance(record, ForcedTrade):
+                    # Remembered only once published, so a resend can still bring a skipped one.
+                    self._recent.add(record.trade_id)
         except Exception:
             # Nothing raised here may end the feed (AC-4).
             if self._bad.add(BadRow("unknown", "handler_error"), now_ns) is not None:

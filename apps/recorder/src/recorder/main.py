@@ -86,6 +86,11 @@ def build_config(settings: RecorderSettings) -> TradingNodeConfig:
     )
 
 
+def outages_path(catalog_path: str, run: str) -> Path:
+    """The run's ``context_outages.jsonl``, in the run folder where the compactor reads it (spec 0009 AC-6)."""
+    return Path(catalog_path) / "live" / run / OUTAGES_FILE
+
+
 def guard(settings: RecorderSettings, secrets: Mapping[str, SecretStr]) -> None:
     env_guard.check_exec_clients(build_config(settings).exec_clients, process="recorder", env=settings.trading_env)
 
@@ -139,7 +144,7 @@ def main() -> None:
                 reconnect_max_s=settings.context_reconnect_max_s,
                 idle_s=settings.context_idle_s,
             ),
-            outages_path=lambda: Path(settings.catalog_path) / "live" / str(node.kernel.instance_id) / OUTAGES_FILE,
+            outages_path=lambda: outages_path(settings.catalog_path, str(node.kernel.instance_id)),
         )
     )
     disk_guard = DiskGuardActor(DiskGuardConfig(catalog_path=settings.catalog_path, floor_bytes=floor_bytes))

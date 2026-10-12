@@ -201,6 +201,10 @@ class RecentIds:
         self._limit = limit
         self._ids: OrderedDict[str, None] = OrderedDict()
 
+    def __contains__(self, trade_id: object) -> bool:
+        """Whether ``trade_id`` is among the last ``limit`` remembered."""
+        return trade_id in self._ids
+
     def add(self, trade_id: str) -> bool:
         """Remember ``trade_id``; False when it was already among the last ``limit``."""
         if trade_id in self._ids:
