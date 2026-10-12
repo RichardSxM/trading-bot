@@ -89,6 +89,7 @@ Two softer guards only block new entries: a cap of 50 trades a day, and a 10 min
 - **AC-14** (when the limits are checked): on every `PositionOpened` and `PositionClosed`, and on a 1 s timer that runs all the time, flat or not. The timer reads the latest quote from the cache for the unrealized part, rolls the figures over at UTC midnight by the trader's clock, and clears blocks whose time is up.
 - **AC-15** (entry check): `check_entry` gains a `halted` input, checked first. The refusal order becomes `halted`, `paused`, `blocked:<reason>`, `position_open`, `zero_quantity`, `notional_cap`, `leverage_cap`. `halted` is an `info` refusal like `paused`.
   - **The base class.** It denies every order that is not reduce only while halted, logging `entry_denied_halted`.
+    - **Not reachable at runtime today.** `PlaceholderTimed` and `RandomTaker` check `halted` again right before they submit, in the same call on the node's one event loop thread, so a halt cannot land between that check and the base class gate. The base deny stays as the backstop for later strategies. Its proof is the engine level unit test `test_a_halted_trader_starts_halted_refuses_an_entry_and_accepts_a_reduce_only_stop` (`packages/core/tests/test_node_control.py`). The strategies' own `halted` refusal is the runtime proof (verify step 2).
   - **The strategies.** `PlaceholderTimed` and `RandomTaker` pass `halted` into `EntryRequest`, and treat it like `paused` in their own check right before submitting, so they go back to flat instead of waiting on an entry that was never sent.
   - **The dashboard list.** `entries_blocked` lists `halted` (with plain words) while halted, as it lists `paused`.
 
@@ -267,6 +268,9 @@ Core functions:
 | dashboard HALTED badge | reason, age | `trader_state.halt_reason`, `halted_at` |
 | dashboard command state | failure reason words | `{env}:control:results` `reason` field, mapped to plain words in the dashboard |
 | CLI | `source` | always `cli` |
+| entry hold drill | hold length | `SANDBOX_DELAY_ENTRY_FILLS_S` (`PaperLoopSettings.sandbox_delay_entry_fills_s`), through `FeeSandboxConfig.delay_entry_fills_s` |
+| entry hold drill | `OrderSubmitted` and `OrderCanceled` times | the sandbox's own event clock (`self.test_clock.timestamp_ns()`), as on every other sandbox event |
+| entry hold drill | the fill price on release | the simulated exchange's current quote when the command is released, not the quote at decision time |
 
 **Key invariants**:
 - While halted, no order that is not reduce only reaches the exchange. `check_entry` and the gate in `KfsStrategy.submit_order` each refuse it. The risk engine in `REDUCING` adds a third layer only while a position is open: it refuses an order that would grow it, but not a new entry from flat.
@@ -290,9 +294,21 @@ Core functions:
 - `RISK_LOSS_COOLDOWN_S`: seconds of `loss_cooldown` after a losing close, `0` turns it off (default `600`)
 - `KILL_SWITCH_FLAT_TIMEOUT_S`: how long stop and flatten wait for flat before answering `failed` (default `20`)
 - `SANDBOX_REJECT_KILL_SWITCH_ORDERS`: a demo only drill, like spec 0006's `SANDBOX_REJECT_STOP_ORDERS`. The sandbox rejects every order tagged `origin:kill_switch`, so the `flatten_timeout` and `not_flat` paths can be checked by hand. The default is `false`, and the trader refuses to start with it on outside demo.
+- `SANDBOX_DELAY_ENTRY_FILLS_S`: a demo only drill for AC-1's entry cancel. A sandbox market entry is in flight for only about 75 ms, too short to tap stop inside it. With this above 0, the sandbox reports every order that is not reduce only as submitted at once and holds it that many seconds before it reaches the simulated exchange. A cancel during the hold cancels it, like a venue cancelling an order it has not worked yet. Stops and exits (reduce only) are never held. A decimal from `0` to `60`, default `0` (off). The trader refuses to start with it above 0 outside demo, and logs a WARNING `sandbox_delay_entry_fills` at start while it is on.
+  - **Which orders are held.** Every order with `not order.is_reduce_only`, the same test the gate and `entry_orders` use, sent through `submit_order`.
+  - **How the hold works.** In `FeeSandboxExecutionClient.submit_order`, a held order gets `OrderSubmitted` at once on the sandbox clock (as the reject drills emit it), its command is kept by `client_order_id`, and `self._loop.call_later(delay, ...)` releases it. The release calls `self.exchange.send(command)` directly, never `super().submit_order`: NautilusTrader 1.231's inner `BacktestExecClient.submit_order` emits `OrderSubmitted` again, and SUBMITTED to SUBMITTED is not a valid transition. The sandbox runs with `LatencyModel(0)`, so a released order fills at once at the current quote.
+  - **One held map, no double events.** Held commands live in one dict keyed by `client_order_id`, next to their `TimerHandle`. The release pops its entry and does nothing if the entry is already gone. A cancel pops the same entry and cancels the timer. The ids the drill has cancelled are kept in a set, and a second cancel for one of them is dropped, so nothing emits `OrderCanceled` twice.
+  - **A failed release.** If `self.exchange.send` raises, the release logs ERROR `sandbox_delay_release_failed` and emits `OrderRejected` with reason `SANDBOX_DELAY_ENTRY_FILLS_S drill release failed`, so the strategy goes back to flat instead of keeping a ghost SUBMITTED order.
+  - **How the cancel works.** A new `cancel_order` override: for a held order it drops the release timer and the command, then emits `OrderCanceled` with no venue order id (the order never reached the matching engine). `OrderCanceled` types its venue order id as optional, and NautilusTrader allows SUBMITTED to PENDING_CANCEL to CANCELED. A cancel for an order already released, or never held, goes to `super().cancel_order` unchanged.
+  - **On disconnect.** A `disconnect` override cancels every hold timer and emits `OrderCanceled` for each held order before calling `super().disconnect()`, so a shutdown mid hold leaves no SUBMITTED order behind and no timer firing into a stopped exchange.
+  - **Out of scope.** `submit_order_list`, `cancel_all_orders`, and batch cancels pass through unchanged and are never held. No trader strategy enters through them (the placeholder and `RandomTaker` use `submit_order`, the kill switch cancels with `cancel_order` per order).
+  - **Not checked again at release.** The risk caps and the stale feed block run at decision time only. A held order is not checked again when it is released. That is accepted for a drill that is off by default.
+  - **The config.** `FeeSandboxConfig` gains `delay_entry_fills_s`, set from the setting in `sandbox_exec_client`.
 
 **Critical test scenarios** (each maps to an acceptance criterion):
 - **Happy path.** In demo with a position open, tap stop. Entry orders are cancelled, the position closes, the stop order is cancelled by `on_position_closed`, the result is `executed` within seconds, and the top bar shows `HALTED · manual stop`. Restart the trader: it is still halted. Resume: running. Verifies **AC-1**, **AC-3**, **AC-4**, **AC-5**, **AC-7**, **AC-17**.
+- **Entry in flight at stop.** With `SANDBOX_DELAY_ENTRY_FILLS_S` on, tap stop while an entry is held. The trader logs INFO `entry_canceled_kill_switch`, the entry's `orders` row ends `canceled`, no `order_rejected` event is written, no position opens, and stop answers `executed`. Verifies **AC-1**, **AC-3**.
+- **Entry hold drill (unit).** A held entry fills only after the delay. A cancel during the hold cancels it and it never fills. A reduce only order is never held. Each held order gets exactly one `OrderSubmitted`. A second cancel emits nothing more. A disconnect mid hold cancels the held order. A release that raises rejects the order. The setting above 0 outside demo refuses start. Verifies the drill itself.
 - **Late fill.** An entry in flight when stop arrives fills after the halt. It gets its stop, then is closed within the same wait. Verifies **AC-3**.
 - **Several round trips.** Three round trips in one day under NETTING (same position id) count as three trades and three realized results. Verifies **AC-8**, **AC-11**.
 - **Deploy unpause on a halted trader.** The trading state stays `REDUCING`. Verifies **AC-20**.
@@ -386,7 +402,15 @@ Tracer Bullet: the first slice is the thinnest real stop from the dashboard butt
    - Update the styleguide samples.
 
    Satisfies **AC-16**, **AC-17**.
-7. **Prove it in demo.** Run [verify.md](verify.md) on the laptop stack, then down. Satisfies every AC.
+7. **Entry hold drill.** (not built) Built the same way as `SANDBOX_REJECT_KILL_SWITCH_ORDERS`:
+   - `PaperLoopSettings.sandbox_delay_entry_fills_s` (0 to 60, default 0), refused above 0 outside demo in `_sandbox_drill_in_demo_only`.
+   - `FeeSandboxConfig.delay_entry_fills_s`, set in `sandbox_exec_client`.
+   - The hold in `FeeSandboxExecutionClient.submit_order`, the release (with its failure path), and the new `cancel_order` and `disconnect` overrides, as described under Configuration.
+   - The start WARNING `sandbox_delay_entry_fills` in `apps/trader/src/trader/main.py`, and `SANDBOX_DELAY_ENTRY_FILLS_S: ${SANDBOX_DELAY_ENTRY_FILLS_S:-0}` in `compose.yaml`.
+   - Tests in `test_sandbox.py` and `test_settings.py`, for the "Entry hold drill (unit)" scenario.
+
+   Satisfies **AC-1** (its runtime proof, verify step 16).
+8. **Prove it in demo.** Run [verify.md](verify.md) on the laptop stack, then down. Satisfies every AC.
 
 ## Consequences
 
@@ -411,6 +435,7 @@ Tracer Bullet: the first slice is the thinnest real stop from the dashboard butt
 **Neutral**:
 - **Resume clears more than before.** The System page's Resume now clears a pause too, whoever set it. That is what spec 0005 AC-13 already said Resume should do.
 - **The strategy version changes.** The `risk_` settings join the strategy version config, so the first deploy after this feature records a new strategy version.
+- **A drill entry fills late.** With `SANDBOX_DELAY_ENTRY_FILLS_S` on, a held entry fills at the quote when it is released, not at decision time, so its price can drift from the decision's. That is fine for a demo drill, and it is off by default.
 - **New risk event rows.** `halt`, `resume`, and the `trade_cap` `limit_hit` rows start appearing in `risk_events`. Feature 12 will alert on the critical ones.
 
 ## Follow-up

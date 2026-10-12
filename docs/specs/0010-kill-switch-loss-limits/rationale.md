@@ -99,3 +99,11 @@ Option 2 is the only one that meets the scope's done criterion, "flatten everyth
 **Failing closed.** When the seed fails, entries are blocked (`loss_unknown`), because a limit you cannot measure is a limit you cannot honor.
 
 **The cost.** The price is the most code of the four options, and a control consumer that can be busy for up to 20 s. Both are acceptable for a component whose whole job is to be the last line of defense.
+
+### Proving the two race only points (2026-10-12)
+
+The first `/check verify` runs proved every step except two points that depend on timing.
+
+**AC-1's entry cancel gets a drill.** A sandbox market entry is in flight for about 75 ms, at 1.97 to 2.75 s after the boundary, and a hand timed stop at 14:35:02.05 UTC missed it. Retrying the race would be luck, not evidence. Accepting the unit test alone (`test_node_placeholder.py`, `entry_canceled_kill_switch`) was the runner up, but cancelling an entry in flight is the core promise of the stop button, so it deserves a runtime check. `SANDBOX_DELAY_ENTRY_FILLS_S` holds the entry long enough to tap stop, and it mirrors how a real venue behaves: an order acknowledged but not yet worked, then cancelled. It is built like the existing drills (demo only, off by default, refused elsewhere), so it adds no new kind of risk. NautilusTrader's own latency model was the other way to slow fills, but it delays every order, stops and exits too, and a cancel racing a queued submit does not give a clean SUBMITTED to CANCELED. A hold on entries alone tests exactly the AC-1 path and nothing else.
+
+**AC-15's base class deny rests on its unit test.** With today's strategies, the base deny cannot be reached at runtime: each strategy checks `halted` right before it submits, in the same call on the one event loop thread, so no halt can land in between. A drill to force it would mean a strategy that skips its own check, test code in the trader. The engine level unit test already drives a real `BacktestEngine` through the real gate, which is the honest proof. The deny stays as the backstop for later strategies.

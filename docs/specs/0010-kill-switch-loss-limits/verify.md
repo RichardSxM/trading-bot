@@ -12,6 +12,7 @@ Commands below use the CLI as `cli`, meaning `docker compose exec -T dashboard p
    - `redis-cli GET demo:trader:halt` shows the JSON with `reason` `manual_stop` and `source` `dashboard`.
    - `risk_events` has one `halt` row, severity `warning`.
 2. **Entries refused while halted (AC-15).** Wait for the next boundary. The trader log shows the decision refused with `halted`, there is a `limit_hit` `info` event, and no order is sent.
+   - This is the strategy's own `halted` refusal. The base class deny (`entry_denied_halted`) cannot be reached at runtime with today's strategies, so its proof is the unit test named in AC-15, not this step.
 3. **Halt survives a restart (AC-5, AC-20).** Run `docker compose restart trader`. The top bar still shows HALTED, and `trader_state.halted` is true.
 4. **Resume (AC-4, AC-18).** On the System page, press Resume.
    - A confirm step appears. Cancel it and check nothing was sent.
@@ -50,5 +51,11 @@ Commands below use the CLI as `cli`, meaning `docker compose exec -T dashboard p
     - `entries_blocked` shows `loss_unknown`, and the log shows `loss_seed_failed` every 30 s.
     - Start `postgres`: within 30 s the block clears.
 14. **Bad halt key (AC-5).** Run `redis-cli SET demo:trader:halt notjson`, then restart the trader. It starts halted with reason `unknown`, and logs one `critical` `halt_key_invalid`. Resume clears it.
-15. **Deploy leaves a halt alone (AC-20).** With the trader halted, run the deploy's pause and wait-flat path (`cli pause --source deploy --wait-result`, then `cli unpause --source deploy`). The halt key is still there afterwards.
-16. **Done.** Put every setting back, then run `docker compose down`.
+15. **Deploy leaves a halt alone (AC-20).** Run this with `SANDBOX_DELAY_ENTRY_FILLS_S` at `0` (a held entry would make wait-flat wait out the hold). With the trader halted, run the deploy's pause and wait-flat path (`cli pause --source deploy --wait-result`, then `cli unpause --source deploy`). The halt key is still there afterwards.
+16. **Entry cancelled by stop (AC-1, AC-3).** Set `SANDBOX_DELAY_ENTRY_FILLS_S=30` and recreate the trader (pass it through the environment, as with the other drills, and don't touch `.env`). The start log shows the WARNING `sandbox_delay_entry_fills`. Wait for a boundary. While `trader_state` shows `open_entry_orders` 1 and `open_positions` 0, tap stop.
+    - The trader logs INFO `entry_canceled_kill_switch` for that entry.
+    - The entry's `orders` row ends `canceled`, and it has no fill.
+    - No `order_rejected` risk event is written for it.
+    - No position opens, and the result is `confirmed` within a few seconds.
+    - Resume, then set `SANDBOX_DELAY_ENTRY_FILLS_S` back to `0` and recreate the trader.
+17. **Done.** Put every setting back, then run `docker compose down`.
