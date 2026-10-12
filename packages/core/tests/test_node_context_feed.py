@@ -156,6 +156,25 @@ def test_refused_connects_back_off_doubling_and_log_down_once(caplog):
     assert feed.outages == []  # no message ever came, so no outage has a start
 
 
+def test_short_sessions_keep_doubling_the_backoff():
+    server = Server([[INFO, ticker(), "close"]] * 3)
+
+    _, _, waits = asyncio.run(_run(server, lambda f, e, w: False, max_waits=3))
+
+    assert waits == [1, 2, 4]
+
+
+def test_a_session_connected_past_the_reset_starts_the_backoff_from_one(monkeypatch):
+    from trading_core.node import context_feed
+
+    monkeypatch.setattr(context_feed, "BACKOFF_RESET_S", 0)  # every session counts as long enough
+    server = Server([[INFO, ticker(), "close"]] * 3)
+
+    _, _, waits = asyncio.run(_run(server, lambda f, e, w: False, max_waits=3))
+
+    assert waits == [1, 1, 1]
+
+
 def test_a_resubscribe_snapshot_publishes_no_uid_twice():
     server = Server([[INFO, snapshot("a", "b"), "close"], [INFO, snapshot("a", "b", "c")]])
 

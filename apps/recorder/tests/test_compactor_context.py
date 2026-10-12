@@ -210,3 +210,49 @@ def test_an_outage_line_is_a_reconnect_gap_of_both_raw_streams_and_beats_a_silen
     assert store.load_done().outages == {"a-dead": 1}
     rows = pq.read_table(store.data_file(OPEN_INTEREST_TABLE, INSTRUMENT, H0)).column("value").to_pylist()
     assert rows == [str(r.value) for r in oi]
+
+
+def test_a_restart_is_one_recorder_down_gap_per_context_stream_from_the_book_runs(tmp_path):
+    """covers: spec 0009 AC-7 (recorder_down from the book's run boundaries; a quiet liquidation stream
+    gets no gap of its own)."""
+    from recorder.compactor.days import read_gaps
+    from recorder.compactor.store import CONTEXT_TABLES
+
+    a = {FUNDING_TABLE: make_funding(H0 + 3 * SECOND_NS, H0 + HOUR_NS - 20 * SECOND_NS)}
+    b = {FUNDING_TABLE: make_funding(H0 + HOUR_NS + 5 * SECOND_NS, H0 + 2 * HOUR_NS - SECOND_NS)}
+    store = _two_runs_with(tmp_path, a, b)
+
+    _compactor(store).run_pass(_later())
+
+    (book,) = read_gaps(store, "2026-10-08")
+    assert book.kind == "recorder_down"
+    context = [g for g in read_gaps(store, "2026-10-08", stream=None) if g.stream in CONTEXT_TABLES]
+    assert sorted(context) == sorted(
+        Gap(book.start_ns, INSTRUMENT, "recorder_down", book.end_ns, stream=s) for s in CONTEXT_TABLES
+    )
+
+
+def test_a_funding_row_later_than_the_window_goes_to_quarantine(tmp_path):
+    """covers: spec 0009 AC-2 (late context rows are quarantined and counted, as for trades)."""
+    from recorder.compactor import days
+    from trading_core.marketdata.hours import day_of
+
+    funding = make_funding(H0 + 3 * SECOND_NS, H0 + 2 * HOUR_NS - SECOND_NS)
+    i = next(n for n, f in enumerate(funding) if f.ts_init >= H0 + 30 * 60 * SECOND_NS)
+    late = funding[i]
+    after = next(n for n, f in enumerate(funding) if f.ts_init > late.ts_init + 700 * SECOND_NS)
+    arrival = funding[:i] + funding[i + 1 : after] + [late] + funding[after:]
+    store = _runs(tmp_path, arrival)
+
+    _compactor(store).run_pass(_later())
+
+    assert [r.ts_init for r in _read(store, H0)] == [
+        f.ts_init for f in funding if f.ts_init < H0 + HOUR_NS and f is not late
+    ]
+    quarantine = pq.read_table(str(store.quarantine_file(FUNDING_TABLE, INSTRUMENT, H0)))
+    assert quarantine.column("ts_init").to_pylist() == [late.ts_init]
+    done = store.load_done()
+    assert done.incomplete[stream_key(FUNDING_TABLE, INSTRUMENT)] == {H0: 1}
+    manifest = days._manifest(store, done, day_of(H0))
+    (stream,) = [s for s in manifest["streams"] if s["type"] == FUNDING_TABLE]
+    assert (stream["late_rows"], stream["incomplete_hours"]) == (1, [H0])

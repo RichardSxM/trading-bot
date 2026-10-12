@@ -172,7 +172,7 @@ code in [packages/core/src/trading_core/marketdata/context.py](../../packages/co
   - [x] Raw client: `websockets` actor for open interest and liquidations, parsers, dedupe, reconnect and idle watchdog, outages file and `reconnect` gaps, liquidation window (AC-3 to AC-8, AC-10, AC-11, AC-13)
   - [ ] Live read, Tardis history, deploy: trader actor, Tardis mark, index, open interest and the `--context` backfill, retention and boundary checks, the VPS 24 h check (AC-12, AC-15, AC-16, AC-17)
 - [ ] Verify it: `/check verify market context feed`
-- [ ] Test it: `/test market context feed`
+- [x] Test it: `/test market context feed`
 - [ ] Review it (fresh model): `/check review market context feed`
 - [ ] Document it: `/document market context feed`
 
