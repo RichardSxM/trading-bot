@@ -604,17 +604,22 @@ def trader_state(
     cache: Cache,
     git_commit: str,
     paper: Callable[[], PaperStatus] | None = None,
+    kill_switch: KillSwitch | None = None,
+    losses: Callable[[], Mapping[str, object]] | None = None,
 ) -> Mapping[str, object] | None:
     """The ``trader_state`` snapshot data (AC-7) from the gate, the risk engine, and the cache.
 
     None until the pause key was read at start, so the trader never reports running before it knows.
     With ``paper`` (demo) it adds the paper loop's status; without one the same fields hold only
-    the pause, so the dashboard reads one shape in every env (spec 0006 AC-16).
+    the pause, so the dashboard reads one shape in every env (spec 0006 AC-16). The halt, and the
+    loss figures from ``losses`` (``LossLimitActor.snapshot_fields``), are spec 0010 AC-16's; without
+    ``losses`` every loss field is null, as before the seed lands.
     """
     if not gate.loaded:
         return None
     orders = [*cache.orders_open(), *cache.orders_inflight()]
     state = gate.state
+    halt_state = gate.halt_state
     status = (
         paper()
         if paper is not None
@@ -638,7 +643,24 @@ def trader_state(
         "recording_backlog": status.recording_backlog,
         "exiting": status.exiting,
         "position_opened_ns": status.position_opened_ns,
+        "halted": halt_state is not None,
+        "halt_reason": halt_state.reason.value if halt_state is not None else None,
+        "halted_at": format_utc(halt_state.halted_at) if halt_state is not None else None,
+        "flattening": kill_switch.flattening if kill_switch is not None else False,
+        **(losses() if losses is not None else NO_LOSS_FIELDS),
     }
+
+
+NO_LOSS_FIELDS: Final[Mapping[str, object]] = {
+    "loss_today_usd": None,
+    "loss_total_usd": None,
+    "daily_loss_limit_usd": None,
+    "total_loss_limit_usd": None,
+    "trades_today": None,
+    "max_trades_per_day": None,
+    "cooldown_until": None,
+}
+"""The loss fields of ``trader_state`` before anything is known (spec 0010 AC-16)."""
 
 
 def shutdown_counts(gate: PauseGate, cache: Cache) -> Mapping[str, int]:

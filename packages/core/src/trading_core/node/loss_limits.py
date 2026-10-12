@@ -22,6 +22,7 @@ from nautilus_trader.common.actor import Actor
 from nautilus_trader.common.config import ActorConfig
 from nautilus_trader.model.events import PositionClosed, PositionOpened
 
+from trading_core.control.messages import format_utc
 from trading_core.node.control import KillSwitch, Record
 from trading_core.recording.enums import Env, RiskEventKind, Severity
 from trading_core.recording.queries import LossSeed
@@ -44,6 +45,7 @@ from trading_core.strategy.blocks import BlockReason, EntryBlocks
 log = logging.getLogger(__name__)
 
 SEED_RETRY_S: Final = 30.0
+CENT: Final = Decimal("0.01")
 _TICK_TIMER: Final = "loss_limits_tick"
 _TICK: Final = timedelta(seconds=1)
 # The blocks this actor owns; ``loss_unknown`` is handled apart, by the seed.
@@ -66,6 +68,10 @@ def seeded_tally(seed: LossSeed, now: datetime, limits: LossLimits) -> LossTally
         last_loss_closed_at=seed.last_loss_closed_at,
         daily_tripped=seed.daily_halt_today or -seed.realized_today >= limits.daily_usd,
     )
+
+
+def _cents(value: Decimal) -> str:
+    return str(value.quantize(CENT))
 
 
 def _utc(ns: int) -> datetime:
@@ -130,6 +136,23 @@ class LossLimitActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
     def limits(self) -> LossLimits:
         """The thresholds, published in ``trader_state`` so the dashboard holds no copy."""
         return self._limits
+
+    def snapshot_fields(self) -> dict[str, object]:
+        """The loss fields of ``trader_state`` (spec 0010 AC-16): money as decimal strings to the cent,
+        the cooldown end as ISO 8601 UTC; the figures are null until the seed lands, the limits never."""
+        tally, verdict = self.figures()
+        limits = self._limits
+        return {
+            "loss_today_usd": None if verdict is None else _cents(verdict.loss_today),
+            "loss_total_usd": None if verdict is None else _cents(verdict.loss_total),
+            "daily_loss_limit_usd": _cents(limits.daily_usd),
+            "total_loss_limit_usd": _cents(limits.total_usd),
+            "trades_today": None if tally is None else tally.trades_today,
+            "max_trades_per_day": limits.max_trades_per_day,
+            "cooldown_until": None
+            if verdict is None or verdict.cooldown_until is None
+            else format_utc(verdict.cooldown_until),
+        }
 
     # Lifecycle ------------------------------------------------------------------------------
 

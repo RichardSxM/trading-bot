@@ -375,7 +375,40 @@ def test_trader_state_reports_the_pause_and_the_counts():
         "recording_backlog": 0,
         "exiting": False,
         "position_opened_ns": None,
+        "halted": False,
+        "halt_reason": None,
+        "halted_at": None,
+        "flattening": False,
+        "loss_today_usd": None,
+        "loss_total_usd": None,
+        "daily_loss_limit_usd": None,
+        "total_loss_limit_usd": None,
+        "trades_today": None,
+        "max_trades_per_day": None,
+        "cooldown_until": None,
     }
+
+
+def test_trader_state_reports_the_halt_and_the_loss_fields():
+    """covers: spec 0010 AC-16"""
+    gate = PauseGate()
+    gate.unpause()
+    gate.halt(HaltState(HaltReason.DAILY_LOSS_LIMIT, HaltSource.TRADER, NOW, uuid.uuid4()))
+    risk = FakeRiskEngine()
+    risk.trading_state = TradingState.REDUCING
+    fields = {"loss_today_usd": "21.50", "trades_today": 3}
+
+    state = trader_state(gate, risk, FakeCache(), "x", losses=lambda: fields)
+
+    assert state is not None
+    assert (state["trading_state"], state["halted"], state["halt_reason"], state["halted_at"]) == (
+        "REDUCING",
+        True,
+        "daily_loss_limit",
+        "2026-10-03T09:30:00.000000Z",
+    )
+    assert state["entries_blocked"] == ["halted"]
+    assert (state["loss_today_usd"], state["trades_today"]) == ("21.50", 3)
 
 
 def test_trader_state_carries_the_paper_status_when_the_paper_loop_runs():

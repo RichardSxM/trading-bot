@@ -872,6 +872,11 @@ def test_an_unrealized_loss_over_the_daily_limit_halts_and_blocks_until_midnight
     assert tally.trades_today == 1
     assert tally.daily_tripped
     assert verdict.loss_today > Decimal("0.05")
+    fields = made["actor"].snapshot_fields()
+    assert fields["daily_loss_limit_usd"] == "0.05"
+    assert fields["total_loss_limit_usd"] == "100.00"
+    assert fields["trades_today"] == 1
+    assert Decimal(fields["loss_today_usd"]) > Decimal("0.05")
 
 
 def test_a_losing_close_starts_the_cooldown_and_counts_one_trade():
@@ -918,6 +923,7 @@ def test_events_before_the_seed_are_held_and_a_key_in_the_seed_counts_once(caplo
     engine, _, _ = _run(FALLING_AFTER_ENTRY, add_actor=add)
     actor = made["actor"]
     assert not actor.seeded
+    assert actor.snapshot_fields()["loss_today_usd"] is None  # unknown until the seed lands
     assert BlockReason.LOSS_UNKNOWN in own.active()
     assert actor._buffer  # the opened and closed events, held
 

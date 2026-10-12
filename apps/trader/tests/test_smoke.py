@@ -206,7 +206,9 @@ def fake_main(monkeypatch):
     monkeypatch.setattr(trader_main, "TradingNode", _FakeNode)
     monkeypatch.setattr(trader_main, "snapshot_client", lambda settings, password: _FakeRedis())
     monkeypatch.setattr(trader_main, "control_parts", _fake_control_parts)
-    monkeypatch.setattr(trader_main, "trader_state", lambda gate, risk, cache, commit, paper=None: {"paused": False})
+    monkeypatch.setattr(
+        trader_main, "trader_state", lambda gate, risk, cache, commit, paper=None, *_: {"paused": False}
+    )
     monkeypatch.setattr(trader_main, "cache_client", lambda settings, password: _PurgeRedis())
     monkeypatch.setattr(trader_main, "start_paper_loop", lambda settings, secrets, trader_id: None)
     return trader_main

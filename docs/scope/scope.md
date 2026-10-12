@@ -185,12 +185,13 @@ One action closes all positions, cancels all orders, and stops trading; automati
 **Carried over from an article (2026-10-04, monkeytrade scalping guide, forex focused), for the design to weigh:** besides the daily loss limit (the article suggests 2 to 3 % of the account), a losing streak stop: halt new entries for the day after three losses in a row, shown as one more `entries_blocked` reason (spec 0006).
 **Also from an article (2026-10-04, NinjaTrader 1 minute scalping), for the design to weigh:** two guards against overtrading, each one more `entries_blocked` reason. A cap on trades per day, since a fast strategy always finds a signal and every trade pays fees. And a short cooldown after any loss (somewhere around 5 to 15 minutes, tuned in testing), a softer cousin of the losing streak stop.
 spec [0010](../specs/0010-kill-switch-loss-limits/index.md)
+code in [packages/core/src/trading_core/control/halt.py](../../packages/core/src/trading_core/control/halt.py), [packages/core/src/trading_core/risk/limits.py](../../packages/core/src/trading_core/risk/limits.py), [packages/core/src/trading_core/node/control.py](../../packages/core/src/trading_core/node/control.py), [packages/core/src/trading_core/node/loss_limits.py](../../packages/core/src/trading_core/node/loss_limits.py), [apps/dashboard/src/dashboard/web/control_routes.py](../../apps/dashboard/src/dashboard/web/control_routes.py), [apps/dashboard/src/dashboard/control_cli.py](../../apps/dashboard/src/dashboard/control_cli.py)
 - [x] Design it (spec): `/architect kill switch & loss limits`
-- [ ] Build it: `/develop kill switch & loss limits`
+- [x] Build it: `/develop kill switch & loss limits`
   - [x] Thin stop, end to end: halt key and gate, one trading state owner, `check_entry` halted, strategy `flatten` hook with tags and late fill handling, origin aware mapper, `KillSwitch.stop` waiting for flat, restart flatten, the demo drill (AC-1, AC-3, AC-5, AC-6, AC-7, AC-15)
   - [x] Flatten and resume: the commands, dashboard buttons with a confirm and failure reasons, `control_cli` stop, flatten, resume (AC-2, AC-4, AC-18, AC-19, AC-20)
   - [x] Loss limits: pure `risk/limits.py` and `LossLimitSettings`, the Postgres seed, `LossLimitActor` with its 1 s timer, automatic halts, trade cap and cooldown blocks (AC-8 to AC-14, AC-21)
-  - [ ] Snapshot and dashboard view: `trader_state` fields, HALTED badge, loss meters, trades and cooldown, plain words (AC-16, AC-17)
+  - [x] Snapshot and dashboard view: `trader_state` fields, HALTED badge, loss meters, trades and cooldown, plain words (AC-16, AC-17)
 - [ ] Verify it: `/check verify kill switch & loss limits`
 - [ ] Test it: `/test kill switch & loss limits`
 - [ ] Review it (fresh model): `/check review kill switch & loss limits`

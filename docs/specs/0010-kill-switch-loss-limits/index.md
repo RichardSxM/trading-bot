@@ -378,7 +378,7 @@ Tracer Bullet: the first slice is the thinnest real stop from the dashboard butt
    - **`KillSwitch.resume`** reads its `seeded` flag and `loss_total` for the `loss_unknown` and `total_loss_limit` refusals.
 
    Satisfies **AC-9**, **AC-10**, **AC-11**, **AC-12**, **AC-13**, **AC-14**, **AC-4**.
-6. **Snapshot and dashboard view.**
+6. **Snapshot and dashboard view.** (built)
    - `trader_state` gains the AC-16 fields, read from the gate, the `KillSwitch`, and the `LossLimitActor`.
    - The dashboard's top bar gets the `HALTED` badge.
    - The System page gets the loss meters, trades today, and cooldown.

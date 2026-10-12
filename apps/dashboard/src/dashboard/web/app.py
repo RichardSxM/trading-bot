@@ -26,7 +26,16 @@ from dashboard.data.pnl import PnlFigures, pnl_figures
 from dashboard.data.trades import TradesView, trades_view
 from dashboard.live.poller import ACTIVITY_SIZE, Poller, supervise
 from dashboard.live.position import PositionView
-from dashboard.live.state import ActivityRow, AgeView, AlertView, BlockedView, CommandView, PauseView, collapse
+from dashboard.live.state import (
+    ActivityRow,
+    AgeView,
+    AlertView,
+    BlockedView,
+    CommandView,
+    LossesView,
+    PauseView,
+    collapse,
+)
 from dashboard.settings import DashboardSettings, normalize_seed
 from dashboard.ui.format import num, pnl, ts
 from dashboard.web import auth_routes, control_routes, page_routes
@@ -125,6 +134,7 @@ def create_app(
     position_template = templates.get_template("partials/overview_position.html")
     blocked_template = templates.get_template("partials/topbar_blocked.html")
     blocked_reasons_template = templates.get_template("partials/overview_blocked.html")
+    losses_template = templates.get_template("partials/system_losses.html")
     position_key = snapshot_key(settings.trading_env, "position")
     account_key = snapshot_key(settings.trading_env, "account")
     heartbeat_key = snapshot_key(settings.trading_env, "heartbeat")
@@ -159,6 +169,9 @@ def create_app(
 
     def render_blocked_reasons(view: BlockedView) -> str:
         return blocked_reasons_template.render(view=view)
+
+    def render_losses(view: LossesView) -> str:
+        return losses_template.render(view=view)
 
     context = AppContext(
         settings=settings,
@@ -195,6 +208,7 @@ def create_app(
             render_position=render_position,
             render_blocked=render_blocked,
             render_blocked_reasons=render_blocked_reasons,
+            render_losses=render_losses,
         ),
         redis=client,
         clock=clock,

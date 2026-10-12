@@ -508,7 +508,15 @@ def run_node(
         ("heartbeat", lambda: heartbeat_state(node, settings)),
         (
             "trader_state",
-            lambda: trader_state(control.gate, control.risk_engine, node.cache, settings.git_commit, paper_state),
+            lambda: trader_state(
+                control.gate,
+                control.risk_engine,
+                node.cache,
+                settings.git_commit,
+                paper_state,
+                control.kill_switch,
+                losses.snapshot_fields,
+            ),
         ),
     ]
     if paper is not None:

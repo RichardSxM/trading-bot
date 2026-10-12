@@ -4,7 +4,7 @@ spec 0010 AC-18 (Resume sends ``resume``, Flatten, the confirm step that works w
 import logging
 import re
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from redis.exceptions import ConnectionError as RedisConnectionError
@@ -269,3 +269,61 @@ def test_a_failed_result_shows_its_reason_in_plain_words(reason, words):
     view = command_state(to_fields(msg), result_to_fields(result), now, 60)
 
     assert view.text == words
+
+
+# spec 0010 AC-16, AC-17: the HALTED badge and the loss limits on System ----------------------
+
+
+def test_the_top_bar_shows_halted_with_its_reason_and_age_over_a_pause():
+    now = datetime(2026, 10, 12, 9, 42, tzinfo=UTC)
+    data = {"paused": True, "pause_source": "deploy", "halted": True, "halt_reason": "daily_loss_limit"}
+    raw = encode(1, data | {"halted_at": "2026-10-12T09:30:00.000000Z"})
+
+    assert pause_view(raw, now) == PauseView("HALTED · daily loss limit · 12m", "bad")
+    assert pause_view(encode(1, {"halted": True, "halt_reason": "new_thing"}), now).text == "HALTED · new_thing"
+
+
+def test_every_page_shows_the_halted_badge(logged_in, redis, clock):
+    redis.values[STATE_KEY] = _state(clock, halted=True, halt_reason="manual_stop", halted_at=None)
+
+    for page in ("/", "/system", "/trades"):
+        assert "HALTED · manual stop" in logged_in.get(page).text
+
+
+def test_system_shows_the_loss_figures_against_their_limits(logged_in, redis, clock):
+    now = datetime.fromtimestamp(clock.now, tz=UTC)
+    until = format_utc(now + timedelta(minutes=8))
+    redis.values[STATE_KEY] = _state(
+        clock,
+        loss_today_usd="12.50",
+        daily_loss_limit_usd="20.00",
+        loss_total_usd="-3.25",
+        total_loss_limit_usd="100.00",
+        trades_today=4,
+        max_trades_per_day=50,
+        cooldown_until=until,
+    )
+
+    page = logged_in.get("/system").text
+
+    assert re.search(r"Loss today</dt><dd>12\.50 of 20\.00 USD", page)
+    assert re.search(r"Total loss</dt><dd>\u22123\.25 of 100\.00 USD", page)
+    assert re.search(r"Trades today</dt><dd>4 of 50", page)
+    assert re.search(r"Cooldown</dt><dd>[78]m left", page)
+
+
+def test_loss_figures_not_seeded_read_unknown(logged_in, redis, clock):
+    redis.values[STATE_KEY] = _state(
+        clock, loss_today_usd=None, daily_loss_limit_usd="20.00", trades_today=None, max_trades_per_day=50
+    )
+
+    page = logged_in.get("/system").text
+
+    assert re.search(r'Loss today</dt><dd><span class="losses__unknown">unknown</span> of 20\.00 USD', page)
+    assert "Cooldown</dt><dd>none" in page
+
+
+def test_without_trader_state_the_loss_box_says_no_data(logged_in, redis):
+    redis.values.pop(STATE_KEY, None)
+
+    assert '<p class="losses__lost">no data</p>' in logged_in.get("/system").text

@@ -6,6 +6,10 @@
     <header class="region__head"><h2 class="region__title" id="trading-h">Trading</h2></header>
     {% with csrf=csrf, error=pause_error, confirm=confirm %}{% include "partials/pause_area.html" %}{% endwith %}
   </section>
+  <section class="region region--wide" aria-labelledby="losses-h">
+    <header class="region__head"><h2 class="region__title" id="losses-h">Loss limits</h2></header>
+    <div class="losses-box" sse-swap="system-losses">{{ live["system-losses"] }}</div>
+  </section>
   <section class="region region--wide" aria-labelledby="system-h">
     <header class="region__head"><h2 class="region__title" id="system-h">Commands and services</h2></header>
     {{ empty_state("Command history and service health appear here.", glyph="server-cog") }}
