@@ -19,12 +19,12 @@ import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from importlib.metadata import version
 from pathlib import Path
 from types import FrameType
-from typing import TYPE_CHECKING, Final, Protocol
+from typing import TYPE_CHECKING, Final, Literal, Protocol
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -49,7 +49,14 @@ from lab.strategies import ConfigValue
 from lab.units import TRADER_ID, UnitPlan, UnitResult, run_unit
 from trading_core.lab.errors import ReplayInterruptedError, UnitFailedError
 from trading_core.lab.fill_stats import EntryFill, EntryOrder, SideStats, fill_stats
-from trading_core.lab.funding import FundingPayment, FundingRate, PositionKey, apply_funding
+from trading_core.lab.funding import (
+    FundingPayment,
+    FundingRate,
+    PositionKey,
+    apply_funding,
+    funding_boundaries,
+    own_funding_gap,
+)
 from trading_core.lab.loser_band import BandTrade, loser_band
 from trading_core.lab.metrics import ClosedTrade, FundingCash, run_metrics
 from trading_core.lab.segments import Segment, SegmentPlan, hours_of, plan_segments, required_days
@@ -98,6 +105,9 @@ EXIT_MISSING_DAYS: Final = 2
 EXIT_INTERRUPTED: Final = 130
 LOSER_STRATEGY: Final = "random_taker"
 
+# Where a run's funding rates come from (``run_config.funding_source``, spec 0009 AC-14).
+type FundingSourceName = Literal["tardis", "own", "none"]
+
 
 class Store(Protocol):
     """Where a replay keeps its rows: the laptop Postgres as ``lab_app`` (AC-11), or memory in tests."""
@@ -131,6 +141,29 @@ class PostgresStore:
         """``write_run_bundle`` in its own session."""
         with self._sessions() as session:
             repository.write_run_bundle(session, bundle)
+
+
+def run_funding(
+    tree: SourceTree, source: str, days: Sequence[date], plan: SegmentPlan
+) -> tuple[tuple[FundingRate, ...], FundingSourceName, int | None]:
+    """The rates the run applies, where they come from, and the boundary an ``own`` run lacks.
+
+    A ``tardis`` run always applies its rates. An ``own`` run applies its recorded rates only when
+    every boundary inside its segments has one from the period before it; otherwise none at all,
+    and the first such boundary is returned (spec 0009 AC-14).
+    """
+    rates = tuple(tree.funding_rates(list(days)))
+    if source == "tardis":
+        return rates, "tardis", None
+    boundaries = [b for s in plan.segments for b in funding_boundaries(s.start_ns, s.end_ns)]
+    gap = own_funding_gap(rates, boundaries)
+    if gap is not None:
+        log.info(
+            "lab_funding_skipped",
+            extra={"fields": {"boundary": ns_to_utc(gap).isoformat()}},
+        )
+        return (), "none", gap
+    return rates, "own", None
 
 
 def plan_run(
@@ -217,8 +250,12 @@ class Batch:
     plan: SegmentPlan
     version_id: UUID
     folder: Path
-    # The run's funding_rate_update rows (``tardis`` runs; none for ``own``), by time (AC-9).
+    # The run's funding_rate_update rows, by time (spec 0008 AC-9). An ``own`` run has them only
+    # when they cover every boundary (spec 0009 AC-14); ``funding_source`` says which applies.
     funding_rates: tuple[FundingRate, ...] = ()
+    funding_source: FundingSourceName = "none"
+    # The first boundary an ``own`` run's rates did not cover, so it applies none (AC-14).
+    funding_skipped_ns: int | None = None
 
 
 def _run_config(batch: Batch, variant: VariantSpec, *, segment_end_partial: bool = False) -> dict[str, JsonValue]:
@@ -243,7 +280,11 @@ def _run_config(batch: Batch, variant: VariantSpec, *, segment_end_partial: bool
             "max_order_notional": run.risk_limits().max_order_notional,
             "max_leverage": run.risk_limits().max_leverage,
         },
-        "funding_source": "tardis" if run.source == "tardis" else "none",
+        "funding_source": batch.funding_source,
+        "context": {
+            **run.context.model_dump(),
+            "liquidations_available": run.context.values(run.source).liquidations_available,
+        },
         "segments": [[s.start_ns, s.end_ns] for s in batch.plan.segments],
         "skipped_hours": [[h.hour_ns, h.reason] for h in batch.plan.skipped],
         "segment_end_partial": segment_end_partial,
@@ -261,9 +302,9 @@ def _strategy_config(loaded: LoadedRun, variant: VariantSpec) -> dict[str, Confi
 
 
 def unit_plans(
-    settings: LabSettings, loaded: LoadedRun, segments: Sequence[Segment], variant: VariantSpec
+    settings: LabSettings, loaded: LoadedRun, segments: Sequence[Segment], variant: VariantSpec, *, funding: bool
 ) -> list[UnitPlan]:
-    """One unit per segment for ``variant``, in segment order."""
+    """One unit per segment for ``variant``, in segment order; ``funding`` samples every boundary."""
     run = loaded.run
     return [
         UnitPlan(
@@ -281,15 +322,19 @@ def unit_plans(
             seed=run.seed,
             strategy_name=run.strategy.name,
             strategy_config=_strategy_config(loaded, variant),
-            funding=run.source == "tardis",
+            funding=funding,
             test_strategies=settings.lab_test_strategies,
+            market=run.context.values(run.source),
+            context_warmup_s=run.context.warmup_s,
         )
         for segment in segments
     ]
 
 
 def _unit_plans(batch: Batch, variant: VariantSpec) -> list[UnitPlan]:
-    return unit_plans(batch.settings, batch.loaded, batch.plan.segments, variant)
+    return unit_plans(
+        batch.settings, batch.loaded, batch.plan.segments, variant, funding=batch.funding_source != "none"
+    )
 
 
 def build_bundle(
@@ -498,7 +543,8 @@ def _report(
         skipped_hours=[(h.hour_ns, h.reason) for h in batch.plan.skipped],
         results=results,
         loser_band=band,
-        before_funding=batch.loaded.run.source == "own",
+        before_funding=batch.funding_source == "none",
+        funding_skipped_ns=batch.funding_skipped_ns,
     )
 
 
@@ -724,9 +770,12 @@ def replay(
         settings.git_commit,
         run.version_config(),
     )
+    rates, funding_source, funding_skipped_ns = run_funding(tree, run.source, days, plan)
     batch_id = uuid.uuid7()
     batch = Batch(
-        funding_rates=tuple(tree.funding_rates(days)) if run.source == "tardis" else (),
+        funding_rates=rates,
+        funding_source=funding_source,
+        funding_skipped_ns=funding_skipped_ns,
         batch_id=batch_id,
         loaded=loaded,
         settings=settings,

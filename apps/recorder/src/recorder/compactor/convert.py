@@ -14,7 +14,7 @@ and every hole cuts the carried book until the feed's next ``CLEAR`` at or after
 import logging
 import time
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Final
 
@@ -26,6 +26,7 @@ import pyarrow.parquet as pq
 from recorder.compactor.days import write_gaps
 from recorder.compactor.store import (
     COMPRESSION,
+    CONTEXT_TABLES,
     CatalogStore,
     DoneRecord,
     atomic_write,
@@ -37,7 +38,7 @@ from trading_core.catalog.book import CLEAR, F_LAST, F_SNAPSHOT, BookCarry
 from trading_core.catalog.reorder import LateRows, ReorderWindow
 from trading_core.catalog.sink import ROW_GROUP_ROWS, HourSink
 from trading_core.marketdata.errors import FeatherUnreadable, HourCountMismatch
-from trading_core.marketdata.gaps import Gap, GapDetector
+from trading_core.marketdata.gaps import Gap, GapDetector, SilenceDetector
 from trading_core.marketdata.hours import (
     HOUR_NS,
     SECOND_NS,
@@ -144,7 +145,8 @@ class HourStream:
 
     ``carry`` is the book for a delta stream and ``None`` for trades; ``gaps`` likewise detects a
     delta stream's gaps (AC-4) from the rows the window writes, and they are committed with the
-    hour that holds their end. Late rows go to quarantine (AC-12).
+    hour that holds their end. ``silence`` detects a context stream's ``silence`` gaps the same way
+    (spec 0009 AC-7). Late rows go to quarantine (AC-12).
     """
 
     def __init__(
@@ -156,6 +158,8 @@ class HourStream:
         *,
         carry: BookCarry | None,
         gaps: GapDetector | None = None,
+        silence: SilenceDetector | None = None,
+        dedupe_ids: bool = False,
         grace_ns: int = 0,
         window_ns: int = 600 * SECOND_NS,
         max_rows: int = 2_000_000,
@@ -167,6 +171,13 @@ class HourStream:
         self.key = stream_key(table, instrument_id)
         self.carry = carry
         self.gaps = gaps
+        self.silence = silence
+        # Liquidations: a trade id seen in this hour or the hour before is dropped (spec 0009 AC-5).
+        self._dedupe_ids = dedupe_ids
+        self._done_ids = done.liquidation_uids
+        self._ids_before: set[str] = set()
+        self._ids_now: set[str] = set()
+        self._duplicates = 0
         self._grace_ns = grace_ns
         self.window = ReorderWindow(self.key, window_ns=window_ns, max_rows=max_rows)
         self._pending: list[Gap] = []
@@ -393,19 +404,45 @@ class HourStream:
             self._start(hour, rows.schema)
         assert self.open is not None
         open_hour = self.open
+        if self._dedupe_ids:
+            rows, ts = self._drop_seen_ids(rows, ts)
+            if rows.num_rows == 0:
+                return
         scan = None
         if self.gaps is not None and self._run is not None:
             clear = (rows.column("action").to_numpy() == CLEAR).tolist()
             scan = self.gaps.scan_book(self._run, ts.tolist(), clear, self._run_holes())
             self._pending.extend(scan.gaps)
+        if self.silence is not None and self._run is not None:
+            self._pending.extend(self.silence.scan(self._run, ts.tolist()))
         open_hour.sink.write(rows)
         open_hour.source_rows += rows.num_rows
         if self.carry is not None:
             self.carry.apply(rows, scan)
 
+    def _drop_seen_ids(self, rows: Any, ts: Any) -> tuple[Any, Any]:
+        """The rows whose ``trade_id`` this hour and the hour before have not had yet. Rows come in
+        ``ts_init`` order, so the earliest copy is the one kept."""
+        keep: list[int] = []
+        for index, trade_id in enumerate(rows.column("trade_id").to_pylist()):
+            if trade_id in self._ids_now or trade_id in self._ids_before:
+                self._duplicates += 1
+                continue
+            self._ids_now.add(trade_id)
+            keep.append(index)
+        if len(keep) == rows.num_rows:
+            return rows, ts
+        return rows.take(keep), ts[keep]
+
     def _start(self, hour: int, schema: Any) -> None:
         sink = HourSink(self._store.data_file(self.table, self.instrument_id, hour), schema, hour)
         self.open = _OpenHour(hour=hour, sink=sink, started=time.monotonic())
+        if self._dedupe_ids:
+            # Only the hour right before counts; the previous hour's ids are in done.json for a rerun.
+            before = self._done_ids.get(self.key, {})
+            self._ids_before = set(before.get("uids", [])) if before.get("hour") == hour - HOUR_NS else set()
+            self._ids_now = set()
+            self._duplicates = 0
         carry = self.carry
         if carry is None:
             return
@@ -424,7 +461,11 @@ class HourStream:
         finished while a gap is still open.
         """
         assert self.gaps is not None
-        write_gaps(self._store, self._pending)
+        # A recorder outage is one for every context stream too, timed by the book's run
+        # boundaries, so a quiet stream gives no false gap (spec 0009 AC-7).
+        down = [g for g in self._pending if g.kind == "recorder_down"]
+        context = [replace(g, stream=table) for g in down for table in CONTEXT_TABLES]
+        write_gaps(self._store, [*self._pending, *context])
         spoiled: list[tuple[int, int]] = []
         for gap in self._pending:
             fields: dict[str, object] = {
@@ -451,6 +492,43 @@ class HourStream:
                 for spoiled_hour in range(hour_of(start), hour_of(end) + 1, HOUR_NS):
                     incomplete.setdefault(spoiled_hour, 0)
         done.streams[self.instrument_id] = self.gaps.state.to_dict()
+
+    def _commit_ids(self, done: DoneRecord, hour: int) -> None:
+        """Keep the hour's trade ids for the next hour's dedupe, and log what was dropped (AC-5)."""
+        done.liquidation_uids[self.key] = {"hour": hour, "uids": sorted(self._ids_now)}
+        if self._duplicates:
+            log.warning(
+                "liquidation duplicates dropped",
+                extra={
+                    "fields": {
+                        "code": "liquidation_duplicate",
+                        "stream": self.key,
+                        "hour_ns": hour,
+                        "count": self._duplicates,
+                    }
+                },
+            )
+
+    def _commit_silence(self, done: DoneRecord) -> None:
+        """Write a context stream's ``silence`` gaps and its detector state, ahead of the ``done.json`` commit."""
+        assert self.silence is not None
+        write_gaps(self._store, self._pending)
+        for gap in self._pending:
+            log.info(
+                "context gap",
+                extra={
+                    "fields": {
+                        "code": "context_gap",
+                        "stream": gap.stream,
+                        "instrument_id": gap.instrument_id,
+                        "kind": gap.kind,
+                        "start_ns": gap.start_ns,
+                        "end_ns": gap.end_ns,
+                        "duration_s": round(gap.duration_s, 3),
+                    }
+                },
+            )
+        done.context_streams[self.key] = self.silence.state.to_dict()
 
     def _finish(self, done: DoneRecord) -> None:
         open_hour, self.open = self.open, None
@@ -490,8 +568,12 @@ class HourStream:
         if carry is not None:
             done.carry[self.instrument_id] = hour if carry.valid else None
         self._mark_finished(done)
+        if self._dedupe_ids:
+            self._commit_ids(done, hour)
         if self.gaps is not None:
             self._commit_gaps(done, hour)
+        if self.silence is not None:
+            self._commit_silence(done)
         self._flush_late(done)
         self._store.save_done(done)
         self._pending = []

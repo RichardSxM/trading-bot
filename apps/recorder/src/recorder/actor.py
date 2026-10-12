@@ -1,5 +1,5 @@
-"""The recorder's actors: market data subscriptions with the sequence watch (spec 0007 AC-15), and
-the disk floor guard (AC-7)."""
+"""The recorder's actors: market data subscriptions with the sequence watch (spec 0007 AC-15), the
+market context subscriptions (spec 0009 AC-1), and the disk floor guard (spec 0007 AC-7)."""
 
 from collections.abc import Callable
 from datetime import timedelta
@@ -51,6 +51,10 @@ class RecordingActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
         for instrument_id in self._instrument_ids:
             self.subscribe_order_book_deltas(instrument_id, BookType.L2_MBP)
             self.subscribe_trade_ticks(instrument_id)
+            # The perp's own context (spec 0009 AC-1).
+            self.subscribe_mark_prices(instrument_id)
+            self.subscribe_index_prices(instrument_id)
+            self.subscribe_funding_rates(instrument_id)
 
     def on_stop(self) -> None:
         self.clock.cancel_timer("sequence_holes")

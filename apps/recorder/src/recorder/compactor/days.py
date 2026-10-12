@@ -21,6 +21,7 @@ from trading_core.catalog.days import (
     write_gaps,
 )
 from trading_core.catalog.days import write_text as _write_text
+from trading_core.marketdata.gaps import BOOK_STREAM
 from trading_core.marketdata.hours import DAY_NS, day_closed, day_name, day_of
 
 __all__ = ["GAP_SCHEMA", "close_days", "gap_days", "read_gaps", "write_gaps"]
@@ -64,7 +65,8 @@ def close_days(store: CatalogStore, done: DoneRecord, recorded: Collection[str] 
                     "date": name,
                     "total_bytes": manifest["total_bytes"],
                     "rows": sum(s["rows"] for s in manifest["streams"]),
-                    "gap_seconds": round(sum(g["seconds"] for g in manifest["gaps"]), 3),
+                    # The book's gaps; the context streams' are in the manifest (spec 0009 AC-7).
+                    "gap_seconds": round(sum(g["seconds"] for g in manifest["gaps"] if g["stream"] == BOOK_STREAM), 3),
                 }
             },
         )

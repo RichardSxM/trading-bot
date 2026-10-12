@@ -202,3 +202,45 @@ def test_a_cut_and_a_resume_can_share_a_row():
 
 def test_pending_counts_turn_unknown_with_a_fail_safe_hole():
     assert PendingSequence(T, T, 3).merge(T + S, UNKNOWN) == PendingSequence(T, T + S, UNKNOWN)
+
+
+def test_context_silence_is_two_rows_of_one_run_far_enough_apart():
+    """covers: spec 0009 AC-7."""
+    from trading_core.marketdata.gaps import SilenceDetector, SilenceState
+
+    s = 1_000_000_000
+    detector = SilenceDetector("X", "mark_price_update", SilenceState(), silence_ns=60 * s)
+
+    gaps = detector.scan("a", [0, 59 * s, 119 * s])  # 59 s, then exactly 60 s
+    gaps += detector.scan("b", [500 * s])  # a new run: the book's recorder_down covers it
+
+    assert gaps == [Gap(59 * s, "X", "silence", 119 * s, stream="mark_price_update")]
+    assert detector.state == SilenceState(500 * s, "b")
+
+
+def test_context_silence_resumes_from_its_stored_state():
+    """covers: spec 0009 AC-7 (detector state kept in done.json)."""
+    from trading_core.marketdata.gaps import SilenceDetector, SilenceState
+
+    s = 1_000_000_000
+    state = SilenceState.from_dict(SilenceState(10 * s, "a").to_dict())
+    detector = SilenceDetector("X", "index_price_update", state, silence_ns=60 * s)
+
+    assert detector.scan("a", [80 * s]) == [Gap(10 * s, "X", "silence", 80 * s, stream="index_price_update")]
+
+
+def test_a_stronger_overlapping_gap_of_the_same_stream_wins():
+    """covers: spec 0009 AC-7 (recorder_down over reconnect over silence, within one stream)."""
+    from trading_core.marketdata.gaps import resolve_overlaps
+
+    oi = "custom_open_interest_update"
+    silence = Gap(10, "X", "silence", 100, stream=oi)
+    reconnect = Gap(20, "X", "reconnect", 90, stream=oi)
+    down = Gap(80, "X", "recorder_down", 200, stream=oi)
+    other_stream = Gap(10, "X", "silence", 100, stream="mark_price_update")
+    touching = Gap(200, "X", "silence", 260, stream=oi)
+
+    assert resolve_overlaps([silence, reconnect, down, other_stream, touching]) == sorted(
+        [down, other_stream, touching]
+    )
+    assert resolve_overlaps([silence, reconnect]) == [reconnect]

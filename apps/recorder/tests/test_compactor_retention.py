@@ -144,3 +144,25 @@ def test_settings_default_to_the_spec(monkeypatch):
     floors = (settings.catalog_cap_gb, settings.catalog_free_floor_gb, settings.catalog_hard_floor_gb)
     assert floors == (Decimal(30), Decimal(8), Decimal(2))
     assert str(settings.backup_state_path) == "/state/catalog_backup.json"
+
+
+def test_context_tables_go_with_their_hour(store, tmp_path):
+    """covers: spec 0009 AC-16 (the same hour rule, unchanged, for the five context tables)."""
+    from recorder.compactor.store import CONTEXT_TABLES
+
+    def hour_with_context(hour):
+        mtime = hour + HOUR_NS + 600 * SECOND_NS
+        return _hour(store, hour) + [
+            _write(store.data_file(table, INSTRUMENTS[0], hour), mtime) for table in CONTEXT_TABLES
+        ]
+
+    first = hour_with_context(H0)
+    second = hour_with_context(H0 + HOUR_NS)
+    state = _state(tmp_path, "2025-10-06T09:00:00Z")
+
+    # Each hour holds 11 data files; the cap keeps one.
+    _run(store, state, cap_bytes=12 * SIZE)
+
+    assert not any(p.exists() for p in first)
+    assert all(p.exists() for p in second)
+    assert len(CONTEXT_TABLES) == 5

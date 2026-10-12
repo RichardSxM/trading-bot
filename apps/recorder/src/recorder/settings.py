@@ -2,11 +2,12 @@
 
 from pydantic import Field
 
-from trading_core.settings import CatalogDiskSettings
+from trading_core.settings import CatalogDiskSettings, ContextSettings
 
 
-class RecorderSettings(CatalogDiskSettings):
-    """The recorder's instruments, catalog folder, and queue watch level, plus the disk floors."""
+class RecorderSettings(CatalogDiskSettings, ContextSettings):
+    """The recorder's instruments, catalog folder, and queue watch level, plus the disk floors and the
+    market context feed (spec 0009)."""
 
     # Pinned from the adapter's instrument provider (Kraken's live public data).
     recorder_instruments: str = "PF_XBTUSD.KRAKEN,PF_ETHUSD.KRAKEN"

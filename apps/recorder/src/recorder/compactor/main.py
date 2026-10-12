@@ -21,18 +21,29 @@ from typing import Final
 from pydantic import Field
 
 from recorder.compactor.convert import Beat, BookCarry, HourStream
-from recorder.compactor.days import close_days
+from recorder.compactor.days import close_days, write_gaps
 from recorder.compactor.instruments import InstrumentDefinitions
-from recorder.compactor.store import DELTAS_TABLE, INSTRUMENTS_TABLE, STREAM_TABLES, CatalogStore, read_backup_state
+from recorder.compactor.store import (
+    DELTAS_TABLE,
+    INSTRUMENTS_TABLE,
+    LIQUIDATION_TABLE,
+    RAW_FEED_TABLES,
+    SILENCE_TABLES,
+    STREAM_TABLES,
+    CatalogStore,
+    read_backup_state,
+    stream_key,
+)
 from recorder.live_files import Found, current_run, discover, is_closed
 from recorder.volume import CatalogVolumeMissing, check_catalog_volume
 from trading_core.boot import boot
+from trading_core.marketdata.context_feed import parse_outages
 from trading_core.marketdata.errors import BackupStateInvalid
-from trading_core.marketdata.gaps import GapDetector, GapState
+from trading_core.marketdata.gaps import Gap, GapDetector, GapState, SilenceDetector, SilenceState
 from trading_core.marketdata.hours import GB, SECOND_NS, backlog_bytes_needed
 from trading_core.marketdata.retention import parse_backup_state, plan_retention
 from trading_core.marketdata.sequence import RunHoles, parse_holes
-from trading_core.settings import CatalogDiskSettings
+from trading_core.settings import CatalogDiskSettings, ContextSettings
 
 log = logging.getLogger(__name__)
 
@@ -43,8 +54,9 @@ OFFLINE_FAIL_CODES: Final = frozenset({"catalog_hour_mismatch", "compactor_pass_
 MAX_OFFLINE_PASSES: Final = 20
 
 
-class CompactorSettings(CatalogDiskSettings):
-    """The compactor's catalog, conversion, and retention settings, plus the shared disk floors."""
+class CompactorSettings(CatalogDiskSettings, ContextSettings):
+    """The compactor's catalog, conversion, and retention settings, plus the shared disk floors and the
+    context silence rule (spec 0009 AC-7)."""
 
     catalog_path: str = "/data/catalog"
     # True on the VPS (compose.vps.yaml): refuse to start unless the extra disk is mounted.
@@ -97,6 +109,7 @@ class Compactor:
         ratio: Decimal = Decimal("0.042"),
         floor_bytes: int = 8 * GB,
         silence_ns: int = 10 * SECOND_NS,
+        context_silence_ns: int = 60 * SECOND_NS,
         window_ns: int = 600 * SECOND_NS,
         max_rows: int = 2_000_000,
         beat: Beat | None = None,
@@ -111,6 +124,7 @@ class Compactor:
         self._ratio = ratio
         self._floor_bytes = floor_bytes
         self._silence_ns = silence_ns
+        self._context_silence_ns = context_silence_ns
         self._window_ns = window_ns
         self._max_rows = max_rows
         self._beat = beat
@@ -127,6 +141,7 @@ class Compactor:
         stop_at = self._backlog_gate(found, current)
         holes = self._read_holes(found, current)
         instruments = {instrument for _, instrument in found.streams}
+        outages_changed = self._outage_gaps(found, instruments)
         for file in found.instruments:
             self.definitions.read(file, instruments)
         for (table, instrument), files in found.streams.items():
@@ -140,7 +155,7 @@ class Compactor:
                     break  # files are read strictly in order
                 stream.feed(file, self.done, now_ns)
             stream.end_run_if_over(files, current, self.done, now_ns)
-        changed = False
+        changed = outages_changed
         for stream in self.streams.values():
             changed = stream.end_pass(self.done) or changed
         changed = self.definitions.write_hours(instruments, self.done, STREAM_TABLES) or changed
@@ -158,9 +173,13 @@ class Compactor:
         if stream is None:
             deltas = table == DELTAS_TABLE
             gaps = None
+            silence = None
             if deltas:
                 state = GapState.from_dict(self.done.streams.get(instrument, {}))
                 gaps = GapDetector(instrument, state, silence_ns=self._silence_ns)
+            elif table in SILENCE_TABLES:
+                quiet = SilenceState.from_dict(self.done.context_streams.get(stream_key(table, instrument), {}))
+                silence = SilenceDetector(instrument, table, quiet, silence_ns=self._context_silence_ns)
             stream = HourStream(
                 self._store,
                 table,
@@ -168,6 +187,8 @@ class Compactor:
                 self.done,
                 carry=BookCarry(instrument) if deltas else None,
                 gaps=gaps,
+                silence=silence,
+                dedupe_ids=table == LIQUIDATION_TABLE,
                 grace_ns=self._grace_ns,
                 window_ns=self._window_ns,
                 max_rows=self._max_rows,
@@ -175,6 +196,36 @@ class Compactor:
             )
             self.streams[(table, instrument)] = stream
         return stream
+
+    def _outage_gaps(self, found: Found, instruments: set[str]) -> bool:
+        """The new lines of each run's ``context_outages.jsonl`` as ``reconnect`` gaps of the raw feed's
+        streams, for every instrument (spec 0009 AC-7). True if any line was new."""
+        changed = False
+        for run in found.runs:
+            lines = self._store.read_outage_lines(run)
+            if lines is None:
+                continue
+            seen = self.done.outages.get(run, 0)
+            if len(lines) <= seen:
+                continue
+            outages, bad = parse_outages(lines[seen:])
+            if bad:
+                log.error(
+                    "context outages file has unreadable lines",
+                    extra={"fields": {"code": "context_outages_bad_lines", "run": run, "bad_lines": bad}},
+                )
+            write_gaps(
+                self._store,
+                [
+                    Gap(o.start_ns, instrument, "reconnect", o.end_ns, stream=table)
+                    for o in outages
+                    for instrument in sorted(instruments)
+                    for table in RAW_FEED_TABLES
+                ],
+            )
+            self.done.outages[run] = len(lines)
+            changed = True
+        return changed
 
     def _read_holes(self, found: Found, current: str | None) -> dict[str, RunHoles | None]:
         """Each run's holes file as written so far (AC-16); ``None`` for a run without one.
@@ -409,6 +460,7 @@ def main() -> None:
             ratio=settings.compactor_parquet_ratio,
             floor_bytes=int(settings.catalog_free_floor_gb * GB),
             silence_ns=settings.book_silence_gap_s * SECOND_NS,
+            context_silence_ns=settings.context_silence_s * SECOND_NS,
             window_ns=settings.compactor_reorder_window_s * SECOND_NS,
             max_rows=settings.compactor_reorder_max_rows,
             beat=heartbeat,

@@ -1,4 +1,4 @@
-"""Funding payments for replays of Tardis days (spec 0008 AC-9).
+"""Funding payments for replays (spec 0008 AC-9; our own recorded days from spec 0009 AC-14).
 
 The engine applies no funding, so each unit samples, at every UTC funding boundary strictly
 inside its segment, the mid and its signed position, and the parent turns the samples into
@@ -79,6 +79,21 @@ def rate_at(rates: Sequence[FundingRate], ts_ns: int) -> Decimal:
     if index == 0:
         raise FundingRateMissingError(f"no funding_rate_update at or before {ts_ns}")
     return rates[index - 1].rate
+
+
+def own_funding_gap(rates: Sequence[FundingRate], boundaries: Iterable[int]) -> int | None:
+    """The first boundary our own recorded rates do not cover, or ``None`` when every one is covered.
+
+    A boundary is covered when the last rate at or before it (as ``rate_at`` picks it) is less than
+    one funding period old there: its ``ts_ns`` is in ``(boundary - FUNDING_PERIOD_NS, boundary]``.
+    ``rates`` must be sorted by ``ts_ns`` (spec 0009 AC-14).
+    """
+    times = [r.ts_ns for r in rates]
+    for boundary in sorted(boundaries):
+        index = bisect_right(times, boundary)
+        if index == 0 or times[index - 1] <= boundary - FUNDING_PERIOD_NS:
+            return boundary
+    return None
 
 
 def apply_funding(samples: Iterable[FundingSample], rates: Iterable[FundingRate]) -> list[FundingPayment]:

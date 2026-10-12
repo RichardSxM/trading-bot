@@ -110,9 +110,16 @@ def test_the_bridge_gap_runs_from_the_backlog_to_the_vps_and_closes_the_days_bet
     one = json.loads(backlog.manifest_file("2026-10-08").read_text())
     two = json.loads(backlog.manifest_file("2026-10-09").read_text())
     assert one["gaps"] == [
-        {"instrument_id": INSTRUMENT, "kind": "recorder_down", "seconds": pytest.approx((day_one - last_ns) / 1e9)}
+        {
+            "instrument_id": INSTRUMENT,
+            "stream": DELTAS_TABLE,
+            "kind": "recorder_down",
+            "seconds": pytest.approx((day_one - last_ns) / 1e9),
+        }
     ]
-    assert two["gaps"] == [{"instrument_id": INSTRUMENT, "kind": "recorder_down", "seconds": 86_400.0}]
+    assert two["gaps"] == [
+        {"instrument_id": INSTRUMENT, "stream": DELTAS_TABLE, "kind": "recorder_down", "seconds": 86_400.0}
+    ]
     assert two["streams"] == []
     assert not backlog.manifest_file("2026-10-10").exists()
 

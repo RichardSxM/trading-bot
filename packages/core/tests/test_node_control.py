@@ -15,7 +15,7 @@ import pytest
 pytest.importorskip("nautilus_trader")
 
 from nautilus_trader.backtest.engine import BacktestEngine, BacktestEngineConfig
-from nautilus_trader.config import LoggingConfig, StrategyConfig
+from nautilus_trader.config import LoggingConfig
 from nautilus_trader.model.currencies import USD
 from nautilus_trader.model.enums import AccountType, OmsType, OrderSide, OrderStatus, OrderType, TradingState
 from nautilus_trader.model.identifiers import Venue
@@ -33,7 +33,7 @@ from trading_core.node.control import (
     shutdown_counts,
     trader_state,
 )
-from trading_core.node.strategy import KfsStrategy, PauseGate
+from trading_core.node.strategy import KfsStrategy, KfsStrategyConfig, PauseGate
 from trading_core.recording.enums import ControlCmd, ControlOutcome, ControlSource
 
 NOW = datetime(2026, 10, 3, 9, 30, tzinfo=UTC)
@@ -219,7 +219,9 @@ def _engine(gate, pause_key_value, reduce_first=False):
         await asyncio.sleep(3600)
 
     engine.add_actor(ControlActor(controller, lambda: pause_key_value, consume))
-    strategy = Probe(StrategyConfig(), gate, engine.kernel.risk_engine if reduce_first else None)
+    strategy = Probe(
+        KfsStrategyConfig(instrument_id=INSTRUMENT.id.value), gate, engine.kernel.risk_engine if reduce_first else None
+    )
     engine.add_strategy(strategy)
     return engine, strategy
 

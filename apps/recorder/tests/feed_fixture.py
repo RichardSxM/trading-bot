@@ -9,6 +9,7 @@ import random
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
+from typing import Any
 
 import pyarrow as pa
 from nautilus_trader.core import nautilus_pyo3 as p3
@@ -226,3 +227,95 @@ def write_stream(folder: Path, items: list[tuple[int, pa.Table]], rotate_at: lis
     assert sink is not None
     sink.close()
     return paths
+
+
+def write_context(live: Path, run: str, table: str, rows: list[Any], rotate_at: list[int]) -> list[Path]:
+    """Write context objects (spec 0009) as the recorder does: one batch per object, rotating at each time.
+
+    ``rows`` are Nautilus objects (``FundingRateUpdate``, ``MarkPriceUpdate``, a custom type, ...) of
+    one class, each serialized with the metadata the streaming writer gives it.
+    """
+    from nautilus_trader.serialization.arrow.serializer import ArrowSerializer
+
+    cls = type(rows[0])
+    items = [(r.ts_init, ArrowSerializer.serialize_batch([r], data_cls=cls)) for r in rows]
+    return write_stream(live / run / table / rows[0].instrument_id.value, items, rotate_at)
+
+
+def make_funding(start_ns: int, end_ns: int, every_ns: int = 7 * SECOND_NS, instrument: str = INSTRUMENT) -> list[Any]:
+    """Funding updates every ``every_ns``, the rate stepping each update, next funding on the next hour."""
+    from decimal import Decimal
+
+    from nautilus_trader.model.data import FundingRateUpdate
+    from nautilus_trader.model.identifiers import InstrumentId
+
+    iid = InstrumentId.from_str(instrument)
+    rows = []
+    ts = start_ns
+    n = 0
+    while ts < end_ns:
+        n += 1
+        next_hour = (ts // HOUR_NS + 1) * HOUR_NS
+        rate = Decimal("0.000014034466666667") + Decimal(n) * Decimal("0.000000000000000001")
+        rows.append(FundingRateUpdate(iid, rate, ts - 1_000, ts, next_funding_ns=next_hour))
+        ts += every_ns
+    return rows
+
+
+def make_prices(
+    cls, start_ns: int, end_ns: int, every_ns: int = 2 * SECOND_NS, pauses=(), base: int = 83_597
+) -> list[Any]:
+    """``MarkPriceUpdate`` or ``IndexPriceUpdate`` rows every ``every_ns``, at precision 0 as Kraken gives them.
+
+    ``pauses`` are ``(start, end)`` spans with no rows.
+    """
+    from nautilus_trader.model.identifiers import InstrumentId
+    from nautilus_trader.model.objects import Price
+
+    iid = InstrumentId.from_str(INSTRUMENT)
+    rows = []
+    ts, n = start_ns, 0
+    while ts < end_ns:
+        if not any(a <= ts < b for a, b in pauses):
+            n += 1
+            rows.append(cls(iid, Price(base + n % 7, 0), ts - 1_000, ts))
+        ts += every_ns
+    return rows
+
+
+def make_open_interest(start_ns: int, end_ns: int, every_ns: int = 2 * SECOND_NS, pauses=()) -> list[Any]:
+    """``OpenInterestUpdate`` rows every ``every_ns`` (size precision 4, as Kraken's), none inside ``pauses``."""
+    from nautilus_trader.model.identifiers import InstrumentId
+    from nautilus_trader.model.objects import Quantity
+
+    from trading_core.node.context_types import OpenInterestUpdate
+
+    iid = InstrumentId.from_str(INSTRUMENT)
+    rows = []
+    ts, n = start_ns, 0
+    while ts < end_ns:
+        if not any(a <= ts < b for a, b in pauses):
+            n += 1
+            rows.append(OpenInterestUpdate(iid, Quantity.from_str(f"2423.{1378 + n:04d}"), ts - 1_000, ts))
+        ts += every_ns
+    return rows
+
+
+def liquidation(ts: int, uid: str, side: str = "SELL", kind: str = "liquidation") -> Any:
+    """One ``LiquidationTick`` at ``ts``."""
+    from nautilus_trader.model.identifiers import InstrumentId
+    from nautilus_trader.model.objects import Price, Quantity
+
+    from trading_core.marketdata.context import AggressorSide, LiquidationKind
+    from trading_core.node.context_types import LiquidationTick
+
+    return LiquidationTick(
+        InstrumentId.from_str(INSTRUMENT),
+        uid,
+        LiquidationKind(kind),
+        AggressorSide(side),
+        Price.from_str("83512.5"),
+        Quantity.from_str("0.123"),
+        ts - 1_000,
+        ts,
+    )

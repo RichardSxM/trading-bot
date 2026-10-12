@@ -14,7 +14,7 @@ import logging
 import resource
 import time
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from decimal import ROUND_HALF_EVEN, Decimal
 from pathlib import Path
 from typing import Final, Protocol
@@ -32,7 +32,7 @@ from nautilus_trader.model.position import Position
 from lab.actors import LabRecorder, SegmentEndCloser, UnitRows
 from lab.catalog import DELTAS_TABLE, SourceTree, last_ts_init
 from lab.instruments import with_fees
-from lab.strategies import ConfigValue, RunContext, registry_entry
+from lab.strategies import ConfigValue, MarketContextValues, RunContext, registry_entry
 from lab.stream import SegmentStream, rss_bytes
 from trading_core.lab.errors import RecordingFailedError
 from trading_core.lab.funding import FundingSample, funding_boundaries
@@ -68,6 +68,7 @@ TRADER_ID: Final = "BACKTESTER-LAB"
 # Units build rows before the variant has a run id; the parent replaces this one (AC-12).
 UNIT_RUN_ID: Final = UUID(int=0)
 NS_PER_MS: Final = 1_000_000
+NS_PER_S: Final = 1_000_000_000
 CENT: Final = Decimal("0.01")
 
 
@@ -94,6 +95,9 @@ class UnitPlan:
     env: Env = Env.DEMO
     # The test only strategies are registered (LAB_TEST_STRATEGIES=1, AC-13).
     test_strategies: bool = False
+    # The run file's [context] values, and how far before the segment its context rows start (spec 0009 AC-13).
+    market: MarketContextValues = field(default_factory=MarketContextValues)
+    context_warmup_s: int = 7_200
 
 
 type Sequenced[R] = tuple[tuple[int, R], ...]
@@ -297,6 +301,7 @@ def run_unit(plan: UnitPlan) -> UnitResult:
         seed=plan.seed,
         risk=plan.risk,
         order_id_tag=f"S{segment.index}",
+        market=plan.market,
     )
     strategy = entry.build(entry.build_config(plan.strategy_config, context), gate, blocks, rows)
     # The run ends at the final synthetic batch, just after the runner's close can reach the
@@ -336,6 +341,8 @@ def run_unit(plan: UnitPlan) -> UnitResult:
         )
 
     stream = SegmentStream(tree, segment, on_hour=hour_done, final_ts_init=final_ts)
+    # Context rows from before the segment, known at its first book row (spec 0009 AC-13).
+    strategy.warm_market_context(stream.warmup(plan.context_warmup_s * NS_PER_S))
     engine = make_engine(plan)
     try:
         engine.add_actor(recorder)

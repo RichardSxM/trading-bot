@@ -20,21 +20,35 @@ from recorder.disk import free_bytes
 from recorder.sequence_holes import HOLES_FILE
 from trading_core.catalog.layout import (
     DELTAS_TABLE,
+    FUNDING_TABLE,
+    INDEX_TABLE,
     INSTRUMENTS_TABLE,
+    LIQUIDATION_TABLE,
+    MARK_TABLE,
+    OPEN_INTEREST_TABLE,
     TRADES_TABLE,
     CatalogLayout,
     hour_filename,
     parse_hour_filename,
 )
 from trading_core.catalog.sink import COMPRESSION, TMP_SUFFIX, atomic_write
+from trading_core.marketdata.context_feed import OUTAGES_FILE
 from trading_core.marketdata.errors import BackupStateInvalid
 from trading_core.marketdata.retention import HourFiles
 
 __all__ = [
     "BOOKS_KEPT",
     "COMPRESSION",
+    "CONTEXT_TABLES",
     "DELTAS_TABLE",
+    "FUNDING_TABLE",
+    "INDEX_TABLE",
     "INSTRUMENTS_TABLE",
+    "LIQUIDATION_TABLE",
+    "MARK_TABLE",
+    "OPEN_INTEREST_TABLE",
+    "RAW_FEED_TABLES",
+    "SILENCE_TABLES",
     "STREAM_TABLES",
     "TMP_SUFFIX",
     "TRADES_TABLE",
@@ -46,11 +60,28 @@ __all__ = [
     "stream_key",
 ]
 
-# For deltas and trades the recorder's stream folder under `live/<run>/` has the catalog table's
-# name; instruments are `live/<run>/crypto_perpetual_<ns>.feather`.
-STREAM_TABLES: Final = (DELTAS_TABLE, TRADES_TABLE)
+# The market context streams (spec 0009): they convert like trades, and get the book's
+# `recorder_down` gaps as their own (AC-7).
+CONTEXT_TABLES: Final = (MARK_TABLE, INDEX_TABLE, FUNDING_TABLE, OPEN_INTEREST_TABLE, LIQUIDATION_TABLE)
+# The context streams that push steadily, so a long pause between two rows is a `silence` gap
+# (AC-7); funding and liquidations have quiet spells by nature.
+SILENCE_TABLES: Final = (MARK_TABLE, INDEX_TABLE, OPEN_INTEREST_TABLE)
+# The raw feed's streams: its outages are their `reconnect` gaps (AC-7).
+RAW_FEED_TABLES: Final = (OPEN_INTEREST_TABLE, LIQUIDATION_TABLE)
+# Each stream's folder under `live/<run>/` has the catalog table's name; instruments are
+# `live/<run>/crypto_perpetual_<ns>.feather`.
+STREAM_TABLES: Final = (DELTAS_TABLE, TRADES_TABLE, *CONTEXT_TABLES)
 # Book files kept per instrument: the newest is the carry, the one before it a spare.
 BOOKS_KEPT: Final = 2
+
+
+def _complete_lines(path: Path) -> tuple[list[str], int] | None:
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError:
+        return None
+    end = data.rfind(b"\n") + 1
+    return data[:end].decode(errors="replace").splitlines(), end
 
 
 def stream_key(table: str, instrument_id: str) -> str:
@@ -73,6 +104,11 @@ class DoneRecord:
     - ``started_runs``: dead runs whose conversion began, so the space check (AC-9) runs once.
     - ``streams``: per instrument, the gap detector's state (``GapState.to_dict``), so detection
       resumes across passes (AC-4).
+    - ``context_streams``: per context stream key, the silence detector's state
+      (``SilenceState.to_dict``, spec 0009 AC-7).
+    - ``outages``: per run, how many lines of its ``context_outages.jsonl`` became gaps (AC-7).
+    - ``liquidation_uids``: per liquidation stream key, the last finished hour and its trade ids, so a
+      duplicate in the next hour is dropped the same way on a rerun (AC-5).
     - ``empty``: per instrument, hours without rows that lie wholly inside a ``recorder_down`` gap;
       they count towards closing a day (AC-5).
     - ``days``: the closed days (``YYYY-MM-DD``), each with its manifest written.
@@ -88,6 +124,9 @@ class DoneRecord:
     instruments: dict[str, dict[str, Any]] = field(default_factory=dict)
     started_runs: set[str] = field(default_factory=set)
     streams: dict[str, dict[str, object]] = field(default_factory=dict)
+    context_streams: dict[str, dict[str, object]] = field(default_factory=dict)
+    outages: dict[str, int] = field(default_factory=dict)
+    liquidation_uids: dict[str, dict[str, Any]] = field(default_factory=dict)
     empty: dict[str, set[int]] = field(default_factory=dict)
     days: set[str] = field(default_factory=set)
     holes: dict[str, dict[str, object]] = field(default_factory=dict)
@@ -110,6 +149,9 @@ class DoneRecord:
                 "instruments": dict(sorted(self.instruments.items())),
                 "started_runs": sorted(self.started_runs),
                 "streams": dict(sorted(self.streams.items())),
+                "context_streams": dict(sorted(self.context_streams.items())),
+                "outages": dict(sorted(self.outages.items())),
+                "liquidation_uids": dict(sorted(self.liquidation_uids.items())),
                 "empty": {k: sorted(v) for k, v in sorted(self.empty.items())},
                 "days": sorted(self.days),
                 "holes": dict(sorted(self.holes.items())),
@@ -131,6 +173,9 @@ class DoneRecord:
             instruments=dict(raw.get("instruments", {})),
             started_runs=set(raw.get("started_runs", [])),
             streams=dict(raw.get("streams", {})),
+            context_streams=dict(raw.get("context_streams", {})),
+            outages=dict(raw.get("outages", {})),
+            liquidation_uids=dict(raw.get("liquidation_uids", {})),
             empty={k: set(v) for k, v in raw.get("empty", {}).items()},
             days=set(raw.get("days", [])),
             holes=dict(raw.get("holes", {})),
@@ -209,12 +254,16 @@ class CatalogStore(CatalogLayout):
         A last line without its newline is still being written (or was torn by a crash), so it is
         left out.
         """
-        try:
-            data = self.holes_file(run).read_bytes()
-        except FileNotFoundError:
-            return None
-        end = data.rfind(b"\n") + 1
-        return data[:end].decode(errors="replace").splitlines(), end
+        return _complete_lines(self.holes_file(run))
+
+    def outages_file(self, run: str) -> Path:
+        """The recorder's ``context_outages.jsonl`` of a run (spec 0009 AC-6)."""
+        return self.live / run / OUTAGES_FILE
+
+    def read_outage_lines(self, run: str) -> list[str] | None:
+        """The complete lines of a run's outages file, or ``None`` when it has none (as for holes)."""
+        read = _complete_lines(self.outages_file(run))
+        return None if read is None else read[0]
 
     def remove_run_if_empty(self, run: str) -> None:
         """Delete a finished run folder once no feather file is left in it."""

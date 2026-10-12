@@ -54,6 +54,7 @@ from trading_core.control.pause import pause_key
 from trading_core.control.records import PostgresCommandRecorder
 from trading_core.env_guard import ALLOWED_EXEC_CLIENTS, SANDBOX, ExecClientAllowlist
 from trading_core.naming import node_id
+from trading_core.node.context_feed import ContextFeedActor, ContextFeedConfig
 from trading_core.node.control import (
     ControlActor,
     PaperStatus,
@@ -82,7 +83,7 @@ from trading_core.secrets import (
     POSTGRES_PASSWORD,
     REDIS_PASSWORD,
 )
-from trading_core.settings import PaperLoopSettings, Settings
+from trading_core.settings import ContextSettings, PaperLoopSettings, Settings
 from trading_core.snapshot.envelope import snapshot_key
 from trading_core.strategy.blocks import EntryBlocks
 
@@ -104,7 +105,7 @@ CONTROL_SOCKET_TIMEOUT_S: Final = 3.0
 KrakenUrls = tuple[str, str]
 
 
-class TraderSettings(PaperLoopSettings):
+class TraderSettings(PaperLoopSettings, ContextSettings):
     # UTC date the live Kraken key was created; required in live (spec 0003 AC-9).
     kraken_key_rotated_on: date | None = None
     # How long a live start waits for an authenticated Kraken account (spec 0003 AC-8).
@@ -364,8 +365,11 @@ def finish_paper_loop(paper: PaperLoop, settings: PaperLoopSettings, positions_o
         )
 
 
-def placeholder_config(settings: PaperLoopSettings, run_id: UUID) -> PlaceholderConfig:
-    """The strategy's config from the ``PLACEHOLDER_*`` and ``RISK_*`` settings, under ``run_id``."""
+def placeholder_config(settings: TraderSettings, run_id: UUID) -> PlaceholderConfig:
+    """The strategy's config from the ``PLACEHOLDER_*``, ``RISK_*``, and ``CONTEXT_*`` settings, under ``run_id``.
+
+    The placeholder reads the market context and logs it once per bar (spec 0009 AC-11).
+    """
     return PlaceholderConfig(
         env=settings.trading_env,
         run_id=str(run_id),
@@ -379,6 +383,12 @@ def placeholder_config(settings: PaperLoopSettings, run_id: UUID) -> Placeholder
         max_leverage=settings.risk_max_leverage,
         stale_quote_s=settings.risk_stale_quote_s,
         stop_accept_timeout_s=settings.stop_accept_timeout_s,
+        use_market_context=True,
+        context_max_age_mark_s=settings.context_max_age_mark_s,
+        context_max_age_index_s=settings.context_max_age_index_s,
+        context_max_age_open_interest_s=settings.context_max_age_open_interest_s,
+        context_max_age_funding_s=settings.context_max_age_funding_s,
+        context_liquidation_window_s=settings.context_liquidation_window_s,
     )
 
 
@@ -419,6 +429,18 @@ def run_node(
     node.trader.add_actor(control.actor)
     node.trader.add_actor(
         HeartbeatActor(HeartbeatConfig(path=os.environ.get("HEARTBEAT_FILE", "/run/heartbeat/alive")))
+    )
+    # Open interest and liquidations for the strategies' market context (spec 0009 AC-12). The trader
+    # records none of it, and an outage only logs: it never blocks entries, pauses, or alerts.
+    node.trader.add_actor(
+        ContextFeedActor(
+            ContextFeedConfig(
+                ws_url=settings.context_ws_url,
+                instrument_ids=[BTC_PERP],
+                reconnect_max_s=settings.context_reconnect_max_s,
+                idle_s=settings.context_idle_s,
+            )
+        )
     )
     paper_state: Callable[[], PaperStatus] | None = None
     snapshot_readers: list[tuple[str, Callable[[], Mapping[str, object] | None]]] = [

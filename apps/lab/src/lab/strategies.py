@@ -8,7 +8,7 @@ when the caller asks for the test strategies (``LAB_TEST_STRATEGIES=1``, AC-13).
 """
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Final
 from uuid import UUID
@@ -41,6 +41,32 @@ class StrategyConfigError(Exception):
 
 
 @dataclass(frozen=True)
+class MarketContextValues:
+    """The run file's ``[context]`` values a strategy's market context is built with (spec 0009 AC-13).
+
+    The defaults are ``ContextSettings``'; ``liquidations_available`` is false for ``tardis`` runs.
+    """
+
+    max_age_mark_s: int = 30
+    max_age_index_s: int = 30
+    max_age_open_interest_s: int = 30
+    max_age_funding_s: int = 7_200
+    liquidation_window_s: int = 60
+    liquidations_available: bool = True
+
+    def config_fields(self) -> dict[str, object]:
+        """The ``context_*`` fields of ``KfsStrategyConfig``."""
+        return {
+            "context_max_age_mark_s": self.max_age_mark_s,
+            "context_max_age_index_s": self.max_age_index_s,
+            "context_max_age_open_interest_s": self.max_age_open_interest_s,
+            "context_max_age_funding_s": self.max_age_funding_s,
+            "context_liquidation_window_s": self.liquidation_window_s,
+            "context_liquidations_available": self.liquidations_available,
+        }
+
+
+@dataclass(frozen=True)
 class RunContext:
     """What the run, not ``[strategy.config]``, gives every strategy."""
 
@@ -50,6 +76,7 @@ class RunContext:
     seed: int
     risk: RiskLimits
     order_id_tag: str
+    market: MarketContextValues = field(default_factory=MarketContextValues)
 
 
 # Stands in for the run while checking a config at startup, before any run exists.
@@ -121,6 +148,7 @@ def _random_taker_fields(context: RunContext) -> dict[str, object]:
         "max_order_notional_usd": str(context.risk.max_order_notional),
         "max_leverage": str(context.risk.max_leverage),
         "order_id_tag": context.order_id_tag,
+        **context.market.config_fields(),
     }
 
 
@@ -133,6 +161,7 @@ def _placeholder_fields(context: RunContext) -> dict[str, object]:
         "max_order_notional_usd": str(context.risk.max_order_notional),
         "max_leverage": str(context.risk.max_leverage),
         "order_id_tag": context.order_id_tag,
+        **context.market.config_fields(),
     }
 
 

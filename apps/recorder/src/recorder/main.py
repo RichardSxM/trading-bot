@@ -18,7 +18,13 @@ from nautilus_trader.config import (
     TradingNodeConfig,
 )
 from nautilus_trader.live.node import TradingNode
-from nautilus_trader.model.data import OrderBookDeltas, TradeTick
+from nautilus_trader.model.data import (
+    FundingRateUpdate,
+    IndexPriceUpdate,
+    MarkPriceUpdate,
+    OrderBookDeltas,
+    TradeTick,
+)
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.instruments import CryptoPerpetual
 from nautilus_trader.persistence.writer import RotationMode
@@ -31,16 +37,28 @@ from recorder.settings import RecorderSettings
 from recorder.volume import CatalogVolumeMissing, check_catalog_volume
 from trading_core import env_guard
 from trading_core.boot import boot
+from trading_core.marketdata.context_feed import OUTAGES_FILE
 from trading_core.marketdata.hours import GB
 from trading_core.naming import node_id
+from trading_core.node.context_feed import ContextFeedActor, ContextFeedConfig
+from trading_core.node.context_types import LiquidationTick, OpenInterestUpdate
 from trading_core.node.heartbeat import HeartbeatActor, HeartbeatConfig
 from trading_core.node.kraken import futures_data_client
 
 log = logging.getLogger(__name__)
 
-# What the stream records (spec 0007 AC-1). The data engine publishes book deltas as
-# OrderBookDeltas batches; their rows are OrderBookDelta.
-RECORDED_TYPES: list[type] = [OrderBookDeltas, TradeTick, CryptoPerpetual]
+# What the stream records (spec 0007 AC-1, spec 0009 AC-1). The data engine publishes book deltas
+# as OrderBookDeltas batches; their rows are OrderBookDelta.
+RECORDED_TYPES: list[type] = [
+    OrderBookDeltas,
+    TradeTick,
+    CryptoPerpetual,
+    MarkPriceUpdate,
+    IndexPriceUpdate,
+    FundingRateUpdate,
+    OpenInterestUpdate,
+    LiquidationTick,
+]
 # The data engine's queue capacity (the Nautilus default), watched by QueueDepthActor (AC-13).
 DATA_QUEUE_SIZE = 100_000
 
@@ -109,6 +127,19 @@ def main() -> None:
             # Called only once the node is built and running.
             probe=lambda: node.kernel.data_engine.data_qsize(),
             capacity=config.data_engine.qsize,
+        )
+    )
+    # Open interest and liquidations from Kraken's public websocket (spec 0009 AC-3); its outages go
+    # to the run folder for the compactor's reconnect gaps (AC-6, AC-7). It never stops the recorder.
+    node.trader.add_actor(
+        ContextFeedActor(
+            ContextFeedConfig(
+                ws_url=settings.context_ws_url,
+                instrument_ids=settings.instrument_list,
+                reconnect_max_s=settings.context_reconnect_max_s,
+                idle_s=settings.context_idle_s,
+            ),
+            outages_path=lambda: Path(settings.catalog_path) / "live" / str(node.kernel.instance_id) / OUTAGES_FILE,
         )
     )
     disk_guard = DiskGuardActor(DiskGuardConfig(catalog_path=settings.catalog_path, floor_bytes=floor_bytes))
