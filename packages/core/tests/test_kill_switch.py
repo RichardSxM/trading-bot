@@ -391,6 +391,7 @@ class TripOnDelete(FakeRedis):
         self.kill_switch = None
 
     async def delete(self, *names):
+        assert self.kill_switch is not None
         self.kill_switch.halt_automatic(HaltReason.TOTAL_LOSS_LIMIT)
         await super().delete(*names)
 
