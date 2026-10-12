@@ -297,3 +297,49 @@ def test_main_pause_sends_from_deploy_by_default(tmp_path, monkeypatch, capsys):
     assert control_cli.main(["pause", "--wait-result", "5"]) == 0
     line = json.loads(capsys.readouterr().out)
     assert (line["cmd"], line["source"], line["status"]) == ("pause", "deploy", "executed")
+
+
+# spec 0010 AC-19: stop, flatten, resume -----------------------------------------------------
+
+
+@pytest.mark.parametrize("name", ["stop", "flatten", "resume"])
+def test_main_kill_switch_commands_send_as_cli_and_exit_0_on_executed(tmp_path, monkeypatch, capsys, name):
+    _secrets_dir(tmp_path, monkeypatch)
+    redis = AnsweringRedis(ControlOutcome.RECEIVED, ControlOutcome.EXECUTED)
+    monkeypatch.setattr(control_cli, "redis_client", lambda settings, password: redis)
+
+    assert control_cli.main([name, "--wait-result", "5", "--ttl", "30"]) == 0
+    line = json.loads(capsys.readouterr().out)
+    assert (line["cmd"], line["source"], line["status"]) == (name, "cli", "executed")
+    [(_, fields)] = redis.streams["demo:control"]
+    sent = from_fields(fields)
+    assert (sent.expires_at - sent.issued_at).total_seconds() == 30
+
+
+def test_a_failed_resume_prints_its_reason_and_exits_1(tmp_path, monkeypatch, capsys):
+    _secrets_dir(tmp_path, monkeypatch)
+    redis = AnsweringRedis(ControlOutcome.RECEIVED, ControlOutcome.FAILED, reason="not_flat")
+    monkeypatch.setattr(control_cli, "redis_client", lambda settings, password: redis)
+
+    assert control_cli.main(["resume", "--wait-result", "5"]) == 1
+    line = json.loads(capsys.readouterr().out)
+    assert (line["status"], line["reason"]) == ("failed", "not_flat")
+
+
+def test_a_stop_redis_refuses_exits_2(tmp_path, monkeypatch, capsys):
+    _secrets_dir(tmp_path, monkeypatch)
+    redis = AnsweringRedis()
+    redis.fail = RedisConnectionError("down")
+    monkeypatch.setattr(control_cli, "redis_client", lambda settings, password: redis)
+
+    assert control_cli.main(["stop", "--wait-result", "5"]) == 2
+    assert json.loads(capsys.readouterr().out)["status"] == "not_sent"
+
+
+def test_a_stop_without_an_answer_in_time_exits_2():
+    redis = AnsweringRedis(ControlOutcome.RECEIVED)
+    msg = command(ControlCmd.STOP, datetime.now(UTC), 60, ControlSource.CLI)
+
+    result = asyncio.run(control_cli.send_kill_switch(redis, msg, "demo", 0))
+
+    assert (result.code, result.line["status"]) == (2, "no_result")

@@ -181,8 +181,22 @@ def load_pause(controller: PauseController, raw: str | bytes | None) -> None:
     )
 
 
+class LossStatus(Protocol):
+    """What ``resume`` needs from the loss limits (spec 0010 AC-4): seeded yet, and the total under its limit."""
+
+    @property
+    def seeded(self) -> bool: ...
+
+    @property
+    def total_over_limit(self) -> bool: ...
+
+
 class KillSwitch:
-    """Executes ``stop`` (spec 0010 AC-1, AC-3, AC-5 to AC-7): halt, cancel entries, flatten, wait for flat.
+    """Executes ``stop``, ``flatten``, and ``resume`` (spec 0010 AC-1 to AC-7).
+
+    ``stop`` halts, cancels entries, flattens, and waits for flat; ``flatten`` does the same without
+    the halt; ``resume`` lifts the halt and any pause, unless the trader is not flat or a loss limit
+    still forbids it.
 
     The halt is applied in memory before any I/O, so a Redis failure can only leave the trader
     more halted, never less. ``attach`` hands it the strategies and the recording callable once
@@ -205,11 +219,13 @@ class KillSwitch:
         self._client = client
         self._env = Env(env)
         self._key = halt_key(env)
+        self._pause_key = pause_key(env)
         self._now = now
         self._cache = cache
         self._flat_timeout = timedelta(seconds=flat_timeout_s)
         self._poll_s = poll_s
         self._strategies: Sequence[KfsStrategy] = ()
+        self._losses: LossStatus | None = None
         self._record: Record | None = None
         self._run_id: uuid.UUID | None = None
         self._key_written = False
@@ -221,6 +237,10 @@ class KillSwitch:
         self._strategies = tuple(strategies)
         self._record = record
         self._run_id = run_id
+
+    def watch_losses(self, losses: LossStatus) -> None:
+        """Let ``resume`` read the loss limits (the ``LossLimitActor``); without it nothing is refused for them."""
+        self._losses = losses
 
     @property
     def flattening(self) -> bool:
@@ -272,6 +292,61 @@ class KillSwitch:
         if not flat:
             return Outcome(ControlOutcome.FAILED, "flatten_timeout")
         return Outcome(ControlOutcome.EXECUTED)
+
+    async def flatten(self, msg: ControlMessage) -> Outcome:
+        """Cancel entries and close positions without halting or touching the pause, then wait for flat."""
+        self._flatten_all(msg.id)
+        if await self._wait_flat(msg.id, self._now()):
+            return Outcome(ControlOutcome.EXECUTED)
+        return Outcome(ControlOutcome.FAILED, "flatten_timeout")
+
+    async def resume(self, msg: ControlMessage) -> Outcome:
+        """Lift the halt and any pause in one ``DEL``, unless a refusal applies (spec 0010 AC-4).
+
+        Not halted: it still clears any pause. Halted: refused while not flat, while the loss
+        figures are unknown, or while the total loss is at or over its limit. Entry blocks stay.
+        """
+        state = self._gate.halt_state
+        if state is not None:
+            refusal = self._resume_refusal()
+            if refusal is not None:
+                log.warning(
+                    "resume refused",
+                    extra={"fields": {"code": "resume_refused", "reason": refusal, "id": str(msg.id)}},
+                )
+                return Outcome(ControlOutcome.FAILED, refusal)
+        try:
+            await self._client.delete(self._key, self._pause_key)
+        except (RedisError, OSError, TimeoutError) as exc:
+            # Nothing changed: the keys would halt and pause the trader again on its next start.
+            log.error(
+                "halt and pause keys not deleted",
+                extra={"fields": {"code": "halt_key_delete_failed", "error": type(exc).__name__}},
+            )
+            return Outcome(ControlOutcome.FAILED, "halt_key_delete_failed")
+        self._gate.unhalt()
+        self._gate.unpause()
+        self._key_written = False
+        apply_trading_state(self._gate, self._risk_engine)
+        self._event(
+            f"resume:{msg.id}",
+            RiskEventKind.RESUME,
+            Severity.INFO,
+            "trader resumed" if state is not None else "trader resumed (was not halted)",
+            {"source": msg.source.value, "halt_reason": None if state is None else state.reason.value},
+        )
+        return Outcome(ControlOutcome.EXECUTED)
+
+    def _resume_refusal(self) -> str | None:
+        if self.flattening or self._cache.positions_open():
+            return "not_flat"
+        if self._losses is None:
+            return None
+        if not self._losses.seeded:
+            return "loss_unknown"
+        if self._losses.total_over_limit:
+            return "total_loss_limit"
+        return None
 
     def flatten_after_restart(self) -> None:
         """Flatten again once the strategies run, for a trader that started halted (spec 0010 AC-7)."""
@@ -387,11 +462,15 @@ class KillSwitch:
 
 
 def control_execute(pause: PauseController, kill_switch: KillSwitch) -> Execute:
-    """The consumer's ``execute``: ``stop`` to the kill switch, everything else to the pause controller."""
+    """The consumer's ``execute``: ``stop``, ``flatten``, and ``resume`` to the kill switch, the rest to the pause."""
 
     async def execute(msg: ControlMessage) -> Outcome:
         if msg.cmd is ControlCmd.STOP:
             return await kill_switch.stop(msg)
+        if msg.cmd is ControlCmd.FLATTEN:
+            return await kill_switch.flatten(msg)
+        if msg.cmd is ControlCmd.RESUME:
+            return await kill_switch.resume(msg)
         return await pause.execute(msg)
 
     return execute

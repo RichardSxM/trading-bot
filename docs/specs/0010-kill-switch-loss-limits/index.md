@@ -345,7 +345,7 @@ Tracer Bullet: the first slice is the thinnest real stop from the dashboard butt
    - Reword spec 0004 verify step 21 and spec 0005 AC-6 to the new behavior.
 
    Satisfies **AC-1**, **AC-3**, **AC-5**, **AC-6**, **AC-7**.
-3. **Flatten and resume, end to end.**
+3. **Flatten and resume, end to end.** (built)
    - `KillSwitch.flatten` and `KillSwitch.resume`, with the `not_flat` refusal, and `executed` when resume finds no halt (it still clears a pause).
    - The dashboard: `/control/flatten` and `/control/resume` with the two step confirm, Resume switched from `unpause` to `resume`, and the failure reason shown in the command state.
    - `ControlSource.CLI`, plus the `control_cli` subcommands `stop`, `flatten`, and `resume`.

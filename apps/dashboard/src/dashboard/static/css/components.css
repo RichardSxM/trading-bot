@@ -392,6 +392,7 @@ time[title] { text-decoration: underline dotted var(--edge); text-underline-offs
 .pause-area { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-12); }
 .pause-area__error { flex-basis: 100%; color: var(--loss); font-weight: 600; font-size: var(--type-caption-size); }
 .pause-area__note { flex-basis: 100%; color: var(--muted); font-size: var(--type-caption-size); }
+.pause-area__confirm { flex-basis: 100%; margin: 0; font-weight: 600; }
 
 /* The alert bar (AC-21): one full width line under the top bar, only while something is wrong. */
 .alert-bar { grid-column: 1 / -1; margin: 0 calc(-1 * var(--space-16)) calc(-1 * var(--space-8)); }

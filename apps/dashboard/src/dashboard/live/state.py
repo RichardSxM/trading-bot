@@ -108,6 +108,28 @@ _OUTCOMES: Final[dict[ControlOutcome, tuple[str, CommandLevel, bool, CommandStat
 }
 
 
+# A ``failed`` result's reason in plain words (spec 0010 AC-18); an unknown reason shows its code.
+FAILURE_WORDS: Final = {
+    "not_flat": "not flat yet",
+    "total_loss_limit": "total loss limit",
+    "loss_unknown": "loss not known yet",
+    "flatten_timeout": "flatten timeout",
+    "halt_key_write_failed": "halt not saved, a restart would run",
+    "halt_key_delete_failed": "halt not cleared",
+    "pause_key_write_failed": "pause not saved",
+    "pause_key_delete_failed": "pause not cleared",
+    "not_implemented": "not implemented",
+    "error": "error in the trader",
+}
+
+
+def failure_words(reason: str | None) -> str | None:
+    """The plain words for a ``failed`` reason, the code itself when unknown, None without one."""
+    if not reason:
+        return None
+    return FAILURE_WORDS.get(reason, reason)
+
+
 def ago(seconds: float) -> str:
     """A short elapsed time: ``12s ago`` under a minute, ``3m ago`` under an hour, else ``2h ago``.
 
@@ -293,6 +315,9 @@ def _outcome(msg: ControlMessage, outcome: ControlResult | None, now: datetime) 
         # Not final: a late result from the trader still replaces it.
         return _State("not handled, expired", "bad", False, "unhandled", msg.expires_at, msg.expires_at)
     label, level, final, status = _OUTCOMES[outcome.outcome]
+    words = failure_words(outcome.reason) if outcome.outcome is ControlOutcome.FAILED else None
+    if words is not None:
+        label = f"{label} · {words}"
     return _State(label, level, final, status, outcome.outcome_at, outcome.outcome_at if final else None)
 
 
@@ -306,7 +331,7 @@ class PauseView:
 
 RUNNING: Final = PauseView("", "ok")
 PAUSE_NO_DATA: Final = PauseView("no data", "lost")
-_PAUSED_BY: Final = {"dashboard": "paused · by you", "deploy": "paused · by deploy"}
+_PAUSED_BY: Final = {"dashboard": "paused · by you", "deploy": "paused · by deploy", "cli": "paused · by command line"}
 
 
 def pause_view(raw: str | bytes | None) -> PauseView:

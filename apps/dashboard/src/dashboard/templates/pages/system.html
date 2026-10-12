@@ -4,7 +4,7 @@
 <div class="board">
   <section class="region region--wide" aria-labelledby="trading-h">
     <header class="region__head"><h2 class="region__title" id="trading-h">Trading</h2></header>
-    {% with csrf=csrf, error=pause_error %}{% include "partials/pause_area.html" %}{% endwith %}
+    {% with csrf=csrf, error=pause_error, confirm=confirm %}{% include "partials/pause_area.html" %}{% endwith %}
   </section>
   <section class="region region--wide" aria-labelledby="system-h">
     <header class="region__head"><h2 class="region__title" id="system-h">Commands and services</h2></header>

@@ -6,6 +6,9 @@ dashboard container.
     python -m dashboard.control_cli pause --source deploy --wait-result 30
     python -m dashboard.control_cli unpause --source deploy --wait-result 30
     python -m dashboard.control_cli wait-flat --timeout 15m
+    python -m dashboard.control_cli stop --wait-result 30
+    python -m dashboard.control_cli flatten --wait-result 30
+    python -m dashboard.control_cli resume --wait-result 30
 
 Runs with the dashboard's settings and its own Redis login (the ``dashboard`` ACL user), so it
 needs no new grant. stdout carries exactly one JSON line, the result; anything else goes to
@@ -16,6 +19,9 @@ stderr. Exit codes:
 - ``wait-flat``: 0 after two fresh ``trader_state`` reads at least 2 s apart both show no open
   position and no open entry order, 2 on timeout, 3 when the pause is lifted, 1 on a missing or
   stale snapshot.
+- ``stop``, ``flatten``, ``resume`` (spec 0010 AC-19, sent with ``source = cli``): 0 on ``executed``,
+  1 on ``failed``, ``expired``, or ``duplicate`` (the reason is printed), 2 when Redis cannot be
+  reached or no result came in time.
 """
 
 import argparse
@@ -245,6 +251,19 @@ async def _with_client(settings: DashboardSettings, run: Callable[[ControlClient
         await client.aclose()
 
 
+# The kill switch commands (spec 0010 AC-19) and their exit code when the command never got an answer.
+KILL_SWITCH_CMDS: Final = {"stop": ControlCmd.STOP, "flatten": ControlCmd.FLATTEN, "resume": ControlCmd.RESUME}
+EXIT_NO_ANSWER: Final = 2
+
+
+async def send_kill_switch(client: ControlClient, msg: ControlMessage, env: TradingEnv, wait_s: float) -> Result:
+    """``send_and_wait`` for ``stop``, ``flatten``, ``resume``: no answer (not sent, none in time) exits 2."""
+    result = await send_and_wait(client, msg, env, wait_s)
+    if result.line.get("status") in ("not_sent", "no_result"):
+        return Result(EXIT_NO_ANSWER, result.line)
+    return result
+
+
 def _run(args: argparse.Namespace, settings: DashboardSettings) -> Result:
     env = settings.trading_env
     if args.command in ("heartbeat", "state"):
@@ -254,6 +273,9 @@ def _run(args: argparse.Namespace, settings: DashboardSettings) -> Result:
         cmd = ControlCmd.PAUSE if args.command == "pause" else ControlCmd.UNPAUSE
         msg = command(cmd, datetime.now(UTC), args.ttl, ControlSource(args.source))
         return asyncio.run(_with_client(settings, lambda client: send_and_wait(client, msg, env, args.wait_result)))
+    if args.command in KILL_SWITCH_CMDS:
+        msg = command(KILL_SWITCH_CMDS[args.command], datetime.now(UTC), args.ttl, ControlSource.CLI)
+        return asyncio.run(_with_client(settings, lambda client: send_kill_switch(client, msg, env, args.wait_result)))
     key = snapshot_key(env, "trader_state")
     return asyncio.run(_with_client(settings, lambda client: wait_flat(client, key, args.timeout)))
 
@@ -272,6 +294,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     for name in ("pause", "unpause"):
         cmd = sub.add_parser(name, help=f"send {name} and wait for the trader's answer; exit 0 on executed")
         cmd.add_argument("--source", choices=[s.value for s in ControlSource], default=ControlSource.DEPLOY.value)
+        cmd.add_argument("--wait-result", type=float, default=30.0, metavar="SECONDS")
+        cmd.add_argument("--ttl", type=int, default=COMMAND_TTL_S, metavar="SECONDS")
+    for name in KILL_SWITCH_CMDS:
+        cmd = sub.add_parser(name, help=f"send {name} as cli and wait for the trader's answer; exit 0 on executed")
         cmd.add_argument("--wait-result", type=float, default=30.0, metavar="SECONDS")
         cmd.add_argument("--ttl", type=int, default=COMMAND_TTL_S, metavar="SECONDS")
     flat = sub.add_parser("wait-flat", help="wait until the paused trader holds no position and no entry order")

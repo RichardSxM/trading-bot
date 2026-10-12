@@ -20,10 +20,12 @@ router = APIRouter()
 WRONG: Final = "Password or code is wrong"
 LOCKED: Final = "Too many attempts. Try again in 15 minutes."
 STOP_LOST: Final = "Your stop was NOT sent. Log in and tap stop again."
-# A Pause or Resume tap whose session had expired (spec 0005 AC-13); keyed by the `lost` query value.
+# A Pause, Resume, or Flatten tap whose session had expired (spec 0005 AC-13, spec 0010 AC-18); keyed by
+# the `lost` query value.
 LOST_NOTICES: Final = {
     "pause": "Your pause was NOT sent. Log in and tap Pause again.",
     "resume": "Your resume was NOT sent. Log in and tap Resume again.",
+    "flatten": "Your flatten was NOT sent. Log in and tap Flatten again.",
 }
 
 Reason = Literal["bad_password", "bad_code", "replayed_code", "locked"]

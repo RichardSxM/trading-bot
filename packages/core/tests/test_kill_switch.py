@@ -1,6 +1,6 @@
-"""covers: spec 0010 AC-1 (halt then flatten), AC-3 (executed when flat, flatten_timeout, late fill
-re-flatten, a second stop), AC-5 (the halt key), AC-6 (key write failure), AC-7 (halt event, restart
-flatten).
+"""covers: spec 0010 AC-1 (halt then flatten), AC-2 (flatten), AC-3 (executed when flat, flatten_timeout,
+late fill re-flatten, a second stop), AC-4 (resume), AC-5 (the halt key), AC-6 (key write failure),
+AC-7 (halt event, restart flatten).
 
 Needs the ``node`` extra (NautilusTrader) for ``node.control``, so it runs in the trader image.
 """
@@ -50,6 +50,8 @@ class FakeRedis:
         self.values[name] = value
 
     async def delete(self, *names):
+        if self.fail or getattr(self, "fail_delete", False):
+            raise RedisConnectionError("redis down")
         for name in names:
             self.values.pop(name, None)
 
@@ -287,3 +289,141 @@ def test_control_execute_routes_stop_to_the_kill_switch_and_pause_to_the_control
     assert gate.paused
     assert gate.halted
     assert HALT_KEY in redis.values
+
+
+# Flatten and resume (spec 0010 AC-2, AC-4) -----------------------------------------------
+
+PAUSE_KEY = "demo:trader:pause"
+
+
+class Losses:
+    def __init__(self, seeded=True, total_over_limit=False):
+        self.seeded = seeded
+        self.total_over_limit = total_over_limit
+
+
+def _halted(**kwargs):
+    parts = _kill_switch(**kwargs)
+    ks, gate, _, redis, cache, records = parts
+    ks.attach([FakeStrategy(cache)], records.append, uuid.uuid4())
+    asyncio.run(ks.stop(_stop()))
+    redis.values[PAUSE_KEY] = "{}"
+    gate.pause_in_memory()
+    return parts
+
+
+def test_flatten_closes_without_halting_or_touching_the_pause():
+    """covers: spec 0010 AC-2"""
+    cache = FakeCache()
+    cache.positions = {"S-1": ["p"]}
+    ks, gate, risk, redis, cache, _ = _kill_switch(cache)
+    strategy = FakeStrategy(cache)
+    ks.attach([strategy], None, None)
+    msg = command(ControlCmd.FLATTEN, NOW, 60)
+
+    outcome = asyncio.run(ks.flatten(msg))
+
+    assert outcome.outcome is ControlOutcome.EXECUTED
+    assert strategy.flattened == [msg.id]
+    assert not gate.halted
+    assert not gate.paused
+    assert risk.trading_state == TradingState.ACTIVE
+    assert HALT_KEY not in redis.values
+
+
+def test_flatten_that_cannot_get_flat_fails_with_flatten_timeout():
+    cache = FakeCache()
+    cache.positions = {"S-1": ["p"]}
+    ks, *_ = _kill_switch(cache, clock=Clock(step=timedelta(seconds=1)), timeout_s=5)
+    ks.attach([FakeStrategy(cache, stuck=True)], None, None)
+
+    outcome = asyncio.run(ks.flatten(command(ControlCmd.FLATTEN, NOW, 60)))
+
+    assert (outcome.outcome, outcome.reason) == (ControlOutcome.FAILED, "flatten_timeout")
+
+
+def test_resume_deletes_both_keys_lifts_the_halt_and_pause_and_records_one_info_event():
+    """covers: spec 0010 AC-4"""
+    ks, gate, risk, redis, _, records = _halted()
+    msg = command(ControlCmd.RESUME, NOW, 60)
+
+    outcome = asyncio.run(ks.resume(msg))
+
+    assert outcome.outcome is ControlOutcome.EXECUTED
+    assert not gate.halted
+    assert not gate.paused
+    assert risk.trading_state == TradingState.ACTIVE
+    assert HALT_KEY not in redis.values
+    assert PAUSE_KEY not in redis.values
+    resumes = [e for e in _events(records) if e.kind is RiskEventKind.RESUME]
+    assert [(e.event_key, e.severity) for e in resumes] == [(f"resume:{msg.id}", Severity.INFO)]
+
+
+def test_resume_while_a_position_is_open_fails_not_flat_and_changes_nothing():
+    ks, gate, risk, redis, cache, _ = _halted()
+    cache.positions = {"S-9": ["p"]}
+
+    outcome = asyncio.run(ks.resume(command(ControlCmd.RESUME, NOW, 60)))
+
+    assert (outcome.outcome, outcome.reason) == (ControlOutcome.FAILED, "not_flat")
+    assert gate.halted
+    assert risk.trading_state == TradingState.REDUCING
+    assert HALT_KEY in redis.values
+
+
+@pytest.mark.parametrize(
+    ("losses", "reason"),
+    [(Losses(seeded=False), "loss_unknown"), (Losses(total_over_limit=True), "total_loss_limit")],
+)
+def test_resume_is_refused_while_the_loss_limits_forbid_it(losses, reason):
+    ks, gate, *_ = _halted()
+    ks.watch_losses(losses)
+
+    outcome = asyncio.run(ks.resume(command(ControlCmd.RESUME, NOW, 60)))
+
+    assert (outcome.outcome, outcome.reason) == (ControlOutcome.FAILED, reason)
+    assert gate.halted
+
+
+def test_resume_whose_delete_fails_stays_halted_and_paused():
+    ks, gate, risk, redis, *_ = _halted()
+    redis.fail_delete = True
+
+    outcome = asyncio.run(ks.resume(command(ControlCmd.RESUME, NOW, 60)))
+
+    assert (outcome.outcome, outcome.reason) == (ControlOutcome.FAILED, "halt_key_delete_failed")
+    assert gate.halted
+    assert gate.paused
+    assert risk.trading_state == TradingState.REDUCING
+
+
+def test_resume_when_not_halted_still_clears_a_pause():
+    ks, gate, _, redis, *_ = _kill_switch()
+    ks.watch_losses(Losses(seeded=False))
+    redis.values[PAUSE_KEY] = "{}"
+    gate.pause_in_memory()
+
+    outcome = asyncio.run(ks.resume(command(ControlCmd.RESUME, NOW, 60)))
+
+    assert outcome.outcome is ControlOutcome.EXECUTED
+    assert not gate.paused
+    assert PAUSE_KEY not in redis.values
+
+
+def test_a_new_halt_after_resume_writes_the_key_again():
+    ks, gate, _, redis, *_ = _halted()
+    asyncio.run(ks.resume(command(ControlCmd.RESUME, NOW, 60)))
+
+    asyncio.run(ks.stop(_stop()))
+
+    assert halt.decode(redis.values[HALT_KEY]) == gate.halt_state
+
+
+def test_control_execute_routes_flatten_and_resume_to_the_kill_switch():
+    ks, gate, risk, redis, *_ = _kill_switch()
+    execute = control_execute(PauseController(gate, risk, redis, "demo", lambda: NOW), ks)
+
+    flattened = asyncio.run(execute(command(ControlCmd.FLATTEN, NOW, 60)))
+    resumed = asyncio.run(execute(command(ControlCmd.RESUME, NOW, 60)))
+
+    assert (flattened.outcome, resumed.outcome) == (ControlOutcome.EXECUTED, ControlOutcome.EXECUTED)

@@ -1,19 +1,20 @@
-"""The control buttons: Stop in the top bar (spec 0004 AC-11, AC-13), Pause and Resume on System
-(spec 0005 AC-13). One tap appends one command to ``{env}:control``.
+"""The control buttons: Stop in the top bar (spec 0004 AC-11, AC-13), Pause, Resume, and Flatten
+on System (spec 0005 AC-13, spec 0010 AC-18). One tap appends one command to ``{env}:control``.
 
 Each button is a plain form that HTMX enhances, so it works without JavaScript. It depends
 only on the session, the CSRF token, and Redis; it never shows ``sent`` unless the append
-succeeded. Pause and Resume follow the stop's path exactly; Resume sends ``unpause`` and clears
-any pause, whoever set it.
+succeeded. Stop stays one tap. Resume (``resume``: it lifts a halt and clears any pause, whoever
+set it) and Flatten take a confirm step: a POST without ``confirm=1`` only renders the area in
+its confirm state, and the confirm form's POST carries ``confirm=1`` and sends.
 """
 
 import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Final
+from typing import Annotated, Final
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Form, Request
 from fastapi.responses import RedirectResponse, Response
 from redis.typing import EncodableT, FieldT
 
@@ -23,9 +24,10 @@ from dashboard.live.poller import COMMAND_EVENT, REDIS_ERRORS
 from dashboard.web.context import AppContext, app_context
 from dashboard.web.page_routes import render_referring_page
 from dashboard.web.session import (
+    FLATTEN_PATH,
     PAUSE_PATH,
+    RESUME_PATH,
     STOP_PATH,
-    UNPAUSE_PATH,
     CsrfDep,
     current_session,
     handle_csrf_refused,
@@ -45,13 +47,17 @@ SEND_TIMEOUT_S: Final = 1.0
 
 @dataclass(frozen=True)
 class Button:
-    """One control button: its area partial, the page key for its error, and its NOT sent words."""
+    """One control button: its area partial, the page key for its error, and its NOT sent words.
+
+    ``confirm`` names the button's confirm step (``resume``, ``flatten``); None sends on one tap.
+    """
 
     area: str
     template: str
     error_key: str
     not_sent: str
     not_sent_csrf: str
+    confirm: str | None = None
 
 
 STOP: Final = Button(
@@ -74,14 +80,31 @@ RESUME: Final = Button(
     "pause_error",
     "Resume NOT sent: Redis did not answer",
     "Resume NOT sent: reload the page",
+    confirm="resume",
 )
-BUTTONS: Final = {STOP_PATH: STOP, PAUSE_PATH: PAUSE, UNPAUSE_PATH: RESUME}
+FLATTEN: Final = Button(
+    "pause-area",
+    "partials/pause_area.html",
+    "pause_error",
+    "Flatten NOT sent: Redis did not answer",
+    "Flatten NOT sent: reload the page",
+    confirm="flatten",
+)
+BUTTONS: Final = {STOP_PATH: STOP, PAUSE_PATH: PAUSE, RESUME_PATH: RESUME, FLATTEN_PATH: FLATTEN}
+CONFIRMED: Final = "1"
 
 
-def render_area(context: AppContext, session: Session, button: Button, error: str | None, status_code: int) -> Response:
+def render_area(
+    context: AppContext,
+    session: Session,
+    button: Button,
+    error: str | None,
+    status_code: int,
+    confirm: str | None = None,
+) -> Response:
     """The button's area partial for HTMX, plus the command state as an out of band swap when sent."""
-    area = context.templates.get_template(button.template).render(csrf=session.csrf, error=error)
-    command_html = "" if error else context.poller.cached.get(COMMAND_EVENT, "")
+    area = context.templates.get_template(button.template).render(csrf=session.csrf, error=error, confirm=confirm)
+    command_html = "" if error or confirm else context.poller.cached.get(COMMAND_EVENT, "")
     html = area
     if command_html:
         html += f'<span id="{COMMAND_EVENT}" hx-swap-oob="innerHTML">{command_html}</span>'
@@ -145,11 +168,33 @@ async def pause(request: Request, session: CsrfDep) -> Response:
     return await send(request, session, PAUSE, msg)
 
 
-@router.post(UNPAUSE_PATH)
-async def unpause(request: Request, session: CsrfDep) -> Response:
+async def ask_confirm(request: Request, session: Session, button: Button) -> Response:
+    """The button's confirm step: nothing is sent, the area asks first (spec 0010 AC-18)."""
     context = app_context(request)
-    msg = command(ControlCmd.UNPAUSE, _now(context), context.settings.control_command_ttl_s, ControlSource.DASHBOARD)
-    return await send(request, session, RESUME, msg)
+    if is_htmx(request):
+        return render_area(context, session, button, None, 200, confirm=button.confirm)
+    return await render_referring_page(request, context, session, status_code=200, confirm=button.confirm)
+
+
+async def confirmed_send(
+    request: Request, session: Session, button: Button, cmd: ControlCmd, confirm: str | None
+) -> Response:
+    """Send ``cmd`` when the POST carries ``confirm=1``, else render the confirm step."""
+    if confirm != CONFIRMED:
+        return await ask_confirm(request, session, button)
+    context = app_context(request)
+    msg = command(cmd, _now(context), context.settings.control_command_ttl_s, ControlSource.DASHBOARD)
+    return await send(request, session, button, msg)
+
+
+@router.post(RESUME_PATH)
+async def resume(request: Request, session: CsrfDep, confirm: Annotated[str | None, Form()] = None) -> Response:
+    return await confirmed_send(request, session, RESUME, ControlCmd.RESUME, confirm)
+
+
+@router.post(FLATTEN_PATH)
+async def flatten(request: Request, session: CsrfDep, confirm: Annotated[str | None, Form()] = None) -> Response:
+    return await confirmed_send(request, session, FLATTEN, ControlCmd.FLATTEN, confirm)
 
 
 async def handle_csrf_refused_on_stop(request: Request, exc: Exception) -> Response:

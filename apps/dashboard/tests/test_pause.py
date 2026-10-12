@@ -1,4 +1,5 @@
-"""covers: spec 0005 AC-13, Pause and Resume on System, the pause in the top bar, and Activity rows."""
+"""covers: spec 0005 AC-13, Pause and Resume on System, the pause in the top bar, and Activity rows;
+spec 0010 AC-18 (Resume sends ``resume``, Flatten, the confirm step that works without JavaScript)."""
 
 import logging
 import re
@@ -25,7 +26,12 @@ RESULTS = "demo:control:results"
 STATE_KEY = "demo:snapshot:trader_state"
 HTMX = {"HX-Request": "true"}
 SYSTEM = {"Referer": "http://testserver/system"}
-BUTTONS = [("/control/pause", "pause", "Pause"), ("/control/unpause", "unpause", "Resume")]
+# path, cmd, label, and what a sending POST adds to the csrf (the confirm step's answer).
+BUTTONS = [
+    ("/control/pause", "pause", "Pause", {}),
+    ("/control/resume", "resume", "Resume", {"confirm": "1"}),
+    ("/control/flatten", "flatten", "Flatten", {"confirm": "1"}),
+]
 
 
 def _csrf(client):
@@ -50,15 +56,18 @@ def test_system_has_pause_and_resume_forms_with_the_csrf_token(logged_in):
 
     assert 'id="pause-area"' in page
     assert 'action="/control/pause"' in page
-    assert 'action="/control/unpause"' in page
+    assert 'action="/control/resume"' in page
+    assert 'action="/control/flatten"' in page
+    assert "/control/unpause" not in page
     assert ">Pause<" in page
     assert ">Resume<" in page
-    assert page.count('name="csrf"') >= 4  # stop, pause, resume, log out
+    assert ">Flatten<" in page
+    assert page.count('name="csrf"') >= 5  # stop, pause, resume, flatten, log out
 
 
-@pytest.mark.parametrize(("path", "cmd", "label"), BUTTONS)
-def test_one_tap_appends_one_command_from_the_dashboard(logged_in, redis, path, cmd, label):
-    response = logged_in.post(path, data={"csrf": _csrf(logged_in)}, headers=HTMX)
+@pytest.mark.parametrize(("path", "cmd", "label", "extra"), BUTTONS)
+def test_one_tap_appends_one_command_from_the_dashboard(logged_in, redis, path, cmd, label, extra):
+    response = logged_in.post(path, data={"csrf": _csrf(logged_in), **extra}, headers=HTMX)
 
     assert response.status_code == 200
     assert 'id="pause-area"' in response.text
@@ -68,20 +77,20 @@ def test_one_tap_appends_one_command_from_the_dashboard(logged_in, redis, path, 
     assert uuid.UUID(entry["id"]).version == 4
 
 
-@pytest.mark.parametrize(("path", "cmd", "label"), BUTTONS)
-def test_without_javascript_the_form_post_returns_to_system(logged_in, redis, path, cmd, label):
-    response = logged_in.post(path, data={"csrf": _csrf(logged_in)}, headers=SYSTEM)
+@pytest.mark.parametrize(("path", "cmd", "label", "extra"), BUTTONS)
+def test_without_javascript_the_form_post_returns_to_system(logged_in, redis, path, cmd, label, extra):
+    response = logged_in.post(path, data={"csrf": _csrf(logged_in), **extra}, headers=SYSTEM)
 
     assert response.status_code == 303
     assert response.headers["location"] == "/system"
     assert len(_entries(redis)) == 1
 
 
-@pytest.mark.parametrize(("path", "cmd", "label"), BUTTONS)
-def test_a_missing_or_wrong_csrf_token_is_refused_and_appends_nothing(logged_in, redis, path, cmd, label):
-    missing = logged_in.post(path, headers=HTMX)
-    wrong = logged_in.post(path, data={"csrf": "wrong"}, headers=HTMX)
-    plain = logged_in.post(path, data={"csrf": "wrong"}, headers=SYSTEM)
+@pytest.mark.parametrize(("path", "cmd", "label", "extra"), BUTTONS)
+def test_a_missing_or_wrong_csrf_token_is_refused_and_appends_nothing(logged_in, redis, path, cmd, label, extra):
+    missing = logged_in.post(path, data=extra, headers=HTMX)
+    wrong = logged_in.post(path, data={"csrf": "wrong", **extra}, headers=HTMX)
+    plain = logged_in.post(path, data={"csrf": "wrong", **extra}, headers=SYSTEM)
 
     for response in (missing, wrong, plain):
         assert response.status_code == 403
@@ -91,14 +100,14 @@ def test_a_missing_or_wrong_csrf_token_is_refused_and_appends_nothing(logged_in,
     assert _entries(redis) == []
 
 
-@pytest.mark.parametrize(("path", "cmd", "label"), BUTTONS)
-def test_redis_down_answers_503_logs_error_and_never_says_sent(logged_in, redis, caplog, path, cmd, label):
+@pytest.mark.parametrize(("path", "cmd", "label", "extra"), BUTTONS)
+def test_redis_down_answers_503_logs_error_and_never_says_sent(logged_in, redis, caplog, path, cmd, label, extra):
     csrf = _csrf(logged_in)
     redis.fail = RedisConnectionError("down")
 
     with caplog.at_level(logging.ERROR):
-        htmx = logged_in.post(path, data={"csrf": csrf}, headers=HTMX)
-        plain = logged_in.post(path, data={"csrf": csrf}, headers=SYSTEM)
+        htmx = logged_in.post(path, data={"csrf": csrf, **extra}, headers=HTMX)
+        plain = logged_in.post(path, data={"csrf": csrf, **extra}, headers=SYSTEM)
 
     for response in (htmx, plain):
         assert response.status_code == 503
@@ -113,7 +122,8 @@ def test_redis_down_answers_503_logs_error_and_never_says_sent(logged_in, redis,
     ("path", "lost", "notice"),
     [
         ("/control/pause", "pause", "Your pause was NOT sent. Log in and tap Pause again."),
-        ("/control/unpause", "resume", "Your resume was NOT sent. Log in and tap Resume again."),
+        ("/control/resume", "resume", "Your resume was NOT sent. Log in and tap Resume again."),
+        ("/control/flatten", "flatten", "Your flatten was NOT sent. Log in and tap Flatten again."),
     ],
 )
 def test_a_tap_without_a_session_goes_to_login_saying_it_was_not_sent(client, redis, path, lost, notice):
@@ -127,6 +137,37 @@ def test_a_tap_without_a_session_goes_to_login_saying_it_was_not_sent(client, re
     assert plain.headers["location"] == target
     assert notice in client.get(target).text
     assert _entries(redis) == []
+
+
+@pytest.mark.parametrize(("path", "label"), [("/control/resume", "resume"), ("/control/flatten", "flatten")])
+def test_the_first_tap_asks_to_confirm_and_sends_nothing(logged_in, redis, path, label):
+    csrf = _csrf(logged_in)
+
+    htmx = logged_in.post(path, data={"csrf": csrf}, headers=HTMX)
+    plain = logged_in.post(path, data={"csrf": csrf}, headers=SYSTEM)
+
+    for response in (htmx, plain):
+        assert response.status_code == 200
+        assert f">Confirm {label}<" in response.text
+        assert 'name="confirm" value="1"' in response.text
+        assert 'href="/system"' in response.text  # Cancel, a plain link back
+        assert "sent ·" not in response.text
+    assert 'id="pause-area"' in htmx.text
+    assert "<html" in plain.text  # System again, with the area asking, without JavaScript
+    assert _entries(redis) == []
+
+
+def test_only_confirm_1_sends(logged_in, redis):
+    csrf = _csrf(logged_in)
+
+    logged_in.post("/control/resume", data={"csrf": csrf, "confirm": "yes"}, headers=HTMX)
+    assert _entries(redis) == []
+    logged_in.post("/control/resume", data={"csrf": csrf, "confirm": "1"}, headers=HTMX)
+    assert [e["cmd"] for e in _entries(redis)] == ["resume"]
+
+
+def test_the_unpause_route_is_gone_from_the_dashboard(logged_in):
+    assert logged_in.post("/control/unpause", data={"csrf": _csrf(logged_in)}, headers=HTMX).status_code in (404, 405)
 
 
 def test_an_unknown_lost_value_shows_no_notice(client):
@@ -191,16 +232,40 @@ def test_a_failed_pause_shows_in_the_top_bar_but_raises_no_stop_alert():
     assert alert_state(fresh, awaiting_unpause, later, 10) is None
 
 
-def test_activity_lists_pause_and_unpause_next_to_stop(logged_in, redis, clock):
+def test_activity_lists_pause_and_resume_next_to_stop(logged_in, redis, clock):
     now = datetime.fromtimestamp(clock.now, tz=UTC)
     csrf = _csrf(logged_in)
     logged_in.post("/control/stop", data={"csrf": csrf}, headers=HTMX)
     logged_in.post("/control/pause", data={"csrf": csrf}, headers=HTMX)
-    logged_in.post("/control/unpause", data={"csrf": csrf}, headers=HTMX)
+    logged_in.post("/control/resume", data={"csrf": csrf, "confirm": "1"}, headers=HTMX)
     pause_id = _entries(redis)[1]["id"]
     redis.append(RESULTS, {"id": pause_id, "outcome": "executed", "outcome_at": format_utc(now), "schema_version": "1"})
 
     feed = logged_in.get("/").text
-    assert re.search(r"unpause.*awaiting trader", feed, re.S)
+    assert re.search(r"resume.*awaiting trader", feed, re.S)
     assert re.search(r"pause.*confirmed", feed, re.S)
     assert "stop" in feed
+
+
+@pytest.mark.parametrize(
+    ("reason", "words"),
+    [
+        ("not_flat", "resume sent · failed · not flat yet"),
+        ("total_loss_limit", "resume sent · failed · total loss limit"),
+        ("loss_unknown", "resume sent · failed · loss not known yet"),
+        ("brand_new", "resume sent · failed · brand_new"),
+    ],
+)
+def test_a_failed_result_shows_its_reason_in_plain_words(reason, words):
+    """covers: spec 0010 AC-18 (reasons)"""
+    from dashboard.live.state import command_state
+    from trading_core.control.messages import ControlResult, command, result_to_fields, to_fields
+    from trading_core.recording.enums import ControlCmd, ControlOutcome
+
+    now = datetime(2026, 10, 12, 9, 30, tzinfo=UTC)
+    msg = command(ControlCmd.RESUME, now, 60)
+    result = ControlResult(msg.id, ControlOutcome.FAILED, now, reason)
+
+    view = command_state(to_fields(msg), result_to_fields(result), now, 60)
+
+    assert view.text == words
