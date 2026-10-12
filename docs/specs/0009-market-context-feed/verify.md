@@ -19,3 +19,8 @@ The checks that need real Kraken data or the VPS. Unit and integration tests cov
 
 8. Fetch two own days recorded after deploy with `scripts/fetch-catalog.sh`, and run `lab replay` on `random_taker` with `use_market_context` on: the report says funding source `own`, and the `market_context` log lines show ages under the max ages. Result: _pending_
 9. `lab import-tardis --context` on one already converted Tardis day: three tables, the rewritten `funding_rate_update`, and `manifests/context/<day>.json` written; the gap file unchanged; a second run logs `lab_import_day_skipped`; a replay of that day gives the same funding total as before the backfill. Result: _pending_
+
+## Also after deploy (added by /develop, 2026-10-12)
+
+10. Stop the recorder for a few minutes, then start it again. After the compactor's next pass, the day's gap file holds a `recorder_down` row for the book and for each of the five context streams, all with the same start and end, and the manifest lists one gap entry per stream (AC-10). Result: _pending_
+11. Watch the trader's logs for an hour: each bar logs `market_context` with mark, index, basis, funding, and open interest, all ages under their max ages, and no `context_clock_behind` beyond a rare line (AC-12). Result: _pending_
