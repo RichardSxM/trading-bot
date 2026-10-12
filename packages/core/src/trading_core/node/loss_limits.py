@@ -190,7 +190,7 @@ class LossLimitActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
 
     def _land(self, seed: LossSeed, now: datetime) -> None:
         with self._lock:
-            tally = seeded_tally(seed, now, self._limits)
+            tally = roll(seeded_tally(seed, now, self._limits), self.clock.utc_now())
             for event in self._buffer:
                 tally = self._fold(tally, event)
             self._buffer.clear()
@@ -219,7 +219,8 @@ class LossLimitActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
             if self._tally is None:
                 self._buffer.append(event)
                 return
-            self._tally = self._fold(self._tally, event)
+            # Roll first: an event between midnight and the next tick belongs to the new day.
+            self._tally = self._fold(roll(self._tally, self.clock.utc_now()), event)
         self._evaluate()
 
     def _fold(self, tally: LossTally, event: PositionOpened | PositionClosed) -> LossTally:

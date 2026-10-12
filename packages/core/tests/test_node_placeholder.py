@@ -837,6 +837,10 @@ def _loss_actor(read_seed, limits, own_blocks=None, seeded_at_start=None):
     made: dict[str, Any] = {}
 
     class _Actor(LossLimitActor):
+        def _on_position_event(self, event):
+            made.setdefault("events", []).append(event)
+            super()._on_position_event(event)
+
         def on_start(self):
             super().on_start()
             if seeded_at_start is not None:  # the backtest never yields to the seed task: land it here
@@ -1032,6 +1036,33 @@ def test_a_losing_close_starts_the_cooldown_and_counts_one_trade():
     assert {BlockReason.TRADE_CAP, BlockReason.LOSS_COOLDOWN} <= set(strategy._blocks.active())
     trade_cap = [e for e in _risk_events(rows) if e.event_key.startswith("trade_cap:")]
     assert [(e.kind, e.severity) for e in trade_cap] == [(RiskEventKind.LIMIT_HIT, Severity.WARNING)]
+
+
+def test_a_close_after_midnight_before_the_next_tick_counts_in_the_new_day():
+    """covers: spec 0010 AC-9, AC-11 (the day rolls before an event is folded, not only on the 1 s tick)"""
+    from nautilus_trader.model.events import PositionClosed
+
+    build, made = _loss_actor(lambda *_: _empty_seed(), _limits(), seeded_at_start=_empty_seed())
+    _run(FALLING_AFTER_ENTRY, add_actor=build)
+    actor = made["actor"]
+    (closed,) = [e for e in made["events"] if isinstance(e, PositionClosed)]
+    tally, _ = actor.figures()
+    # The tick has not rolled yet: the tally still holds yesterday, empty.
+    actor._tally = replace(
+        tally,
+        day=tally.day - timedelta(days=1),
+        realized_today=Decimal(0),
+        trades_today=0,
+        opened_keys=frozenset(),
+        closed_keys=frozenset(),
+    )
+
+    actor._on_position_event(closed)
+
+    tally, _ = actor.figures()
+    assert tally.day == actor.clock.utc_now().date()
+    assert tally.realized_today == closed.realized_pnl.as_decimal()
+    assert tally.trades_today == 1
 
 
 def test_events_before_the_seed_are_held_and_a_key_in_the_seed_counts_once(caplog):

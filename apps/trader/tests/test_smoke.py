@@ -907,6 +907,7 @@ def test_the_placeholder_reads_the_market_context_with_the_trader_settings():
         ({"RISK_TOTAL_LOSS_LIMIT_USD": "-1"}, "greater than 0"),
         ({"RISK_DAILY_LOSS_LIMIT_USD": "20", "RISK_TOTAL_LOSS_LIMIT_USD": "10"}, "must not be below"),
         ({"RISK_TOTAL_LOSS_SINCE": "2999-01-01"}, "in the future"),
+        ({"RISK_TOTAL_LOSS_SINCE": ""}, "risk_total_loss_since"),  # unset in Compose reaches the trader empty
         ({"RISK_MAX_TRADES_PER_DAY": "0"}, "greater than or equal to 1"),
         ({"RISK_LOSS_COOLDOWN_S": "-1"}, "greater than or equal to 0"),
         ({"KILL_SWITCH_FLAT_TIMEOUT_S": "4"}, "greater than or equal to 5"),

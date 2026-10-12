@@ -371,6 +371,54 @@ def test_resume_while_a_position_is_open_fails_not_flat_and_changes_nothing():
     assert HALT_KEY in redis.values
 
 
+def test_resume_while_an_entry_order_is_still_open_fails_not_flat():
+    """covers: spec 0010 AC-4 (an entry left after a flatten timeout could fill once the halt lifts)"""
+    ks, gate, _, redis, cache, _ = _halted()
+    cache.inflight = [FakeOrder("entry")]
+
+    outcome = asyncio.run(ks.resume(command(ControlCmd.RESUME, NOW, 60)))
+
+    assert (outcome.outcome, outcome.reason) == (ControlOutcome.FAILED, "not_flat")
+    assert gate.halted
+    assert HALT_KEY in redis.values
+
+
+class TripOnDelete(FakeRedis):
+    """A loss limit trips while resume's delete is on its way to Redis."""
+
+    def __init__(self):
+        super().__init__()
+        self.kill_switch = None
+
+    async def delete(self, *names):
+        self.kill_switch.halt_automatic(HaltReason.TOTAL_LOSS_LIMIT)
+        await super().delete(*names)
+
+
+@pytest.mark.parametrize("halted_before", [True, False])
+def test_a_halt_that_lands_during_resume_s_delete_is_kept_and_its_key_written_back(halted_before):
+    """covers: spec 0010 AC-4, AC-10 (a limit tripped during resume is never lost)"""
+    redis = TripOnDelete()
+    ks, gate, risk, redis, cache, records = _kill_switch(redis=redis)
+    redis.kill_switch = ks
+    ks.attach([FakeStrategy(cache)], records.append, uuid.uuid4())
+    if halted_before:
+        asyncio.run(ks.stop(_stop()))
+
+    async def run():
+        outcome = await ks.resume(command(ControlCmd.RESUME, NOW, 60))
+        await asyncio.sleep(0.01)  # let the automatic halt's task settle
+        return outcome
+
+    outcome = asyncio.run(run())
+
+    assert (outcome.outcome, outcome.reason) == (ControlOutcome.FAILED, "halted_during_resume")
+    assert gate.halted
+    assert risk.trading_state == TradingState.REDUCING
+    assert halt.decode(redis.values[HALT_KEY]) == gate.halt_state
+    assert not [e for e in _events(records) if e.kind is RiskEventKind.RESUME]
+
+
 @pytest.mark.parametrize(
     ("losses", "reason"),
     [(Losses(seeded=False), "loss_unknown"), (Losses(total_over_limit=True), "total_loss_limit")],

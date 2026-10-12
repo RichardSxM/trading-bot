@@ -193,9 +193,11 @@ services:
       RISK_STALE_QUOTE_S: ${RISK_STALE_QUOTE_S:-10}
       STOP_ACCEPT_TIMEOUT_S: ${STOP_ACCEPT_TIMEOUT_S:-5}
       # The kill switch and loss limits (spec 0010). The total counts losses since this UTC date.
+      # RISK_TOTAL_LOSS_SINCE has no default on purpose: unset reaches the trader empty, and it
+      # refuses to start (set it in .env on the laptop, /etc/kfs/kfs.env on the VPS).
       RISK_DAILY_LOSS_LIMIT_USD: ${RISK_DAILY_LOSS_LIMIT_USD:-20}
       RISK_TOTAL_LOSS_LIMIT_USD: ${RISK_TOTAL_LOSS_LIMIT_USD:-100}
-      RISK_TOTAL_LOSS_SINCE: ${RISK_TOTAL_LOSS_SINCE:-2026-10-12}
+      RISK_TOTAL_LOSS_SINCE: ${RISK_TOTAL_LOSS_SINCE:-}
       RISK_MAX_TRADES_PER_DAY: ${RISK_MAX_TRADES_PER_DAY:-50}
       RISK_LOSS_COOLDOWN_S: ${RISK_LOSS_COOLDOWN_S:-600}
       KILL_SWITCH_FLAT_TIMEOUT_S: ${KILL_SWITCH_FLAT_TIMEOUT_S:-20}

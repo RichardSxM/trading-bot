@@ -195,7 +195,7 @@ code in [packages/core/src/trading_core/control/halt.py](../../packages/core/src
   - [x] Entry hold drill: demo only `SANDBOX_DELAY_ENTRY_FILLS_S` that holds entries in the sandbox so a stop can cancel one, for verify step 16 (AC-1)
 - [x] Verify it: `/check verify kill switch & loss limits`
 - [x] Test it: `/test kill switch & loss limits`
-- [ ] Review it (fresh model): `/check review kill switch & loss limits`
+- [x] Review it (fresh model): `/check review kill switch & loss limits`
 - [ ] Document it: `/document kill switch & loss limits`
 
 ### 10. Leverage & liquidation guard · needs a decision

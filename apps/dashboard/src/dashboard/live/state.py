@@ -114,6 +114,7 @@ FAILURE_WORDS: Final = {
     "not_flat": "not flat yet",
     "total_loss_limit": "total loss limit",
     "loss_unknown": "loss not known yet",
+    "halted_during_resume": "a loss limit halted it again",
     "flatten_timeout": "flatten timeout",
     "halt_key_write_failed": "halt not saved, a restart would run",
     "halt_key_delete_failed": "halt not cleared",

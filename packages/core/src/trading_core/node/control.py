@@ -230,6 +230,7 @@ class KillSwitch:
         self._run_id: uuid.UUID | None = None
         self._key_written = False
         self._flattening = 0
+        self._halts = 0  # every halt applied, new or not, so resume sees one that lands during its delete
         self._tasks: set[asyncio.Task[object]] = set()
         self._loop: asyncio.AbstractEventLoop | None = None
 
@@ -306,16 +307,15 @@ class KillSwitch:
 
         Not halted: it still clears any pause. Halted: refused while not flat, while the loss
         figures are unknown, or while the total loss is at or over its limit. Entry blocks stay.
+        A halt that lands while the keys are being deleted (a loss limit) is kept: its key is
+        written back and resume answers ``halted_during_resume``.
         """
         state = self._gate.halt_state
         if state is not None:
             refusal = self._resume_refusal()
             if refusal is not None:
-                log.warning(
-                    "resume refused",
-                    extra={"fields": {"code": "resume_refused", "reason": refusal, "id": str(msg.id)}},
-                )
-                return Outcome(ControlOutcome.FAILED, refusal)
+                return self._refused(msg, refusal)
+        halts = self._halts
         try:
             await self._client.delete(self._key, self._pause_key)
         except (RedisError, OSError, TimeoutError) as exc:
@@ -325,6 +325,8 @@ class KillSwitch:
                 extra={"fields": {"code": "halt_key_delete_failed", "error": type(exc).__name__}},
             )
             return Outcome(ControlOutcome.FAILED, "halt_key_delete_failed")
+        if self._halts != halts:
+            return await self._keep_new_halt(msg)
         self._gate.unhalt()
         self._gate.unpause()
         self._key_written = False
@@ -338,8 +340,24 @@ class KillSwitch:
         )
         return Outcome(ControlOutcome.EXECUTED)
 
+    def _refused(self, msg: ControlMessage, reason: str) -> Outcome:
+        log.warning(
+            "resume refused",
+            extra={"fields": {"code": "resume_refused", "reason": reason, "id": str(msg.id)}},
+        )
+        return Outcome(ControlOutcome.FAILED, reason)
+
+    async def _keep_new_halt(self, msg: ControlMessage) -> Outcome:
+        """A halt landed during resume's delete: stay halted and write its key back (the delete removed it)."""
+        current = self._gate.halt_state
+        self._key_written = False
+        if current is not None and not await self._write_key(current):
+            return Outcome(ControlOutcome.FAILED, "halt_key_write_failed")
+        return self._refused(msg, "halted_during_resume")
+
     def _resume_refusal(self) -> str | None:
-        if self.flattening or self._cache.positions_open():
+        # is_flat, not only positions: an entry still open or in flight could fill after the halt lifts.
+        if self.flattening or not self.is_flat():
             return "not_flat"
         if self._losses is None:
             return None
@@ -378,6 +396,7 @@ class KillSwitch:
     def _apply_halt(self, state: HaltState) -> bool:
         """Halt in memory and set the trading state, before any I/O; True when newly halted."""
         newly = self._gate.halt(state)
+        self._halts += 1
         apply_trading_state(self._gate, self._risk_engine)
         return newly
 
