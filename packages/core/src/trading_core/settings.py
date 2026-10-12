@@ -141,6 +141,7 @@ class PaperLoopSettings(Settings):
     sandbox_taker_fee: Decimal = Field(default=Decimal("0.0005"), ge=0, lt=1)
     sandbox_reject_stop_orders: bool = False
     sandbox_reject_kill_switch_orders: bool = False
+    sandbox_delay_entry_fills_s: Decimal = Field(default=Decimal(0), ge=0, le=60)
 
     recording_max_backlog_s: Decimal = Field(default=Decimal(30), gt=0)
     recording_queue_max: int = Field(default=10_000, gt=0)
@@ -161,6 +162,8 @@ class PaperLoopSettings(Settings):
             raise ValueError("SANDBOX_REJECT_STOP_ORDERS is for the demo drill only")
         if self.sandbox_reject_kill_switch_orders and self.trading_env != "demo":
             raise ValueError("SANDBOX_REJECT_KILL_SWITCH_ORDERS is for the demo drill only")
+        if self.sandbox_delay_entry_fills_s > 0 and self.trading_env != "demo":
+            raise ValueError("SANDBOX_DELAY_ENTRY_FILLS_S is for the demo drill only")
         return self
 
     def strategy_config(self) -> dict[str, str | int]:

@@ -194,6 +194,24 @@ def test_the_kill_switch_drill_is_off_by_default_and_refused_outside_demo(monkey
         PaperLoopSettings(trading_env="live")
 
 
+def test_the_entry_hold_drill_is_off_by_default_bounded_and_refused_outside_demo(monkeypatch):
+    """covers: spec 0010 SANDBOX_DELAY_ENTRY_FILLS_S"""
+    from decimal import Decimal
+
+    from trading_core.settings import PaperLoopSettings
+
+    assert PaperLoopSettings(trading_env="demo").sandbox_delay_entry_fills_s == 0
+    monkeypatch.setenv("SANDBOX_DELAY_ENTRY_FILLS_S", "30")
+    assert PaperLoopSettings(trading_env="demo").sandbox_delay_entry_fills_s == Decimal(30)
+    with pytest.raises(ValidationError, match="SANDBOX_DELAY_ENTRY_FILLS_S"):
+        PaperLoopSettings(trading_env="live")
+    monkeypatch.setenv("SANDBOX_DELAY_ENTRY_FILLS_S", "61")
+    with pytest.raises(ValidationError):
+        PaperLoopSettings(trading_env="demo")
+    monkeypatch.setenv("SANDBOX_DELAY_ENTRY_FILLS_S", "0")
+    assert PaperLoopSettings(trading_env="live").sandbox_delay_entry_fills_s == 0
+
+
 def test_the_stop_reject_drill_is_refused_outside_demo(monkeypatch):
     from trading_core.settings import PaperLoopSettings
 

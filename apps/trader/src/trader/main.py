@@ -682,6 +682,13 @@ def warn_on_settings(settings: PaperLoopSettings) -> None:
             "the sandbox rejects every kill switch order, for the spec 0010 drill only",
             extra={"fields": {"code": "sandbox_reject_kill_switch_orders"}},
         )
+    if settings.sandbox_delay_entry_fills_s > 0:
+        log.warning(
+            "the sandbox holds every entry before it fills, for the spec 0010 AC-1 drill only",
+            extra={
+                "fields": {"code": "sandbox_delay_entry_fills", "hold_s": str(settings.sandbox_delay_entry_fills_s)}
+            },
+        )
 
 
 def main() -> None:
