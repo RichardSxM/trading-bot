@@ -103,8 +103,9 @@ def test_blocks_survive_concurrent_writers():
 def test_entries_blocked_adds_paused():
     blocks = EntryBlocks()
     blocks.add(BlockReason.STALE_FEED)
-    assert entries_blocked(blocks, paused=True) == ["paused", "stale_feed"]
-    assert entries_blocked(EntryBlocks(), paused=False) == []
+    assert entries_blocked(blocks, paused=True, halted=False) == ["paused", "stale_feed"]
+    assert entries_blocked(blocks, paused=False, halted=True) == ["halted", "stale_feed"]
+    assert entries_blocked(EntryBlocks(), paused=False, halted=False) == []
 
 
 def test_every_reason_has_plain_words():

@@ -38,6 +38,8 @@ from trading_core.settings import PaperLoopSettings
 # The sandbox simulates USD margin; Kraken's PF_ perpetuals settle in USD.
 SANDBOX_CURRENCY = "USD"
 DRILL_REJECT_REASON = "SANDBOX_REJECT_STOP_ORDERS drill"
+KILL_SWITCH_DRILL_REASON = "SANDBOX_REJECT_KILL_SWITCH_ORDERS drill"
+KILL_SWITCH_TAG = "origin:kill_switch"
 # The least size, in base units, the simulated exchange sees on each side of every quote.
 DEEP_BOOK_SIZE = 1000
 
@@ -47,11 +49,13 @@ class FeeSandboxConfig(SandboxExecutionClientConfig, frozen=True, kw_only=True):
 
     ``reject_every_stop`` is the AC-7 drill switch. It differs from Nautilus' own
     ``reject_stop_orders``, which rejects only a stop whose trigger is already in the market.
+    ``reject_kill_switch`` rejects every order tagged ``origin:kill_switch`` (spec 0010's drill).
     """
 
     maker_fee: Decimal
     taker_fee: Decimal
     reject_every_stop: bool = False
+    reject_kill_switch: bool = False
 
 
 def with_fees(instrument: Instrument, maker_fee: Decimal, taker_fee: Decimal) -> Instrument:
@@ -93,6 +97,7 @@ class FeeSandboxExecutionClient(SandboxExecutionClient):
         self._maker_fee = config.maker_fee
         self._taker_fee = config.taker_fee
         self._reject_every_stop = config.reject_every_stop
+        self._reject_kill_switch = config.reject_kill_switch
 
     def connect(self) -> None:
         """Connect, then reset the fees on every instrument the sandbox loaded from the cache."""
@@ -101,16 +106,18 @@ class FeeSandboxExecutionClient(SandboxExecutionClient):
             self.exchange.update_instrument(with_fees(instrument, self._maker_fee, self._taker_fee))
 
     def submit_order(self, command: SubmitOrder) -> None:
-        """Submit to the simulated exchange; in the AC-7 drill a stop is submitted and rejected instead."""
+        """Submit to the simulated exchange; in a drill a stop or kill switch order is rejected instead."""
         order = command.order
-        if not (self._reject_every_stop and order.has_trigger_price):
+        if self._reject_every_stop and order.has_trigger_price:
+            reason = DRILL_REJECT_REASON
+        elif self._reject_kill_switch and KILL_SWITCH_TAG in (order.tags or []):
+            reason = KILL_SWITCH_DRILL_REASON
+        else:
             super().submit_order(command)  # type: ignore[no-untyped-call]  # Nautilus' sandbox client is unannotated
             return
         ts = self.test_clock.timestamp_ns()  # the sandbox's own event clock, as on every other event
         self.generate_order_submitted(command.strategy_id, command.instrument_id, order.client_order_id, ts)
-        self.generate_order_rejected(
-            command.strategy_id, command.instrument_id, order.client_order_id, DRILL_REJECT_REASON, ts
-        )
+        self.generate_order_rejected(command.strategy_id, command.instrument_id, order.client_order_id, reason, ts)
 
     def on_data(self, data: Data) -> None:
         """Feed market data to the simulated exchange: quotes as ``deep_quote``, instruments with the fees."""
@@ -160,4 +167,5 @@ def sandbox_exec_client(settings: PaperLoopSettings) -> FeeSandboxConfig:
         maker_fee=settings.sandbox_maker_fee,
         taker_fee=settings.sandbox_taker_fee,
         reject_every_stop=settings.sandbox_reject_stop_orders,
+        reject_kill_switch=settings.sandbox_reject_kill_switch_orders,
     )

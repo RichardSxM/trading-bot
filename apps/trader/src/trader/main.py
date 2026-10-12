@@ -50,6 +50,7 @@ from trader.snapshot_writer import log_writer_crash, write_heartbeats
 from trading_core import env_guard
 from trading_core.boot import boot
 from trading_core.control.consumer import ControlConsumer
+from trading_core.control.halt import halt_key
 from trading_core.control.pause import pause_key
 from trading_core.control.records import PostgresCommandRecorder
 from trading_core.env_guard import ALLOWED_EXEC_CLIENTS, SANDBOX, ExecClientAllowlist
@@ -57,9 +58,11 @@ from trading_core.naming import node_id
 from trading_core.node.context_feed import ContextFeedActor, ContextFeedConfig
 from trading_core.node.control import (
     ControlActor,
+    KillSwitch,
     PaperStatus,
     PauseController,
     RiskEngine,
+    control_execute,
     shutdown_counts,
     trader_state,
 )
@@ -71,7 +74,7 @@ from trading_core.node.paper_snapshots import account_snapshot, paper_status, po
 from trading_core.node.placeholder import STRATEGY_NAME, PlaceholderConfig, PlaceholderTimed
 from trading_core.node.recording import RecordingActor
 from trading_core.node.sandbox import FeeSandboxExecClientFactory, sandbox_exec_client
-from trading_core.node.strategy import PauseGate
+from trading_core.node.strategy import KfsStrategy, PauseGate
 from trading_core.recording import repository
 from trading_core.recording.enums import Env, RunMode, RunStatus, StrategyKind
 from trading_core.recording.rows import JsonObject
@@ -83,7 +86,7 @@ from trading_core.secrets import (
     POSTGRES_PASSWORD,
     REDIS_PASSWORD,
 )
-from trading_core.settings import ContextSettings, PaperLoopSettings, Settings
+from trading_core.settings import ContextSettings, LossLimitSettings, PaperLoopSettings, Settings
 from trading_core.snapshot.envelope import snapshot_key
 from trading_core.strategy.blocks import EntryBlocks
 
@@ -105,7 +108,7 @@ CONTROL_SOCKET_TIMEOUT_S: Final = 3.0
 KrakenUrls = tuple[str, str]
 
 
-class TraderSettings(PaperLoopSettings, ContextSettings):
+class TraderSettings(PaperLoopSettings, ContextSettings, LossLimitSettings):
     # UTC date the live Kraken key was created; required in live (spec 0003 AC-9).
     kraken_key_rotated_on: date | None = None
     # How long a live start waits for an authenticated Kraken account (spec 0003 AC-8).
@@ -224,16 +227,18 @@ def snapshot_client(settings: Settings, password: SecretStr) -> Redis:
 
 @dataclass(frozen=True)
 class ControlParts:
-    """What ``run_node`` needs from the control side: the actor, the gate, the risk engine, the stop counts."""
+    """What ``run_node`` needs from the control side: the actor, the kill switch, the gate, the risk engine, and
+    the stop counts."""
 
     actor: ControlActor
+    kill_switch: KillSwitch
     risk_engine: RiskEngine
     shutdown_counts: Callable[[], Mapping[str, int]]
     gate: PauseGate = field(default_factory=PauseGate)
 
 
-def control_parts(node: TradingNode, settings: Settings, secrets: Mapping[str, SecretStr]) -> ControlParts:
-    """Build the pause gate, the control actor with its own Redis and Postgres logins, and the readers."""
+def control_parts(node: TradingNode, settings: LossLimitSettings, secrets: Mapping[str, SecretStr]) -> ControlParts:
+    """Build the gate, the kill switch, the control actor with its own Redis and Postgres logins, and the readers."""
     env = settings.trading_env
     password = secrets[REDIS_PASSWORD].get_secret_value()
     client = Redis(
@@ -260,14 +265,20 @@ def control_parts(node: TradingNode, settings: Settings, secrets: Mapping[str, S
         return datetime.now(UTC)
 
     controller = PauseController(gate, risk_engine, client, env, now)
-    consumer = ControlConsumer(client, env, controller.execute, PostgresCommandRecorder(engine, Env(env)), now)
+    kill_switch = KillSwitch(gate, risk_engine, client, env, now, node.cache, settings.kill_switch_flat_timeout_s)
+    execute = control_execute(controller, kill_switch)
+    consumer = ControlConsumer(client, env, execute, PostgresCommandRecorder(engine, Env(env)), now)
 
-    def read_pause_key() -> str | bytes | None:
-        value = start_client.get(pause_key(env))
-        return value if isinstance(value, str | bytes) else None
+    def read_key(key: str) -> Callable[[], str | bytes | None]:
+        def read() -> str | bytes | None:
+            value = start_client.get(key)
+            return value if isinstance(value, str | bytes) else None
+
+        return read
 
     return ControlParts(
-        actor=ControlActor(controller, read_pause_key, consumer.run),
+        actor=ControlActor(controller, kill_switch, read_key(pause_key(env)), read_key(halt_key(env)), consumer.run),
+        kill_switch=kill_switch,
         risk_engine=risk_engine,
         shutdown_counts=lambda: shutdown_counts(gate, node.cache),
         gate=gate,
@@ -461,6 +472,9 @@ def run_node(
         )
         strategy = PlaceholderTimed(placeholder_config(settings, paper.run_id), control.gate, paper.blocks, record)
         node.trader.add_strategy(strategy)
+        control.kill_switch.attach(
+            [s for s in node.trader.strategies() if isinstance(s, KfsStrategy)], record, paper.run_id
+        )
         writer, blocks = paper.writer, paper.blocks
 
         def paper_state() -> PaperStatus:
@@ -604,6 +618,11 @@ def warn_on_settings(settings: PaperLoopSettings) -> None:
         log.warning(
             "the sandbox rejects every stop order, for the AC-7 drill only",
             extra={"fields": {"code": "sandbox_reject_stop_orders"}},
+        )
+    if settings.sandbox_reject_kill_switch_orders:
+        log.warning(
+            "the sandbox rejects every kill switch order, for the spec 0010 drill only",
+            extra={"fields": {"code": "sandbox_reject_kill_switch_orders"}},
         )
 
 

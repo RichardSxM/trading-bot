@@ -310,14 +310,14 @@ Core functions:
 
 Tracer Bullet: the first slice is the thinnest real stop from the dashboard button to a flat, halted trader and a confirmed top bar. Each later slice thickens one segment end to end. There is no migration in any slice.
 
-1. **Halt state in core.**
+1. **Halt state in core.** (built)
    - `control/halt.py`: `HaltReason`, `HaltState`, `halt_key`, `encode`, `decode` (mirrors `control/pause.py`), with unit tests.
    - `target_trading_state(paused, halted)`.
    - `check_entry` gains `halted`, checked first, plus `HALTED` in the info refusals, with tests.
    - `BlockReason.HALTED` and `entries_blocked(blocks, paused, halted)`.
 
    Satisfies **AC-5**, **AC-15**.
-2. **The thin stop.**
+2. **The thin stop.** (built)
    - **The gate.**
      - `PauseGate` gains `halt(state)`, `halt_in_memory()`, `unhalt()`, `halted`, and `halt_state`.
      - One `apply_trading_state()` sets the risk engine from both flags; `PauseController` switches to it.

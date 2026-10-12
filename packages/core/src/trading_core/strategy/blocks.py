@@ -10,8 +10,9 @@ from typing import Final
 
 
 class BlockReason(StrEnum):
-    """One reason entries are blocked. ``paused`` comes from the pause gate, not from ``EntryBlocks``."""
+    """One reason entries are blocked. ``halted`` and ``paused`` come from the gate, not from ``EntryBlocks``."""
 
+    HALTED = "halted"
     PAUSED = "paused"
     STALE_FEED = "stale_feed"
     RECORDING_UNHEALTHY = "recording_unhealthy"
@@ -22,6 +23,7 @@ class BlockReason(StrEnum):
 
 
 PLAIN_WORDS: Final[dict[BlockReason, str]] = {
+    BlockReason.HALTED: "Halted by the stop button or a loss limit (press Resume to clear)",
     BlockReason.PAUSED: "Paused from the dashboard or by a deploy",
     BlockReason.STALE_FEED: "No fresh prices from Kraken",
     BlockReason.RECORDING_UNHEALTHY: "The database is behind or not answering",
@@ -67,9 +69,11 @@ class EntryBlocks:
             return tuple(sorted(self._active))
 
 
-def entries_blocked(blocks: EntryBlocks, paused: bool) -> list[str]:
-    """The ``entries_blocked`` snapshot field: the active reasons plus ``paused`` when paused, sorted."""
+def entries_blocked(blocks: EntryBlocks, paused: bool, halted: bool) -> list[str]:
+    """The ``entries_blocked`` snapshot field: the active reasons plus ``paused`` and ``halted`` when set, sorted."""
     reasons = {str(r) for r in blocks.active()}
     if paused:
         reasons.add(BlockReason.PAUSED)
+    if halted:
+        reasons.add(BlockReason.HALTED)
     return sorted(reasons)

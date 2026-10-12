@@ -116,7 +116,11 @@ class _FakeNode:
         self.calls.append(("factory", name))
 
     def add_strategy(self, strategy):
+        self.strategies_added = [*getattr(self, "strategies_added", []), strategy]
         self.calls.append(("add_strategy", type(strategy).__name__))
+
+    def strategies(self):
+        return list(getattr(self, "strategies_added", []))
 
     def add_exec_client_factory(self, name, factory):
         self.calls.append(("exec_factory", name))
@@ -170,11 +174,20 @@ class ControlActor:
     """Stands in for the control actor, which needs a real node and Redis."""
 
 
+class KillSwitch:
+    """Stands in for the kill switch; records the strategies handed over."""
+
+    def attach(self, strategies, record, run_id):
+        self.attached = (strategies, record, run_id)
+
+
 def _fake_control_parts(node, settings, secrets):
     from trader.main import ControlParts
 
+    node.kill_switch = KillSwitch()
     return ControlParts(
         actor=cast(Any, ControlActor()),
+        kill_switch=cast(Any, node.kill_switch),
         risk_engine=cast(Any, object()),
         shutdown_counts=lambda: {"cancelled": 0, "unacknowledged_cancels": 0, "positions_kept": 0, "stops_kept": 0},
     )
@@ -769,6 +782,11 @@ def test_demo_registers_recording_then_the_strategy_after_control_and_finishes_t
     registered = [c for c in node.calls if c[0] in ("add_actor", "add_strategy")]
     assert registered[0] == ("add_actor", "ControlActor")
     assert registered.index(("add_actor", "RecordingActor")) < registered.index(("add_strategy", "PlaceholderTimed"))
+    # The kill switch gets the strategies (spec 0010): the placeholder, with the paper run's recorder.
+    strategies, record, run_id = node.kill_switch.attached
+    assert [type(s).__name__ for s in strategies] == ["PlaceholderTimed"]
+    assert record is not None
+    assert run_id is not None
     assert (code, finished) == (0, [0])
     assert node.calls[-1] == "dispose"
 

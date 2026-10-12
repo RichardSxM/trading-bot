@@ -1,11 +1,15 @@
-"""The pause gate and the strategy base class every trader strategy subclasses (spec 0005 AC-6, AC-9).
+"""The pause gate and the strategy base class every trader strategy subclasses (spec 0005 AC-6, AC-9, spec 0010).
 
-While the trader is paused, ``KfsStrategy`` refuses every order that is not reduce only before
+While the trader is paused or halted, ``KfsStrategy`` refuses every order that is not reduce only before
 it reaches the engine, also when flat. The NautilusTrader risk engine in ``REDUCING`` is the
 second layer. Exits and protective stops must be reduce only, so they still go through.
 
 On stop (SIGTERM) a strategy pauses the gate in memory only and cancels its open entry orders.
 It never cancels a reduce only order and never closes a position.
+
+The kill switch calls ``flatten(halt_id)`` on every strategy (spec 0010 AC-1): the base class
+cancels the entry orders; a strategy that holds positions overrides it to close them through
+its own exit loop, tagging those orders ``origin:kill_switch`` and ``halt:<halt_id>``.
 
 With ``use_market_context`` on, the base class also subscribes the instrument's market context
 and folds every update into a ``ContextBook``; ``market_context()`` reads it (spec 0009 AC-11).
@@ -13,6 +17,7 @@ and folds every update into a ``ContextBook``; ``market_context()`` reads it (sp
 
 import logging
 import threading
+import uuid
 from collections.abc import Iterable
 from decimal import Decimal
 from typing import Final
@@ -26,6 +31,7 @@ from nautilus_trader.model.orders.base import Order
 from nautilus_trader.model.orders.list import OrderList
 from nautilus_trader.trading.strategy import Strategy
 
+from trading_core.control.halt import HaltState
 from trading_core.control.pause import PauseState
 from trading_core.marketdata.context import ContextBook, ContextLookAheadError, Liquidation, MarketContext, MaxAges
 from trading_core.marketdata.hours import SECOND_NS
@@ -56,10 +62,11 @@ class KfsStrategyConfig(StrategyConfig, frozen=True, kw_only=True):
 
 
 class PauseGate:
-    """Whether the trader is paused, and by whom; one per trader process, shared by every strategy.
+    """Whether the trader is paused or halted, and by whom; one per trader process, shared by every strategy.
 
     ``state`` is the value of the pause key. A pause in memory only (on stop) has no state.
-    ``loaded`` stays False until the pause key was read at start (or found unreadable).
+    ``halt_state`` is the value of the halt key (spec 0010 AC-5), or the halt applied in memory.
+    ``loaded`` stays False until the pause and halt keys were read at start (or found unreadable).
     """
 
     def __init__(self) -> None:
@@ -67,6 +74,7 @@ class PauseGate:
         self._paused = False
         self._loaded = False
         self._state: PauseState | None = None
+        self._halt: HaltState | None = None
         self._cancelled = 0
 
     @property
@@ -86,6 +94,18 @@ class PauseGate:
         """The pause key's value while paused through a command, else None."""
         with self._lock:
             return self._state
+
+    @property
+    def halted(self) -> bool:
+        """True while halted: entries are refused until a successful ``resume``."""
+        with self._lock:
+            return self._halt is not None
+
+    @property
+    def halt_state(self) -> HaltState | None:
+        """Why, by whom, and when the trader halted, else None."""
+        with self._lock:
+            return self._halt
 
     @property
     def cancelled(self) -> int:
@@ -112,6 +132,19 @@ class PauseGate:
             self._paused = False
             self._loaded = True
             self._state = None
+
+    def halt(self, state: HaltState) -> bool:
+        """Halt with ``state``; True when newly halted, False (keeping the first state) when already halted."""
+        with self._lock:
+            if self._halt is not None:
+                return False
+            self._halt = state
+            return True
+
+    def unhalt(self) -> None:
+        """Lift the halt (a successful ``resume``)."""
+        with self._lock:
+            self._halt = None
 
     def note_cancelled(self, count: int) -> None:
         """Add ``count`` entry orders cancelled on stop."""
@@ -256,8 +289,8 @@ class KfsStrategy(Strategy):  # type: ignore[misc]  # Strategy is Cython with no
         client_id: ClientId | None = None,
         params: dict[str, object] | None = None,
     ) -> None:
-        """Submit ``order``, unless the trader is paused and it is not reduce only."""
-        if self._gate.paused and not order.is_reduce_only:
+        """Submit ``order``, unless the trader is paused or halted and it is not reduce only."""
+        if (self._gate.paused or self._gate.halted) and not order.is_reduce_only:
             self._deny(order)
             return
         super().submit_order(order, position_id, client_id, params)
@@ -269,8 +302,8 @@ class KfsStrategy(Strategy):  # type: ignore[misc]  # Strategy is Cython with no
         client_id: ClientId | None = None,
         params: dict[str, object] | None = None,
     ) -> None:
-        """Submit ``order_list``, unless the trader is paused and any order in it is not reduce only."""
-        if self._gate.paused:
+        """Submit ``order_list``, unless the trader is paused or halted and any order in it is not reduce only."""
+        if self._gate.paused or self._gate.halted:
             entries = entry_orders(order_list.orders)
             if entries:
                 for order in entries:
@@ -283,22 +316,36 @@ class KfsStrategy(Strategy):  # type: ignore[misc]  # Strategy is Cython with no
         self._gate.pause_in_memory()
         self.cancel_entry_orders()
 
+    def flatten(self, halt_id: uuid.UUID) -> None:
+        """Close this strategy's positions and cancel its entry orders for the kill switch (spec 0010 AC-1).
+
+        Called again on every poll while the kill switch waits for flat, so it must be idempotent.
+        The base class only cancels entries; a strategy that opens positions overrides it.
+        """
+        self._cancel_entries()
+
     def cancel_entry_orders(self) -> int:
         """Cancel this strategy's open and in flight orders that are not reduce only; returns how many."""
+        count = self._cancel_entries()
+        self._gate.note_cancelled(count)
+        return count
+
+    def _cancel_entries(self) -> int:
         orders = entry_orders(
             [*self.cache.orders_open(strategy_id=self.id), *self.cache.orders_inflight(strategy_id=self.id)]
         )
         for order in orders:
-            self.cancel_order(order)
-        self._gate.note_cancelled(len(orders))
+            if not order.is_pending_cancel:
+                self.cancel_order(order)
         return len(orders)
 
     def _deny(self, order: Order) -> None:
+        halted = self._gate.halted
         log.warning(
-            "entry denied, trader paused",
+            "entry denied, trader halted" if halted else "entry denied, trader paused",
             extra={
                 "fields": {
-                    "code": "entry_denied_paused",
+                    "code": "entry_denied_halted" if halted else "entry_denied_paused",
                     "strategy_id": str(self.id),
                     "client_order_id": str(order.client_order_id),
                 }

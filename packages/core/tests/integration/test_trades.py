@@ -1,5 +1,5 @@
 """covers: spec 0006 AC-19 (the Trades lists: closed paper round trips with side from the earliest fill
-and exit reason, and fills, each newest first and paged by 50).
+and exit reason, and fills, each newest first and paged by 50); spec 0010 AC-1 (a kill switch exit).
 
 Other tests commit demo positions and fills to the same database, so every row here sits in 2090
 and later, newer than anything else, and the assertions look at the head of each list.
@@ -16,6 +16,7 @@ from trading_core.recording import repository
 from trading_core.recording.enums import (
     Env,
     Intent,
+    OrderOrigin,
     OrderSide,
     OrderStatus,
     OrderType,
@@ -56,11 +57,13 @@ def _round_trip(
     exit_type: OrderType | None = OrderType.MARKET,
     exit_intent: Intent | None = Intent.EXIT,
     linked: bool = True,
+    kill_switch: bool = False,
 ) -> UUID:
     """A closed position, entered by market on ``entry`` and closed by ``exit_type``.
 
     ``exit_intent`` is the exit order's own decision (``None``: it carries the entry's).
     ``exit_type=None`` leaves the exit fill out; ``linked=False`` leaves out every fill.
+    ``kill_switch`` makes the exit a kill switch order: its origin, and no decision.
     """
     opened_at = closed_at - timedelta(minutes=10)
     position = world.position(
@@ -93,7 +96,8 @@ def _round_trip(
         position.id,
         OPPOSITE[entry],
         closed_at,
-        decision_id=exit_decision_id,
+        decision_id=None if kill_switch else exit_decision_id,
+        origin=OrderOrigin.KILL_SWITCH if kill_switch else OrderOrigin.STRATEGY,
         order_type=exit_type,
         trigger_price=trigger,
     )
@@ -140,10 +144,12 @@ def test_each_exit_reason(session: Session, world: World):
     abandoned_bare = _round_trip(session, world, at + timedelta(hours=2), linked=False)
     _abandon(session, world, abandoned_bare)
     bare = _round_trip(session, world, at + timedelta(hours=1), linked=False)
+    killed = _round_trip(session, world, at + timedelta(hours=7), exit_intent=None, kill_switch=True)
 
-    rows = {r.position_id: r.exit_reason for r in _head(session, 6)}
+    rows = {r.position_id: r.exit_reason for r in _head(session, 7)}
 
     assert rows == {
+        killed: ExitReason.KILL_SWITCH,
         stop: ExitReason.STOP,
         timed: ExitReason.TIME,
         failure: ExitReason.STOP_FAILURE,

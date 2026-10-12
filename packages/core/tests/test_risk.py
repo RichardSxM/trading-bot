@@ -26,6 +26,7 @@ BASE = EntryRequest(
     open_notional=Decimal(0),
     has_position=False,
     paused=False,
+    halted=False,
     blocks=(),
 )
 
@@ -41,6 +42,7 @@ def test_a_small_entry_is_approved():
 @pytest.mark.parametrize(
     ("changes", "reason"),
     [
+        ({"halted": True}, "halted"),
         ({"paused": True}, "paused"),
         ({"blocks": ("stale_feed",)}, "blocked:stale_feed"),
         ({"has_position": True}, "position_open"),
@@ -56,6 +58,7 @@ def test_each_refusal(changes, reason):
 
 def test_refusals_come_in_the_spec_order():
     everything = request(
+        halted=True,
         paused=True,
         blocks=("stale_feed",),
         has_position=True,
@@ -63,13 +66,28 @@ def test_refusals_come_in_the_spec_order():
         equity=Decimal(1),
     )
     order = []
-    for undo in ({}, {"paused": False}, {"blocks": ()}, {"has_position": False}, {"quantity": Decimal("0.003")}):
+    for undo in (
+        {},
+        {"halted": False},
+        {"paused": False},
+        {"blocks": ()},
+        {"has_position": False},
+        {"quantity": Decimal("0.003")},
+    ):
         everything = EntryRequest(**(everything.__dict__ | undo))
         order.append(check_entry(everything, LIMITS).reason)
     everything = EntryRequest(**(everything.__dict__ | {"quantity": Decimal("0.0012")}))
     order.append(check_entry(everything, LIMITS).reason)
 
-    assert order == ["paused", "blocked:stale_feed", "position_open", "zero_quantity", "notional_cap", "leverage_cap"]
+    assert order == [
+        "halted",
+        "paused",
+        "blocked:stale_feed",
+        "position_open",
+        "zero_quantity",
+        "notional_cap",
+        "leverage_cap",
+    ]
 
 
 def test_the_first_block_in_sorted_order_is_named():
@@ -93,6 +111,7 @@ def test_unjudgeable_inputs_raise(changes):
 @pytest.mark.parametrize(
     ("reason", "severity"),
     [
+        ("halted", Severity.INFO),
         ("paused", Severity.INFO),
         ("blocked:exit_failed", Severity.INFO),
         ("position_open", Severity.INFO),

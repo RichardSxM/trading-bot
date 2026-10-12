@@ -37,6 +37,8 @@ from trading_core.recording.rows import (
 
 DECISION_TAG: Final = "decision:"
 PARENT_TAG: Final = "parent:"
+ORIGIN_TAG: Final = "origin:"
+HALT_TAG: Final = "halt:"
 _CAMEL: Final = re.compile(r"(?<!^)(?=[A-Z])")
 
 
@@ -73,6 +75,20 @@ def decision_id(tags: Iterable[str]) -> UUID:
         raise MissingDecisionTagError(f"bad decision tag {value!r}") from exc
 
 
+def order_origin(tags: Iterable[str]) -> OrderOrigin:
+    """The origin an order carries in its ``origin:<value>`` tag; ``strategy`` without one.
+
+    Only ``kill_switch`` may be tagged (spec 0010 AC-1); any other value raises
+    ``MissingDecisionTagError``, so a mistagged order fails closed like an untagged one.
+    """
+    value = tag_value(tags, ORIGIN_TAG)
+    if value is None:
+        return OrderOrigin.STRATEGY
+    if value != OrderOrigin.KILL_SWITCH:
+        raise MissingDecisionTagError(f"bad origin tag {value!r}")
+    return OrderOrigin.KILL_SWITCH
+
+
 def weighted_avg(fills: Sequence[tuple[Decimal, Decimal]]) -> Decimal | None:
     """The quantity weighted average price of ``(price, quantity)`` fills; None without any quantity."""
     quantity = sum((q for _, q in fills), Decimal(0))
@@ -103,12 +119,16 @@ class OrderFacts:
 
 
 def order_row(facts: OrderFacts, *, env: Env, run_id: UUID, last_event_ns: int) -> OrderRow:
-    """The ``orders`` row for a strategy order; its decision and parent come from its tags."""
+    """The ``orders`` row for a strategy or kill switch order; its origin, decision, and parent come from its tags.
+
+    A ``strategy`` order must carry a decision; a ``kill_switch`` order has none (spec 0010 AC-1).
+    """
+    origin = order_origin(facts.tags)
     return OrderRow(
         env=env,
         run_id=run_id,
-        decision_id=decision_id(facts.tags),
-        origin=OrderOrigin.STRATEGY,
+        decision_id=decision_id(facts.tags) if origin is OrderOrigin.STRATEGY else None,
+        origin=origin,
         client_order_id=facts.client_order_id,
         venue_order_id=facts.venue_order_id,
         parent_client_order_id=tag_value(facts.tags, PARENT_TAG),

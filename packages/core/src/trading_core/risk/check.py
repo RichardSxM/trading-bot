@@ -12,6 +12,7 @@ from typing import Final
 
 from trading_core.recording.enums import Severity
 
+HALTED: Final = "halted"
 PAUSED: Final = "paused"
 POSITION_OPEN: Final = "position_open"
 ZERO_QUANTITY: Final = "zero_quantity"
@@ -20,7 +21,7 @@ LEVERAGE_CAP: Final = "leverage_cap"
 BLOCKED_PREFIX: Final = "blocked:"
 
 # Refusals that are the normal state of things, not a limit being hit.
-_INFO_REFUSALS: Final = frozenset({PAUSED, POSITION_OPEN})
+_INFO_REFUSALS: Final = frozenset({HALTED, PAUSED, POSITION_OPEN})
 
 
 class InvalidRiskInput(ValueError):
@@ -45,6 +46,7 @@ class EntryRequest:
     open_notional: Decimal
     has_position: bool
     paused: bool
+    halted: bool
     blocks: Collection[str]
 
 
@@ -59,7 +61,7 @@ class RiskVerdict:
 def check_entry(request: EntryRequest, limits: RiskLimits) -> RiskVerdict:
     """Approve the entry, or refuse it with the first matching reason in this order.
 
-    ``paused``, ``blocked:<reason>`` (the first active block, sorted), ``position_open``,
+    ``halted``, ``paused``, ``blocked:<reason>`` (the first active block, sorted), ``position_open``,
     ``zero_quantity``, ``notional_cap`` (the order's notional over the cap), ``leverage_cap``
     (open notional after the order, divided by equity, over the cap).
     """
@@ -67,6 +69,8 @@ def check_entry(request: EntryRequest, limits: RiskLimits) -> RiskVerdict:
         raise InvalidRiskInput(f"mid must be above zero, got {request.mid}")
     if request.equity <= 0:
         raise InvalidRiskInput(f"equity must be above zero, got {request.equity}")
+    if request.halted:
+        return RiskVerdict(False, HALTED)
     if request.paused:
         return RiskVerdict(False, PAUSED)
     if request.blocks:
@@ -84,7 +88,7 @@ def check_entry(request: EntryRequest, limits: RiskLimits) -> RiskVerdict:
 
 
 def refusal_severity(reason: str) -> Severity:
-    """The ``limit_hit`` severity for a refusal: ``info`` when paused, blocked, or positioned, else ``warning``."""
+    """The ``limit_hit`` severity for a refusal: ``info`` when halted, paused, blocked, or positioned, else warning."""
     if reason in _INFO_REFUSALS or reason.startswith(BLOCKED_PREFIX):
         return Severity.INFO
     return Severity.WARNING

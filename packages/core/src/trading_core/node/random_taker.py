@@ -4,7 +4,10 @@ Every ``interval_s`` seconds on the UTC clock, while flat, it draws a side from 
 boundary (``trading_core.strategy.random_taker``), sizes ``notional_usd`` at the mid, runs the
 pure risk check, records the decision, and submits a market entry. It closes with a reduce only
 market order ``hold_s`` seconds after the entry's first fill. It places no stop. Like every
-trader strategy it honours the pause gate and records through ``record``.
+trader strategy it honours the pause and halt gate and records through ``record``.
+
+``flatten`` (the kill switch, spec 0010) is the simple version: it cancels the entry and closes
+any position at market with the kill switch tags, retried like any exit.
 
 Round trip: ``flat`` → ``entering`` (entry submitted) → ``holding`` (filled) → ``exiting`` → ``flat``.
 """
@@ -37,8 +40,8 @@ from nautilus_trader.model.position import Position
 
 from trading_core.node.placeholder import Record
 from trading_core.node.strategy import KfsStrategy, KfsStrategyConfig, PauseGate
-from trading_core.recording.enums import Env, Intent, OrderSide, RiskEventKind, RiskVerdict, Severity
-from trading_core.recording.mappers import DECISION_TAG
+from trading_core.recording.enums import Env, Intent, OrderOrigin, OrderSide, RiskEventKind, RiskVerdict, Severity
+from trading_core.recording.mappers import DECISION_TAG, HALT_TAG, ORIGIN_TAG
 from trading_core.recording.rows import DecisionRow, JsonObject, RiskEventRow
 from trading_core.recording.spool import WriteCall, WriteItem
 from trading_core.risk.check import EntryRequest, InvalidRiskInput, RiskLimits, check_entry, refusal_severity
@@ -103,6 +106,7 @@ class RandomTaker(KfsStrategy):
         self._entry_id: ClientOrderId | None = None
         self._exit_decision: UUID | None = None
         self._exit_id: ClientOrderId | None = None
+        self._kill_switch_tags: list[str] | None = None
 
     # Lifecycle ------------------------------------------------------------------------------
 
@@ -115,6 +119,15 @@ class RandomTaker(KfsStrategy):
     def on_stop(self) -> None:
         """Cancel entries and pause (the base class); a position stays."""
         super().on_stop()
+
+    def flatten(self, halt_id: UUID) -> None:
+        """Cancel the entry and close any position at market, tagged for the kill switch (spec 0010)."""
+        self._kill_switch_tags = [f"{ORIGIN_TAG}{OrderOrigin.KILL_SWITCH}", f"{HALT_TAG}{halt_id}"]
+        if self._position() is not None and self.phase != Phase.EXITING:
+            self._cancel_timer(_HOLD)
+            self.phase = Phase.EXITING
+            self._submit_exit()
+        self._cancel_entries()
 
     def on_quote_tick(self, tick: QuoteTick) -> None:
         """The mid is read from the cache at the boundary; nothing to do here."""
@@ -153,6 +166,7 @@ class RandomTaker(KfsStrategy):
             open_notional=Decimal(0),
             has_position=False,
             paused=self._gate.paused,
+            halted=self._gate.halted,
             blocks=[str(r) for r in self._blocks.active()],
         )
         try:
@@ -179,6 +193,9 @@ class RandomTaker(KfsStrategy):
                 decision,
                 {"reason": reason},
             )
+            return
+        if self._gate.halted or self._gate.paused:  # the gate again, right before submitting
+            log.info("entry denied by the gate", extra={"fields": {"code": "entry_denied_gate"}})
             return
         order = self._entry_order(side, instrument.make_qty(quantity), quote, decision)
         self.phase = Phase.ENTERING
@@ -280,7 +297,7 @@ class RandomTaker(KfsStrategy):
             position.quantity,
             time_in_force=TimeInForce.GTC,
             reduce_only=True,
-            tags=[f"{DECISION_TAG}{self._exit_decision}"],
+            tags=self._kill_switch_tags or [f"{DECISION_TAG}{self._exit_decision}"],
         )
         self._exit_id = order.client_order_id
         self.submit_order(order)

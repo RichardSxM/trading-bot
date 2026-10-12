@@ -62,7 +62,7 @@ def round_trip_cells(trip: RoundTrip) -> list[Cell]:
         "" if trip.avg_exit_px is None else num(trip.avg_exit_px),
         pnl(trip.realized_pnl),
         pnl(-trip.fees),
-        "" if trip.exit_reason is None else trip.exit_reason.value,
+        "" if trip.exit_reason is None else trip.exit_reason.value.replace("_", " "),
     ]
 
 

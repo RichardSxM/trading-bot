@@ -58,16 +58,16 @@ def make_client():
 
     loops = []
 
-    def make(reject_every_stop):
+    def make(reject_every_stop, reject_kill_switch=False):
         loops.append(asyncio.new_event_loop())
-        return _client(loops[-1], reject_every_stop)
+        return _client(loops[-1], reject_every_stop, reject_kill_switch)
 
     yield make
     for loop in loops:
         loop.close()
 
 
-def _client(loop, reject_every_stop):
+def _client(loop, reject_every_stop, reject_kill_switch=False):
     from nautilus_trader.cache.cache import Cache
     from nautilus_trader.common.component import LiveClock, MessageBus
     from nautilus_trader.portfolio.portfolio import Portfolio
@@ -80,7 +80,13 @@ def _client(loop, reject_every_stop):
     cache = Cache()
     events: list[object] = []
     msgbus.register("ExecEngine.process", events.append)
-    config = sandbox_exec_client(PaperLoopSettings(trading_env="demo", sandbox_reject_stop_orders=reject_every_stop))
+    config = sandbox_exec_client(
+        PaperLoopSettings(
+            trading_env="demo",
+            sandbox_reject_stop_orders=reject_every_stop,
+            sandbox_reject_kill_switch_orders=reject_kill_switch,
+        )
+    )
     client = FeeSandboxExecutionClient(
         loop=loop,
         portfolio=Portfolio(msgbus, cache, clock),
@@ -139,6 +145,38 @@ def test_the_stop_reject_drill_rejects_a_stop_and_passes_other_orders_on(make_cl
     assert [type(event) for event in events] == [OrderSubmitted, OrderRejected]
     assert {event.client_order_id for event in events} == {stop.client_order_id}
     assert events[1].reason == DRILL_REJECT_REASON
+
+
+def test_the_kill_switch_drill_rejects_only_orders_tagged_kill_switch(make_client):
+    """covers: spec 0010 SANDBOX_REJECT_KILL_SWITCH_ORDERS"""
+    from nautilus_trader.common.component import TestClock
+    from nautilus_trader.common.factories import OrderFactory
+    from nautilus_trader.model.enums import OrderSide
+    from nautilus_trader.model.events import OrderRejected, OrderSubmitted
+    from nautilus_trader.model.identifiers import InstrumentId
+    from nautilus_trader.model.objects import Quantity
+    from nautilus_trader.test_kit.stubs.identifiers import TestIdStubs
+
+    from trading_core.node.sandbox import KILL_SWITCH_DRILL_REASON
+
+    client, events, sent = make_client(reject_every_stop=False, reject_kill_switch=True)
+    market, stop = _orders()
+    factory = OrderFactory(TestIdStubs.trader_id(), TestIdStubs.strategy_id(), TestClock())
+    close = factory.market(
+        InstrumentId.from_str("PF_XBTUSD.KRAKEN"),
+        OrderSide.SELL,
+        Quantity.from_str("0.0011"),
+        reduce_only=True,
+        tags=["origin:kill_switch", "halt:x"],
+    )
+
+    for order in (market, stop, close):
+        client.submit_order(_submit(order))
+
+    assert [command.order for command in sent] == [market, stop]
+    assert [type(event) for event in events] == [OrderSubmitted, OrderRejected]
+    assert events[1].client_order_id == close.client_order_id
+    assert events[1].reason == KILL_SWITCH_DRILL_REASON
 
 
 def test_without_the_drill_a_stop_goes_to_the_exchange(make_client):

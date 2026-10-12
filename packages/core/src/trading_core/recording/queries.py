@@ -18,7 +18,16 @@ from sqlalchemy import Date, ScalarSelect, String, cast, func, literal, select, 
 from sqlalchemy.orm import InstrumentedAttribute, Session, aliased
 
 from trading_core.recording import models
-from trading_core.recording.enums import Env, Intent, OrderSide, OrderType, PositionSide, PositionStatus, RunMode
+from trading_core.recording.enums import (
+    Env,
+    Intent,
+    OrderOrigin,
+    OrderSide,
+    OrderType,
+    PositionSide,
+    PositionStatus,
+    RunMode,
+)
 from trading_core.recording.errors import UnsupportedInstrumentError
 from trading_core.strategy.placeholder import ExitReason, exit_reason
 
@@ -224,11 +233,14 @@ def _offset(page: int, size: int) -> int:
     return (page - 1) * size
 
 
-def _exit_reason(abandoned: bool, order_type: str | None, intent: str | None) -> ExitReason | None:
+def _exit_reason(abandoned: bool, order_type: str | None, intent: str | None, origin: str | None) -> ExitReason | None:
     if not abandoned and order_type is None:
         return None
     return exit_reason(
-        abandoned, None if order_type is None else OrderType(order_type), None if intent is None else Intent(intent)
+        abandoned,
+        None if order_type is None else OrderType(order_type),
+        None if intent is None else Intent(intent),
+        None if origin is None else OrderOrigin(origin),
     )
 
 
@@ -237,8 +249,8 @@ def round_trips_page(session: Session, env: Env, page: int, size: int = PAGE_SIZ
 
     The side comes from the position's earliest fill (``filled_ns``, then ``id``): ``buy`` is long,
     ``sell`` is short. The exit reason is ``abandoned`` when a ``risk_events`` row keyed
-    ``abandoned:<position_id>`` exists, otherwise ``exit_reason`` on the order (and its decision)
-    of the position's last fill. A page past the end is empty. Raises ``ValueError`` for a page
+    ``abandoned:<position_id>`` exists, otherwise ``exit_reason`` on the order (its type, origin,
+    and decision) of the position's last fill. A page past the end is empty. Raises ``ValueError`` for a page
     or size below 1.
     """
     offset = _offset(page, size)
@@ -252,7 +264,7 @@ def round_trips_page(session: Session, env: Env, page: int, size: int = PAGE_SIZ
         .lateral("opening")
     )
     closing = (
-        select(order.order_type, decision.intent)
+        select(order.order_type, order.origin, decision.intent)
         .select_from(last)
         .join(order, order.id == last.order_id)
         .outerjoin(decision, decision.id == order.decision_id)
@@ -270,7 +282,7 @@ def round_trips_page(session: Session, env: Env, page: int, size: int = PAGE_SIZ
         .exists()
     )
     rows = session.execute(
-        select(position, opening.c.side, closing.c.order_type, closing.c.intent, abandoned)
+        select(position, opening.c.side, closing.c.order_type, closing.c.intent, closing.c.origin, abandoned)
         .join(run, run.id == position.run_id)
         .outerjoin(opening, true())
         .outerjoin(closing, true())
@@ -296,9 +308,9 @@ def round_trips_page(session: Session, env: Env, page: int, size: int = PAGE_SIZ
             realized_pnl=p.realized_pnl,
             fees=p.fees_total,
             currency=p.currency,
-            exit_reason=_exit_reason(is_abandoned, order_type, intent),
+            exit_reason=_exit_reason(is_abandoned, order_type, intent, origin),
         )
-        for p, side, order_type, intent, is_abandoned in rows
+        for p, side, order_type, intent, origin, is_abandoned in rows
     ]
 
 

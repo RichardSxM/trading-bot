@@ -10,6 +10,11 @@ Round trip: ``flat`` → ``entering`` (entry submitted) → ``protected`` (stop 
 ``exiting`` (exit loop) → ``flat``. A stop fill goes straight to ``flat``. An order the venue
 cancels or expires is handled like a refusal: an unfilled entry goes back to ``flat``, a partly
 filled entry, a lost stop, or a lost exit runs (or keeps running) the exit loop.
+
+``flatten`` (the kill switch, spec 0010 AC-1, AC-3) closes through the same exit loop, or adopts
+the one already running; every exit order after it carries the kill switch tags in place of a
+decision. Asked while an entry is in flight, it cancels the entry and remembers the request: a
+late fill still gets its stop, then the exit loop starts at once.
 """
 
 import functools
@@ -46,13 +51,14 @@ from trading_core.node.strategy import KfsStrategy, KfsStrategyConfig, PauseGate
 from trading_core.recording.enums import (
     Env,
     Intent,
+    OrderOrigin,
     OrderSide,
     PositionSide,
     RiskEventKind,
     RiskVerdict,
     Severity,
 )
-from trading_core.recording.mappers import DECISION_TAG, PARENT_TAG, weighted_avg
+from trading_core.recording.mappers import DECISION_TAG, HALT_TAG, ORIGIN_TAG, PARENT_TAG, weighted_avg
 from trading_core.recording.rows import DecisionRow, JsonObject, RiskEventRow
 from trading_core.recording.spool import WriteCall, WriteItem
 from trading_core.risk.check import EntryRequest, InvalidRiskInput, RiskLimits, check_entry, refusal_severity
@@ -143,6 +149,9 @@ class PlaceholderTimed(KfsStrategy):
         self._exit_failures = 0
         self.position_opened_ns: int | None = None
         self.exit_due_ns: int | None = None
+        # Set by ``flatten`` until the round trip ends (spec 0010 AC-1).
+        self._kill_switch_tags: list[str] | None = None
+        self._kill_switch_pending = False
 
     # Read by the snapshots ------------------------------------------------------------------
 
@@ -169,6 +178,24 @@ class PlaceholderTimed(KfsStrategy):
     def on_stop(self) -> None:
         """Cancel entries and pause (the base class); positions, stops, and exits stay."""
         super().on_stop()
+
+    def flatten(self, halt_id: UUID) -> None:
+        """Close the position through the exit loop, or cancel an entry in flight (spec 0010 AC-1, AC-3).
+
+        Idempotent: an exit loop already running is adopted (its next retries carry the tags), and
+        the kill switch may call this again on every poll until flat.
+        """
+        self._kill_switch_tags = [f"{ORIGIN_TAG}{OrderOrigin.KILL_SWITCH}", f"{HALT_TAG}{halt_id}"]
+        if self._position() is not None:
+            self._cancel_timer(_PARTIAL)
+            self._start_exit_loop()
+        elif self.phase == Phase.ENTERING:
+            self._kill_switch_pending = True
+        self._cancel_entries()  # after: a cancel of a part filled entry arrives while ``exiting``
+        log.info(
+            "flatten requested",
+            extra={"fields": {"code": "strategy_flatten", "halt_id": str(halt_id), "phase": self.phase.value}},
+        )
 
     def on_quote_tick(self, tick: QuoteTick) -> None:
         """Quotes drive the sandbox and the stale check; nothing to do here."""
@@ -226,6 +253,7 @@ class PlaceholderTimed(KfsStrategy):
             open_notional=Decimal(0),
             has_position=False,
             paused=self._gate.paused,
+            halted=self._gate.halted,
             blocks=[str(r) for r in self._blocks.active()],
         )
         try:
@@ -258,8 +286,8 @@ class PlaceholderTimed(KfsStrategy):
                 {"reason": reason},
             )
             return
-        if self._gate.paused:  # the gate again, right before submitting (AC-20)
-            self._entry_denied(decision, "paused")
+        if self._gate.halted or self._gate.paused:  # the gate again, right before submitting (AC-20)
+            self._entry_denied(decision, "halted" if self._gate.halted else "paused")
             return
         order = self.order_factory.market(
             self._instrument_id,
@@ -341,7 +369,14 @@ class PlaceholderTimed(KfsStrategy):
         # entry timeout is already ``exiting`` when its cancel arrives.
         position = self._position()
         if client_order_id == self._entry_id and self.phase == Phase.ENTERING:
-            if position is None:
+            if position is None and (self._kill_switch_pending or self._gate.halted):
+                # Expected: the kill switch cancelled it (spec 0010 AC-1).
+                log.info(
+                    "entry cancelled by the kill switch",
+                    extra={"fields": {"code": "entry_canceled_kill_switch", "client_order_id": str(client_order_id)}},
+                )
+                self._back_to_flat()
+            elif position is None:
                 self._risk_event(
                     f"entry_canceled:{client_order_id}",
                     RiskEventKind.ORDER_REJECTED,
@@ -380,6 +415,9 @@ class PlaceholderTimed(KfsStrategy):
         if entry is not None and entry.status == NautilusOrderStatus.FILLED and self.phase == Phase.ENTERING:
             self._cancel_timer(_PARTIAL)
             self._submit_stop(entry)
+            if self._kill_switch_pending:  # a late fill after flatten (spec 0010 AC-3)
+                log.info("late entry fill, flattening", extra={"fields": {"code": "late_fill_flatten"}})
+                self._start_exit_loop()
 
     def on_position_closed(self, event: PositionClosed) -> None:
         """Flat: cancel the leftover stop and exit order and every round trip timer, then wait for the boundary."""
@@ -493,14 +531,14 @@ class PlaceholderTimed(KfsStrategy):
         position = self._position()
         if position is None:
             return
-        decision = self._exit_decision or self._entry_decision
+        tags = self._kill_switch_tags or [f"{DECISION_TAG}{self._exit_decision or self._entry_decision}"]
         order = self.order_factory.market(
             self._instrument_id,
             NautilusOrderSide.SELL if position.side == NautilusPositionSide.LONG else NautilusOrderSide.BUY,
             position.quantity,
             time_in_force=TimeInForce.GTC,
             reduce_only=True,
-            tags=[f"{DECISION_TAG}{decision}"],
+            tags=tags,
         )
         self._exit_id = order.client_order_id
         self.submit_order(order)

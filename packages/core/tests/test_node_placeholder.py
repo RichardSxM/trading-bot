@@ -30,6 +30,7 @@ from nautilus_trader.model.identifiers import InstrumentId, Symbol, Venue
 from nautilus_trader.model.instruments import CryptoPerpetual
 from nautilus_trader.model.objects import Money, Price, Quantity
 
+from trading_core.control.halt import HaltReason, HaltSource, HaltState
 from trading_core.node.placeholder import Phase, PlaceholderConfig, PlaceholderTimed
 from trading_core.node.recording import RecordingActor
 from trading_core.node.strategy import PauseGate
@@ -37,6 +38,7 @@ from trading_core.recording.enums import (
     Env,
     Intent,
     OrderEventKind,
+    OrderOrigin,
     OrderSide,
     OrderStatus,
     PositionStatus,
@@ -123,6 +125,7 @@ def _run(
     strategy_cls=None,
     extra_data=(),
     custom_data=(),
+    gate=None,
     **overrides,
 ):
     engine = BacktestEngine(BacktestEngineConfig(logging=LoggingConfig(bypass_logging=True)))
@@ -164,7 +167,7 @@ def _run(
         RecordingActor(env=Env.DEMO, run_id=run_id, instrument_id=INSTRUMENT_ID, record=records.append, blocks=blocks)
     )
     config = PlaceholderConfig(**values)  # type: ignore[arg-type]  # each value has its own type
-    strategy = (strategy_cls or PlaceholderTimed)(config, PauseGate(), blocks, records.append)
+    strategy = (strategy_cls or PlaceholderTimed)(config, gate or PauseGate(), blocks, records.append)
     engine.add_strategy(strategy)
 
     async def run():
@@ -655,3 +658,123 @@ def test_the_hold_timer_during_the_exit_loop_writes_no_decision(caplog):
     _, exit_order = _by_type(engine, OrderType.MARKET)
     assert exit_order.tags == [f"{DECISION_TAG}{enter.id}"]  # still a stop_failure exit
     assert engine.cache.positions_open() == []
+
+
+# The kill switch (spec 0010) -------------------------------------------------------------
+
+HALT_ID = uuid.UUID("0199d7a4-6d2f-7c4e-9a7b-0f1e2d3c4b5a")
+KILL_SWITCH_TAGS = ["origin:kill_switch", f"halt:{HALT_ID}"]
+ONE_TRIP = Prices(29, lambda t: 85000 + int(t * 10))  # one round trip: the 12:15 boundary only
+
+
+class _FlattenAt(PlaceholderTimed):
+    """Calls ``flatten(HALT_ID)`` once, ``at`` minutes after START."""
+
+    at = 17.0
+
+    def on_start(self):
+        super().on_start()
+        at_ns = _ns(START + timedelta(minutes=type(self).at))
+        self.clock.set_time_alert_ns("test_flatten", at_ns, lambda _: self.flatten(HALT_ID))
+
+
+def test_flatten_with_a_protected_position_closes_it_with_tagged_orders_and_no_decision():
+    """covers: spec 0010 AC-1 (tags, no decision, the stop stays until the position closed)"""
+    _FlattenAt.at = 17.0
+    engine, strategy, rows = _run(ONE_TRIP, strategy_cls=_FlattenAt)
+
+    assert [d.intent for d in _decisions(rows)] == [Intent.ENTER]
+    _, exit_order = _by_type(engine, OrderType.MARKET)
+    assert exit_order.is_reduce_only
+    assert exit_order.tags == KILL_SWITCH_TAGS
+    assert exit_order.filled_qty == exit_order.quantity
+    (stop,) = _by_type(engine, OrderType.STOP_MARKET)
+    assert stop.is_closed
+    assert engine.cache.positions_open() == []
+    assert strategy.phase == Phase.FLAT
+    assert strategy._kill_switch_tags is None
+    assert _risk_events(rows) == []
+    # The recording mapper takes the origin from the tag and leaves the decision empty.
+    order_rows = [r for r in rows if isinstance(r, OrderRow) and r.client_order_id == str(exit_order.client_order_id)]
+    assert {(r.origin, r.decision_id) for r in order_rows} == {(OrderOrigin.KILL_SWITCH, None)}
+
+
+class _FlattenRefused(_FlattenAt):
+    """The first ``refusals`` exits are refused before the venue, so the flatten adopts a running loop."""
+
+    refusals = 2
+
+    def _submit_exit(self, event=None):
+        if self._position() is not None and type(self).refusals > 0:
+            type(self).refusals -= 1
+            self._exit_refused("rejected: test")
+            return
+        super()._submit_exit(event)
+
+
+def test_flatten_adopts_an_exit_loop_already_running_and_its_retries_carry_the_tags():
+    # The time exit (12:25:02) is refused and retried every 1 s; the flatten lands at 12:25:04.5.
+    _FlattenRefused.at = 25 + 4.5 / 60
+    _FlattenRefused.refusals = 6
+    engine, _, rows = _run(ONE_TRIP, strategy_cls=_FlattenRefused)
+
+    assert [d.intent for d in _decisions(rows)] == [Intent.ENTER, Intent.EXIT]
+    exits = [o for o in _by_type(engine, OrderType.MARKET) if o.is_reduce_only]
+    assert [o.tags for o in exits] == [KILL_SWITCH_TAGS]
+    assert engine.cache.positions_open() == []
+
+
+def test_a_late_entry_fill_after_flatten_gets_its_stop_then_closes_at_once():
+    """covers: spec 0010 AC-3 (a late fill)"""
+    # Every venue message takes 20 s: the entry sent at 12:15:02 fills about 12:15:22. The flatten
+    # at 12:15:10 finds no position yet, so it cancels the entry and remembers; the fill wins.
+    _FlattenAt.at = 15 + 10 / 60
+    engine, _, rows = _run(ONE_TRIP, strategy_cls=_FlattenAt, latency_s=20, stop_accept_timeout_s=Decimal(60))
+
+    entry, exit_order = _by_type(engine, OrderType.MARKET)
+    assert entry.filled_qty == entry.quantity
+    assert exit_order.tags == KILL_SWITCH_TAGS
+    assert len(_by_type(engine, OrderType.STOP_MARKET)) == 1
+    assert engine.cache.positions_open() == []
+    assert [d.intent for d in _decisions(rows)] == [Intent.ENTER]
+    assert _risk_events(rows) == []
+
+
+class _HeldEntry(_FlattenAt):
+    """The entry never reaches the venue; after the flatten the venue cancels it."""
+
+    def submit_order(self, order, *args, **kwargs):
+        if order.client_order_id == self._entry_id:
+            return
+        super().submit_order(order, *args, **kwargs)
+
+    def flatten(self, halt_id):
+        entry_id = self._entry_id
+        super().flatten(halt_id)
+        if entry_id is not None:
+            _ended(self, entry_id)
+
+
+def test_an_entry_cancelled_by_the_flatten_logs_info_and_records_no_rejection(caplog):
+    """covers: spec 0010 AC-1 (expected cancels raise no order_rejected event)"""
+    _HeldEntry.at = 15 + 10 / 60
+    with caplog.at_level(logging.INFO, logger="trading_core.node.placeholder"):
+        _, strategy, rows = _run(Prices(20, lambda t: 85000 + int(t * 10)), strategy_cls=_HeldEntry)
+
+    assert _risk_events(rows) == []
+    assert "entry_canceled_kill_switch" in [getattr(r, "fields", {}).get("code") for r in caplog.records]
+    assert strategy.phase == Phase.FLAT
+    assert strategy._kill_switch_tags is None
+
+
+def test_a_halted_gate_refuses_the_entry_as_halted_and_records_an_info_limit_hit():
+    """covers: spec 0010 AC-15"""
+    gate = PauseGate()
+    gate.halt(HaltState(HaltReason.MANUAL_STOP, HaltSource.DASHBOARD, START, HALT_ID))
+    engine, _, rows = _run(Prices(20, lambda t: 85000 + int(t * 10)), gate=gate)
+
+    (decision,) = _decisions(rows)
+    assert (decision.risk_verdict, decision.risk_reason) == (RiskVerdict.REJECTED, "halted")
+    (event,) = _risk_events(rows)
+    assert (event.kind, event.severity) == (RiskEventKind.LIMIT_HIT, Severity.INFO)
+    assert engine.cache.orders() == []

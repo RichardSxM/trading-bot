@@ -254,10 +254,11 @@ class ControlCmd(StrEnum):
 
 
 class ControlSource(StrEnum):
-    """Who sent a control command: you from the dashboard, or a deploy (spec 0005)."""
+    """Who sent a control command: you from the dashboard or the command line, or a deploy (spec 0005, 0010)."""
 
     DASHBOARD = "dashboard"
     DEPLOY = "deploy"
+    CLI = "cli"
 
 
 class ControlOutcome(StrEnum):

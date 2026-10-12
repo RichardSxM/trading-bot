@@ -1,5 +1,6 @@
-"""covers: spec 0005 AC-6 (pause in two layers, the key at start, not_implemented), AC-7 (trader_state),
-AC-9 (entry orders cancelled on stop, stops and positions kept).
+"""covers: spec 0005 AC-6 (pause in two layers, the key at start), AC-7 (trader_state),
+AC-9 (entry orders cancelled on stop, stops and positions kept); spec 0010 AC-5 (halt key at start),
+AC-15 (the gate refuses entries while halted), the single trading state owner.
 
 Needs the ``node`` extra (NautilusTrader), so it runs in the trader image. The strategy tests use a
 BacktestEngine: its Trader starts actors and strategies in the same order as the live node.
@@ -23,10 +24,13 @@ from nautilus_trader.model.objects import Money, Price, Quantity
 from nautilus_trader.test_kit.providers import TestInstrumentProvider
 from redis.exceptions import ConnectionError as RedisConnectionError
 
+from trading_core.control import halt
+from trading_core.control.halt import HaltReason, HaltSource, HaltState
 from trading_core.control.messages import pause_command, stop_command, unpause_command
 from trading_core.control.pause import PauseState, decode, encode
 from trading_core.node.control import (
     ControlActor,
+    KillSwitch,
     PaperStatus,
     PauseController,
     load_pause,
@@ -105,7 +109,8 @@ def test_unpause_deletes_the_key_and_sets_active():
 
 
 @pytest.mark.parametrize("cmd", [ControlCmd.STOP, ControlCmd.RESUME, ControlCmd.FLATTEN])
-def test_stop_resume_and_flatten_fail_not_implemented_with_one_warning(cmd, caplog):
+def test_the_pause_controller_answers_not_implemented_for_kill_switch_commands(cmd, caplog):
+    # ``control_execute`` routes these to the kill switch; the pause controller never runs them.
     controller, gate, risk, _ = _controller()
     msg = stop_command(NOW, 60)
     msg = type(msg)(msg.id, cmd, msg.issued_at, msg.expires_at)
@@ -130,6 +135,20 @@ def test_a_pause_whose_key_cannot_be_written_fails_but_stays_paused(caplog):
     assert gate.paused
     assert risk.trading_state == TradingState.REDUCING
     assert "pause_key_write_failed" in _codes(caplog)
+
+
+def test_an_unpause_on_a_halted_trader_keeps_reducing():
+    """covers: spec 0010 AC-20 (a deploy's unpause leaves a halt alone)"""
+    controller, gate, risk, _ = _controller()
+    gate.halt(HaltState(HaltReason.MANUAL_STOP, HaltSource.DASHBOARD, NOW, uuid.uuid4()))
+    asyncio.run(controller.execute(pause_command(NOW, 60, ControlSource.DEPLOY)))
+
+    outcome = asyncio.run(controller.execute(unpause_command(NOW, 60, ControlSource.DEPLOY)))
+
+    assert outcome.outcome is ControlOutcome.EXECUTED
+    assert not gate.paused
+    assert gate.halted
+    assert risk.trading_state == TradingState.REDUCING
 
 
 def test_an_unpause_whose_key_cannot_be_deleted_fails_and_stays_paused():
@@ -203,7 +222,7 @@ class Probe(KfsStrategy):
         self.submit_order(self.stop_order)
 
 
-def _engine(gate, pause_key_value, reduce_first=False):
+def _engine(gate, pause_key_value, reduce_first=False, halt_key_value=None):
     engine = BacktestEngine(BacktestEngineConfig(logging=LoggingConfig(bypass_logging=True)))
     engine.add_venue(
         Venue("BINANCE"),
@@ -213,12 +232,14 @@ def _engine(gate, pause_key_value, reduce_first=False):
         base_currency=USD,
     )
     engine.add_instrument(INSTRUMENT)
-    controller = PauseController(gate, engine.kernel.risk_engine, FakeRedis(), "demo", lambda: NOW)
+    redis = FakeRedis()
+    controller = PauseController(gate, engine.kernel.risk_engine, redis, "demo", lambda: NOW)
+    kill_switch = KillSwitch(gate, engine.kernel.risk_engine, redis, "demo", lambda: NOW, engine.cache, 20)
 
     async def consume():
         await asyncio.sleep(3600)
 
-    engine.add_actor(ControlActor(controller, lambda: pause_key_value, consume))
+    engine.add_actor(ControlActor(controller, kill_switch, lambda: pause_key_value, lambda: halt_key_value, consume))
     strategy = Probe(
         KfsStrategyConfig(instrument_id=INSTRUMENT.id.value), gate, engine.kernel.risk_engine if reduce_first else None
     )
@@ -247,6 +268,34 @@ def test_a_paused_flat_trader_refuses_an_entry_and_accepts_a_reduce_only_stop(ca
     assert engine.cache.order(strategy.entry.client_order_id) is None
     assert engine.cache.order(strategy.stop_order.client_order_id) is not None
     assert "entry_denied_paused" in _codes(caplog)
+
+
+def test_a_halted_trader_starts_halted_refuses_an_entry_and_accepts_a_reduce_only_stop(caplog):
+    gate = PauseGate()
+    state = HaltState(HaltReason.DAILY_LOSS_LIMIT, HaltSource.TRADER, NOW, uuid.uuid4())
+    engine, strategy = _engine(gate, None, halt_key_value=halt.encode(state))
+
+    with caplog.at_level(logging.WARNING):
+        _run(engine)
+
+    assert gate.halt_state == state
+    assert engine.kernel.risk_engine.trading_state == TradingState.REDUCING
+    assert engine.cache.order(strategy.entry.client_order_id) is None
+    assert engine.cache.order(strategy.stop_order.client_order_id) is not None
+    assert "entry_denied_halted" in _codes(caplog)
+
+
+def test_a_malformed_halt_key_starts_halted_unknown(caplog):
+    gate = PauseGate()
+    engine, _ = _engine(gate, None, halt_key_value=b"notjson")
+
+    with caplog.at_level(logging.WARNING):
+        _run(engine)
+
+    assert gate.halt_state is not None
+    assert gate.halt_state.reason is HaltReason.UNKNOWN
+    assert engine.kernel.risk_engine.trading_state == TradingState.REDUCING
+    assert _codes(caplog).count("halt_key_invalid") == 1
 
 
 def test_reducing_alone_lets_a_flat_entry_through_which_is_why_the_gate_exists():

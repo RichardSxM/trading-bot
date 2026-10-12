@@ -183,6 +183,17 @@ def test_the_stop_reject_drill_is_off_by_default_and_allowed_in_demo(monkeypatch
     assert PaperLoopSettings(trading_env="demo").sandbox_reject_stop_orders is True
 
 
+def test_the_kill_switch_drill_is_off_by_default_and_refused_outside_demo(monkeypatch):
+    """covers: spec 0010 SANDBOX_REJECT_KILL_SWITCH_ORDERS"""
+    from trading_core.settings import PaperLoopSettings
+
+    assert PaperLoopSettings(trading_env="demo").sandbox_reject_kill_switch_orders is False
+    monkeypatch.setenv("SANDBOX_REJECT_KILL_SWITCH_ORDERS", "true")
+    assert PaperLoopSettings(trading_env="demo").sandbox_reject_kill_switch_orders is True
+    with pytest.raises(ValidationError, match="SANDBOX_REJECT_KILL_SWITCH_ORDERS"):
+        PaperLoopSettings(trading_env="live")
+
+
 def test_the_stop_reject_drill_is_refused_outside_demo(monkeypatch):
     from trading_core.settings import PaperLoopSettings
 
