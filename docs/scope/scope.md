@@ -163,12 +163,13 @@ Record the perp market's own context next to prices: funding rate, open interest
 **Carried over from an article (2026-10-04, a OneBullEx post, promotional, rules of thumb only):** a funding rate above +0.05 % per period reads as crowded longs and reversal risk, below −0.02 % as crowded shorts. Rising open interest while price sits in a tight range reads as pressure building before a breakout. Treat both as hypotheses for the backtest to test on our own data, not as thresholds to hard code.
 **Carried over from spec 0008:** own recorder days carry no funding, so the scalping simulator labels own runs "before funding". Once this feed records funding, the simulator can apply it to own days and drop that label.
 spec [0009](../specs/0009-market-context-feed/index.md)
+code in [packages/core/src/trading_core/marketdata/context.py](../../packages/core/src/trading_core/marketdata/context.py), [packages/core/src/trading_core/node/context_feed.py](../../packages/core/src/trading_core/node/context_feed.py), [apps/recorder/src/recorder/compactor/](../../apps/recorder/src/recorder/compactor/), [apps/lab/src/lab/stream.py](../../apps/lab/src/lab/stream.py)
 - [x] Design it (spec): `/architect market context feed`
 - [ ] Build it: `/develop market context feed`
-  - [ ] Gate: funding rate meaning and period, stream cadence and precision, Kraken's `ticker` and `trade` fields and fixtures, custom types through the feather writer and the engine, size per day (AC-1, AC-2, AC-3, AC-5, AC-9, AC-13, AC-14, AC-17)
-  - [ ] Thin thread, funding end to end: `ContextSettings`, recorder and compactor funding, pure `ContextBook`, `KfsStrategy` context hook and the placeholder log, own replay funding all or nothing, gap `stream` column (AC-1, AC-2, AC-7, AC-8, AC-9, AC-11, AC-14, AC-16)
-  - [ ] Mark, index, basis: recording with silence gaps, basis on read, lab hour stream with warmup and the look ahead test (AC-1, AC-2, AC-7, AC-8, AC-11, AC-13)
-  - [ ] Raw client: `websockets` actor for open interest and liquidations, parsers, dedupe, reconnect and idle watchdog, outages file and `reconnect` gaps, liquidation window (AC-3 to AC-8, AC-10, AC-11, AC-13)
+  - [x] Gate: funding rate meaning and period, stream cadence and precision, Kraken's `ticker` and `trade` fields and fixtures, custom types through the feather writer and the engine, size per day (AC-1, AC-2, AC-3, AC-5, AC-9, AC-13, AC-14, AC-17)
+  - [x] Thin thread, funding end to end: `ContextSettings`, recorder and compactor funding, pure `ContextBook`, `KfsStrategy` context hook and the placeholder log, own replay funding all or nothing, gap `stream` column (AC-1, AC-2, AC-7, AC-8, AC-9, AC-11, AC-14, AC-16)
+  - [x] Mark, index, basis: recording with silence gaps, basis on read, lab hour stream with warmup and the look ahead test (AC-1, AC-2, AC-7, AC-8, AC-11, AC-13)
+  - [x] Raw client: `websockets` actor for open interest and liquidations, parsers, dedupe, reconnect and idle watchdog, outages file and `reconnect` gaps, liquidation window (AC-3 to AC-8, AC-10, AC-11, AC-13)
   - [ ] Live read, Tardis history, deploy: trader actor, Tardis mark, index, open interest and the `--context` backfill, retention and boundary checks, the VPS 24 h check (AC-12, AC-15, AC-16, AC-17)
 - [ ] Verify it: `/check verify market context feed`
 - [ ] Test it: `/test market context feed`
