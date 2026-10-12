@@ -180,6 +180,9 @@ class KillSwitch:
     def attach(self, strategies, record, run_id):
         self.attached = (strategies, record, run_id)
 
+    def watch_losses(self, losses):
+        self.losses = losses
+
 
 def _fake_control_parts(node, settings, secrets):
     from trader.main import ControlParts
@@ -782,6 +785,9 @@ def test_demo_registers_recording_then_the_strategy_after_control_and_finishes_t
     registered = [c for c in node.calls if c[0] in ("add_actor", "add_strategy")]
     assert registered[0] == ("add_actor", "ControlActor")
     assert registered.index(("add_actor", "RecordingActor")) < registered.index(("add_strategy", "PlaceholderTimed"))
+    # The loss limits come after the control actor and before the strategy, and resume reads them.
+    assert registered.index(("add_actor", "LossLimitActor")) < registered.index(("add_strategy", "PlaceholderTimed"))
+    assert type(node.kill_switch.losses).__name__ == "LossLimitActor"
     # The kill switch gets the strategies (spec 0010): the placeholder, with the paper run's recorder.
     strategies, record, run_id = node.kill_switch.attached
     assert [type(s).__name__ for s in strategies] == ["PlaceholderTimed"]
@@ -887,3 +893,52 @@ def test_the_placeholder_reads_the_market_context_with_the_trader_settings():
         settings.context_max_age_funding_s,
         settings.context_liquidation_window_s,
     )
+
+
+# spec 0010 AC-21: the loss limit settings refuse a bad start --------------------------------
+
+
+@pytest.mark.parametrize(
+    ("env", "match"),
+    [
+        ({"RISK_DAILY_LOSS_LIMIT_USD": "0"}, "greater than 0"),
+        ({"RISK_TOTAL_LOSS_LIMIT_USD": "-1"}, "greater than 0"),
+        ({"RISK_DAILY_LOSS_LIMIT_USD": "20", "RISK_TOTAL_LOSS_LIMIT_USD": "10"}, "must not be below"),
+        ({"RISK_TOTAL_LOSS_SINCE": "2999-01-01"}, "in the future"),
+        ({"RISK_MAX_TRADES_PER_DAY": "0"}, "greater than or equal to 1"),
+        ({"RISK_LOSS_COOLDOWN_S": "-1"}, "greater than or equal to 0"),
+        ({"KILL_SWITCH_FLAT_TIMEOUT_S": "4"}, "greater than or equal to 5"),
+        ({"KILL_SWITCH_FLAT_TIMEOUT_S": "121"}, "less than or equal to 120"),
+    ],
+)
+def test_bad_loss_limit_settings_refuse_the_start(monkeypatch, env, match):
+    from pydantic import ValidationError
+
+    monkeypatch.setenv("TRADING_ENV", "demo")
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    with pytest.raises(ValidationError, match=match):
+        TraderSettings()
+
+
+def test_a_missing_total_loss_since_refuses_the_start(monkeypatch):
+    from pydantic import ValidationError
+
+    monkeypatch.setenv("TRADING_ENV", "demo")
+    monkeypatch.delenv("RISK_TOTAL_LOSS_SINCE")
+    with pytest.raises(ValidationError, match="risk_total_loss_since"):
+        TraderSettings()
+
+
+def test_the_loss_limit_defaults_match_the_spec(monkeypatch):
+    monkeypatch.setenv("TRADING_ENV", "demo")
+    settings = TraderSettings()
+
+    assert (
+        settings.risk_daily_loss_limit_usd,
+        settings.risk_total_loss_limit_usd,
+        settings.risk_max_trades_per_day,
+        settings.risk_loss_cooldown_s,
+        settings.kill_switch_flat_timeout_s,
+    ) == (Decimal(20), Decimal(100), 50, 600, 20)
+    assert "risk_daily_loss_limit_usd" in settings.strategy_config()

@@ -352,7 +352,7 @@ Tracer Bullet: the first slice is the thinnest real stop from the dashboard butt
    - A check that a deploy's pause and unpause leave the halt alone.
 
    Satisfies **AC-2**, **AC-4**, **AC-18**, **AC-19**, **AC-20**.
-4. **Pure loss rules.**
+4. **Pure loss rules.** (built)
    - `risk/limits.py`: `LossLimits`, `LossTally`, `LimitVerdict`, `roll`, `on_opened`, `on_closed`, `evaluate`, `tripped`, keyed by `(position_ref, opened_ns)`. Unit tests cover each AC edge:
      - at the limit;
      - the midnight roll;
@@ -364,7 +364,7 @@ Tracer Bullet: the first slice is the thinnest real stop from the dashboard butt
    - `LossLimitSettings` with its validators.
 
    Satisfies **AC-8**, **AC-9**, **AC-10**, **AC-11**, **AC-12**, **AC-21**.
-5. **Loss limits live.**
+5. **Loss limits live.** (built)
    - `recording.queries.loss_seed`, with an integration test on real Postgres.
    - **`LossLimitActor`** in `node/`, registered after the `ControlActor` and the demo's abandoned close.
      - It subscribes to position events first, holding them in a buffer.

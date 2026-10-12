@@ -11,8 +11,10 @@ Runs ``PlaceholderTimed`` in a BacktestEngine on synthetic quotes for a PF_XBTUS
 import asyncio
 import logging
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Any
 
 import pytest
 
@@ -126,6 +128,7 @@ def _run(
     extra_data=(),
     custom_data=(),
     gate=None,
+    add_actor=None,
     **overrides,
 ):
     engine = BacktestEngine(BacktestEngineConfig(logging=LoggingConfig(bypass_logging=True)))
@@ -167,7 +170,10 @@ def _run(
         RecordingActor(env=Env.DEMO, run_id=run_id, instrument_id=INSTRUMENT_ID, record=records.append, blocks=blocks)
     )
     config = PlaceholderConfig(**values)  # type: ignore[arg-type]  # each value has its own type
-    strategy = (strategy_cls or PlaceholderTimed)(config, gate or PauseGate(), blocks, records.append)
+    gate = gate or PauseGate()
+    if add_actor is not None:  # registered before the strategy, as the trader does
+        engine.add_actor(add_actor(engine, gate, blocks, records.append))
+    strategy = (strategy_cls or PlaceholderTimed)(config, gate, blocks, records.append)
     engine.add_strategy(strategy)
 
     async def run():
@@ -778,3 +784,166 @@ def test_a_halted_gate_refuses_the_entry_as_halted_and_records_an_info_limit_hit
     (event,) = _risk_events(rows)
     assert (event.kind, event.severity) == (RiskEventKind.LIMIT_HIT, Severity.INFO)
     assert engine.cache.orders() == []
+
+
+# The loss limit actor (spec 0010 AC-8 to AC-14) -----------------------------------------
+
+
+class _Redis:
+    async def set(self, name, value):
+        pass
+
+    async def delete(self, *names):
+        pass
+
+
+def _loss_actor(read_seed, limits, own_blocks=None, seeded_at_start=None):
+    """A factory for ``_run(add_actor=...)``: a ``LossLimitActor`` with a real ``KillSwitch`` on the engine."""
+    from trading_core.node.control import KillSwitch
+    from trading_core.node.loss_limits import LossLimitActor
+
+    made: dict[str, Any] = {}
+
+    class _Actor(LossLimitActor):
+        def on_start(self):
+            super().on_start()
+            if seeded_at_start is not None:  # the backtest never yields to the seed task: land it here
+                self._land(seeded_at_start, self.clock.utc_now())
+
+    def build(engine, gate, blocks, record):
+        kill_switch = KillSwitch(gate, engine.kernel.risk_engine, _Redis(), "demo", lambda: START, engine.cache, 20)
+        actor = _Actor(
+            limits=limits,
+            env=Env.DEMO,
+            read_seed=read_seed,
+            kill_switch=kill_switch,
+            blocks=own_blocks if own_blocks is not None else blocks,
+            record=record,
+            run_id=uuid.uuid7(),
+            seed_retry_s=0,
+        )
+        kill_switch.watch_losses(actor)
+        made["actor"], made["kill_switch"] = actor, kill_switch
+        return actor
+
+    return build, made
+
+
+def _limits(**changes):
+    from trading_core.risk.limits import LossLimits
+
+    base = LossLimits(
+        daily_usd=Decimal(20), total_usd=Decimal(100), total_since=START.date(), max_trades_per_day=50, cooldown_s=600
+    )
+    return replace(base, **changes)
+
+
+def _empty_seed(**changes):
+    from trading_core.recording.queries import LossSeed
+
+    base = LossSeed(
+        realized_today=Decimal(0),
+        realized_total=Decimal(0),
+        closed_keys=frozenset(),
+        opened_today_keys=frozenset(),
+        last_loss_closed_at=None,
+        daily_halt_today=False,
+    )
+    return replace(base, **changes)
+
+
+FALLING_AFTER_ENTRY = Prices(29, lambda t: 85000 + int(t * 10) if t < 16 else 84900)
+
+
+def test_an_unrealized_loss_over_the_daily_limit_halts_and_blocks_until_midnight():
+    """covers: spec 0010 AC-8, AC-9, AC-14 (the 1 s timer sees the open loss)"""
+    build, made = _loss_actor(
+        lambda *_: _empty_seed(), _limits(daily_usd=Decimal("0.05")), seeded_at_start=_empty_seed()
+    )
+    gate = PauseGate()
+
+    _, strategy, _ = _run(FALLING_AFTER_ENTRY, add_actor=build, gate=gate)
+
+    assert gate.halt_state is not None
+    assert gate.halt_state.reason is HaltReason.DAILY_LOSS_LIMIT
+    assert gate.halt_state.source is HaltSource.TRADER
+    assert BlockReason.DAILY_LOSS_LIMIT in strategy._blocks.active()
+    tally, verdict = made["actor"].figures()
+    assert tally.trades_today == 1
+    assert tally.daily_tripped
+    assert verdict.loss_today > Decimal("0.05")
+
+
+def test_a_losing_close_starts_the_cooldown_and_counts_one_trade():
+    """covers: spec 0010 AC-11, AC-12"""
+    build, made = _loss_actor(
+        lambda *_: _empty_seed(), _limits(max_trades_per_day=1, cooldown_s=3600), seeded_at_start=_empty_seed()
+    )
+
+    _, strategy, rows = _run(FALLING_AFTER_ENTRY, add_actor=build)
+
+    tally, verdict = made["actor"].figures()
+    assert tally.trades_today == 1
+    assert tally.realized_today < 0
+    assert verdict.cooldown_until is not None
+    assert {BlockReason.TRADE_CAP, BlockReason.LOSS_COOLDOWN} <= set(strategy._blocks.active())
+    trade_cap = [e for e in _risk_events(rows) if e.event_key.startswith("trade_cap:")]
+    assert [(e.kind, e.severity) for e in trade_cap] == [(RiskEventKind.LIMIT_HIT, Severity.WARNING)]
+
+
+def test_events_before_the_seed_are_held_and_a_key_in_the_seed_counts_once(caplog):
+    """covers: spec 0010 AC-13 (subscribe first, fold the buffer, skip seeded keys; retry on failure)"""
+    from trading_core.strategy.blocks import EntryBlocks
+
+    own = EntryBlocks()  # the strategy trades; only the actor's own blocks wait for the seed
+    calls = []
+    engine_box: dict[str, Any] = {}
+
+    def read_seed(day_start, total_since):
+        calls.append((day_start, total_since))
+        if len(calls) == 1:
+            raise OSError("postgres down")
+        # The recording writer already wrote the round trip before the seed read it.
+        closed = engine_box["engine"].cache.positions_closed()
+        keys = frozenset((p.id.value, p.ts_opened) for p in closed)
+        realized = sum((p.realized_pnl.as_decimal() for p in closed), Decimal(0))
+        return _empty_seed(realized_today=realized, realized_total=realized, closed_keys=keys, opened_today_keys=keys)
+
+    build, made = _loss_actor(read_seed, _limits(), own_blocks=own)
+
+    def add(engine, gate, blocks, record):
+        engine_box["engine"] = engine
+        return build(engine, gate, blocks, record)
+
+    engine, _, _ = _run(FALLING_AFTER_ENTRY, add_actor=add)
+    actor = made["actor"]
+    assert not actor.seeded
+    assert BlockReason.LOSS_UNKNOWN in own.active()
+    assert actor._buffer  # the opened and closed events, held
+
+    with caplog.at_level(logging.WARNING, logger="trading_core.node.loss_limits"):
+        asyncio.run(actor._seed_until_landed())
+
+    assert actor.seeded
+    assert BlockReason.LOSS_UNKNOWN not in own.active()
+    assert "loss_seed_failed" in [getattr(r, "fields", {}).get("code") for r in caplog.records]
+    assert calls[0][0] == datetime(2026, 10, 4, tzinfo=UTC)  # UTC midnight of the trader's clock
+    tally, _ = actor.figures()
+    (position,) = engine.cache.positions_closed()
+    assert tally.trades_today == 1
+    assert tally.realized_today == position.realized_pnl.as_decimal()
+
+
+def test_resume_reads_the_loss_limits():
+    """covers: spec 0010 AC-4 (loss_unknown until seeded)"""
+    from trading_core.control.messages import command
+    from trading_core.recording.enums import ControlCmd, ControlOutcome
+
+    build, made = _loss_actor(lambda *_: _empty_seed(), _limits())
+    gate = PauseGate()
+    gate.halt(HaltState(HaltReason.MANUAL_STOP, HaltSource.DASHBOARD, START, HALT_ID))
+
+    _run(Prices(5, lambda t: 85000), add_actor=build, gate=gate)
+    outcome = asyncio.run(made["kill_switch"].resume(command(ControlCmd.RESUME, START, 60)))
+
+    assert (outcome.outcome, outcome.reason) == (ControlOutcome.FAILED, "loss_unknown")

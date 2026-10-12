@@ -26,6 +26,7 @@ from trading_core.recording.enums import (
     OrderType,
     PositionSide,
     PositionStatus,
+    RiskEventKind,
     RunMode,
 )
 from trading_core.recording.errors import UnsupportedInstrumentError
@@ -347,3 +348,88 @@ def fills_page(session: Session, env: Env, page: int, size: int = PAGE_SIZE) -> 
 def control_command_known(session: Session, command_id: UUID) -> bool:
     """True when the trader already recorded the control command ``command_id`` (spec 0005 AC-6)."""
     return session.get(models.ControlCommand, command_id) is not None
+
+
+@dataclass(frozen=True, kw_only=True)
+class LossSeed:
+    """What the loss limits start from (spec 0010 AC-13), read once at start.
+
+    Realized sums are net of fees (a loss is negative). ``closed_keys`` are the
+    ``(position_ref, opened_ns)`` of positions closed since ``total_since`` (today's are among
+    them), ``opened_today_keys`` those opened since UTC midnight, so live events already in the
+    seed are skipped.
+    """
+
+    realized_today: Decimal
+    realized_total: Decimal
+    closed_keys: frozenset[tuple[str, int]]
+    opened_today_keys: frozenset[tuple[str, int]]
+    last_loss_closed_at: datetime | None
+    daily_halt_today: bool
+
+
+def loss_seed(session: Session, env: Env, mode: RunMode, day_start: datetime, total_since: datetime) -> LossSeed:
+    """The loss figures of ``env``'s ``mode`` runs: realized today and since ``total_since``, today's
+    opened positions, the newest losing close, and whether a ``daily_loss_limit`` halt was recorded today.
+
+    ``day_start`` (UTC midnight) and ``total_since`` are aware UTC datetimes.
+    """
+    position, run = models.Position, models.StrategyRun
+    window = min(day_start, total_since)
+    rows = session.execute(
+        select(position.position_ref, position.opened_ns, position.opened_at, position.closed_at, position.realized_pnl)
+        .join(run, run.id == position.run_id)
+        .where(
+            run.mode == mode,
+            run.env == env,
+            position.env == env,
+            (
+                (position.status == PositionStatus.CLOSED) & (position.closed_at >= window)
+                | (position.opened_at >= day_start)
+            ),
+        )
+    ).all()
+    realized_today = realized_total = Decimal(0)
+    closed: set[tuple[str, int]] = set()
+    opened: set[tuple[str, int]] = set()
+    for ref, opened_ns, opened_at, closed_at, realized in rows:
+        key = (ref, opened_ns)
+        if opened_at >= day_start:
+            opened.add(key)
+        if closed_at is None:
+            continue
+        if closed_at >= total_since:
+            closed.add(key)
+            realized_total += realized
+        if closed_at >= day_start:
+            realized_today += realized
+    last_loss = session.execute(
+        select(func.max(position.closed_at))
+        .join(run, run.id == position.run_id)
+        .where(
+            run.mode == mode,
+            run.env == env,
+            position.env == env,
+            position.status == PositionStatus.CLOSED,
+            position.realized_pnl < 0,
+        )
+    ).scalar_one()
+    event = models.RiskEvent
+    daily_halt = session.execute(
+        select(event.id)
+        .where(
+            event.env == env,
+            event.kind == RiskEventKind.HALT,
+            func.jsonb_extract_path_text(event.details, "reason") == "daily_loss_limit",
+            event.occurred_at >= day_start,
+        )
+        .limit(1)
+    ).first()
+    return LossSeed(
+        realized_today=realized_today,
+        realized_total=realized_total,
+        closed_keys=frozenset(closed),
+        opened_today_keys=frozenset(opened),
+        last_loss_closed_at=last_loss,
+        daily_halt_today=daily_halt is not None,
+    )

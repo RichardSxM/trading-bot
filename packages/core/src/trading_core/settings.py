@@ -4,6 +4,7 @@ Secrets never come from the environment: they are files read by ``trading_core.s
 (spec 0003). Settings only says where those files live.
 """
 
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
@@ -172,9 +173,26 @@ class PaperLoopSettings(Settings):
 
 
 class LossLimitSettings(Settings):
-    """The kill switch and loss limit settings (spec 0010 AC-21); the trader's settings subclass it in every env."""
+    """The kill switch and loss limit settings (spec 0010 AC-21); the trader's settings subclass it in every env.
 
+    ``RISK_TOTAL_LOSS_SINCE`` has no default: the trader refuses to start without it. The ``risk_``
+    names put these in the strategy version config.
+    """
+
+    risk_daily_loss_limit_usd: Decimal = Field(default=Decimal(20), gt=0)
+    risk_total_loss_limit_usd: Decimal = Field(default=Decimal(100), gt=0)
+    risk_total_loss_since: date
+    risk_max_trades_per_day: int = Field(default=50, ge=1)
+    risk_loss_cooldown_s: int = Field(default=600, ge=0)
     kill_switch_flat_timeout_s: int = Field(default=20, ge=5, le=120)
+
+    @model_validator(mode="after")
+    def _limits_fit(self) -> Self:
+        if self.risk_total_loss_limit_usd < self.risk_daily_loss_limit_usd:
+            raise ValueError("RISK_TOTAL_LOSS_LIMIT_USD must not be below RISK_DAILY_LOSS_LIMIT_USD")
+        if self.risk_total_loss_since > datetime.now(UTC).date():
+            raise ValueError("RISK_TOTAL_LOSS_SINCE must not be in the future")
+        return self
 
 
 @lru_cache(maxsize=1)

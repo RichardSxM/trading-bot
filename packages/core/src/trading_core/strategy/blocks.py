@@ -20,6 +20,10 @@ class BlockReason(StrEnum):
     EXIT_FAILED = "exit_failed"
     RECORD_CONFLICT = "record_conflict"
     RECORDING_FAILED = "recording_failed"
+    DAILY_LOSS_LIMIT = "daily_loss_limit"
+    TRADE_CAP = "trade_cap"
+    LOSS_COOLDOWN = "loss_cooldown"
+    LOSS_UNKNOWN = "loss_unknown"
 
 
 PLAIN_WORDS: Final[dict[BlockReason, str]] = {
@@ -31,10 +35,24 @@ PLAIN_WORDS: Final[dict[BlockReason, str]] = {
     BlockReason.EXIT_FAILED: "Closing a position failed 5 times (restart to clear)",
     BlockReason.RECORD_CONFLICT: "A record contradicted the database (restart to clear)",
     BlockReason.RECORDING_FAILED: "A record could not be written (restart to clear)",
+    BlockReason.DAILY_LOSS_LIMIT: "Today's loss reached the daily limit (clears at midnight UTC)",
+    BlockReason.TRADE_CAP: "Today's trade cap is reached (clears at midnight UTC)",
+    BlockReason.LOSS_COOLDOWN: "Cooling down after a losing trade",
+    BlockReason.LOSS_UNKNOWN: "Today's loss is not known yet (waiting for the database)",
 }
 """What the dashboard shows for each reason."""
 
-SELF_CLEARING: Final = frozenset({BlockReason.PAUSED, BlockReason.STALE_FEED, BlockReason.RECORDING_UNHEALTHY})
+SELF_CLEARING: Final = frozenset(
+    {
+        BlockReason.PAUSED,
+        BlockReason.STALE_FEED,
+        BlockReason.RECORDING_UNHEALTHY,
+        BlockReason.DAILY_LOSS_LIMIT,
+        BlockReason.TRADE_CAP,
+        BlockReason.LOSS_COOLDOWN,
+        BlockReason.LOSS_UNKNOWN,
+    }
+)
 """Reasons that clear by themselves; the rest hold until the trader restarts."""
 
 

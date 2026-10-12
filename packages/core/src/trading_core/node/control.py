@@ -231,6 +231,7 @@ class KillSwitch:
         self._key_written = False
         self._flattening = 0
         self._tasks: set[asyncio.Task[object]] = set()
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     def attach(self, strategies: Sequence[KfsStrategy], record: Record | None, run_id: uuid.UUID | None) -> None:
         """Hand over the strategies to flatten and where events go, once they exist (``main``)."""
@@ -359,10 +360,32 @@ class KillSwitch:
         self._flatten_all(flatten_id)
         self._spawn(self._wait_flat(flatten_id, self._now()))
 
-    async def _halt(self, state: HaltState, flatten_id: uuid.UUID) -> bool:
-        """Halt in memory, then write the key while flattening; False when the key could not be written."""
+    def halt_automatic(self, reason: HaltReason) -> uuid.UUID:
+        """Halt for a loss limit (spec 0010 AC-9, AC-10): in memory now, then key, event, and flat wait as a task.
+
+        Returns the new ``halt_id`` (a UUID7). There is no command to answer, so a timeout only
+        writes its ``flatten_timeout`` event.
+        """
+        state = HaltState(reason, HaltSource.TRADER, self._now(), uuid.uuid7())
+        newly = self._apply_halt(state)
+        self._spawn(self._halt_automatic(state, newly))
+        return state.halt_id
+
+    async def _halt_automatic(self, state: HaltState, newly: bool) -> None:
+        await self._after_halt(state, newly, flatten_id=state.halt_id)
+        await self._wait_flat(state.halt_id, self._now())
+
+    def _apply_halt(self, state: HaltState) -> bool:
+        """Halt in memory and set the trading state, before any I/O; True when newly halted."""
         newly = self._gate.halt(state)
         apply_trading_state(self._gate, self._risk_engine)
+        return newly
+
+    async def _halt(self, state: HaltState, flatten_id: uuid.UUID) -> bool:
+        """Halt in memory, then write the key while flattening; False when the key could not be written."""
+        return await self._after_halt(state, self._apply_halt(state), flatten_id)
+
+    async def _after_halt(self, state: HaltState, newly: bool, flatten_id: uuid.UUID) -> bool:
         current = self._gate.halt_state or state
         write = None if self._key_written else asyncio.ensure_future(self._write_key(current))
         self._flatten_all(flatten_id)  # before the write runs: a slow Redis never delays the close
@@ -430,10 +453,19 @@ class KillSwitch:
         finally:
             self._flattening -= 1
 
+    def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """The node's event loop, where the flat waits of automatic halts run (``ControlActor.on_start``)."""
+        self._loop = loop
+
     def _spawn(self, work: Coroutine[object, object, object]) -> None:
-        task = asyncio.get_running_loop().create_task(work)
-        self._tasks.add(task)
-        task.add_done_callback(self._task_done)
+        loop = self._loop or asyncio.get_running_loop()
+
+        def start() -> None:
+            task = loop.create_task(work)
+            self._tasks.add(task)
+            task.add_done_callback(self._task_done)
+
+        loop.call_soon_threadsafe(start)
 
     def _task_done(self, task: asyncio.Task[object]) -> None:
         self._tasks.discard(task)
@@ -521,6 +553,7 @@ class ControlActor(Actor):  # type: ignore[misc]  # Actor is Cython with no stub
         else:
             load_pause(self._controller, raw)
         loop = asyncio.get_running_loop()
+        self._kill_switch.bind_loop(loop)
         if self._controller.halted:
             # Through the loop: the flat wait it starts is a task on the node's event loop.
             self.clock.set_time_alert(

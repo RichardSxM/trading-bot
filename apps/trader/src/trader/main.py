@@ -70,6 +70,7 @@ from trading_core.node.heartbeat import HeartbeatActor, HeartbeatConfig
 from trading_core.node.key_actors import KeyAgeActor, KeyAgeConfig
 from trading_core.node.key_check import watch_key_check
 from trading_core.node.kraken import BTC_PERP, futures_data_client, futures_exec_client
+from trading_core.node.loss_limits import LossLimitActor
 from trading_core.node.paper_snapshots import account_snapshot, paper_status, position_snapshot
 from trading_core.node.placeholder import STRATEGY_NAME, PlaceholderConfig, PlaceholderTimed
 from trading_core.node.recording import RecordingActor
@@ -77,9 +78,11 @@ from trading_core.node.sandbox import FeeSandboxExecClientFactory, sandbox_exec_
 from trading_core.node.strategy import KfsStrategy, PauseGate
 from trading_core.recording import repository
 from trading_core.recording.enums import Env, RunMode, RunStatus, StrategyKind
+from trading_core.recording.queries import LossSeed, loss_seed
 from trading_core.recording.rows import JsonObject
 from trading_core.recording.writer import RecordingWriter, deadletter_path, replay_spool, spool_path
 from trading_core.redis_check import redis_reachable
+from trading_core.risk.limits import LossLimits
 from trading_core.secrets import (
     KRAKEN_API_KEY,
     KRAKEN_API_SECRET,
@@ -403,6 +406,50 @@ def placeholder_config(settings: TraderSettings, run_id: UUID) -> PlaceholderCon
     )
 
 
+def loss_limits(settings: LossLimitSettings) -> LossLimits:
+    """The pure loss limits from the ``RISK_*`` settings (spec 0010 AC-21)."""
+    return LossLimits(
+        daily_usd=settings.risk_daily_loss_limit_usd,
+        total_usd=settings.risk_total_loss_limit_usd,
+        total_since=settings.risk_total_loss_since,
+        max_trades_per_day=settings.risk_max_trades_per_day,
+        cooldown_s=settings.risk_loss_cooldown_s,
+    )
+
+
+def loss_limit_actor(
+    settings: TraderSettings, secrets: Mapping[str, SecretStr], kill_switch: KillSwitch, paper: PaperLoop | None
+) -> LossLimitActor:
+    """The loss limits (spec 0010 AC-13): seeded from the paper runs in demo, the live runs in live.
+
+    Demo shares the paper loop's sessions, blocks, and recorder. Live has no strategy and no run
+    yet, so its blocks guard nothing and its events are only logged (spec 0010 Follow-up).
+    """
+    env = Env(settings.trading_env)
+    sessions: Callable[[], Session]
+    if paper is not None:
+        sessions, mode, blocks = paper.sessions, RunMode.PAPER, paper.blocks
+    else:
+        engine = create_engine(settings.database_url(secrets[POSTGRES_PASSWORD]), pool_size=1, pool_pre_ping=True)
+        sessions, mode, blocks = sessionmaker(engine), RunMode.LIVE, EntryBlocks()
+
+    def read_seed(day_start: datetime, total_since: datetime) -> LossSeed:
+        with sessions() as session:
+            return loss_seed(session, env, mode, day_start, total_since)
+
+    actor = LossLimitActor(
+        limits=loss_limits(settings),
+        env=env,
+        read_seed=read_seed,
+        kill_switch=kill_switch,
+        blocks=blocks,
+        record=None if paper is None else paper.writer.put,
+        run_id=None if paper is None else paper.run_id,
+    )
+    kill_switch.watch_losses(actor)
+    return actor
+
+
 def heartbeat_state(node: TradingNode, settings: Settings) -> dict[str, object]:
     """The heartbeat snapshot's data: the process, its commit, the trader state, and the data link."""
     return {
@@ -453,6 +500,9 @@ def run_node(
             )
         )
     )
+    # After the control actor (the halt is known) and the demo's abandoned close (start_paper_loop).
+    losses = loss_limit_actor(settings, secrets, control.kill_switch, paper)
+    node.trader.add_actor(losses)
     paper_state: Callable[[], PaperStatus] | None = None
     snapshot_readers: list[tuple[str, Callable[[], Mapping[str, object] | None]]] = [
         ("heartbeat", lambda: heartbeat_state(node, settings)),

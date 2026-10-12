@@ -43,6 +43,7 @@ def run(tmp_path_factory):
         "LOG_LEVEL": "DEBUG",
         "SECRETS_DIR_IN_CONTAINER": str(folder),
         "KRAKEN_KEY_ROTATED_ON": datetime.now(UTC).date().isoformat(),
+        "RISK_TOTAL_LOSS_SINCE": datetime.now(UTC).date().isoformat(),
         "GIT_COMMIT": "canary",
         "HEARTBEAT_FILE": str(folder / "alive"),
     }

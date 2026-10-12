@@ -189,7 +189,7 @@ spec [0010](../specs/0010-kill-switch-loss-limits/index.md)
 - [ ] Build it: `/develop kill switch & loss limits`
   - [x] Thin stop, end to end: halt key and gate, one trading state owner, `check_entry` halted, strategy `flatten` hook with tags and late fill handling, origin aware mapper, `KillSwitch.stop` waiting for flat, restart flatten, the demo drill (AC-1, AC-3, AC-5, AC-6, AC-7, AC-15)
   - [x] Flatten and resume: the commands, dashboard buttons with a confirm and failure reasons, `control_cli` stop, flatten, resume (AC-2, AC-4, AC-18, AC-19, AC-20)
-  - [ ] Loss limits: pure `risk/limits.py` and `LossLimitSettings`, the Postgres seed, `LossLimitActor` with its 1 s timer, automatic halts, trade cap and cooldown blocks (AC-8 to AC-14, AC-21)
+  - [x] Loss limits: pure `risk/limits.py` and `LossLimitSettings`, the Postgres seed, `LossLimitActor` with its 1 s timer, automatic halts, trade cap and cooldown blocks (AC-8 to AC-14, AC-21)
   - [ ] Snapshot and dashboard view: `trader_state` fields, HALTED badge, loss meters, trades and cooldown, plain words (AC-16, AC-17)
 - [ ] Verify it: `/check verify kill switch & loss limits`
 - [ ] Test it: `/test kill switch & loss limits`
