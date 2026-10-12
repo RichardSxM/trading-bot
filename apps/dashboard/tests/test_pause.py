@@ -253,6 +253,9 @@ def test_activity_lists_pause_and_resume_next_to_stop(logged_in, redis, clock):
         ("not_flat", "resume sent · failed · not flat yet"),
         ("total_loss_limit", "resume sent · failed · total loss limit"),
         ("loss_unknown", "resume sent · failed · loss not known yet"),
+        ("halt_key_delete_failed", "resume sent · failed · halt not cleared"),
+        ("flatten_timeout", "resume sent · failed · flatten timeout"),
+        ("halt_key_write_failed", "resume sent · failed · halt not saved, a restart would run"),
         ("brand_new", "resume sent · failed · brand_new"),
     ],
 )

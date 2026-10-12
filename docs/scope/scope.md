@@ -193,8 +193,8 @@ code in [packages/core/src/trading_core/control/halt.py](../../packages/core/src
   - [x] Loss limits: pure `risk/limits.py` and `LossLimitSettings`, the Postgres seed, `LossLimitActor` with its 1 s timer, automatic halts, trade cap and cooldown blocks (AC-8 to AC-14, AC-21)
   - [x] Snapshot and dashboard view: `trader_state` fields, HALTED badge, loss meters, trades and cooldown, plain words (AC-16, AC-17)
   - [x] Entry hold drill: demo only `SANDBOX_DELAY_ENTRY_FILLS_S` that holds entries in the sandbox so a stop can cancel one, for verify step 16 (AC-1)
-- [ ] Verify it: `/check verify kill switch & loss limits`
-- [ ] Test it: `/test kill switch & loss limits`
+- [x] Verify it: `/check verify kill switch & loss limits`
+- [x] Test it: `/test kill switch & loss limits`
 - [ ] Review it (fresh model): `/check review kill switch & loss limits`
 - [ ] Document it: `/document kill switch & loss limits`
 

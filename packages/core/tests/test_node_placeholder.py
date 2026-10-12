@@ -788,6 +788,23 @@ def test_a_flatten_while_flat_leaves_the_next_round_trip_its_own_tags():
     assert strategy._kill_switch_tags is None
 
 
+def test_flatten_exits_keep_retrying_past_five_refusals_and_report_exit_failed_once(caplog):
+    """covers: spec 0010 AC-1 (exit failed under a flatten), AC-3 (the exits keep retrying, past the
+    kill switch's 20 s wait)"""
+    _FlattenRefused.at = 17.0
+    _FlattenRefused.refusals = 30  # 30 s of refusals, one a second
+    with caplog.at_level(logging.WARNING, logger="trading_core.node.placeholder"):
+        engine, _, rows = _run(ONE_TRIP, strategy_cls=_FlattenRefused)
+
+    exit_failed = [e for e in _risk_events(rows) if e.event_key.startswith("exit_failed:")]
+    assert [e.severity for e in exit_failed] == [Severity.CRITICAL]
+    refused = [r for r in caplog.records if getattr(r, "fields", {}).get("code") == "exit_refused"]
+    assert len(refused) == 30
+    exits = [o for o in _by_type(engine, OrderType.MARKET) if o.is_reduce_only]
+    assert [o.tags for o in exits] == [KILL_SWITCH_TAGS]
+    assert engine.cache.positions_open() == []
+
+
 def test_a_halted_gate_refuses_the_entry_as_halted_and_records_an_info_limit_hit():
     """covers: spec 0010 AC-15"""
     gate = PauseGate()
@@ -892,6 +909,112 @@ def test_an_unrealized_loss_over_the_daily_limit_halts_and_blocks_until_midnight
     assert fields["total_loss_limit_usd"] == "100.00"
     assert fields["trades_today"] == 1
     assert Decimal(fields["loss_today_usd"]) > Decimal("0.05")
+
+
+def test_when_the_total_trips_too_the_halt_reason_is_total_loss_limit_and_resume_is_refused():
+    """covers: spec 0010 AC-10 (total wins; resume answers total_loss_limit while over)"""
+    from trading_core.control.messages import command
+    from trading_core.recording.enums import ControlCmd, ControlOutcome
+
+    build, made = _loss_actor(
+        lambda *_: _empty_seed(),
+        _limits(daily_usd=Decimal("0.05"), total_usd=Decimal("0.05")),
+        seeded_at_start=_empty_seed(),
+    )
+    gate = PauseGate()
+
+    _run(FALLING_AFTER_ENTRY, add_actor=build, gate=gate)
+    outcome = asyncio.run(made["kill_switch"].resume(command(ControlCmd.RESUME, START, 60)))
+
+    assert gate.halt_state is not None
+    assert gate.halt_state.reason is HaltReason.TOTAL_LOSS_LIMIT
+    assert (outcome.outcome, outcome.reason) == (ControlOutcome.FAILED, "total_loss_limit")
+    assert gate.halted
+
+
+def test_resume_is_refused_with_the_total_loss_exactly_at_its_limit():
+    """covers: spec 0010 AC-4 (total_loss_limit while the total is at or over the limit)"""
+    from trading_core.control.messages import command
+    from trading_core.recording.enums import ControlCmd, ControlOutcome
+
+    seed = _empty_seed(realized_total=Decimal(-100))
+    build, made = _loss_actor(lambda *_: seed, _limits(total_usd=Decimal(100)), seeded_at_start=seed)
+    gate = PauseGate()
+    gate.halt(HaltState(HaltReason.MANUAL_STOP, HaltSource.DASHBOARD, START, HALT_ID))
+
+    _run(Prices(5, lambda t: 85000), add_actor=build, gate=gate)
+    outcome = asyncio.run(made["kill_switch"].resume(command(ControlCmd.RESUME, START, 60)))
+
+    assert (outcome.outcome, outcome.reason) == (ControlOutcome.FAILED, "total_loss_limit")
+    assert gate.halt_state is not None
+    assert gate.halt_state.halt_id == HALT_ID  # the limit tripping while halted kept the first halt
+
+
+def test_resume_after_a_daily_halt_lifts_the_halt_but_keeps_the_daily_block():
+    """covers: spec 0010 AC-4 (resume never clears an entry block), AC-9 (one trip per day)"""
+    from trading_core.control.messages import command
+    from trading_core.recording.enums import ControlCmd, ControlOutcome
+
+    build, made = _loss_actor(
+        lambda *_: _empty_seed(), _limits(daily_usd=Decimal("0.05")), seeded_at_start=_empty_seed()
+    )
+    gate = PauseGate()
+
+    _, strategy, _ = _run(FALLING_AFTER_ENTRY, add_actor=build, gate=gate)
+    outcome = asyncio.run(made["kill_switch"].resume(command(ControlCmd.RESUME, START, 60)))
+    made["actor"]._evaluate()  # the next 1 s check, with the loss still over the limit
+
+    assert outcome.outcome is ControlOutcome.EXECUTED
+    assert not gate.halted
+    assert BlockReason.DAILY_LOSS_LIMIT in strategy._blocks.active()
+
+
+def test_a_restart_with_today_s_realized_loss_at_the_limit_blocks_without_a_new_halt():
+    """covers: spec 0010 AC-9 (a restart the same day blocks again from the realized loss alone)"""
+    seed = _empty_seed(realized_today=Decimal(-20), realized_total=Decimal(-20))
+    build, made = _loss_actor(lambda *_: seed, _limits(daily_usd=Decimal(20)), seeded_at_start=seed)
+    gate = PauseGate()
+
+    _, strategy, _ = _run(Prices(5, lambda t: 85000), add_actor=build, gate=gate)
+
+    assert not gate.halted
+    assert BlockReason.DAILY_LOSS_LIMIT in strategy._blocks.active()
+    tally, _ = made["actor"].figures()
+    assert tally.daily_tripped
+
+
+def test_a_restart_inside_the_cooldown_blocks_from_the_newest_losing_close():
+    """covers: spec 0010 AC-12 (a restart within the wait blocks again), AC-16 (cooldown_until in ISO UTC)"""
+    seed = _empty_seed(last_loss_closed_at=START - timedelta(minutes=1))
+    build, made = _loss_actor(lambda *_: seed, _limits(cooldown_s=600), seeded_at_start=seed)
+
+    _, strategy, _ = _run(Prices(5, lambda t: 85000), add_actor=build)
+
+    assert BlockReason.LOSS_COOLDOWN in strategy._blocks.active()
+    _, verdict = made["actor"].figures()
+    assert verdict.cooldown_until == START + timedelta(minutes=9)
+    assert made["actor"].snapshot_fields()["cooldown_until"] == "2026-10-04T12:09:00.000000Z"
+
+
+def test_the_loss_fields_are_null_until_the_seed_lands_and_the_limits_never_are():
+    """covers: spec 0010 AC-16"""
+
+    def read_seed(*_):
+        raise OSError("postgres down")
+
+    build, made = _loss_actor(read_seed, _limits())
+
+    _run(Prices(5, lambda t: 85000), add_actor=build)
+
+    assert made["actor"].snapshot_fields() == {
+        "loss_today_usd": None,
+        "loss_total_usd": None,
+        "daily_loss_limit_usd": "20.00",
+        "total_loss_limit_usd": "100.00",
+        "trades_today": None,
+        "max_trades_per_day": 50,
+        "cooldown_until": None,
+    }
 
 
 def test_a_losing_close_starts_the_cooldown_and_counts_one_trade():

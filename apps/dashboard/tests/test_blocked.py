@@ -54,6 +54,25 @@ def test_the_badge_and_the_overview_list_show_while_entries_are_blocked(client, 
     assert "A stop was not accepted, so the position was closed (restart to clear)" in page
 
 
+def test_the_halt_and_loss_limit_reasons_read_in_plain_words(client, clock, redis):
+    """covers: spec 0010 AC-15 (halted is listed), AC-17 (plain words for the loss limit blocks)"""
+    expected = {
+        "halted": "Halted by the stop button or a loss limit (press Resume to clear)",
+        "daily_loss_limit": "Today&#39;s loss reached the daily limit (clears at midnight UTC)",
+        "trade_cap": "Today&#39;s trade cap is reached (clears at midnight UTC)",
+        "loss_cooldown": "Cooling down after a losing trade",
+        "loss_unknown": "Today&#39;s loss is not known yet (waiting for the database)",
+    }
+
+    page = _page(client, clock, redis, entries_blocked=list(expected))
+
+    assert "blocked · 5 reasons" in page
+    for code, words in expected.items():
+        assert (
+            f'<span class="blocked-reasons__words">{words}</span> <code class="blocked-reasons__code">{code}</code>'
+        ) in page
+
+
 def test_nothing_blocked_shows_no_badge_and_no_list(client, clock, redis):
     page = _page(client, clock, redis, entries_blocked=[])
 

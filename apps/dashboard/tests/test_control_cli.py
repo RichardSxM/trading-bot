@@ -161,6 +161,18 @@ def test_any_other_final_outcome_exits_1(outcome):
         assert result.line["reason"] == "pause_key_write_failed"
 
 
+@pytest.mark.parametrize("cmd", [ControlCmd.STOP, ControlCmd.FLATTEN, ControlCmd.RESUME])
+@pytest.mark.parametrize("outcome", [ControlOutcome.EXPIRED, ControlOutcome.DUPLICATE])
+def test_a_kill_switch_command_exits_0_only_on_executed(cmd, outcome):
+    """covers: spec 0010 AC-19 (--wait-result exits 0 only on executed)"""
+    redis = AnsweringRedis(ControlOutcome.RECEIVED, outcome)
+    msg = command(cmd, datetime.now(UTC), 60, ControlSource.CLI)
+
+    result = asyncio.run(send_and_wait(redis, msg, "demo", 30, poll_s=0))
+
+    assert (result.code, result.line["cmd"], result.line["status"]) == (1, cmd.value, outcome.value)
+
+
 def test_received_alone_is_not_an_answer_and_times_out():
     redis = AnsweringRedis(ControlOutcome.RECEIVED)
 

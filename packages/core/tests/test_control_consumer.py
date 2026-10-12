@@ -99,7 +99,10 @@ class FakeRecorder:
         self.rows[result.id].append(result.outcome.value)
 
 
-def _consumer(redis, recorder, executed=None, outcome=EXECUTED, now=NOW, **kw):
+def _consumer(redis, recorder, executed=None, outcome=EXECUTED, now=NOW, executor=None, **kw):
+    if executor is not None:
+        return ControlConsumer(redis, "demo", executor, recorder, lambda: now, **kw)
+
     async def execute(msg):
         if executed is not None:
             executed.append(msg)
@@ -301,3 +304,26 @@ def test_every_command_kind_reaches_the_executor():
     _drain(_consumer(redis, FakeRecorder(), executed))
 
     assert [m.cmd for m in executed] == list(ControlCmd)
+
+
+def test_a_second_stop_waits_until_the_first_has_its_outcome():
+    """covers: spec 0010 AC-3 (a second command waits its turn)"""
+    redis = FakeRedis()
+    first, second = stop_command(NOW, 60), stop_command(NOW, 60)
+    redis.add(to_fields(first))
+    redis.add(to_fields(second))
+    steps = []
+
+    async def execute(msg):
+        steps.append(("start", msg.id))
+        await asyncio.sleep(0.01)  # a flatten waiting for flat yields to the loop
+        steps.append(("end", msg.id))
+        return EXECUTED
+
+    _drain(_consumer(redis, FakeRecorder(), executor=execute))
+
+    assert steps == [("start", first.id), ("end", first.id), ("start", second.id), ("end", second.id)]
+    assert [(r.id, r.outcome.value) for r in redis.results if r.outcome.value == "executed"] == [
+        (first.id, "executed"),
+        (second.id, "executed"),
+    ]

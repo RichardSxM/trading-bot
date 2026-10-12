@@ -9,12 +9,13 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid7
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from trading_core.recording import repository
+from trading_core.recording import models, repository
 from trading_core.recording.enums import Env, PositionSide, PositionStatus, RiskEventKind, RunMode, Severity
 from trading_core.recording.queries import loss_seed
-from trading_core.recording.rows import RiskEventRow
+from trading_core.recording.rows import PositionSnapshotRow, RiskEventRow
 
 from .conftest import World
 
@@ -90,6 +91,48 @@ def test_a_daily_halt_event_today_is_seen_and_other_reasons_are_not(session: Ses
 
     halt("daily_loss_limit", DAY + timedelta(hours=2))
     assert _seed(session).daily_halt_today
+
+
+def test_a_position_closed_as_abandoned_at_a_restart_counts_with_its_marked_loss(session: Session, world: World):
+    """covers: spec 0010 AC-8 (positions closed as abandoned at a demo restart count, with the marked loss)"""
+    opened = DAY + timedelta(hours=1)
+    row = world.position(opened_ns=_ns(opened), last_event_ns=_ns(opened))
+    repository.upsert_position(session, row)
+    position = session.execute(
+        select(models.Position).where(models.Position.position_ref == row.position_ref)
+    ).scalar_one()
+    repository.record_position_snapshot(
+        session,
+        PositionSnapshotRow(
+            env=Env.DEMO,
+            position_id=position.id,
+            quantity=row.quantity,
+            mark_px=Decimal("59000"),
+            unrealized_pnl=Decimal("-3.25"),
+            currency="USD",
+            captured_ns=_ns(opened + timedelta(minutes=5)),
+        ),
+    )
+    trader_id = session.execute(
+        select(models.StrategyRun.trader_id).where(models.StrategyRun.id == world.run_id)
+    ).scalar_one()
+    restarted = repository.start_run(
+        session,
+        env=Env.DEMO,
+        mode=RunMode.PAPER,
+        version_id=world.version_id,
+        trader_id=trader_id,
+        run_config={},
+        started_ns=_ns(opened + timedelta(hours=1)),
+    )
+
+    closed = repository.close_abandoned(session, Env.DEMO, trader_id, restarted, _ns(opened + timedelta(hours=1)))
+    seed = _seed(session)
+
+    assert closed == [position.id]
+    assert seed.realized_today == Decimal("-3.25")
+    assert (row.position_ref, row.opened_ns) in seed.closed_keys
+    assert seed.last_loss_closed_at == opened + timedelta(hours=1)
 
 
 def test_other_modes_and_envs_are_left_out(session: Session, world: World):

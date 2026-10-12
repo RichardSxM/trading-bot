@@ -109,8 +109,8 @@ class Clock:
         return value
 
 
-def _kill_switch(cache=None, clock=None, timeout_s=20):
-    gate, risk, redis = PauseGate(), FakeRiskEngine(), FakeRedis()
+def _kill_switch(cache=None, clock=None, timeout_s=20, redis=None):
+    gate, risk, redis = PauseGate(), FakeRiskEngine(), redis or FakeRedis()
     cache = cache or FakeCache()
     records: list[WriteItem] = []
     ks = KillSwitch(gate, risk, redis, "demo", clock or Clock(), cache, timeout_s, poll_s=0.001)
@@ -417,6 +417,127 @@ def test_a_new_halt_after_resume_writes_the_key_again():
     asyncio.run(ks.stop(_stop()))
 
     assert halt.decode(redis.values[HALT_KEY]) == gate.halt_state
+
+
+def test_resume_while_a_stop_is_still_waiting_for_flat_fails_not_flat():
+    """covers: spec 0010 AC-4 (not_flat while a stop's flatten is still running)"""
+    cache = FakeCache()
+    cache.inflight = [FakeOrder("entry")]  # no position: only the running flatten says not flat
+    ks, gate, _, redis, *_ = _kill_switch(cache)
+    ks.attach([FakeStrategy(cache)], None, None)
+
+    async def run():
+        stop = asyncio.create_task(ks.stop(_stop()))
+        await asyncio.sleep(0.01)
+        refused = await ks.resume(command(ControlCmd.RESUME, NOW, 60))
+        cache.inflight = []
+        await stop
+        return refused
+
+    outcome = asyncio.run(run())
+
+    assert (outcome.outcome, outcome.reason) == (ControlOutcome.FAILED, "not_flat")
+    assert gate.halted
+    assert HALT_KEY in redis.values
+
+
+class SlowRedis(FakeRedis):
+    """``set`` waits until ``release`` is set, like a Redis that answers late."""
+
+    def __init__(self):
+        super().__init__()
+        self.release = asyncio.Event()
+
+    async def set(self, name, value):
+        await self.release.wait()
+        await super().set(name, value)
+
+
+def test_a_slow_halt_key_write_never_delays_the_flatten():
+    """covers: spec 0010 AC-1 (the key is written while the positions close)"""
+    cache = FakeCache()
+    cache.positions = {"S-1": ["p"]}
+    ks, _, _, redis, *_ = _kill_switch(cache, redis=SlowRedis())
+    strategy = FakeStrategy(cache)
+    ks.attach([strategy], None, None)
+    msg = _stop()
+
+    async def run():
+        stop = asyncio.create_task(ks.stop(msg))
+        await asyncio.sleep(0.01)
+        flattened_before_the_write = list(strategy.flattened)
+        redis.release.set()
+        return flattened_before_the_write, await stop
+
+    flattened, outcome = asyncio.run(run())
+
+    assert flattened == [msg.id]
+    assert outcome.outcome is ControlOutcome.EXECUTED
+    assert HALT_KEY in redis.values
+
+
+def _halt_automatic(ks, reason, settle_s=0.01):
+    async def run():
+        halt_id = ks.halt_automatic(reason)
+        await asyncio.sleep(settle_s)  # the key, the event, and the flat wait run as a task
+        return halt_id
+
+    return asyncio.run(run())
+
+
+def test_an_automatic_halt_writes_the_key_flattens_and_records_one_critical_event():
+    """covers: spec 0010 AC-5, AC-7 (an automatic halt is critical, source trader), AC-10"""
+    cache = FakeCache()
+    cache.positions = {"S-1": ["p"]}
+    ks, gate, risk, redis, cache, records = _kill_switch(cache)
+    strategy = FakeStrategy(cache)
+    ks.attach([strategy], records.append, uuid.uuid4())
+
+    halt_id = _halt_automatic(ks, HaltReason.TOTAL_LOSS_LIMIT)
+
+    assert risk.trading_state == TradingState.REDUCING
+    state = halt.decode(redis.values[HALT_KEY])
+    assert (state.reason, state.source, state.halt_id) == (HaltReason.TOTAL_LOSS_LIMIT, HaltSource.TRADER, halt_id)
+    assert gate.halt_state == state
+    assert strategy.flattened[0] == halt_id
+    assert cache.positions_open() == []
+    [event] = _events(records)
+    assert (event.event_key, event.kind, event.severity) == (f"halt:{halt_id}", RiskEventKind.HALT, Severity.CRITICAL)
+    assert event.details == {"reason": "total_loss_limit", "source": "trader"}
+
+
+def test_a_limit_that_trips_while_halted_keeps_the_first_halt_and_writes_no_second_event():
+    """covers: spec 0010 AC-5 (already halted)"""
+    ks, gate, _, redis, _, records = _kill_switch()
+    strategy = FakeStrategy(FakeCache())
+    ks.attach([strategy], records.append, uuid.uuid4())
+    first = _stop()
+    asyncio.run(ks.stop(first))
+    key_before = redis.values[HALT_KEY]
+
+    second_id = _halt_automatic(ks, HaltReason.DAILY_LOSS_LIMIT)
+
+    assert gate.halt_state.halt_id == first.id
+    assert gate.halt_state.reason is HaltReason.MANUAL_STOP
+    assert redis.values[HALT_KEY] == key_before
+    assert redis.sets == 1
+    assert [e.event_key for e in _events(records)] == [f"halt:{first.id}"]
+    assert strategy.flattened == [first.id, second_id]  # it still flattens again
+
+
+def test_an_automatic_halt_that_cannot_get_flat_writes_flatten_timeout():
+    """covers: spec 0010 AC-3 (an automatic halt's flat wait is its own task)"""
+    cache = FakeCache()
+    cache.positions = {"S-1": ["p"]}
+    ks, gate, *_, records = _kill_switch(cache, clock=Clock(step=timedelta(seconds=1)), timeout_s=5)
+    ks.attach([FakeStrategy(cache, stuck=True)], records.append, uuid.uuid4())
+
+    halt_id = _halt_automatic(ks, HaltReason.DAILY_LOSS_LIMIT, settle_s=0.1)
+
+    timeouts = [e for e in _events(records) if e.event_key == f"flatten_timeout:{halt_id}"]
+    assert [(e.kind, e.severity) for e in timeouts] == [(RiskEventKind.ORDER_REJECTED, Severity.CRITICAL)]
+    assert gate.halted
+    assert not ks.flattening
 
 
 def test_control_execute_routes_flatten_and_resume_to_the_kill_switch():

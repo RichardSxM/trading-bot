@@ -88,6 +88,22 @@ def test_the_midnight_roll_clears_the_daily_block_and_today_but_keeps_the_total(
     assert roll(rolled, midnight + timedelta(hours=1)) is rolled  # same day: unchanged
 
 
+def test_the_midnight_roll_resets_the_trade_count_and_lifts_the_trade_cap():
+    """covers: spec 0010 AC-11 (blocked until the next UTC midnight), AC-14 (the roll)"""
+    tally = _tally()
+    for minutes in (10, 30, 50):
+        tally = on_opened(tally, _key(NOW - timedelta(minutes=minutes)))
+    midnight = datetime(2026, 10, 13, 0, 0, tzinfo=UTC)
+    assert BlockReason.TRADE_CAP in evaluate(tally, Decimal(0), LIMITS, NOW).blocks
+
+    rolled = roll(tally, midnight)
+    verdict = evaluate(rolled, Decimal(0), LIMITS, midnight)
+
+    assert rolled.trades_today == 0
+    assert BlockReason.TRADE_CAP not in verdict.blocks
+    assert on_opened(rolled, _key(midnight)).trades_today == 1  # the new day counts afresh
+
+
 def test_when_both_limits_trip_at_once_total_wins():
     tally = _closed(_tally(), "-150", at=NOW - timedelta(hours=1))
 
