@@ -330,9 +330,6 @@ class Poller:
     def _alert(self, age: AgeView, command: CommandView) -> AlertView | None:
         return alert_state(age, command, self._now(), self._ack_warn_s)
 
-    def _now(self) -> datetime:
-        return datetime.fromtimestamp(self._clock_ns() / 1_000_000_000, tz=UTC)
-
     def _warn_invalid(self, key: tuple[object, ...]) -> None:
         if key not in self._warned_invalid:
             if len(self._warned_invalid) >= 4 * ACTIVITY_SIZE:  # bounded; an old entry may warn again
