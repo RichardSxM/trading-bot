@@ -21,7 +21,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 8 | Order book recorder | Slice 3 | done |
 | 20 | Market context feed | Slice 3 | in-progress |
 | 9 | Kill switch & loss limits | Slice 4 | in-progress |
-| 10 | Leverage & liquidation guard | Slice 4 | planned |
+| 10 | Leverage & liquidation guard | Slice 4 | in-progress |
 | 11 | Restart & outage safety | Slice 4 | planned |
 | 12 | Phone alerts & health checks | Slice 5 | planned |
 | 13 | Candle backtest lab | Slice 6 | planned |
@@ -198,12 +198,23 @@ code in [packages/core/src/trading_core/control/halt.py](../../packages/core/src
 - [x] Review it (fresh model): `/check review kill switch & loss limits`
 - [x] Document it: `/document kill switch & loss limits`
 
-### 10. Leverage & liquidation guard · needs a decision
+### 10. Leverage & liquidation guard · in-progress
 Hard caps on position size, total exposure, and leverage (2x at first), plus a minimum distance between entry and liquidation price; funding costs counted in every decision.
 **Done when:** any order that breaks a cap or sits too close to liquidation is rejected and logged, and funding payments show in P&L.
 **Carried over from spec 0006:** feature 6 shipped fixed caps in a pure `check_entry` (extend it, don't fork it) and left funding out of P&L, labeled "before funding". This feature decides how funding reaches `funding_payments` and `positions.realized_pnl` in demo (spec 0002's open Follow-up).
 **Carried over from an article (2026-10-04, changelly strategies overview), for the design to weigh:** size each trade from its risk, not a fixed notional. Size = (account equity × risk per trade) ÷ (distance from entry to stop), with the article's 1 to 2 % as the usual ceiling for risk per trade. Every stopped out trade then costs about the same, whatever the stop distance. The hard caps above still apply on top, and the smaller size wins. Fees count toward the risk, since a tight stop on a small move can lose more to fees than to price.
-- [ ] Design it (spec): `/architect leverage & liquidation guard`
+spec [0011](../specs/0011-leverage-liquidation-guard/index.md)
+- [x] Design it (spec): `/architect leverage & liquidation guard`
+- [ ] Build it: `/develop leverage & liquidation guard`
+  - [ ] Thin thread: the six `RISK_*` settings, risk sizing and cap clipping inside `check_entry`, the placeholder sized by the guard with its figures recorded (AC-1 to AC-4, AC-11, AC-12, AC-15, AC-19)
+  - [ ] Liquidation: the pure cross margin estimate, both distance refusals, `liquidation_px` on snapshots and the `liq_near` alarm (AC-5 to AC-8)
+  - [ ] Funding in the decision: hourly periods inside the hold, the `ContextBook` rate, the `funding_stale` refusal (AC-9, AC-10)
+  - [ ] Funding in P&L: `record_funding` bumping `funding_total`, hourly booking in the `RecordingActor`, `FundingLedger` equity, funding in the loss limits (AC-13, AC-14, AC-16, AC-17)
+  - [ ] Dashboard: net P&L with funding, "before funding" removed (AC-18)
+- [ ] Verify it: `/check verify leverage & liquidation guard`
+- [ ] Test it: `/test leverage & liquidation guard`
+- [ ] Review it (fresh model): `/check review leverage & liquidation guard`
+- [ ] Document it: `/document leverage & liquidation guard`
 
 ### 11. Restart & outage safety · needs a decision
 After a crash, restart, or dropped connection, the bot rebuilds its view from the exchange's real positions and orders before doing anything else, and never sends a duplicate order.
