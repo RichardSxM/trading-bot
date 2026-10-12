@@ -196,7 +196,7 @@ code in [packages/core/src/trading_core/control/halt.py](../../packages/core/src
 - [x] Verify it: `/check verify kill switch & loss limits`
 - [x] Test it: `/test kill switch & loss limits`
 - [x] Review it (fresh model): `/check review kill switch & loss limits`
-- [ ] Document it: `/document kill switch & loss limits`
+- [x] Document it: `/document kill switch & loss limits`
 
 ### 10. Leverage & liquidation guard · needs a decision
 Hard caps on position size, total exposure, and leverage (2x at first), plus a minimum distance between entry and liquidation price; funding costs counted in every decision.
