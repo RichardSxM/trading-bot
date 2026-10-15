@@ -159,6 +159,29 @@ def test_a_write_error_trips_stops_once_drops_later_writes_and_close_writes_noth
     assert stream.held == []
 
 
+def test_an_error_while_routing_a_message_also_trips_and_stops_once(tmp_path, caplog, monkeypatch):
+    # covers: AC-4 (any error while writing fails closed, routing included)
+    stops = _Stops()
+    w = buffered(tmp_path, _clock(), cache_with(BTC), stop=stops)
+
+    def boom(_cls):
+        raise ValueError("bad table")
+
+    monkeypatch.setattr("recorder.writer.class_to_filename", boom)
+    with caplog.at_level(logging.INFO):
+        w.write(_deltas(H0))
+        w.write(_deltas(H0 + 1))
+
+    assert w.tripped
+    assert stops.calls == 1
+    assert _codes(caplog) == [("CRITICAL", "recorder_write_failed")]
+    fields = caplog.records[0].fields
+    assert fields["table"] == "OrderBookDeltas"
+    assert fields["instrument_id"] is None
+    assert "bad table" in fields["error"]
+    assert w.take_stats(H0 + 60 * SECOND_NS)["dropped"] == 1
+
+
 def test_messages_before_the_instrument_is_cached_are_dropped_with_one_warning(tmp_path, caplog):
     cache = cache_with()
     w = buffered(tmp_path, _clock(), cache)

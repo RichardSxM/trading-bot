@@ -169,15 +169,18 @@ class BufferedFeatherWriter:
         if self.tripped:
             self._stats.dropped += 1
             return
-        actual: Any = obj.data if isinstance(obj, CustomData) else obj
-        table = class_to_filename(cls)
-        per_instrument = table in PER_INSTRUMENT_TABLES or (
-            table.startswith("custom_") and hasattr(actual, "instrument_id")
-        )
-        instrument_id: str | None = actual.instrument_id.value if per_instrument else None
-        # One read of the clock per write (AC-3).
-        now_ns = self._clock.timestamp_ns()
+        # Routing sits inside the try too, so any error here fails closed (AC-4).
+        table: str = cls.__name__
+        instrument_id: str | None = None
         try:
+            actual: Any = obj.data if isinstance(obj, CustomData) else obj
+            table = class_to_filename(cls)
+            per_instrument = table in PER_INSTRUMENT_TABLES or (
+                table.startswith("custom_") and hasattr(actual, "instrument_id")
+            )
+            instrument_id = actual.instrument_id.value if per_instrument else None
+            # One read of the clock per write (AC-3).
+            now_ns = self._clock.timestamp_ns()
             stream = self._stream_for(table, cls, actual, instrument_id, now_ns)
             if stream is None:
                 self._stats.dropped += 1
