@@ -21,7 +21,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 8 | Order book recorder | Slice 3 | done |
 | 20 | Market context feed | Slice 3 | in-progress |
 | 9 | Kill switch & loss limits | Slice 4 | in-progress |
-| 10 | Leverage & liquidation guard | Slice 4 | in-progress |
+| 10 | Leverage & liquidation guard | Slice 4 | done |
 | 11 | Restart & outage safety | Slice 4 | planned |
 | 12 | Phone alerts & health checks | Slice 5 | planned |
 | 13 | Candle backtest lab | Slice 6 | planned |
@@ -198,7 +198,7 @@ code in [packages/core/src/trading_core/control/halt.py](../../packages/core/src
 - [x] Review it (fresh model): `/check review kill switch & loss limits`
 - [x] Document it: `/document kill switch & loss limits`
 
-### 10. Leverage & liquidation guard · in-progress
+### 10. Leverage & liquidation guard · done
 Hard caps on position size, total exposure, and leverage (2x at first), plus a minimum distance between entry and liquidation price; funding costs counted in every decision.
 **Done when:** any order that breaks a cap or sits too close to liquidation is rejected and logged, and funding payments show in P&L.
 **Carried over from spec 0006:** feature 6 shipped fixed caps in a pure `check_entry` (extend it, don't fork it) and left funding out of P&L, labeled "before funding". This feature decides how funding reaches `funding_payments` and `positions.realized_pnl` in demo (spec 0002's open Follow-up).

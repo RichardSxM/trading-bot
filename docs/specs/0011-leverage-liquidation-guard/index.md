@@ -1,7 +1,7 @@
 # 0011. Size every entry from its risk, cap exposure and leverage, keep liquidation far away, and count funding
 
 **Date**: 2026-10-12
-**Status**: In Progress
+**Status**: Accepted
 
 ## Summary
 
