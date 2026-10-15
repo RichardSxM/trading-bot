@@ -29,7 +29,7 @@ In demo, the trader now books a funding payment at every hourly funding time a p
   - **fees** `taker_fee × (entry_px + stop_px)` (the entry and the stop exit are both market orders);
   - **funding** `funding_periods × max(0, cost_sign × rate) × entry_px`, where `cost_sign` is +1 for a buy and −1 for a sell (a long pays a positive rate, a short pays a negative one), and a funding rate the trade would earn counts as 0.
 
-  The risk size is `equity × RISK_PER_TRADE ÷ loss per unit`, rounded down to the instrument's size step. `entry_px` is the mid. `taker_fee` is `instrument.taker_fee` (the demo sandbox instrument already carries `SANDBOX_TAKER_FEE`). `rate` is the relative funding rate per hour, the `ContextBook` value as the lab uses it.
+  The risk size is `equity × RISK_PER_TRADE ÷ loss per unit`, rounded down to the instrument's size step. `entry_px` is the mid. `taker_fee` is the strategy config's `GuardedConfig.taker_fee`, the fee the venue charges each fill: `SANDBOX_TAKER_FEE` in demo, the run's taker fee in the lab. Never `instrument.taker_fee`: Kraken publishes its instruments with fee 0, and the sandbox puts its fee only on its own exchange's copy. One value feeds both the guard and the fills, so the two cannot drift apart: in demo, the sandbox and `placeholder_config` both read `settings.sandbox_taker_fee`; in the lab, the engine's instrument copy and `RunContext.taker_fee` both come from `plan.taker_fee`. The trader builds only the placeholder config, and only on its demo paper path. `RandomTaker` is built only in the lab. Live has no fee source yet, so `placeholder_config` raises for any env but demo. It runs while the node is being put together, before the node starts, and the env guard refuses live as well (owed to feature 19, see Follow-up). `rate` is the relative funding rate per hour, the `ContextBook` value as the lab uses it.
 - **AC-2** (caps clip, smaller wins): the entry quantity is the smallest of the risk size and the three cap sizes, each rounded down to the size step:
   - **order notional:** `RISK_MAX_ORDER_NOTIONAL_USD ÷ entry_px`;
   - **total exposure:** `(RISK_MAX_TOTAL_EXPOSURE_USD − open_notional) ÷ entry_px`;
@@ -41,7 +41,7 @@ In demo, the trader now books a funding payment at every hourly funding time a p
 
 *Liquidation*
 
-- **AC-5** (liquidation estimate): the guard estimates the liquidation price `liq_px` of the account after the order fills at `entry_px`, as cross margin (the whole account backs the position). With equity `E`, entry quantity `q`, the other open notional `O`, the entry fee `f = taker_fee × q × entry_px`, and maintenance rate `m` (AC-6):
+- **AC-5** (liquidation estimate): the guard estimates the liquidation price `liq_px` of the account after the order fills at `entry_px`, as cross margin (the whole account backs the position). With equity `E`, entry quantity `q`, the other open notional `O`, the entry fee `f = taker_fee × q × entry_px` (`taker_fee` per AC-1), and maintenance rate `m` (AC-6):
   - **buy:** `liq_px = (q × entry_px + f + m × O − E) ÷ (q × (1 − m))`
   - **sell:** `liq_px = (E + q × entry_px − f − m × O) ÷ (q × (1 + m))`
 
@@ -52,7 +52,7 @@ In demo, the trader now books a funding payment at every hourly funding time a p
   - `liq_inside_stop` when `liq_distance` is below `RISK_LIQ_STOP_MULTIPLE × stop_distance` (skipped when the request has no stop price).
 
   Both use the final quantity from AC-2 or AC-3.
-- **AC-8** (open position alarm): every position snapshot (every `SNAPSHOT_INTERVAL_NS`, 60 s) stores in `position_snapshots.liquidation_px` the AC-5 estimate for the open position, with `entry_px` = the snapshot's mark (never the average entry), `E` = the full current equity including all unrealized P&L, `q` = the absolute quantity, the side from the position, `f` = 0, and `O` = the other open notional. When the mark is closer to it than `RISK_MIN_LIQ_DISTANCE_PCT`, the trader writes one `critical` `limit_hit` risk event keyed `liq_near:<position row id>` (idempotent on its key, so once per position, restarts included). A null estimate, or a missing mid on another open instrument, leaves `liquidation_px` null and raises no alarm. It takes no action; the stop protects the position.
+- **AC-8** (open position alarm): every position snapshot (every `SNAPSHOT_INTERVAL_NS`, 60 s) stores in `position_snapshots.liquidation_px` the AC-5 estimate for the open position, with `entry_px` = the snapshot's mark (never the average entry), `E` = the full current equity including all unrealized P&L, `q` = the absolute quantity, the side from the position, `f` = 0 (on purpose: the entry fee is already paid and sits in equity), and `O` = the other open notional. When the mark is closer to it than `RISK_MIN_LIQ_DISTANCE_PCT`, the trader writes one `critical` `limit_hit` risk event keyed `liq_near:<position row id>` (idempotent on its key, so once per position, restarts included). A null estimate, or a missing mid on another open instrument, leaves `liquidation_px` null and raises no alarm. It takes no action; the stop protects the position.
 
 *Funding in the decision*
 
@@ -74,7 +74,7 @@ In demo, the trader now books a funding payment at every hourly funding time a p
 
   **Who is charged.** A position is charged when `opened_ns < boundary` and it is still open or `closed_ns > boundary`, judged by the position's own event timestamps, not by cache state when the alert runs. So a position that opens or closes exactly at a boundary is not charged for it.
 
-  **The alert.** The `RecordingActor` arms a time alert (`clock.set_time_alert_ns`) for the next top of the UTC hour in `on_start`, and arms the next one each time it fires. Boundaries missed while the trader was down are never booked. The actor subscribes to `FundingRateUpdate` for its instruments itself and keeps the latest rate with its `ts_init` per instrument.
+  **The alert.** The `RecordingActor` arms a time alert (`clock.set_time_alert_ns`) for the next top of the UTC hour in `on_start`, and arms the next one each time it fires. It cancels the alert's name before setting it again: a live clock still holds a firing alert's name while its callback runs, so setting the same name raises. Boundaries missed while the trader was down are never booked. The actor subscribes to `FundingRateUpdate` for its instruments itself and keeps the latest rate with its `ts_init` per instrument.
 
   **Repeats.** Each row is built once, and the spool replays that same row, so writing it twice leaves one row (spec 0002 AC-5). When no usable rate or quote exists, nothing is booked, and one `warning` `limit_hit` risk event keyed `funding_unbooked:<instrument>:<paid_ns>` is written.
 - **AC-14** (position total): `positions.funding_total` is the sum of that position's `funding_payments.amount`, updated in the same transaction as each payment insert, only when the insert writes a new row (`record_funding` returns whether it inserted). `positions.realized_pnl` keeps NautilusTrader's figure (net of fees, before funding). The net P&L of a position is `realized_pnl + funding_total`, everywhere it is shown or counted. The position upsert never overwrites `funding_total`: the column is left out of its update set (an insert still writes 0).
@@ -122,7 +122,8 @@ In demo, the trader now books a funding payment at every hourly funding time a p
 - **`realized_pnl` stays before funding** (your call in the interview), matching the replay lab ([apps/lab/src/lab/replay.py](../../../apps/lab/src/lab/replay.py)). Spec 0002's sign note ("`realized_pnl` is net of fees and funding") is corrected by this spec.
 - **`PLACEHOLDER_NOTIONAL_USD` is removed.** The placeholder passes its stop price (`stop_price` at the mid) and `max_hold = PLACEHOLDER_HOLD_MIN` instead. `RandomTaker` keeps its `notional_usd` and passes `fixed_quantity`, with no stop price (it places no stop).
   - **Runner up:** keep the setting as a fourth cap. It would duplicate `RISK_MAX_ORDER_NOTIONAL_USD`.
-- **Fees:** always `instrument.taker_fee`. The demo sandbox instrument is already patched to `SANDBOX_TAKER_FEE`, so one source covers demo and live.
+- **Fees come from the strategy config** (`GuardedConfig.taker_fee`), set by whoever builds the config: the trader from `SANDBOX_TAKER_FEE` (the fee the sandbox charges), the lab from the run's taker fee. The trader's `placeholder_config` refuses any env but demo until feature 19 decides the live source. (Corrected 2026-10-15, PR #41: this spec first said `instrument.taker_fee`, which is 0 for every Kraken instrument in the node cache, so verify step 2 showed entries sized without fees.)
+  - **Runner up:** `instrument.taker_fee`. One source for every mode in theory, but Kraken publishes 0, the sandbox fee never reaches the cache, and the real live fee depends on the account's fee tier, not the instrument.
 
 ## Feature design
 
@@ -157,14 +158,14 @@ In demo, the trader now books a funding payment at every hourly funding time a p
 | entry check | `stop_px` | placeholder: `trading_core.strategy.placeholder.stop_price(mid, side, PLACEHOLDER_STOP_PCT, price_increment)`; RandomTaker: none |
 | entry check | `equity` | AC-17: `account.balance_total(USD)` + open positions' unrealized at their mid + `FundingLedger.run_total` |
 | entry check | `open_notional` | AC-4: every `cache.positions_open()`, `|signed qty| × mid` of its instrument |
-| entry check | `taker_fee` | `instrument.taker_fee` (demo instrument carries `SANDBOX_TAKER_FEE`) |
+| entry check | `taker_fee` | `GuardedConfig.taker_fee`: trader `SANDBOX_TAKER_FEE` (demo only), lab the run's `taker_fee`; live refused until feature 19 |
 | entry check | `maintenance_rate` | AC-6: max(`instrument.margin_maint`, `RISK_MAINTENANCE_MARGIN_RATE`) |
 | entry check | `funding_rate`, staleness | strategy `market_context().funding_rate` (`ContextValue.value`, `.is_stale`), spec 0009 AC-8/9 |
 | entry check | `funding_periods` | AC-9 from `clock.timestamp_ns()` and `max_hold` (placeholder `PLACEHOLDER_HOLD_MIN`, which already runs with `use_market_context=True`); RandomTaker passes 0 |
 | entry check | `size_step` | `instrument.size_increment` |
 | entry check | `quantity`, `limited_by`, `liq_px`, `loss_per_unit` | derived in `check_entry` (AC-1, AC-2, AC-5) |
 | entry check | caps | `RISK_PER_TRADE`, `RISK_MAX_ORDER_NOTIONAL_USD`, `RISK_MAX_TOTAL_EXPOSURE_USD`, `RISK_MAX_LEVERAGE`, `RISK_MIN_LIQ_DISTANCE_PCT`, `RISK_LIQ_STOP_MULTIPLE`, `RISK_STOP_SLIPPAGE_BPS` |
-| snapshot | `liquidation_px` | AC-8: `liquidation_price` with entry = snapshot mark, full current equity, fee 0, other open notional |
+| snapshot | `liquidation_px` | AC-8: `liquidation_price` with entry = snapshot mark, full current equity, fee 0 (the entry fee is already in equity), other open notional |
 | booking | `paid_ns` | the boundary the time alert was set for (top of the UTC hour) |
 | booking | `rate` | the actor's own latest `FundingRateUpdate` per instrument, at or before the boundary, within one `FUNDING_PERIOD_NS` |
 | booking | `mid`, `signed_qty` | latest quote at the boundary, younger than `RISK_STALE_QUOTE_S`; `position.signed_decimal_qty()` |
@@ -195,6 +196,8 @@ In demo, the trader now books a funding payment at every hourly funding time a p
 
 **Critical test scenarios** (each maps to an acceptance criterion):
 - Risk binds: equity 1000, risk 0.5 %, stop 0.3 %, fees and slippage give the exact quantity rounded down; verifies **AC-1**.
+- Fee source: an instrument with `taker_fee` 0 in the cache and a config with 0.0005 sizes with 0.0005 and records it; a live trader config refuses to build; verifies **AC-1**, **AC-12**.
+- The funding alert set again while it is still armed replaces it, and books the next boundary without `recording_failed`; verifies **AC-13**.
 - A cap binds: the same with a 250 USD order cap gives `250 ÷ mid` rounded down and `limited_by = notional_cap`; zero exposure headroom refuses with `exposure_cap`; verifies **AC-2**, **AC-4**.
 - Fixed quantity over a cap is refused in the stated order; verifies **AC-3**.
 - Liquidation: a long and a short at 2x on 1000 USD match hand worked values; a long at 1x has no liquidation; maintenance from the instrument wins when larger; verifies **AC-5**, **AC-6**.
@@ -212,7 +215,7 @@ Ordered as tracer bullets: first one thin thread through the real entry path, th
 
 1. Settings: add the six `RISK_*` settings with their validators, remove `PLACEHOLDER_NOTIONAL_USD`, satisfies **AC-19**.
 2. Pure sizing and caps: extend `EntryRequest`, `RiskLimits`, `RiskVerdict` (with `GuardFigures`), add `risk_quantity` and `cap_quantity`, the new refusal order and severities, and the `InvalidRiskInput` cases, with unit tests, satisfies **AC-1**, **AC-2**, **AC-3**, **AC-11**, **AC-15**.
-3. Wire the thin thread: the placeholder passes its stop price, size step, taker fee, open notional over every instrument, and `max_hold`, submits the verdict's quantity, and records the AC-12 figures; `RandomTaker` passes `fixed_quantity`, satisfies **AC-4**, **AC-12**.
+3. Wire the thin thread: the placeholder passes its stop price, size step, taker fee (`GuardedConfig.taker_fee`, AC-1), open notional over every instrument, and `max_hold`, submits the verdict's quantity, and records the AC-12 figures; `RandomTaker` passes `fixed_quantity`, satisfies **AC-4**, **AC-12**.
 4. Pure liquidation: `liquidation_price`, the maintenance rate rule, both distance refusals in `check_entry`, with hand worked unit tests, satisfies **AC-5**, **AC-6**, **AC-7**.
 5. Snapshot `liquidation_px` and the `liq_near` alarm in the `RecordingActor`, satisfies **AC-8**.
 6. Funding term: `funding_periods`, the strategy's `ContextBook` rate into the request, the `funding_stale` refusal, satisfies **AC-9**, **AC-10**.
@@ -235,6 +238,7 @@ Ordered as tracer bullets: first one thin thread through the real entry path, th
 - The liquidation estimate holds the other positions' notional fixed and ignores the exit fee: exact for one instrument, an approximation once ETH trades too.
 - A position shorter than the 60 s snapshot interval gets no `liquidation_px` and no alarm; the entry check already covered it.
 - The liquidation estimate is our formula, not Kraken's. It is pessimistic (the maintenance rate floor), but a change in Kraken's margin rules would not reach it until the setting is updated.
+- The guard counts the taker fee on both legs and ignores maker fills. That only makes it more careful: the placeholder's entry and stop are both market orders, and a maker fill would cost less.
 - More inputs on every entry decision means a larger `inputs` JSON and more fields a strategy must supply.
 
 **Neutral**:
@@ -244,6 +248,10 @@ Ordered as tracer bullets: first one thin thread through the real entry path, th
 ## Follow-up
 
 - [ ] Live funding: poll Kraken's account log for funding entries (`source = kraken_log`), owed before feature 19 goes live; the live trader should refuse to start without it.
+- [ ] Live taker fee source, owed to feature 19 (its `/architect` run decides it). Until then `placeholder_config` refuses live. Recommended: read the account's fee tier from Kraken's futures fee schedule (the public schedules plus the account's 30 day volume; endpoint names to confirm then) at start, and refuse to start when it cannot be read. Runner up: a validated `RISK_TAKER_FEE` setting set to the highest tier's fee, simpler, but safe only while someone keeps it at or above the real tier by hand (a higher fee only makes entries smaller). Whichever wins, also settle these:
+  - **Move the live refusal** out of `placeholder_config` into one shared factory that builds every `GuardedConfig`, so no future live strategy can skip it.
+  - **Keep up with the tier.** It moves with 30 day volume, so read it again during a run, or size with a margin above it.
+  - **Bound the fee.** Give it a validated range with an upper sanity cap. An absurdly high fee would quietly size every entry to zero.
 - [ ] Before go live, check `RISK_MAINTENANCE_MARGIN_RATE` and `instrument.margin_maint` against Kraken's current margin schedule for `PF_XBTUSD`, and compare one live position's reported liquidation price with the AC-5 estimate.
 - [ ] Spec 0002 Follow-up (how demo funding reaches `funding_payments`) is settled by this spec; correct its sign note on `realized_pnl`.
 - [ ] Spec 0006's "before funding" P&L note is superseded by AC-18.
