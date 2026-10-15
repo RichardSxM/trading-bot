@@ -99,6 +99,7 @@ def _run(prices, strategy_cls=RandomTaker, gate=None):
         min_liq_distance_pct=Decimal(10),
         liq_stop_multiple=Decimal(3),
         stop_slippage_bps=Decimal(5),
+        taker_fee=Decimal("0.0005"),
         notional_usd=Decimal(100),
     )
     strategy = strategy_cls(config, gate or PauseGate(), blocks, records.append)

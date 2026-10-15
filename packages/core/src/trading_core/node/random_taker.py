@@ -170,7 +170,7 @@ class RandomTaker(KfsStrategy):
                 equity=self._equity(),
                 open_notional=guard.open_notional(self.cache),
                 size_step=instrument.size_increment.as_decimal(),
-                taker_fee=instrument.taker_fee,
+                taker_fee=self._cfg.taker_fee,
                 instrument_maintenance_rate=guard.margin_maint(instrument),
                 funding_periods=0,  # a lab probe with no market context (spec 0011 AC-9)
                 fixed_quantity=entry_quantity(self._cfg.notional_usd, mid, instrument.size_increment.as_decimal()),

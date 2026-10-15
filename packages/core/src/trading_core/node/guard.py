@@ -15,7 +15,12 @@ from trading_core.risk.check import InvalidRiskInput, RiskLimits
 
 
 class GuardedConfig(KfsStrategyConfig, frozen=True, kw_only=True):
-    """The ``RISK_*`` caps and sizing rules every guarded strategy's config carries (spec 0011 AC-19)."""
+    """The ``RISK_*`` caps and sizing rules every guarded strategy's config carries (spec 0011 AC-19).
+
+    ``taker_fee`` is the fee the guard sizes with, a fraction of notional: the fee the venue
+    charges. Never the cached instrument's, which Kraken publishes as 0 (the sandbox puts its fee
+    only on its own exchange's copy).
+    """
 
     max_order_notional_usd: Decimal
     max_leverage: Decimal
@@ -25,6 +30,7 @@ class GuardedConfig(KfsStrategyConfig, frozen=True, kw_only=True):
     min_liq_distance_pct: Decimal
     liq_stop_multiple: Decimal
     stop_slippage_bps: Decimal
+    taker_fee: Decimal
 
     def risk_limits(self) -> RiskLimits:
         """These settings as the pure guard's ``RiskLimits``."""

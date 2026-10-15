@@ -131,6 +131,7 @@ def _run(
     gate=None,
     add_actor=None,
     liq_alarm_pct=Decimal(10),
+    instrument=INSTRUMENT,
     **overrides,
 ):
     engine = BacktestEngine(BacktestEngineConfig(logging=LoggingConfig(bypass_logging=True)))
@@ -142,7 +143,7 @@ def _run(
         base_currency=USD,
         latency_model=LatencyModel(base_latency_nanos=int(latency_s * 1_000_000_000)) if latency_s else None,
     )
-    engine.add_instrument(INSTRUMENT)
+    engine.add_instrument(instrument)
     ticks = _quotes(prices)
     engine.add_data(ticks[int(start_offset_min * 6) :])
     if extra_data:
@@ -168,6 +169,7 @@ def _run(
         "min_liq_distance_pct": Decimal(10),
         "liq_stop_multiple": Decimal(3),
         "stop_slippage_bps": Decimal(5),
+        "taker_fee": Decimal("0.0005"),
         "stale_quote_s": Decimal(10),
         "stop_accept_timeout_s": Decimal(5),
     } | overrides
@@ -248,6 +250,21 @@ def test_a_stop_fill_ends_the_round_trip_without_a_time_exit():
     assert stop.filled_qty == stop.quantity
     assert engine.cache.positions_open() == []
     assert strategy.phase == Phase.FLAT
+
+
+def test_the_guard_sizes_with_the_configured_fee_not_the_cached_instruments():
+    # covers: spec 0011 verify step 2. Kraken publishes its instruments with fee 0, and the demo
+    # sandbox charges its fee only on its own exchange's copy, so the cache holds 0.
+    zero_fee = CryptoPerpetual.from_dict(CryptoPerpetual.to_dict(INSTRUMENT) | {"maker_fee": "0", "taker_fee": "0"})
+    _, _, rows = _run(Prices(29, lambda t: 85000 + int(t * 10)), instrument=zero_fee)
+
+    enter = _decisions(rows)[0]
+    inputs = {k: Decimal(str(enter.inputs[k])) for k in ("taker_fee", "entry_px", "stop_px", "loss_per_unit")}
+    assert inputs["taker_fee"] == Decimal("0.0005")
+    distance = inputs["entry_px"] - inputs["stop_px"]  # a long
+    slippage = inputs["stop_px"] * 5 / 10_000
+    fees = Decimal("0.0005") * (inputs["entry_px"] + inputs["stop_px"])
+    assert inputs["loss_per_unit"] == distance + slippage + fees
 
 
 def test_too_few_bars_at_the_boundary_skips_without_a_decision():

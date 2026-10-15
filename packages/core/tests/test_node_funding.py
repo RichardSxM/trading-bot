@@ -102,6 +102,7 @@ def _run(prices=STEADY, *, interval_s=1_800, hold_s=3_600, rates=None):
         min_liq_distance_pct=Decimal(10),
         liq_stop_multiple=Decimal(3),
         stop_slippage_bps=Decimal(5),
+        taker_fee=Decimal("0.0005"),
         notional_usd=Decimal(100),
         interval_s=interval_s,
         hold_s=hold_s,

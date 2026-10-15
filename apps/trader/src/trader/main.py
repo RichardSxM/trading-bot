@@ -386,8 +386,12 @@ def finish_paper_loop(paper: PaperLoop, settings: PaperLoopSettings, positions_o
 def placeholder_config(settings: TraderSettings, run_id: UUID) -> PlaceholderConfig:
     """The strategy's config from the ``PLACEHOLDER_*``, ``RISK_*``, and ``CONTEXT_*`` settings, under ``run_id``.
 
-    The placeholder reads the market context and logs it once per bar (spec 0009 AC-11).
+    The placeholder reads the market context and logs it once per bar (spec 0009 AC-11). The guard
+    sizes with the sandbox's own taker fee, the fee each demo fill pays (spec 0011). Live has no fee
+    source yet (feature 19), so it refuses rather than size with Kraken's published 0.
     """
+    if settings.trading_env != "demo":
+        raise ValueError("the guard's live taker fee source is not decided yet (spec 0011, feature 19)")
     return PlaceholderConfig(
         env=settings.trading_env,
         run_id=str(run_id),
@@ -404,6 +408,7 @@ def placeholder_config(settings: TraderSettings, run_id: UUID) -> PlaceholderCon
         min_liq_distance_pct=settings.risk_min_liq_distance_pct,
         liq_stop_multiple=settings.risk_liq_stop_multiple,
         stop_slippage_bps=settings.risk_stop_slippage_bps,
+        taker_fee=settings.sandbox_taker_fee,
         stale_quote_s=settings.risk_stale_quote_s,
         stop_accept_timeout_s=settings.stop_accept_timeout_s,
         use_market_context=True,

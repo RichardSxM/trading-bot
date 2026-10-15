@@ -76,6 +76,7 @@ class RunContext:
     seed: int
     risk: RiskLimits
     order_id_tag: str
+    taker_fee: Decimal  # the run's fee, which the engine's instrument copy also charges (AC-5)
     market: MarketContextValues = field(default_factory=MarketContextValues)
 
 
@@ -96,6 +97,7 @@ _CHECK_CONTEXT: Final = RunContext(
         stop_slippage_bps=Decimal(5),
     ),
     order_id_tag="S1",
+    taker_fee=Decimal("0.0005"),
 )
 
 
@@ -148,9 +150,10 @@ class StrategyEntry:
         return self.factory(config, gate, blocks, record)
 
 
-def _risk_fields(risk: RiskLimits) -> dict[str, object]:
-    """The ``GuardedConfig`` fields of the run's ``RiskLimits`` (spec 0011)."""
+def _risk_fields(risk: RiskLimits, taker_fee: Decimal) -> dict[str, object]:
+    """The ``GuardedConfig`` fields of the run's ``RiskLimits`` and taker fee (spec 0011)."""
     return {
+        "taker_fee": str(taker_fee),
         "max_order_notional_usd": str(risk.max_order_notional),
         "max_leverage": str(risk.max_leverage),
         "max_total_exposure_usd": str(risk.max_total_exposure),
@@ -168,7 +171,7 @@ def _random_taker_fields(context: RunContext) -> dict[str, object]:
         "run_id": str(context.run_id),
         "instrument_id": context.instrument_id,
         "seed": context.seed,
-        **_risk_fields(context.risk),
+        **_risk_fields(context.risk, context.taker_fee),
         "order_id_tag": context.order_id_tag,
         **context.market.config_fields(),
     }
@@ -180,7 +183,7 @@ def _placeholder_fields(context: RunContext) -> dict[str, object]:
         "env": context.env.value,
         "run_id": str(context.run_id),
         "instrument_id": context.instrument_id,
-        **_risk_fields(context.risk),
+        **_risk_fields(context.risk, context.taker_fee),
         "order_id_tag": context.order_id_tag,
         **context.market.config_fields(),
     }
