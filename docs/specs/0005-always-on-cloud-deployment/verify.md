@@ -40,7 +40,7 @@ Run these on the real VPS unless a step says laptop. Steps 1 to 6 belong to mile
 |---|---|---|
 | Median TCP connect to `futures.kraken.com:443` | 3.5 ms (20 tries) | 2026-10-03 |
 | chrony offset | 0.000017 s slow | 2026-10-03 |
-| Peak memory per service during the soak | | |
+| Peak memory per service during the soak | recorder 1536 MiB, compactor 348.3, trader 291.5, dashboard 97.8, backup 87.7, postgres 78.9, redis 22.3 | 2026-10-14 |
 
 ## Notes from the build (milestone 2)
 
@@ -74,3 +74,15 @@ Run these on the real VPS unless a step says laptop. Steps 1 to 6 belong to mile
 - **Step 18 on the VPS, 2026-10-04.** Two `restic backup --host kfs-gate` runs inside the backup container with its own key: no lock warning. `forget --keep-last 1` "removed" 3 snapshots, and `b2 ls --long --versions` with the full key showed a `hide` over each kept `upload`. `b2 rm b2id://<fileId>` with the VPS key: `unauthorized for application key with capabilities 'listBuckets,readFiles,listFiles,writeFiles'`, version still there. `b2 file unhide` brought the snapshot back, `restic check` clean. Then `forget --keep-last 1 --prune` with the VPS key hid 1 snapshot, 4 index files, and 6 packs. The spec's recovery steps 2 to 4 with that T found exactly those 11 files and no overwrite; after the unhide, both snapshots were back, `restic check --read-data` was clean, and the forgotten snapshot restored its test file. Lifecycle: one rule, empty prefix, `daysFromHidingToDeleting` 45. The `kfs-gate` snapshots were then forgotten and pruned with the full key. The Mac has no `jq`; use the backup image's (`docker run --rm -i --entrypoint jq <backup image>`).
 - **Step 19 on the VPS, 2026-10-04.** The first `once` uploaded 15 GB (the catalog) in 253 s, snapshot `0a788a45` with tags `kfs`, `env:demo`, `sha:f178037…`; a second run 7 s later added only what changed. `restic ls latest` has `/staging/dump`, `/data/catalog`, `/host/kfs.env`, `/host/deploys.jsonl`, and 0 paths with `secrets`. Breaking the key file on the host does not reach the running container (the secret is a bind mounted file, and `place-secrets.sh` replaces it with a new one), hence the repository override in step 19. Health: start aged with a fresh `last_success` 0, both aged 1, after a restart 0.
 - **Step 20 from the laptop, 2026-10-04.** The secrets can be piped in (`printf '%s\n' "$(cat …)" … | scripts/restore-drill.sh`), one per line, password then key id then key. `PASS` on snapshot `9a404f73` (0 h old); the dry run removed 0 snapshots, since restic 0.16.4 kept both of that day's snapshots as daily ones. `--self-test`: `FAIL` with `control_commands: manifest 20, restored 19`. A scratch copy with `STALE_H=0`: `PASS` for the data, then `FAIL` naming the snapshot age, and no prune. No drill container was left.
+
+## Notes from the soak (milestone 5)
+
+- **Smoke soak.** `20261011T183024Z` (0.1 h) was all ok except a false `healthy now: dashboard: unhealthy`. A `kfs-compose run` one off (`kfs-dashboard-run-*`, which inherits the health check) took the place of `kfs-dashboard-1` in `kfs_services_healthy`. PR #36 (93b4806) fixed it by filtering out `com.docker.compose.oneoff=True`, which also affects the deploy gate and safe reboot.
+- **Step 21, 2026-10-11.** Deployed b533fa3 at 18:35 UTC with an open demo position (opened 18:30:01, stop on). The deploy paused and logged `waited_for_flat_s` 281 (the strategy's timed exit filled at 18:40:01), then switched, passed the gate, and unpaused at 18:40:53. The smoke samples up to 18:36 showed 0 uncovered stops. PASS.
+- **Step 22, 2026-10-11 to 2026-10-14.** Soak `20261011T185828Z` on 93b4806, demo, 18:58:28 UTC to 18:58:28 UTC, 72 h, 25921 samples, `PASS`:
+  - healthy at the end;
+  - longest `trader_state` gap 14.1 s (limit 120 s);
+  - fills: 574 in Postgres, 574 `fill_seen`;
+  - stops: 0 uncovered in 17005 samples that held a position (18 exempt);
+  - peaks are in the Baseline table.
+- **The recorder restarted 11 times during the soak.** Every automatic restart was `autoheal_restart kfs-recorder-1`, in clusters: 3 between 07:02 and 07:06 on 10-13, 13:02, 3 between 14:31 and 14:36, and 15:32 on 10-13, then 12:42, 14:00 and 14:22 on 10-14. No other service restarted, and the trader was not affected. The recorder restarted again at about 02:45 UTC on 2026-10-15 (up 3 hours at the 05:44 UTC check, soon after the 02:30 backup). It looks like the BTC only heartbeat starvation from feature 8 (`recorder_queue_high` at peaks). It is not an AC-24 failure, but it needs its own look before feature 11.
