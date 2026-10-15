@@ -1,7 +1,7 @@
 """Integration fixtures: a throwaway Postgres database per test session (spec 0002).
 
 Run in the migrate service, which is on the Compose network as the owner role ``trading``:
-``docker compose run --rm -T migrate pytest -q -m integration``. The session creates
+``docker compose run --rm -T migrate pytest -q -m integration tests/integration``. The session creates
 ``trading_test_<hex>``, runs role setup and ``alembic upgrade head`` into it, and drops it at
 the end. Roles are cluster wide and shared with the dev stack; setup is idempotent. Passwords
 come from the migrate service's mounted secret files (spec 0003).

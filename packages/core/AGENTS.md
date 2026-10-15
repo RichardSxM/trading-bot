@@ -34,7 +34,7 @@ The shared library every process imports: settings, JSON logging, the startup cl
 ```bash
 docker compose run --rm --no-deps -T -w /app/packages/core trader pytest -q
 docker compose run --rm migrate                                     # role setup, then alembic upgrade head
-docker compose run --rm -T migrate pytest -q -m integration         # integration tests on a throwaway database
+docker compose run --rm -T migrate pytest -q -m integration tests/integration   # integration tests on a throwaway database
 ```
 
 ## Conventions
