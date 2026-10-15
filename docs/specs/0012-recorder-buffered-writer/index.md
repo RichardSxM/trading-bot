@@ -24,6 +24,13 @@ The recorder falls over at busy hours, because the Nautilus feather writer (the 
 - **AC-7**: A benchmark, `python -m recorder.bench_writer`, run in the recorder container on the laptop, pushes 600,000 synthetic Kraken like messages through `BufferedFeatherWriter.write` and its flush tick into a temp folder. The messages are `OrderBookDeltas` for `PF_XBTUSD.KRAKEN` of 1 or 2 deltas alternating (1.5 on average, as measured), plus one `TradeTick` per 10 delta messages. It prints messages per second; it must sustain at least 10,000 (over 6 times the 1,500 peak). The same command runs once on the VPS (brief, `--no-deps`, a temp folder), and its number is written into Consequences.
 - **AC-8**: On the VPS, over the first 24 h after the deploy, covering US open (13:30 to 14:30 UTC, 15:30 to 16:30 Amsterdam) and the 02:00 UTC peak (01:30 to 02:30 UTC, 03:30 to 04:30 Amsterdam): no `recorder_queue_full`, no autoheal restart of the recorder, no `book_sequence_hole` outside a Kraken maintenance window listed on status.kraken.com, no `recorder_writer_busy`, and no `recorder_write_failed`. The compactor converts every hour of the period with no `catalog_hour_mismatch` and no `compactor_pass_failed`.
 - **AC-9**: The compactor does not change. Its existing tests pass unchanged, and a run folder written by `BufferedFeatherWriter` converts to the same Parquet hours (same rows, same snapshot) as the same messages written by `StreamingFeatherWriter`.
+- **AC-10**: `SequenceWatch` is safe when its sequence tick runs on a timer thread while `on_order_book_deltas` runs on the event loop. It holds one `threading.Lock` (not reentrant), and stays free of Nautilus imports:
+  - `observe_all(deltas: Iterable[<anything with .sequence and .ts_init>], now_ns)` takes the lock once and observes every delta in it, late counts (`_late`, `_late_first`) included. `RecordingActor.on_order_book_deltas` calls it once per `OrderBookDeltas` message with `deltas.deltas`, so the lock costs one acquire per message, not per delta. `observe(sequence, ts_init, now_ns)` stays as a locking wrapper for one delta; both share one unlocked body.
+  - `start`, `tick`, and `stop` each take the lock for their whole body, the holes file write included. `start` rebuilds the tracker and clears the closed flag.
+  - `stop` sets the closed flag. After it, `tick` and `observe_all` return at once without touching the tracker or the file, and a second `stop` writes nothing, so `{"closed": true}` is written once and stays the last line of the holes file.
+  - When the holes file write fails, the watch sets `tripped` under the lock but calls the injected `stop` only after the lock is released, so a `stop` that comes back into the watch can never deadlock.
+  - `RecordingActor._tick` reads `now_ns` before it takes the lock, so a tick may run after an observe stamped a little later. That is harmless: the tracker only confirms suspicions older than `now_ns − confirm_ns`.
+  - Tests: (1) deterministic: a `HolesFile.append` that blocks on an `Event` while a `tick` holds the lock; `observe_all` from a second thread has not returned until the event is set (this fails without the lock); (2) a tick and a stream of `observe_all` calls from two threads, with `sys.setswitchinterval` set very low, give the same holes and late counts as the same calls in order; (3) a tick and a second stop after stop leave the file ending in exactly one `closed`, and `observe_all` after stop changes nothing; (4) a failing file write calls `stop` with the lock free (the injected `stop` acquires it without blocking).
 
 ## Decision
 
@@ -82,6 +89,7 @@ main.py finally: node.dispose() ──► finally writer.close() ──► exit 
 - `apps/recorder/src/recorder/actor.py`: `WriterFlushActor` (two timers, `on_stop` flushes). Thin, calls the writer.
 - `apps/recorder/src/recorder/main.py`: drop `StreamingConfig` and the `pandas` and `RotationMode` imports; follow the start order above; close the writer in a nested `finally` after `node.dispose()`; add `writer.tripped` to the exit 75 check.
 - `apps/recorder/src/recorder/bench_writer.py`: the AC-7 benchmark.
+- `apps/recorder/src/recorder/sequence_holes.py` and `actor.py`: the `SequenceWatch` lock, `observe_all`, and the closed guard (AC-10). Tests in `test_sequence_holes.py`.
 - `apps/recorder/src/recorder/settings.py`: the two new settings.
 - Tests: `test_stream_rotation.py` is rewritten against `BufferedFeatherWriter` (AC-1, AC-3); a new `test_writer_parity.py` (AC-1, AC-9); a new `test_writer.py` (AC-2, AC-4, AC-5, AC-6).
 
@@ -90,7 +98,7 @@ main.py finally: node.dispose() ──► finally writer.close() ──► exit 
 - Within a stream, rows are written in arrival order; batching never reorders, merges, or drops a message (0007 AC-12's reorder repair still sees the same order).
 - A message held in memory is at most about `RECORDER_FLUSH_MS` old, plus the event loop's delay of the tick; the cap bounds a burst.
 - After a write error, nothing more is written by this process, not even at close; the recorder stops and restarts.
-- Bus handlers and clock timer callbacks run on the event loop thread (the existing `SequenceWatch` already relies on this; build task 1 checks it). A `threading.Lock` around `write`, the flushes, and `close` still guards the writer's state, because it costs almost nothing.
+- Bus handlers run on the event loop thread, but clock timer callbacks do not. In Nautilus 1.231.0 a `LiveClock` timer is a Rust timer that calls its Python callback from a runtime thread while holding the GIL (thread ids measured in the build's laptop run, 2026-10-15, and seen in `create_pyo3_conversion_wrapper` in `common/component.pyx`). `cancel_timer` does not wait for a callback already running, and two timers may run at once on different runtime threads, so nothing may assume they take turns. The GIL keeps single bytecodes whole, not a whole method, so any state that a timer callback and a bus handler or `on_stop` both touch holds one `threading.Lock` for each whole method that touches it (AC-10). Two such objects exist: the writer (`write`, the flushes, `take_stats`, `close`) and `SequenceWatch` (`start`, `observe`, `observe_all`, `tick`, `stop`). State that only timers touch (`QueueWatch`, `DiskGuard`) needs no lock, because a race between its tick and its stop only affects a log line.
 - The newest `order_book_deltas` file gets new bytes at least every `RECORDER_FLUSH_MS` while deltas flow, so 0007 AC-7's 60 s freshness health check still holds unchanged.
 - The run folder layout, names, schemas, and metadata stay what 0007 and its compactor read. The compactor has no code change.
 - Still no execution client and no secrets in the recorder.
@@ -132,13 +140,14 @@ Through `RecorderSettings` (both have defaults, so nothing needs adding to `/etc
 
 Tracer Bullet: book deltas first go all the way from the new writer through the compactor to a Parquet hour, then the other types, failure handling, and stats thicken it, and the VPS proves it.
 
-1. Thin thread: core `marketdata/writer.py` (flush rule, next boundary), and `BufferedFeatherWriter` for `order_book_deltas` only, with hold, tick flush, cap, and rotation, in a test that runs a fixture run folder through the compactor's conversion. Also confirm in a live node (a brief laptop run) that bus handlers and clock timer callbacks run on the same thread. Satisfies **AC-2**, **AC-3**, **AC-9**.
+1. Thin thread: core `marketdata/writer.py` (flush rule, next boundary), and `BufferedFeatherWriter` for `order_book_deltas` only, with hold, tick flush, cap, and rotation, in a test that runs a fixture run folder through the compactor's conversion. Also check in a live node (a brief laptop run) which threads bus handlers and clock timer callbacks run on (done: they differ, see the Key invariants and task 7). Satisfies **AC-2**, **AC-3**, **AC-9**.
 2. All eight types with the full routing, the eager shared table file and its single boundary, the serialize equivalence test, and the parity test against `StreamingFeatherWriter`. Rewrite `test_stream_rotation.py`. Satisfies **AC-1**, **AC-2**, **AC-3**, **AC-9**.
 3. Wire it into the node: `main.py` (no `StreamingConfig`, the start order, the nested `finally` close, exit 75), `WriterFlushActor`, the two settings. A brief laptop run (demo, then the stack down) confirms files appear under `live/<instance_id>/`, the health check passes, and the compactor converts a closed hour. Satisfies **AC-1**, **AC-2**, **AC-5**.
 4. Fail closed and the drop paths (`recorder_write_failed`, `recorder_write_no_instrument`, `recorder_write_after_close`), with the shutdown test. Satisfies **AC-4**, **AC-5**.
 5. Stats: the core rule, the 60 s tick, queue depth and tick lag, and the three log codes (`recorder_writer_stats`, `recorder_writer_busy`, `recorder_flush_slow`). Satisfies **AC-6**.
 6. The benchmark, run on the laptop (at least 10,000 msg/s). Satisfies **AC-7**.
-7. Deploy to the VPS, run the benchmark there once and write its number into Consequences, then the 24 h check in [verify.md](verify.md). Satisfies **AC-7**, **AC-8**.
+7. Thread safety of the sequence watch: the lock, `observe_all` and the locking `observe`, the closed guard and idempotent `stop`, the stop call after the lock is released, `RecordingActor.on_order_book_deltas` calling `observe_all`, and the four tests of AC-10. Satisfies **AC-10**.
+8. Deploy to the VPS, run the benchmark there once and write its number into Consequences, then the 24 h check in [verify.md](verify.md). Satisfies **AC-7**, **AC-8**.
 
 ## Migration plan
 
@@ -165,7 +174,8 @@ Tracer Bullet: book deltas first go all the way from the new writer through the 
 
 **Neutral**:
 - Measured before this spec (py-spy, 2026-10-15, 30 s on the VPS): 87.6% of the recorder's main thread was in `StreamingFeatherWriter.write`; `serialize_batch([obj])` 36.6%, `serialized.nbytes` 23.4%, `write_table` 13.2%; the sequence watch was 0.2%.
-- The VPS benchmark result goes here after build task 7.
+- The VPS benchmark result goes here after build task 8.
+- The lock in `SequenceWatch` costs one uncontended acquire per `OrderBookDeltas` message, well under 1 µs, against the 0.2% the whole watch took in the profile. A tick holds it for its holes file write and fsync (a few ms once a minute), and deltas wait that long.
 
 ## Follow-up
 
