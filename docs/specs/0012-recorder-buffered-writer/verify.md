@@ -51,6 +51,6 @@ _Added by `/develop` after the first laptop run. `/check verify` runs these; `/t
 
 - [ ] During the laptop run, `recorder_flush_slow` shows at most once, in the first minute (the first flush of a busy stream); none after that. → AC-6
 - [ ] After `docker compose stop recorder`, the last row of each `order_book_deltas` file is within about 1 s of that file's mtime (rows reach disk right up to the writer's close in `main.py`, even after the actors stop). → AC-5
-- [ ] `recorder_writer_stats` shows `dropped` 0 on every line. → AC-4
+- [x] `recorder_writer_stats` shows `dropped` 0 on every line. → AC-4
 
 On the first build run (2026-10-15, BTC and ETH): one `recorder_flush_slow` at 347 ms in the first minute, then `max_flush_ms` 66; `busy_pct` 7 to 10; last delta row 83 ms before the file's mtime; `dropped` 0.

@@ -17,6 +17,8 @@ def test_demo_config_records_into_catalog_without_redis(monkeypatch):
     # The recorder writes through BufferedFeatherWriter, not the kernel's writer (spec 0012 AC-1).
     assert config.streaming is None
     assert config.exec_clients == {}
+    # A short post stop, so a docker stop reaches writer.close before SIGKILL (spec 0012 AC-5).
+    assert config.timeout_post_stop == 1.0
 
 
 def test_pinned_instruments_parse(monkeypatch):

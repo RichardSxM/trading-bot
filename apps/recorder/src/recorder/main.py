@@ -65,6 +65,10 @@ RECORDED_TYPES: list[type] = [
 ]
 # The data engine's queue capacity (the Nautilus default), watched by QueueDepthActor (AC-13).
 DATA_QUEUE_SIZE = 100_000
+# The kernel sleeps this long after the actors stop, with the data clients still connected. The
+# recorder has no orders to wait for, and data in that sleep is only held until close (spec 0012
+# AC-5), so the stop reaches writer.close well inside the compose stop_grace_period.
+POST_STOP_S = 1.0
 
 
 def build_config(settings: RecorderSettings) -> TradingNodeConfig:
@@ -77,6 +81,7 @@ def build_config(settings: RecorderSettings) -> TradingNodeConfig:
         exec_engine=LiveExecEngineConfig(reconciliation=False),
         data_clients={KRAKEN: futures_data_client()},
         # No streaming: main.py records through BufferedFeatherWriter (spec 0012).
+        timeout_post_stop=POST_STOP_S,
     )
 
 
