@@ -57,7 +57,20 @@ class _Listener(Actor):  # type: ignore[misc]  # Actor is Cython with no stubs
         self.msgbus.subscribe(topic=FUNDING_BOOKED_TOPIC, handler=self.booked.append)
 
 
-def _run(prices=STEADY, *, interval_s=1_800, hold_s=3_600, rates=None):
+class _RearmWhileArmed(Actor):  # type: ignore[misc]  # Actor is Cython with no stubs
+    """Runs the funding alert's handler while that alert is still armed, as a live clock does."""
+
+    def __init__(self, recording, at_ns):
+        super().__init__(ActorConfig(component_id="RearmWhileArmed"))
+        self._recording = recording
+        self._at_ns = at_ns
+
+    def on_start(self):
+        handler = self._recording._guarded(self._recording._on_funding_alert)
+        self.clock.set_time_alert_ns("rearm", self._at_ns, handler)
+
+
+def _run(prices=STEADY, *, interval_s=1_800, hold_s=3_600, rates=None, rearm_at_ns=None, blocks=None):
     engine = BacktestEngine(BacktestEngineConfig(logging=LoggingConfig(bypass_logging=True)))
     engine.add_venue(
         Venue("KRAKEN"),
@@ -72,23 +85,24 @@ def _run(prices=STEADY, *, interval_s=1_800, hold_s=3_600, rates=None):
         engine.add_data(rates)
     run_id = uuid.uuid7()
     records: list[WriteItem] = []
-    blocks = EntryBlocks()
+    blocks = EntryBlocks() if blocks is None else blocks
     ledger = FundingLedger()
     listener = _Listener()
     engine.add_actor(listener)
-    engine.add_actor(
-        RecordingActor(
-            env=Env.DEMO,
-            run_id=run_id,
-            instrument_id=INSTRUMENT_ID,
-            record=records.append,
-            blocks=blocks,
-            maintenance_margin_rate=Decimal("0.01"),
-            min_liq_distance_pct=Decimal(10),
-            stale_quote_s=Decimal(10),
-            ledger=ledger,
-        )
+    recording = RecordingActor(
+        env=Env.DEMO,
+        run_id=run_id,
+        instrument_id=INSTRUMENT_ID,
+        record=records.append,
+        blocks=blocks,
+        maintenance_margin_rate=Decimal("0.01"),
+        min_liq_distance_pct=Decimal(10),
+        stale_quote_s=Decimal(10),
+        ledger=ledger,
     )
+    engine.add_actor(recording)
+    if rearm_at_ns is not None:
+        engine.add_actor(_RearmWhileArmed(recording, rearm_at_ns))
     config = RandomTakerConfig(
         env="demo",
         run_id=str(run_id),
@@ -134,6 +148,17 @@ def test_a_position_open_across_the_hour_books_one_payment_with_the_right_sign()
     assert (payment.amount < 0) == (signed_qty > 0)
     assert ledger.run_total == payment.amount
     assert booked == [FundingBooked(INSTRUMENT_ID.value, BOUNDARY_NS, payment.position_id, payment.amount)]
+
+
+def test_the_funding_alert_rearms_while_it_is_still_armed():
+    """A live clock keeps a firing alert in ``timer_names`` during its callback, so arming the
+    same name again must replace it, not raise (seen on the VPS at every hour, 2026-10-15)."""
+    blocks = EntryBlocks()
+
+    rows, _, _ = _run(rates=_rates(), rearm_at_ns=BOUNDARY_NS - 600 * SECOND_NS, blocks=blocks)
+
+    assert blocks.active() == ()
+    assert [p.paid_ns for p in _funding(rows)] == [BOUNDARY_NS]
 
 
 def test_a_position_that_opens_exactly_at_the_boundary_is_not_charged():

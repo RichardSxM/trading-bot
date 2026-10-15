@@ -455,6 +455,10 @@ class RecordingActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
 
     def _arm_funding(self, boundary_ns: int) -> None:
         self._funding_boundary_ns = boundary_ns
+        # A live clock keeps a firing alert in ``timer_names`` until its callback returns, and
+        # this runs from that callback: cancel first, or the same name raises.
+        if _FUNDING_ALERT in self.clock.timer_names:
+            self.clock.cancel_timer(_FUNDING_ALERT)
         self.clock.set_time_alert_ns(_FUNDING_ALERT, boundary_ns, self._guarded(self._on_funding_alert))
 
     def _on_funding_alert(self, event: object) -> None:
