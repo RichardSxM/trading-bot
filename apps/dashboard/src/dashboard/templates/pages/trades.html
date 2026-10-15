@@ -11,7 +11,7 @@
   </section>
   {% else %}
   <section class="region region--wide" aria-labelledby="round-trips-h">
-    <header class="region__head"><h2 class="region__title" id="round-trips-h">Closed round trips</h2><span class="region__meta">paper · newest first · P&amp;L before funding · times in UTC</span></header>
+    <header class="region__head"><h2 class="region__title" id="round-trips-h">Closed round trips</h2><span class="region__meta">paper · newest first · P&amp;L net of fees and funding · times in UTC</span></header>
     {{ table("Closed round trips", round_trip_columns, round_trips, "Each paper position appears here once it closes.", empty_glyph="arrow-left-right") }}
     {{ pager("Closed round trips pages", round_trip_pager) }}
   </section>

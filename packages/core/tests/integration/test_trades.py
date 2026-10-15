@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from trading_core.recording import repository
 from trading_core.recording.enums import (
     Env,
+    FundingSource,
     Intent,
     OrderOrigin,
     OrderSide,
@@ -27,10 +28,10 @@ from trading_core.recording.enums import (
     Severity,
 )
 from trading_core.recording.queries import fills_page, round_trips_page
-from trading_core.recording.rows import RiskEventRow
+from trading_core.recording.rows import FundingRow, RiskEventRow
 from trading_core.strategy.placeholder import ExitReason
 
-from .conftest import World
+from .conftest import INSTRUMENT, World
 
 BASE = datetime(2090, 1, 1, tzinfo=UTC)
 OPPOSITE = {OrderSide.BUY: OrderSide.SELL, OrderSide.SELL: OrderSide.BUY}
@@ -169,6 +170,31 @@ def test_a_round_trip_carries_its_position_figures(session: Session, world: Worl
     assert (row.opened_at, row.closed_at) == (closed_at - timedelta(minutes=10), closed_at)
     assert (row.size, row.avg_entry_px, row.avg_exit_px) == (Decimal("0.001"), Decimal("60000.5"), Decimal("60100"))
     assert (row.realized_pnl, row.fees, row.currency) == (Decimal("0.04"), Decimal("0.03000025"), "USD")
+    assert (row.funding, row.net_pnl) == (Decimal(0), Decimal("0.04"))
+
+
+def test_a_round_trip_nets_its_booked_funding(session: Session, world: World):
+    closed_at = BASE + timedelta(days=2, hours=12)
+    position_id = _round_trip(session, world, closed_at)
+    repository.record_funding(
+        session,
+        FundingRow(
+            env=Env.DEMO,
+            run_id=world.run_id,
+            position_id=position_id,
+            instrument_id=INSTRUMENT,
+            amount=Decimal("-0.006"),
+            currency="USD",
+            rate=Decimal("0.0001"),
+            source=FundingSource.COMPUTED,
+            paid_ns=_ns(closed_at - timedelta(minutes=5)),
+        ),
+    )
+
+    (row,) = _head(session, 1)
+
+    assert row.position_id == position_id
+    assert (row.realized_pnl, row.funding, row.net_pnl) == (Decimal("0.04"), Decimal("-0.006"), Decimal("0.034"))
 
 
 def test_open_positions_and_other_modes_are_left_out(session: Session, world: World):

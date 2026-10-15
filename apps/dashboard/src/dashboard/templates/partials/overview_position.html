@@ -19,24 +19,25 @@
     {% if view.equity is not none %}<div class="figures__row"><dt>Equity</dt><dd><span class="num">{{ view.equity|num }}</span> <span class="figures__unit">{{ view.currency }}</span></dd></div>{% endif %}
   </dl>
 {%- else %}
-  {% call stat("Unrealized P&L, before funding", note=view.age.text ~ " old") %}{{ view.unrealized|pnl }}{% endcall %}
+  {% call stat("Unrealized P&L", note=view.age.text ~ " old") %}{{ view.unrealized|pnl }}{% endcall %}
   <dl class="figures">
     <div class="figures__row"><dt>Side</dt><dd class="figures__side figures__side--{{ view.side }}">{{ view.side }}</dd></div>
     <div class="figures__row"><dt>Size</dt><dd><span class="num">{{ view.quantity.copy_abs()|num }}</span> <span class="figures__unit">BTC</span></dd></div>
     <div class="figures__row"><dt>Average entry</dt><dd><span class="num">{{ view.avg_entry|num }}</span></dd></div>
     <div class="figures__row"><dt>Mark</dt><dd>{% call stale(view.age.text, view.age.level) %}<span class="num">{{ view.mark|num }}</span>{% endcall %}</dd></div>
     <div class="figures__row"><dt>Stop</dt><dd>{% if view.stop_px is not none %}<span class="num">{{ view.stop_px|num }}</span>{% if view.stop_status %} <span class="figures__note">{{ view.stop_status|replace("_", " ") }}</span>{% endif %}{% else %}<span class="figures__warn">no stop</span>{% endif %}</dd></div>
+    {% if view.pnl is not none %}<div class="figures__row"><dt>Funding so far</dt><dd>{{ view.pnl.open_funding|pnl }}</dd></div>{% endif %}
     {% if view.exit_due_ns is not none %}<div class="figures__row"><dt>Closes at</dt><dd>{{ view.exit_due_ns|ts }}</dd></div>{% endif %}
     {% if view.equity is not none %}<div class="figures__row"><dt>Equity</dt><dd><span class="num">{{ view.equity|num }}</span> <span class="figures__unit">{{ view.currency }}</span></dd></div>{% endif %}
   </dl>
 {%- endif %}
-  <h3 class="figures__title">Paper P&amp;L, before funding</h3>
+  <h3 class="figures__title">Paper P&amp;L, net of fees and funding</h3>
 {%- if view.pnl is none %}
   <p class="figures__unavailable">P&amp;L unavailable: Postgres did not answer. It retries every few seconds.</p>
 {%- else %}
   <dl class="figures">
-    <div class="figures__row"><dt>Realized today (UTC)</dt><dd>{{ view.pnl.realized_today|pnl }}</dd></div>
-    <div class="figures__row"><dt>Realized all time</dt><dd>{{ view.pnl.realized_all|pnl }}</dd></div>
+    <div class="figures__row"><dt>Net today (UTC)</dt><dd>{{ view.pnl.realized_today|pnl }}</dd></div>
+    <div class="figures__row"><dt>Net all time</dt><dd>{{ view.pnl.realized_all|pnl }}</dd></div>
     <div class="figures__row"><dt>Fees today (UTC)</dt><dd><span class="num">{{ view.pnl.fees_today|num }}</span></dd></div>
   </dl>
 {%- endif %}

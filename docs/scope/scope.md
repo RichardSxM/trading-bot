@@ -204,13 +204,14 @@ Hard caps on position size, total exposure, and leverage (2x at first), plus a m
 **Carried over from spec 0006:** feature 6 shipped fixed caps in a pure `check_entry` (extend it, don't fork it) and left funding out of P&L, labeled "before funding". This feature decides how funding reaches `funding_payments` and `positions.realized_pnl` in demo (spec 0002's open Follow-up).
 **Carried over from an article (2026-10-04, changelly strategies overview), for the design to weigh:** size each trade from its risk, not a fixed notional. Size = (account equity × risk per trade) ÷ (distance from entry to stop), with the article's 1 to 2 % as the usual ceiling for risk per trade. Every stopped out trade then costs about the same, whatever the stop distance. The hard caps above still apply on top, and the smaller size wins. Fees count toward the risk, since a tight stop on a small move can lose more to fees than to price.
 spec [0011](../specs/0011-leverage-liquidation-guard/index.md)
+code in [packages/core/src/trading_core/risk/check.py](../../packages/core/src/trading_core/risk/check.py), [packages/core/src/trading_core/risk/sizing.py](../../packages/core/src/trading_core/risk/sizing.py), [packages/core/src/trading_core/risk/liquidation.py](../../packages/core/src/trading_core/risk/liquidation.py), [packages/core/src/trading_core/risk/funding.py](../../packages/core/src/trading_core/risk/funding.py), [packages/core/src/trading_core/node/guard.py](../../packages/core/src/trading_core/node/guard.py), [packages/core/src/trading_core/node/funding.py](../../packages/core/src/trading_core/node/funding.py), [packages/core/src/trading_core/node/recording.py](../../packages/core/src/trading_core/node/recording.py), [apps/dashboard/src/dashboard/data/pnl.py](../../apps/dashboard/src/dashboard/data/pnl.py)
 - [x] Design it (spec): `/architect leverage & liquidation guard`
-- [ ] Build it: `/develop leverage & liquidation guard`
-  - [ ] Thin thread: the six `RISK_*` settings, risk sizing and cap clipping inside `check_entry`, the placeholder sized by the guard with its figures recorded (AC-1 to AC-4, AC-11, AC-12, AC-15, AC-19)
-  - [ ] Liquidation: the pure cross margin estimate, both distance refusals, `liquidation_px` on snapshots and the `liq_near` alarm (AC-5 to AC-8)
-  - [ ] Funding in the decision: hourly periods inside the hold, the `ContextBook` rate, the `funding_stale` refusal (AC-9, AC-10)
-  - [ ] Funding in P&L: `record_funding` bumping `funding_total`, hourly booking in the `RecordingActor`, `FundingLedger` equity, funding in the loss limits (AC-13, AC-14, AC-16, AC-17)
-  - [ ] Dashboard: net P&L with funding, "before funding" removed (AC-18)
+- [x] Build it: `/develop leverage & liquidation guard`
+  - [x] Thin thread: the six `RISK_*` settings, risk sizing and cap clipping inside `check_entry`, the placeholder sized by the guard with its figures recorded (AC-1 to AC-4, AC-11, AC-12, AC-15, AC-19)
+  - [x] Liquidation: the pure cross margin estimate, both distance refusals, `liquidation_px` on snapshots and the `liq_near` alarm (AC-5 to AC-8)
+  - [x] Funding in the decision: hourly periods inside the hold, the `ContextBook` rate, the `funding_stale` refusal (AC-9, AC-10)
+  - [x] Funding in P&L: `record_funding` bumping `funding_total`, hourly booking in the `RecordingActor`, `FundingLedger` equity, funding in the loss limits (AC-13, AC-14, AC-16, AC-17)
+  - [x] Dashboard: net P&L with funding, "before funding" removed (AC-18)
 - [ ] Verify it: `/check verify leverage & liquidation guard`
 - [ ] Test it: `/test leverage & liquidation guard`
 - [ ] Review it (fresh model): `/check review leverage & liquidation guard`

@@ -1,5 +1,6 @@
 """covers: spec 0006 AC-19, the Trades page (two lists, newest first, 50 per page, 422 below page 1,
-an empty page past the end with a link back to page 1, behind the login)."""
+an empty page past the end with a link back to page 1, behind the login); spec 0011 AC-18 (net P&L
+with funding, a funding column, no "before funding")."""
 
 import logging
 from contextlib import contextmanager
@@ -33,6 +34,7 @@ TRIP = RoundTrip(
     avg_exit_px=Decimal("64100"),
     realized_pnl=Decimal("0.09"),
     fees=Decimal("0.0353"),
+    funding=Decimal("-0.012"),
     currency="USD",
     exit_reason=ExitReason.TIME,
 )
@@ -76,6 +78,9 @@ def test_rows_render_with_the_number_filters(redis, clock):
         page = client.get("/trades").text
 
     assert calls == [(1, 1)]
+    assert ">Funding<" in page
+    assert "before funding" not in page
+    assert "0.078" in page  # net P&L: 0.09 realized + -0.012 funding
     for text in ("Closed round trips", "Latest fills", ">short<", ">time<", ">PF_XBTUSD<", "64,210.5", "0.0011"):
         assert text in page
     assert 'class="pnl pnl--profit"' in page  # net P&L
