@@ -1,7 +1,7 @@
 # 0010. Halt, cancel, and flatten on one stop, and halt by itself at a daily or total loss limit
 
 **Date**: 2026-10-12
-**Status**: In Progress
+**Status**: Accepted
 
 ## Summary
 
