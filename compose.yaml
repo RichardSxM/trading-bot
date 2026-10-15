@@ -275,6 +275,10 @@ services:
       # Heartbeat, a book delta file written in the last 60 s, and free space above the hard
       # floor (spec 0007 AC-7).
       test: ["CMD", "python", "-m", "recorder.health"]
+    # The stop (1 s post stop, up to 10 s for the clients to disconnect, then dispose) must reach
+    # writer.close, which writes what the buffered writer still holds (spec 0012 AC-5). Docker's
+    # default 10 s ends in SIGKILL first.
+    stop_grace_period: 30s
     # 2026-10-08: at 3.2 GB/h of market data the data queue stays full and Nautilus parks every
     # overflowing message in a pending put(), which grew past 768m and got the recorder killed
     # every 5 minutes. The room lets a burst drain instead (late rows are repaired, spec 0007 AC-12).

@@ -3,10 +3,13 @@
 import json
 import logging
 import os
+import sys
+import threading
 from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
+from writer_fixture import fake_kernel
 
 import recorder.main as recorder_main
 from recorder.actor import RecordingActor
@@ -107,6 +110,103 @@ def test_a_failed_write_logs_critical_and_stops_once(tmp_path, caplog):
     assert _codes(caplog) == [("CRITICAL", "sequence_file_failed")]
 
 
+def _deltas(numbers):
+    return [SimpleNamespace(sequence=n, ts_init=_ts(n)) for n in numbers]
+
+
+def test_observe_all_waits_while_a_tick_holds_the_lock(tmp_path):
+    # covers: spec 0012 AC-10 (deterministic: fails without the lock)
+    watch, _ = _watch(tmp_path)
+    watch.start(T)
+    in_append, release = threading.Event(), threading.Event()
+    real_append = watch._file.append
+
+    def blocking_append(lines):
+        in_append.set()
+        release.wait(5)
+        real_append(lines)
+
+    watch._file.append = blocking_append
+    ticker = threading.Thread(target=watch.tick, args=(T + 60 * S,))
+    ticker.start()
+    assert in_append.wait(5)
+    observer = threading.Thread(target=watch.observe_all, args=(_deltas([1, 2, 3]), T))
+    observer.start()
+    observer.join(0.2)
+    assert observer.is_alive()  # blocked behind the tick
+    release.set()
+    ticker.join(5)
+    observer.join(5)
+    assert not observer.is_alive()
+
+
+def test_a_tick_racing_observes_on_another_thread_gives_the_same_holes(tmp_path):
+    # covers: spec 0012 AC-10
+    numbers = [n for n in range(1, 20_001) if n % 500 != 0]  # a hole every 500, never filled
+    batches = [_deltas(numbers[i : i + 2]) for i in range(0, len(numbers), 2)]
+    late = T + 2 * CONFIRM  # every open suspicion is old enough to confirm
+
+    in_order, in_order_path = _watch(tmp_path / "a")
+    in_order.start(T)
+    for batch in batches:
+        in_order.observe_all(batch, T)
+    in_order.stop()
+
+    old = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    try:
+        raced, raced_path = _watch(tmp_path / "b")
+        raced.start(T)
+        ticker = threading.Thread(target=lambda: [raced.tick(late) for _ in range(300)])
+        ticker.start()
+        for batch in batches:
+            raced.observe_all(batch, T)
+        ticker.join()
+        raced.stop()
+    finally:
+        sys.setswitchinterval(old)
+
+    def holes(path):
+        return [line for line in _lines(path) if "first_missing" in line]
+
+    assert holes(raced_path) == holes(in_order_path)
+    assert len(holes(in_order_path)) == 39  # 20,000 is last, so no hole after it
+    assert _lines(raced_path)[-1] == {"closed": True}
+
+
+def test_after_stop_a_tick_a_second_stop_and_observes_change_nothing(tmp_path):
+    # covers: spec 0012 AC-10
+    watch, path = _watch(tmp_path)
+    watch.start(T)
+    watch.observe_all(_deltas([1, 2]), T)
+    watch.stop()
+    before = path.read_text()
+    watch.tick(T + CONFIRM)
+    watch.observe_all(_deltas([5]), T + CONFIRM)
+    watch.observe(9, _ts(9), T + CONFIRM)
+    watch.stop()
+    assert path.read_text() == before
+    assert [line for line in _lines(path) if line == {"closed": True}] == [{"closed": True}]
+    assert _lines(path)[-1] == {"closed": True}
+
+
+def test_a_failed_write_calls_stop_with_the_lock_free(tmp_path):
+    # covers: spec 0012 AC-10
+    lock_free: list[bool] = []
+    path = tmp_path / "live" / "run-1" / HOLES_FILE
+    (tmp_path / "live").write_text("not a folder")
+    watch = SequenceWatch(lambda: path, confirm_ns=CONFIRM, stop=lambda: lock_free.append(_try(watch)))
+    watch.start(T)
+    assert lock_free == [True]
+
+
+def _try(watch):
+    if not watch._lock.acquire(blocking=False):
+        return False
+    watch._lock.release()
+    return True
+
+
 def test_a_short_write_is_continued_so_no_line_is_torn(tmp_path, monkeypatch):
     real_write = os.write
 
@@ -136,7 +236,8 @@ class FakeNode:
 
     def __init__(self, config):
         self.actors: list[object] = []
-        self.trader = SimpleNamespace(add_actor=self.actors.append)
+        self.trader = SimpleNamespace(add_actor=self.actors.append, subscribe=lambda topic, handler: None)
+        self.kernel = fake_kernel()
 
     def add_data_client_factory(self, *a):
         pass

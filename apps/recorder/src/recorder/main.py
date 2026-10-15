@@ -4,17 +4,14 @@ import logging
 import os
 import sys
 from collections.abc import Mapping
-from datetime import time
 from pathlib import Path
 
-import pandas as pd  # type: ignore[import-untyped]  # no pandas-stubs; only Timedelta for StreamingConfig
 from nautilus_trader.adapters.kraken import KRAKEN, KrakenLiveDataClientFactory
 from nautilus_trader.config import (
     CacheConfig,
     LiveDataEngineConfig,
     LiveExecEngineConfig,
     LoggingConfig,
-    StreamingConfig,
     TradingNodeConfig,
 )
 from nautilus_trader.live.node import TradingNode
@@ -27,14 +24,21 @@ from nautilus_trader.model.data import (
 )
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.instruments import CryptoPerpetual
-from nautilus_trader.persistence.writer import RotationMode
 from pydantic import SecretStr
 
-from recorder.actor import DiskGuardActor, DiskGuardConfig, RecordingActor, RecordingConfig
+from recorder.actor import (
+    DiskGuardActor,
+    DiskGuardConfig,
+    RecordingActor,
+    RecordingConfig,
+    WriterFlushActor,
+    WriterFlushConfig,
+)
 from recorder.disk import EXIT_DISK_FULL, wait_for_space
 from recorder.queue_depth import QueueDepthActor, QueueDepthConfig
 from recorder.settings import RecorderSettings
 from recorder.volume import CatalogVolumeMissing, check_catalog_volume
+from recorder.writer import BufferedFeatherWriter
 from trading_core import env_guard
 from trading_core.boot import boot
 from trading_core.marketdata.context_feed import OUTAGES_FILE
@@ -61,6 +65,10 @@ RECORDED_TYPES: list[type] = [
 ]
 # The data engine's queue capacity (the Nautilus default), watched by QueueDepthActor (AC-13).
 DATA_QUEUE_SIZE = 100_000
+# The kernel sleeps this long after the actors stop, with the data clients still connected. The
+# recorder has no orders to wait for, and data in that sleep is only held until close (spec 0012
+# AC-5), so the stop reaches writer.close well inside the compose stop_grace_period.
+POST_STOP_S = 1.0
 
 
 def build_config(settings: RecorderSettings) -> TradingNodeConfig:
@@ -72,23 +80,19 @@ def build_config(settings: RecorderSettings) -> TradingNodeConfig:
         data_engine=LiveDataEngineConfig(qsize=DATA_QUEUE_SIZE),
         exec_engine=LiveExecEngineConfig(reconciliation=False),
         data_clients={KRAKEN: futures_data_client()},
-        # A new feather file per stream after each UTC hour, which the compactor turns into
-        # Parquet (spec 0007). The writer rotates on the first write past the boundary.
-        streaming=StreamingConfig(
-            catalog_path=settings.catalog_path,
-            flush_interval_ms=1_000,
-            include_types=RECORDED_TYPES,
-            rotation_mode=RotationMode.SCHEDULED_DATES,
-            rotation_interval=pd.Timedelta(hours=1),
-            rotation_time=time(0, 0),
-            rotation_timezone="UTC",
-        ),
+        # No streaming: main.py records through BufferedFeatherWriter (spec 0012).
+        timeout_post_stop=POST_STOP_S,
     )
+
+
+def run_path(catalog_path: str, run: str) -> Path:
+    """The run folder ``live/<instance id>``, where the writer puts a run's feather files (spec 0012 AC-1)."""
+    return Path(catalog_path) / "live" / run
 
 
 def outages_path(catalog_path: str, run: str) -> Path:
     """The run's ``context_outages.jsonl``, in the run folder where the compactor reads it (spec 0009 AC-6)."""
-    return Path(catalog_path) / "live" / run / OUTAGES_FILE
+    return run_path(catalog_path, run) / OUTAGES_FILE
 
 
 def guard(settings: RecorderSettings, secrets: Mapping[str, SecretStr]) -> None:
@@ -112,6 +116,17 @@ def main() -> None:
     wait_for_space(Path(settings.catalog_path), floor_bytes)
     config = build_config(settings)
     node = TradingNode(config=config)
+    # A new feather file per stream after each UTC hour, which the compactor turns into Parquet
+    # (spec 0007), held and written in batches (spec 0012). Subscribed as the kernel would.
+    writer = BufferedFeatherWriter(
+        run_path(settings.catalog_path, str(node.kernel.instance_id)),
+        config_json=config.json(),
+        cache=node.kernel.cache,
+        clock=node.kernel.clock,
+        include_types=RECORDED_TYPES,
+        flush_max_messages=settings.recorder_flush_max_messages,
+    )
+    node.trader.subscribe("*", writer.write)
     node.trader.add_actor(
         HeartbeatActor(HeartbeatConfig(path=os.environ.get("HEARTBEAT_FILE", "/run/heartbeat/alive")))
     )
@@ -121,18 +136,25 @@ def main() -> None:
             catalog_path=settings.catalog_path,
             sequence_confirm_s=settings.recorder_sequence_confirm_s,
         ),
-        # Called in on_start, once the node is built: the streaming writer names the run folder
-        # after the instance id (spec 0007 Milestone 7 gate).
+        # Called in on_start, once the node is built: the run folder is named after the instance id
+        # (spec 0007 Milestone 7 gate).
         run_id=lambda: str(node.kernel.instance_id),
     )
     node.trader.add_actor(recording)
+
+    # Called only once the node is built and running.
+    def queue_depth() -> int:
+        return int(node.kernel.data_engine.data_qsize())
+
     node.trader.add_actor(
         QueueDepthActor(
             QueueDepthConfig(warn_pct=settings.recorder_queue_warn_pct),
-            # Called only once the node is built and running.
-            probe=lambda: node.kernel.data_engine.data_qsize(),
+            probe=queue_depth,
             capacity=config.data_engine.qsize,
         )
+    )
+    node.trader.add_actor(
+        WriterFlushActor(WriterFlushConfig(flush_ms=settings.recorder_flush_ms), writer=writer, probe=queue_depth)
     )
     # Open interest and liquidations from Kraken's public websocket (spec 0009 AC-3); its outages go
     # to the run folder for the compactor's reconnect gaps (AC-6, AC-7). It never stops the recorder.
@@ -154,8 +176,12 @@ def main() -> None:
     try:
         node.run()
     finally:
-        node.dispose()
-    if disk_guard.guard.tripped or recording.watch.tripped:
+        try:
+            node.dispose()
+        finally:
+            # Writes what is still held, even when dispose raised (AC-5).
+            writer.close()
+    if disk_guard.guard.tripped or recording.watch.tripped or writer.tripped:
         sys.exit(EXIT_DISK_FULL)
 
 

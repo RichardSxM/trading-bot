@@ -20,6 +20,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 7 | Always on cloud deployment | Slice 2 | in-progress |
 | 8 | Order book recorder | Slice 3 | done |
 | 20 | Market context feed | Slice 3 | in-progress |
+| 21 | Recorder buffered writer | Slice 3 | in-progress |
 | 9 | Kill switch & loss limits | Slice 4 | done |
 | 10 | Leverage & liquidation guard | Slice 4 | done |
 | 11 | Restart & outage safety | Slice 4 | planned |
@@ -175,6 +176,22 @@ code in [packages/core/src/trading_core/marketdata/context.py](../../packages/co
 - [x] Test it: `/test market context feed`
 - [x] Review it (fresh model): `/check review market context feed`
 - [ ] Document it: `/document market context feed`
+
+### 21. Recorder buffered writer · in-progress
+The recorder falls over at BTC's busiest hours because the Nautilus feather writer saves every message on its own, which caps it near 1,850 messages a second (found by `/debug` on 2026-10-15). Replace it with a writer that saves each stream once a second, with the same files on disk, so the compactor and everything after it stay unchanged. From spec 0007.
+**Done when:** the recorder runs 24 h on the VPS through both daily peaks with no full queue, no restart, and no sequence hole outside Kraken maintenance, and reports its own headroom every minute.
+spec [0012](../specs/0012-recorder-buffered-writer/index.md) · code in [apps/recorder/src/recorder/writer.py](../../apps/recorder/src/recorder/writer.py), [apps/recorder/src/recorder/main.py](../../apps/recorder/src/recorder/main.py), [packages/core/src/trading_core/marketdata/writer.py](../../packages/core/src/trading_core/marketdata/writer.py)
+- [x] Design it (spec): `/architect order book recorder`
+- [ ] Build it: `/develop recorder buffered writer`
+  - [x] Thin thread: core flush and boundary rules, the writer for book deltas with hold, tick, cap, and rotation, through the compactor (AC-2, AC-3, AC-9)
+  - [x] All types and parity: the full routing, the shared instrument file, the serialize and parity tests, wired into `main.py` with the flush actor and settings (AC-1, AC-2, AC-3, AC-5, AC-9)
+  - [x] Failure and stats: fail closed, the drop paths, shutdown, the 60 s stats with queue depth and tick lag, the benchmark (AC-4, AC-5, AC-6, AC-7)
+  - [x] Thread safety: the sequence watch lock, since timer callbacks run off the event loop thread (AC-10)
+  - [ ] VPS: deploy, the VPS benchmark, the 24 h check (AC-7, AC-8)
+- [ ] Verify it: `/check verify recorder buffered writer`
+- [x] Test it: `/test recorder buffered writer`
+- [x] Review it (fresh model): `/check review recorder buffered writer`
+- [x] Document it: `/document recorder buffered writer`
 
 ## Slice 4: Safety guards (all required before live)
 

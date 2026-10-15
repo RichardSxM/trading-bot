@@ -7,6 +7,7 @@ import threading
 from types import SimpleNamespace
 
 import pytest
+from writer_fixture import fake_kernel
 
 import recorder.main as recorder_main
 from recorder import disk, health
@@ -87,7 +88,8 @@ class FakeNode:
 
     def __init__(self, config):
         self.actors: list[object] = []
-        self.trader = SimpleNamespace(add_actor=self.actors.append)
+        self.trader = SimpleNamespace(add_actor=self.actors.append, subscribe=lambda topic, handler: None)
+        self.kernel = fake_kernel()
         self.disposed = False
 
     def add_data_client_factory(self, *a):

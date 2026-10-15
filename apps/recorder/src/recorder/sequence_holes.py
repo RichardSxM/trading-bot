@@ -6,14 +6,18 @@ per tick with one fsync: the holes confirmed since the last tick, then ``{"check
 The first line is ``{"started_ns": …}`` and, on a clean stop, the last is ``{"closed": true}``.
 The compactor turns those holes into ``sequence`` gaps (AC-16). Without Nautilus, so tests drive
 it directly; ``RecordingActor`` in ``actor.py`` runs it.
+
+The tick runs on a Nautilus timer thread while ``observe_all`` runs on the event loop, so one lock
+covers each whole method (spec 0012 AC-10).
 """
 
 import json
 import logging
 import os
-from collections.abc import Callable, Mapping
+import threading
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
-from typing import Final
+from typing import Final, Protocol
 
 from recorder.disk import stop_process
 from trading_core.marketdata.sequence import SequenceHole, SequenceTracker
@@ -21,6 +25,16 @@ from trading_core.marketdata.sequence import SequenceHole, SequenceTracker
 log = logging.getLogger(__name__)
 
 HOLES_FILE: Final = "sequence_holes.jsonl"
+
+
+class Delta(Protocol):
+    """What the watch reads from a book delta (a Nautilus ``OrderBookDelta`` in the recorder)."""
+
+    @property
+    def sequence(self) -> int: ...
+
+    @property
+    def ts_init(self) -> int: ...
 
 
 class HolesFile:
@@ -52,6 +66,10 @@ class SequenceWatch:
     A failed write logs CRITICAL ``sequence_file_failed`` and stops the recorder through ``stop``
     (exit code 75, as the disk guard does), because a run without its holes file would hold back
     every later hour in the compactor. ``tripped`` tells ``main.py`` to exit 75.
+
+    Every public method holds one lock for its whole body, and ``stop`` is called only after it is
+    released. After ``stop`` the watch is closed: ``tick``, ``observe``, and ``stop`` again do nothing,
+    so ``{"closed": true}`` is the file's last line, written once (spec 0012 AC-10).
     """
 
     def __init__(
@@ -68,6 +86,8 @@ class SequenceWatch:
         self._file: HolesFile | None = None
         self._late = 0
         self._late_first: int | None = None
+        self._lock = threading.Lock()
+        self._closed = False
         self.tripped = False
 
     @property
@@ -77,34 +97,59 @@ class SequenceWatch:
 
     def start(self, now_ns: int) -> None:
         """Before the subscriptions: a fresh tracker, and the file's ``started_ns`` line."""
-        self._tracker = SequenceTracker(confirm_ns=self._confirm_ns)
-        self._file = HolesFile(self._path())
-        self._write([{"started_ns": now_ns}])
+        with self._lock:
+            self._tracker = SequenceTracker(confirm_ns=self._confirm_ns)
+            self._closed = False
+            self._file = HolesFile(self._path())
+            failed = self._write([{"started_ns": now_ns}])
+        self._stop_if(failed)
 
     def observe(self, sequence: int, ts_init: int, now_ns: int) -> None:
         """One delta, in arrival order."""
+        with self._lock:
+            if not self._closed:
+                self._observe(sequence, ts_init, now_ns)
+
+    def observe_all(self, deltas: Iterable[Delta], now_ns: int) -> None:
+        """Every delta of one message, in arrival order, under one lock."""
+        with self._lock:
+            if self._closed:
+                return
+            for delta in deltas:
+                self._observe(delta.sequence, delta.ts_init, now_ns)
+
+    def tick(self, now_ns: int) -> None:
+        """Confirm holes, log them, and write them with the new ``checked_to_ns``."""
+        with self._lock:
+            if self._closed:
+                return
+            result = self._tracker.tick(now_ns)
+            self._log_holes(result.holes)
+            self._log_late()
+            lines: list[Mapping[str, object]] = [h.to_dict() for h in result.holes]
+            lines.append({"checked_to_ns": result.checked_to_ns})
+            failed = self._write(lines)
+        self._stop_if(failed)
+
+    def stop(self) -> None:
+        """At stop, every open suspicion is a hole (fail safe), then ``closed``."""
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            holes = self._tracker.close()
+            self._log_holes(holes)
+            self._log_late()
+            lines: list[Mapping[str, object]] = [h.to_dict() for h in holes]
+            lines.append({"closed": True})
+            failed = self._write(lines)
+        self._stop_if(failed)
+
+    def _observe(self, sequence: int, ts_init: int, now_ns: int) -> None:
         if self._tracker.observe(sequence, ts_init, now_ns):
             self._late += 1
             if self._late_first is None:
                 self._late_first = sequence
-
-    def tick(self, now_ns: int) -> None:
-        """Confirm holes, log them, and write them with the new ``checked_to_ns``."""
-        result = self._tracker.tick(now_ns)
-        self._log_holes(result.holes)
-        self._log_late()
-        lines: list[Mapping[str, object]] = [h.to_dict() for h in result.holes]
-        lines.append({"checked_to_ns": result.checked_to_ns})
-        self._write(lines)
-
-    def stop(self) -> None:
-        """At stop, every open suspicion is a hole (fail safe), then ``closed``."""
-        holes = self._tracker.close()
-        self._log_holes(holes)
-        self._log_late()
-        lines: list[Mapping[str, object]] = [h.to_dict() for h in holes]
-        lines.append({"closed": True})
-        self._write(lines)
 
     def _log_holes(self, holes: list[SequenceHole]) -> None:
         for hole in holes:
@@ -140,9 +185,10 @@ class SequenceWatch:
         )
         self._late, self._late_first = 0, None
 
-    def _write(self, lines: list[Mapping[str, object]]) -> None:
+    def _write(self, lines: list[Mapping[str, object]]) -> bool:
+        """Append ``lines``; ``True`` when this write failed and tripped the watch."""
         if self.tripped or self._file is None:
-            return
+            return False
         try:
             self._file.append(lines)
         except OSError as exc:
@@ -153,4 +199,10 @@ class SequenceWatch:
             )
             for handler in logging.getLogger().handlers:
                 handler.flush()
+            return True
+        return False
+
+    def _stop_if(self, failed: bool) -> None:
+        # Outside the lock, so a stop that comes back into the watch cannot deadlock.
+        if failed:
             self._stop()

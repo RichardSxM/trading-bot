@@ -14,9 +14,11 @@ def test_demo_config_records_into_catalog_without_redis(monkeypatch):
     assert config.cache is not None
     assert config.cache is not None
     assert config.cache.database is None
-    assert config.streaming is not None
-    assert config.streaming.catalog_path == "/tmp/catalog"
+    # The recorder writes through BufferedFeatherWriter, not the kernel's writer (spec 0012 AC-1).
+    assert config.streaming is None
     assert config.exec_clients == {}
+    # A short post stop, so a docker stop reaches writer.close before SIGKILL (spec 0012 AC-5).
+    assert config.timeout_post_stop == 1.0
 
 
 def test_pinned_instruments_parse(monkeypatch):
@@ -61,11 +63,11 @@ def test_explicit_recorder_id_must_match_env(monkeypatch):
         build_config(RecorderSettings(trading_env="live"))
 
 
-def test_catalog_is_flushed_every_second(monkeypatch):
-    monkeypatch.delenv("RECORDER_ID", raising=False)
-    streaming = build_config(RecorderSettings(trading_env="demo")).streaming
-    assert streaming is not None
-    assert streaming.flush_interval_ms == 1_000
+def test_catalog_is_flushed_every_second():
+    settings = RecorderSettings(trading_env="demo")
+
+    assert settings.recorder_flush_ms == 1_000
+    assert settings.recorder_flush_max_messages == 4_096
 
 
 def test_instrument_list_trims_and_drops_blanks():

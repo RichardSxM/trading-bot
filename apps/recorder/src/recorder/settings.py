@@ -19,6 +19,10 @@ class RecorderSettings(CatalogDiskSettings, ContextSettings):
     # How long a missing message number may be overtaken before it counts as lost (AC-15): the
     # compactor's reorder window, so a row it would still put back in place is never called lost.
     recorder_sequence_confirm_s: int = Field(default=600, ge=1)
+    # The writer's flush tick, which is also the most recorded time a crash can lose (spec 0012).
+    recorder_flush_ms: int = Field(default=1_000, ge=100, le=5_000)
+    # A stream flushes at once when it holds this many messages (spec 0012 AC-2).
+    recorder_flush_max_messages: int = Field(default=4_096, ge=1, le=100_000)
 
     @property
     def instrument_list(self) -> list[str]:

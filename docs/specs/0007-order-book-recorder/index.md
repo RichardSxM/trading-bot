@@ -17,7 +17,7 @@ The recorder already captures the BTC perp order book (BTC and ETH until 2026-10
 - As the owner, I want to pull chosen days onto the laptop for heavy research.
 
 **Acceptance criteria**:
-- **AC-1**: The recorder's stream writes only `OrderBookDeltas` (the batch type the data engine publishes; its rows are `OrderBookDelta`), `TradeTick`, and `CryptoPerpetual`. Its feather files rotate after each UTC hour boundary (`RotationMode.SCHEDULED_DATES`, 1 h interval, `rotation_time` 00:00, UTC). The writer rotates a stream on its first write at or after the boundary, so a file can end with rows whose `ts_init` is just before the boundary, and later boundaries drift by that write's delay. No other type's file appears in a new run folder.
+- **AC-1**: The recorder's stream writes only `OrderBookDeltas` (the batch type the data engine publishes; its rows are `OrderBookDelta`), `TradeTick`, and `CryptoPerpetual`. Its feather files rotate after each UTC hour boundary (`RotationMode.SCHEDULED_DATES`, 1 h interval, `rotation_time` 00:00, UTC). The writer rotates a stream on its first write at or after the boundary, so a file can end with rows whose `ts_init` is just before the boundary, and later boundaries drift by that write's delay. No other type's file appears in a new run folder. **Amended 2026-10-15 by [spec 0012](../0012-recorder-buffered-writer/index.md):** the files are written by the recorder's own buffered writer instead of `StreamingConfig`, with the same layout; boundaries no longer drift.
 - **AC-2**: Once an hour H is ready (see *Lifecycle of one hour*), the compactor finishes it within 10 minutes on the VPS for a 2 GB hour. It writes one Parquet file per type and instrument that has rows at `data/<class_to_filename(cls)>/<urisafe_identifier(instrument)>/<_timestamps_to_filename(H, H + 1 h − 1 ns)>`, using zstd compression. The rows are ordered by `ts_init`. It writes through a `.tmp` name followed by a rename. Before deleting any feather file, it checks that the Parquet row count equals the source rows routed to the hour, minus the hour's late rows (AC-12), plus the snapshot rows. A mismatch keeps the feather and logs ERROR `catalog_hour_mismatch`. It then deletes each closed feather file whose rows all fall in hours recorded in `done.json`.
 - **AC-3**: Every converted `order_book_deltas` hour whose instrument has a valid carried book for H − 1 begins with that book as snapshot deltas, built the way the adapter's `_request_order_book_snapshot` builds them.
   - One `CLEAR`, then one `ADD` per price level, for all levels on both sides: bids best first, then asks best first.
@@ -93,6 +93,8 @@ The recorder already captures the BTC perp order book (BTC and ETH until 2026-10
 The recorder keeps streaming feather, now filtered and rotated hourly. A new `compactor` Compose service turns each closed hour into zstd Parquet in the Nautilus catalog layout, with a book snapshot at its start. It writes gaps and a daily manifest, then deletes old local hours only once the B2 backup holds them.
 
 **Lost messages (2026-10-08)**: the recorder watches the run's message counter and is the detector of record, because it sees every instrument's messages in one order, while the compactor reads one stream at a time. It writes each hole to a small file in the run folder. A resubscribe to cut the damage short was dropped on the build gate (no fresh snapshot came). The compactor turns the holes into `sequence` gaps and incomplete hours (AC-15 to AC-17, see rationale.md).
+
+**Writer replaced (2026-10-15)**: the kernel's per message streaming writer capped the recorder near 1,850 messages a second, below BTC's peak. [Spec 0012](../0012-recorder-buffered-writer/index.md) replaces it with a buffered writer that keeps the same files.
 
 **Implementation skills**: `nautilus-trader` (`algoderiv/agent-skills`, `.claude/skills/nautilus-trader/`) · `docker-compose-skill` (`scientiacapital/skills`, `.claude/skills/docker-compose-skill/`)
 
@@ -479,7 +481,7 @@ Tracer Bullet again: one hole goes from the recorder's counter to a `sequence` g
 - [ ] Feature 12: alert on `book_sequence_hole`.
 - [ ] The 2026-10-08 hours converted before AC-16 ships carry holes that no gap row marks (the 15:00 hour lost 389,870 BTC and ETH messages). Once AC-16 ships, mark those hours `incomplete` by hand, or drop them.
 - [ ] Each instrument reload writes about 227 tiny `crypto_perpetual` files into the run folder (Nautilus 1.231.0 keeps a rotation timer per instrument but rotates one shared file). Harmless so far; revisit if the compactor slows on them.
-- [ ] Recorder headroom: BTC only still logs `recorder_queue_high` at peaks on the 2 CPU VPS. If restarts come back, raise the heartbeat limit or move to 4 CPUs (`/architect`).
+- [x] Recorder headroom: BTC only still logs `recorder_queue_high` at peaks on the 2 CPU VPS. If restarts come back, raise the heartbeat limit or move to 4 CPUs (`/architect`). The restarts came back; `/debug` traced them to the writer (2026-10-15), decided in [spec 0012](../0012-recorder-buffered-writer/index.md).
 
 ## Rationale
 
