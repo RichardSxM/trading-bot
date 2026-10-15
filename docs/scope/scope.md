@@ -212,7 +212,7 @@ code in [packages/core/src/trading_core/risk/check.py](../../packages/core/src/t
   - [x] Funding in the decision: hourly periods inside the hold, the `ContextBook` rate, the `funding_stale` refusal (AC-9, AC-10)
   - [x] Funding in P&L: `record_funding` bumping `funding_total`, hourly booking in the `RecordingActor`, `FundingLedger` equity, funding in the loss limits (AC-13, AC-14, AC-16, AC-17)
   - [x] Dashboard: net P&L with funding, "before funding" removed (AC-18)
-- [ ] Verify it: `/check verify leverage & liquidation guard`
+- [x] Verify it: `/check verify leverage & liquidation guard`
 - [ ] Test it: `/test leverage & liquidation guard`
 - [ ] Review it (fresh model): `/check review leverage & liquidation guard`
 - [ ] Document it: `/document leverage & liquidation guard`
