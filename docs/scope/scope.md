@@ -186,7 +186,7 @@ spec [0012](../specs/0012-recorder-buffered-writer/index.md) · code in [apps/re
   - [x] Thin thread: core flush and boundary rules, the writer for book deltas with hold, tick, cap, and rotation, through the compactor (AC-2, AC-3, AC-9)
   - [x] All types and parity: the full routing, the shared instrument file, the serialize and parity tests, wired into `main.py` with the flush actor and settings (AC-1, AC-2, AC-3, AC-5, AC-9)
   - [x] Failure and stats: fail closed, the drop paths, shutdown, the 60 s stats with queue depth and tick lag, the benchmark (AC-4, AC-5, AC-6, AC-7)
-  - [ ] Thread safety: the sequence watch lock, since timer callbacks run off the event loop thread (AC-10)
+  - [x] Thread safety: the sequence watch lock, since timer callbacks run off the event loop thread (AC-10)
   - [ ] VPS: deploy, the VPS benchmark, the 24 h check (AC-7, AC-8)
 - [ ] Verify it: `/check verify recorder buffered writer`
 - [x] Test it: `/test recorder buffered writer`

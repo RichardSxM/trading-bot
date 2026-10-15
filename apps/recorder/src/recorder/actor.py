@@ -63,10 +63,8 @@ class RecordingActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
         self.watch.stop()
 
     def on_order_book_deltas(self, deltas: OrderBookDeltas) -> None:
-        now = self.clock.timestamp_ns()
-        observe = self.watch.observe
-        for delta in deltas.deltas:
-            observe(delta.sequence, delta.ts_init, now)
+        # One lock per message: the sequence tick runs on a timer thread (spec 0012 AC-10).
+        self.watch.observe_all(deltas.deltas, self.clock.timestamp_ns())
 
     def _tick(self, _event: TimeEvent) -> None:
         self.watch.tick(self.clock.timestamp_ns())
