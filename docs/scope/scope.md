@@ -215,7 +215,7 @@ code in [packages/core/src/trading_core/risk/check.py](../../packages/core/src/t
 - [x] Verify it: `/check verify leverage & liquidation guard`
 - [x] Test it: `/test leverage & liquidation guard`
 - [x] Review it (fresh model): `/check review leverage & liquidation guard`
-- [ ] Document it: `/document leverage & liquidation guard`
+- [x] Document it: `/document leverage & liquidation guard`
 
 ### 11. Restart & outage safety · needs a decision
 After a crash, restart, or dropped connection, the bot rebuilds its view from the exchange's real positions and orders before doing anything else, and never sends a duplicate order.
