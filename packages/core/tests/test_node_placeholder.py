@@ -267,6 +267,21 @@ def test_the_guard_sizes_with_the_configured_fee_not_the_cached_instruments():
     assert inputs["loss_per_unit"] == distance + slippage + fees
 
 
+def test_the_guard_sizes_from_equity_net_of_the_run_s_booked_funding():
+    # covers: spec 0011 AC-17. Flat at 12:15, so equity is the 1000 USD balance plus the ledger's -100.
+    def with_paid_funding(config, gate, blocks, record):
+        return PlaceholderTimed(config, gate, blocks, record, ledger=FundingLedger(Decimal(-100)))
+
+    _, _, rows = _run(Prices(20, lambda t: 85000 + int(t * 10)), strategy_cls=with_paid_funding)
+
+    enter = _decisions(rows)[0]
+    assert Decimal(str(enter.inputs["equity"])) == Decimal(900)
+    # The risk size follows: 0.5 % of 900, not of 1000.
+    risk_qty = Decimal(str(enter.inputs["risk_quantity"]))
+    loss_per_unit = Decimal(str(enter.inputs["loss_per_unit"]))
+    assert risk_qty == (Decimal("4.5") / loss_per_unit).quantize(Decimal("0.0001"), rounding="ROUND_DOWN")
+
+
 def test_too_few_bars_at_the_boundary_skips_without_a_decision():
     # Quotes from 12:12 only: 3 bars at 12:15, fewer than lookback + 1.
     engine, strategy, rows = _run(Prices(20, lambda t: 85000), start_offset_min=12)
@@ -1175,6 +1190,75 @@ def test_events_before_the_seed_are_held_and_a_key_in_the_seed_counts_once(caplo
     (position,) = engine.cache.positions_closed()
     assert tally.trades_today == 1
     assert tally.realized_today == position.realized_pnl.as_decimal()
+
+
+def _booked(amount, paid_at=START, position_id=None):
+    from trading_core.node.funding import FundingBooked
+
+    return FundingBooked(str(INSTRUMENT_ID), _ns(paid_at), position_id or uuid.uuid7(), Decimal(amount))
+
+
+def _publish(actor, *events):
+    from trading_core.node.funding import FUNDING_BOOKED_TOPIC
+
+    async def publish():  # a trip schedules the kill switch's Redis write, so run on a loop
+        for event in events:
+            actor.msgbus.publish(FUNDING_BOOKED_TOPIC, event)
+
+    asyncio.run(publish())
+
+
+def test_a_booked_payment_reaches_the_loss_limits_and_trips_the_daily_limit_while_flat():
+    """covers: spec 0011 AC-16 (each booking arrives as a message, counted once, and is evaluated at once)"""
+    build, made = _loss_actor(lambda *_: _empty_seed(), _limits(daily_usd=Decimal(20)), seeded_at_start=_empty_seed())
+    gate = PauseGate()
+    engine, strategy, _ = _run(Prices(5, lambda t: 85000), add_actor=build, gate=gate)
+    assert engine.cache.positions_open() == []
+    assert not gate.halted
+    payment = _booked("-25")
+
+    _publish(made["actor"], payment, payment)  # the same key twice
+
+    tally, verdict = made["actor"].figures()
+    assert (tally.realized_today, tally.realized_total) == (Decimal(-25), Decimal(-25))
+    assert verdict.loss_today == Decimal(25)
+    assert gate.halt_state is not None
+    assert gate.halt_state.reason is HaltReason.DAILY_LOSS_LIMIT
+    assert BlockReason.DAILY_LOSS_LIMIT in strategy._blocks.active()
+
+
+def test_a_payment_from_before_the_total_start_counts_nowhere():
+    """covers: spec 0011 AC-16 (a payment counts by its paid_at day and only from total_since)"""
+    build, made = _loss_actor(lambda *_: _empty_seed(), _limits(), seeded_at_start=_empty_seed())
+    _run(Prices(5, lambda t: 85000), add_actor=build)
+
+    _publish(made["actor"], _booked("-5", paid_at=START - timedelta(days=1)))
+
+    tally, _ = made["actor"].figures()
+    assert (tally.realized_today, tally.realized_total) == (Decimal(0), Decimal(0))
+
+
+def test_payments_before_the_seed_are_held_and_one_already_in_the_seed_counts_once():
+    """covers: spec 0011 AC-16 (held until the seed lands, then folded; seeded keys are skipped)"""
+    from trading_core.strategy.blocks import EntryBlocks
+
+    seeded = _booked("-3")
+    seed = _empty_seed(
+        funding_today=Decimal(-3),
+        funding_total=Decimal(-3),
+        funding_keys=frozenset({seeded.key}),
+    )
+    build, made = _loss_actor(lambda *_: seed, _limits(), own_blocks=EntryBlocks())
+    _run(Prices(5, lambda t: 85000), add_actor=build)
+    actor = made["actor"]
+    assert not actor.seeded
+
+    _publish(actor, seeded, _booked("-2"))
+    assert len(actor._buffer) == 2  # held, not counted yet
+    asyncio.run(actor._seed_until_landed())
+
+    tally, _ = actor.figures()
+    assert (tally.realized_today, tally.realized_total) == (Decimal(-5), Decimal(-5))
 
 
 def test_resume_reads_the_loss_limits():
