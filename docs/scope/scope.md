@@ -20,7 +20,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 7 | Always on cloud deployment | Slice 2 | in-progress |
 | 8 | Order book recorder | Slice 3 | done |
 | 20 | Market context feed | Slice 3 | in-progress |
-| 9 | Kill switch & loss limits | Slice 4 | in-progress |
+| 9 | Kill switch & loss limits | Slice 4 | done |
 | 10 | Leverage & liquidation guard | Slice 4 | done |
 | 11 | Restart & outage safety | Slice 4 | planned |
 | 12 | Phone alerts & health checks | Slice 5 | planned |
@@ -178,7 +178,7 @@ code in [packages/core/src/trading_core/marketdata/context.py](../../packages/co
 
 ## Slice 4: Safety guards (all required before live)
 
-### 9. Kill switch & loss limits · in-progress
+### 9. Kill switch & loss limits · done
 One action closes all positions, cancels all orders, and stops trading; automatic halt after a daily or total loss threshold.
 **Done when:** the dashboard stop button and an automatic loss limit each flatten everything in demo within seconds, and trading stays halted until you resume it.
 **Carried over from spec 0005:** build `stop`, `resume`, and `flatten` on the existing ControlActor, decide how stop and pause combine, and reword spec 0004 verify step 21 (stop answers `not_implemented` until then).
