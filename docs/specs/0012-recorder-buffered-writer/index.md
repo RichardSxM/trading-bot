@@ -174,7 +174,7 @@ Tracer Bullet: book deltas first go all the way from the new writer through the 
 
 **Neutral**:
 - Measured before this spec (py-spy, 2026-10-15, 30 s on the VPS): 87.6% of the recorder's main thread was in `StreamingFeatherWriter.write`; `serialize_batch([obj])` 36.6%, `serialized.nbytes` 23.4%, `write_table` 13.2%; the sequence watch was 0.2%.
-- The VPS benchmark result goes here after build task 8.
+- Measured on the VPS after the deploy (2026-10-15, 4d55abd, `python -m recorder.bench_writer` beside the live recorder): 600,000 messages at 57,975 msg/s, against the 10,000 AC-7 asks for and the old writer's ceiling near 1,850. The first live `recorder_writer_stats` (18:41 UTC, a quiet hour) showed `busy_pct` 2, `max_queue_depth` 0, `dropped` 0.
 - The lock in `SequenceWatch` costs one uncontended acquire per `OrderBookDeltas` message, well under 1 µs, against the 0.2% the whole watch took in the profile. A tick holds it for its holes file write and fsync (a few ms once a minute), and deltas wait that long.
 
 ## Follow-up
