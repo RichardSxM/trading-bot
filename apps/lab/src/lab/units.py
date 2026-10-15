@@ -301,6 +301,7 @@ def run_unit(plan: UnitPlan) -> UnitResult:
         seed=plan.seed,
         risk=plan.risk,
         order_id_tag=f"S{segment.index}",
+        taker_fee=plan.taker_fee,
         market=plan.market,
     )
     strategy = entry.build(entry.build_config(plan.strategy_config, context), gate, blocks, rows)

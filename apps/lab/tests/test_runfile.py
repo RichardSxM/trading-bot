@@ -170,3 +170,19 @@ def test_market_context_is_a_strategy_setting_but_its_ages_come_from_the_run():
 
     assert "use_market_context" in entry.user_fields()
     assert not any(name.startswith("context_") for name in entry.user_fields())
+
+
+def test_the_guard_sizes_with_the_runs_taker_fee():
+    """covers: spec 0011 verify step 2 (the guard's fee comes from the run, not the cached instrument)."""
+    from dataclasses import replace
+
+    from lab.strategies import _CHECK_CONTEXT
+    from trading_core.node.guard import GuardedConfig
+
+    entry = REGISTRY["random_taker"]
+
+    config = entry.build_config({}, replace(_CHECK_CONTEXT, taker_fee=Decimal("0.001")))
+
+    assert isinstance(config, GuardedConfig)
+    assert config.taker_fee == Decimal("0.001")
+    assert "taker_fee" not in entry.user_fields()

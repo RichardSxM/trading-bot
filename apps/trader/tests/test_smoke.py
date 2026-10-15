@@ -893,6 +893,26 @@ def test_the_placeholder_reads_the_market_context_with_the_trader_settings():
     )
 
 
+def test_the_placeholder_guard_sizes_with_the_sandbox_taker_fee():
+    """covers: spec 0011 verify step 2 (the cached Kraken instrument carries fee 0)."""
+    from uuid import uuid4
+
+    from trader.main import placeholder_config
+
+    settings = _settings("demo")
+
+    assert placeholder_config(settings, uuid4()).taker_fee == settings.sandbox_taker_fee
+
+
+def test_the_placeholder_refuses_live_without_a_taker_fee_source():
+    from uuid import uuid4
+
+    from trader.main import placeholder_config
+
+    with pytest.raises(ValueError, match="live taker fee"):
+        placeholder_config(_settings("live"), uuid4())
+
+
 # spec 0010 AC-21: the loss limit settings refuse a bad start --------------------------------
 
 

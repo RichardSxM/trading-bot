@@ -265,7 +265,7 @@ class PlaceholderTimed(KfsStrategy):
                 equity=self._equity(),
                 open_notional=guard.open_notional(self.cache),
                 size_step=instrument.size_increment.as_decimal(),
-                taker_fee=instrument.taker_fee,
+                taker_fee=self._cfg.taker_fee,
                 instrument_maintenance_rate=guard.margin_maint(instrument),
                 funding_periods=funding_periods(now, self._cfg.hold_min * NS_PER_MIN),
                 funding_rate=self._funding_rate(),

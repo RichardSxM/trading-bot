@@ -96,6 +96,7 @@ def _live_strategy():
         min_liq_distance_pct=Decimal(10),
         liq_stop_multiple=Decimal(3),
         stop_slippage_bps=Decimal(5),
+        taker_fee=Decimal("0.0005"),
         use_market_context=True,
     )
     strategy = RandomTaker(config, PauseGate(), EntryBlocks(), lambda item: None)
