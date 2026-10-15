@@ -11,6 +11,7 @@ import pytest
 
 from trading_core.recording.enums import (
     Env,
+    FundingSource,
     Granularity,
     Intent,
     Liquidity,
@@ -30,6 +31,7 @@ from trading_core.recording.rows import (
     AccountSnapshotRow,
     DecisionRow,
     FillRow,
+    FundingRow,
     InstrumentRow,
     OrderEventRow,
     OrderRow,
@@ -181,6 +183,18 @@ def _samples():
             decision_id=DECISION,
             order_id=uuid.uuid7(),
             occurred_ns=NS,
+        ),
+        WriteCall.RECORD_FUNDING: FundingRow(
+            env=Env.DEMO,
+            run_id=RUN,
+            position_id=POSITION,
+            instrument_id="PF_XBTUSD.KRAKEN",
+            amount=Decimal("-0.0085"),
+            currency="USD",
+            rate=Decimal("0.0001"),
+            source=FundingSource.COMPUTED,
+            external_id="ext-1",
+            paid_ns=NS,
         ),
     }
 

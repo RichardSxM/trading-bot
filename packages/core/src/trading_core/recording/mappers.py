@@ -230,7 +230,8 @@ class PositionFacts:
 def position_row(facts: PositionFacts, *, env: Env, run_id: UUID, row_id: UUID) -> PositionRow:
     """The ``positions`` row under the id the actor keeps for ``(position_ref, opened_ns)``.
 
-    Funding is not recorded yet (feature 10), so ``funding_total`` is 0 and P&L is before funding.
+    ``funding_total`` is written here only on insert (as 0); ``record_funding`` keeps it after that
+    (spec 0011 AC-14), and ``realized_pnl`` stays NautilusTrader's, before funding.
     """
     avg_entry = weighted_avg(facts.opening)
     if avg_entry is None:

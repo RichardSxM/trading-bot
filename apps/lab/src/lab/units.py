@@ -323,6 +323,7 @@ def run_unit(plan: UnitPlan) -> UnitResult:
         instrument_id=instrument_id,
         rows=rows,
         blocks=blocks,
+        risk=plan.risk,
         funding_boundaries=funding_boundaries(segment.start_ns, data_end) if plan.funding else (),
     )
 

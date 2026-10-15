@@ -32,6 +32,7 @@ from nautilus_trader.model.identifiers import InstrumentId
 from trading_core.lab.errors import RecordingFailedError
 from trading_core.lab.funding import FundingSample, PositionKey
 from trading_core.lab.markouts import FillMarkouts, MarkoutTracker
+from trading_core.node.funding import FundingLedger
 from trading_core.node.recording import RecordingActor
 from trading_core.node.strategy import KfsStrategy, PauseGate
 from trading_core.recording.enums import Env, Intent, OrderSide, RiskVerdict
@@ -46,10 +47,12 @@ from trading_core.recording.rows import (
     RiskEventRow,
 )
 from trading_core.recording.spool import WriteCall, WriteItem
+from trading_core.risk.check import RiskLimits
 from trading_core.strategy.blocks import EntryBlocks
 
 # The decision reason of the runner's close when a segment's data ends (AC-8).
 SEGMENT_END: Final = "segment_end"
+_UNUSED_STALE_QUOTE_S: Final = Decimal(10)
 
 
 def _mid(quote: QuoteTick) -> Decimal:
@@ -131,9 +134,22 @@ class LabRecorder(RecordingActor):
         instrument_id: InstrumentId,
         rows: UnitRows,
         blocks: EntryBlocks,
+        risk: RiskLimits,
         funding_boundaries: Sequence[int] = (),
     ) -> None:
-        super().__init__(env=env, run_id=run_id, instrument_id=instrument_id, record=rows, blocks=blocks)
+        # The stale quote age and the ledger feed only the snapshots and the booked funding, which
+        # the lab never starts (it samples funding at ``funding_boundaries`` instead).
+        super().__init__(
+            env=env,
+            run_id=run_id,
+            instrument_id=instrument_id,
+            record=rows,
+            blocks=blocks,
+            maintenance_margin_rate=risk.maintenance_margin_rate,
+            min_liq_distance_pct=risk.min_liq_distance_pct,
+            stale_quote_s=_UNUSED_STALE_QUOTE_S,
+            ledger=FundingLedger(),
+        )
         self._rows = rows
         self._lab_instrument_id = instrument_id
         self._funding_boundaries = tuple(funding_boundaries)

@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 from typing import Any, ClassVar, cast
@@ -711,16 +712,6 @@ def test_main_purges_the_demo_cache_before_the_node_exists(fake_main, monkeypatc
     assert ("exec_factory", "SANDBOX") in _FakeNode.instances[0].calls
 
 
-def test_main_warns_when_the_placeholder_notional_is_over_the_cap(fake_main, monkeypatch, caplog):
-    monkeypatch.setattr(fake_main, "redis_reachable", lambda host, port: True)
-    settings = _settings("demo").model_copy(update={"placeholder_notional_usd": 300})
-    monkeypatch.setattr(fake_main, "boot", lambda kind, **kw: Boot(settings, SECRETS))
-
-    fake_main.main()
-
-    assert any(getattr(r, "fields", {}).get("code") == "placeholder_notional_over_cap" for r in caplog.records)
-
-
 @pytest.mark.parametrize("drill", [True, False])
 def test_main_warns_only_while_the_stop_reject_drill_is_on(fake_main, monkeypatch, caplog, drill):
     monkeypatch.setattr(fake_main, "redis_reachable", lambda host, port: True)
@@ -758,10 +749,15 @@ def _paper(writer=None):
     import uuid
 
     from trader.main import PaperLoop
+    from trading_core.node.funding import FundingLedger
     from trading_core.strategy.blocks import EntryBlocks
 
     return PaperLoop(
-        run_id=uuid.uuid7(), blocks=EntryBlocks(), writer=cast(Any, writer or _FakeWriter()), sessions=cast(Any, None)
+        run_id=uuid.uuid7(),
+        blocks=EntryBlocks(),
+        writer=cast(Any, writer or _FakeWriter()),
+        sessions=cast(Any, None),
+        ledger=FundingLedger(),
     )
 
 
@@ -825,7 +821,7 @@ def test_an_undrained_queue_is_spilled_under_the_run_id(monkeypatch, tmp_path):
         def __call__(self):
             raise ConnectionError("postgres down")
 
-    paper = type(paper)(run_id=paper.run_id, blocks=paper.blocks, writer=paper.writer, sessions=Sessions())
+    paper = replace(paper, sessions=Sessions())
     settings = TraderSettings(trading_env="demo", spool_dir=tmp_path, recording_drain_s=Decimal(7))
 
     finish_paper_loop(paper, settings, positions_open=0)  # a failed finish is logged, not raised

@@ -200,11 +200,13 @@ def _guarded_upsert(
     key: Sequence[str],
     immutable: Sequence[str],
     stub_only: Sequence[str] = (),
+    insert_only: Sequence[str] = (),
 ) -> None:
     """INSERT … ON CONFLICT (key) DO UPDATE … WHERE stored.last_event_ns <= excluded.last_event_ns.
 
     ``immutable`` fields never change; ``stub_only`` fields may change only while the stored
-    status is ``unknown``. A breach raises ``RecordConflictError`` before anything is written.
+    status is ``unknown``; ``insert_only`` fields are written by the insert and never updated.
+    A breach raises ``RecordConflictError`` before anything is written.
     The stored row stays locked until the caller commits, so a concurrent writer cannot slip
     past the check.
     """
@@ -220,7 +222,9 @@ def _guarded_upsert(
 
     stmt = insert(table).values(dict(values))
     changed: dict[str, object] = {
-        name: stmt.excluded[name] for name in values if name not in _BOOKKEEPING and name not in key
+        name: stmt.excluded[name]
+        for name in values
+        if name not in _BOOKKEEPING and name not in key and name not in insert_only
     }
     changed["updated_at"] = func.now()
     session.execute(
@@ -578,7 +582,10 @@ def record_fill(session: Session, row: FillRow) -> None:
 
 
 def upsert_position(session: Session, row: PositionRow) -> None:
-    """Insert or update a position by ``(run_id, position_ref, opened_ns)``; an older update is ignored."""
+    """Insert or update a position by ``(run_id, position_ref, opened_ns)``; an older update is ignored.
+
+    ``funding_total`` is written only by the insert: ``record_funding`` owns it after that (spec 0011 AC-14).
+    """
     _check_env(row.env)
     _guarded_upsert(
         session,
@@ -586,6 +593,7 @@ def upsert_position(session: Session, row: PositionRow) -> None:
         column_values(row),
         key=("run_id", "position_ref", "opened_ns"),
         immutable=_POSITION_IMMUTABLE,
+        insert_only=("funding_total",),
     )
 
 
@@ -622,11 +630,26 @@ def record_account_snapshot(session: Session, row: AccountSnapshotRow) -> None:
     )
 
 
-def record_funding(session: Session, row: FundingRow) -> None:
-    """Record a funding payment, keyed by Kraken's log id or, when computed, by run, instrument, and time."""
+def record_funding(session: Session, row: FundingRow) -> bool:
+    """Record a funding payment, keyed by Kraken's log id or, when computed, by run, instrument, and time.
+
+    A new row with a ``position_id`` adds its amount to that position's ``funding_total`` in the
+    same transaction (spec 0011 AC-14). Returns True when the row is new. Raises
+    ``MissingParentError`` for an unknown position.
+    """
     _check_env(row.env)
+    if row.position_id is not None and session.get(models.Position, row.position_id) is None:
+        raise MissingParentError(f"position {row.position_id} not found")
     key, where = _FUNDING_KEYS[row.source]
-    _insert_or_compare(session, models.FundingPayment, column_values(row), key, where)
+    inserted = _insert_or_compare(session, models.FundingPayment, column_values(row), key, where)
+    if inserted and row.position_id is not None:
+        position = _table(models.Position)
+        session.execute(
+            update(position)
+            .where(position.c.id == row.position_id)
+            .values(funding_total=position.c.funding_total + row.amount, updated_at=func.now())
+        )
+    return inserted
 
 
 def record_run_result(session: Session, row: RunResultRow) -> None:

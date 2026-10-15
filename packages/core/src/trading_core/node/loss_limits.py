@@ -3,7 +3,8 @@
 At start it subscribes to position events (held in a buffer), blocks entries with
 ``loss_unknown``, and reads the seed from Postgres in a worker thread, retrying every 30 s until
 it lands. Then it folds the buffer (keys already in the seed are skipped) and from then on folds
-each ``PositionOpened`` and ``PositionClosed`` at once. It evaluates on every position event and on
+each ``PositionOpened`` and ``PositionClosed`` at once, and each booked funding payment
+(``FUNDING_BOOKED_TOPIC``, spec 0011 AC-16) as realized, once per key. It evaluates on every position event and on
 a 1 s timer that runs flat or not: the timer reads the latest quote for the unrealized part, rolls
 the day at UTC midnight, and clears blocks whose time is up. A trip asks the ``KillSwitch`` to
 halt; ``trade_cap`` writes one ``limit_hit`` event a day.
@@ -24,6 +25,7 @@ from nautilus_trader.model.events import PositionClosed, PositionOpened
 
 from trading_core.control.messages import format_utc
 from trading_core.node.control import KillSwitch, Record
+from trading_core.node.funding import FUNDING_BOOKED_TOPIC, FundingBooked
 from trading_core.recording.enums import Env, RiskEventKind, Severity
 from trading_core.recording.queries import LossSeed
 from trading_core.recording.rows import JsonObject, RiskEventRow
@@ -35,6 +37,7 @@ from trading_core.risk.limits import (
     PositionKey,
     evaluate,
     on_closed,
+    on_funding,
     on_opened,
     roll,
     tripped,
@@ -58,15 +61,17 @@ type ReadSeed = Callable[[datetime, datetime], LossSeed]
 def seeded_tally(seed: LossSeed, now: datetime, limits: LossLimits) -> LossTally:
     """The tally the seed gives: today already tripped when a daily halt was recorded today, or
     today's realized loss alone reaches the daily limit (a restart the same day blocks again, AC-9)."""
+    realized_today = seed.realized_today + seed.funding_today
     return LossTally(
         day=utc_day(now),
-        realized_today=seed.realized_today,
-        realized_total=seed.realized_total,
+        realized_today=realized_today,
+        realized_total=seed.realized_total + seed.funding_total,
         trades_today=len(seed.opened_today_keys),
         opened_keys=seed.opened_today_keys,
         closed_keys=seed.closed_keys,
+        funding_keys=seed.funding_keys,
         last_loss_closed_at=seed.last_loss_closed_at,
-        daily_tripped=seed.daily_halt_today or -seed.realized_today >= limits.daily_usd,
+        daily_tripped=seed.daily_halt_today or -realized_today >= limits.daily_usd,
     )
 
 
@@ -107,7 +112,7 @@ class LossLimitActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
         self._seed_retry_s = seed_retry_s
         self._lock = threading.Lock()
         self._tally: LossTally | None = None
-        self._buffer: list[PositionOpened | PositionClosed] = []
+        self._buffer: list[PositionOpened | PositionClosed | FundingBooked] = []
         self._verdict: LimitVerdict | None = None
         self._trade_cap_noted: str | None = None
         self._task: asyncio.Task[None] | None = None
@@ -159,6 +164,7 @@ class LossLimitActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
     def on_start(self) -> None:
         """Subscribe first (events are held), block until seeded, seed in a thread, start the 1 s timer."""
         self.msgbus.subscribe(topic="events.position.*", handler=self._on_position_event)
+        self.msgbus.subscribe(topic=FUNDING_BOOKED_TOPIC, handler=self._on_position_event)
         self._blocks.add(BlockReason.LOSS_UNKNOWN)
         self._task = asyncio.get_running_loop().create_task(self._seed_until_landed())
         self._task.add_done_callback(_seed_task_ended)
@@ -213,7 +219,7 @@ class LossLimitActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
     # Events ---------------------------------------------------------------------------------
 
     def _on_position_event(self, event: object) -> None:
-        if not isinstance(event, PositionOpened | PositionClosed):
+        if not isinstance(event, PositionOpened | PositionClosed | FundingBooked):
             return
         with self._lock:
             if self._tally is None:
@@ -223,7 +229,9 @@ class LossLimitActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
             self._tally = self._fold(roll(self._tally, self.clock.utc_now()), event)
         self._evaluate()
 
-    def _fold(self, tally: LossTally, event: PositionOpened | PositionClosed) -> LossTally:
+    def _fold(self, tally: LossTally, event: PositionOpened | PositionClosed | FundingBooked) -> LossTally:
+        if isinstance(event, FundingBooked):
+            return on_funding(tally, event.key, event.amount, _utc(event.paid_ns), self._limits)
         key: PositionKey = (event.position_id.value, event.ts_opened)
         if isinstance(event, PositionOpened):
             return on_opened(tally, key)

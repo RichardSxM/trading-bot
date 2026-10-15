@@ -66,6 +66,7 @@ from trading_core.node.control import (
     shutdown_counts,
     trader_state,
 )
+from trading_core.node.funding import FundingLedger
 from trading_core.node.heartbeat import HeartbeatActor, HeartbeatConfig
 from trading_core.node.key_actors import KeyAgeActor, KeyAgeConfig
 from trading_core.node.key_check import watch_key_check
@@ -78,7 +79,7 @@ from trading_core.node.sandbox import FeeSandboxExecClientFactory, sandbox_exec_
 from trading_core.node.strategy import KfsStrategy, PauseGate
 from trading_core.recording import repository
 from trading_core.recording.enums import Env, RunMode, RunStatus, StrategyKind
-from trading_core.recording.queries import LossSeed, loss_seed
+from trading_core.recording.queries import LossSeed, loss_seed, run_funding_total
 from trading_core.recording.rows import JsonObject
 from trading_core.recording.writer import RecordingWriter, deadletter_path, replay_spool, spool_path
 from trading_core.redis_check import redis_reachable
@@ -290,12 +291,14 @@ def control_parts(node: TradingNode, settings: LossLimitSettings, secrets: Mappi
 
 @dataclass(frozen=True)
 class PaperLoop:
-    """The demo paper loop's recording side (spec 0006): its run, the entry blocks, and the writer."""
+    """The demo paper loop's recording side (spec 0006): its run, the entry blocks, the writer, and
+    the run's booked funding (spec 0011 AC-17)."""
 
     run_id: UUID
     blocks: EntryBlocks
     writer: RecordingWriter
     sessions: Callable[[], Session]
+    ledger: FundingLedger
 
 
 def run_config(settings: PaperLoopSettings) -> JsonObject:
@@ -336,6 +339,7 @@ def start_paper_loop(settings: TraderSettings, secrets: Mapping[str, SecretStr],
             started_ns=time.time_ns(),
         )
         abandoned = repository.close_abandoned(session, env, trader_id, run_id, time.time_ns())
+        ledger = FundingLedger(run_funding_total(session, run_id))
     writer = RecordingWriter(
         sessions,
         blocks,
@@ -353,7 +357,7 @@ def start_paper_loop(settings: TraderSettings, secrets: Mapping[str, SecretStr],
         "paper run started",
         extra={"fields": {"code": "paper_run_started", "run_id": str(run_id), "spool_replayed": replayed}},
     )
-    return PaperLoop(run_id=run_id, blocks=blocks, writer=writer, sessions=sessions)
+    return PaperLoop(run_id=run_id, blocks=blocks, writer=writer, sessions=sessions, ledger=ledger)
 
 
 def finish_paper_loop(paper: PaperLoop, settings: PaperLoopSettings, positions_open: int) -> None:
@@ -392,9 +396,14 @@ def placeholder_config(settings: TraderSettings, run_id: UUID) -> PlaceholderCon
         hold_min=settings.placeholder_hold_min,
         lookback_min=settings.placeholder_lookback_min,
         stop_pct=settings.placeholder_stop_pct,
-        notional_usd=settings.placeholder_notional_usd,
         max_order_notional_usd=settings.risk_max_order_notional_usd,
         max_leverage=settings.risk_max_leverage,
+        max_total_exposure_usd=settings.risk_max_total_exposure_usd,
+        risk_per_trade=settings.risk_per_trade,
+        maintenance_margin_rate=settings.risk_maintenance_margin_rate,
+        min_liq_distance_pct=settings.risk_min_liq_distance_pct,
+        liq_stop_multiple=settings.risk_liq_stop_multiple,
+        stop_slippage_bps=settings.risk_stop_slippage_bps,
         stale_quote_s=settings.risk_stale_quote_s,
         stop_accept_timeout_s=settings.stop_accept_timeout_s,
         use_market_context=True,
@@ -525,10 +534,20 @@ def run_node(
         env = Env(settings.trading_env)
         node.trader.add_actor(
             RecordingActor(
-                env=env, run_id=paper.run_id, instrument_id=instrument_id, record=record, blocks=paper.blocks
+                env=env,
+                run_id=paper.run_id,
+                instrument_id=instrument_id,
+                record=record,
+                blocks=paper.blocks,
+                maintenance_margin_rate=settings.risk_maintenance_margin_rate,
+                min_liq_distance_pct=settings.risk_min_liq_distance_pct,
+                stale_quote_s=settings.risk_stale_quote_s,
+                ledger=paper.ledger,
             )
         )
-        strategy = PlaceholderTimed(placeholder_config(settings, paper.run_id), control.gate, paper.blocks, record)
+        strategy = PlaceholderTimed(
+            placeholder_config(settings, paper.run_id), control.gate, paper.blocks, record, paper.ledger
+        )
         node.trader.add_strategy(strategy)
         control.kill_switch.attach(
             [s for s in node.trader.strategies() if isinstance(s, KfsStrategy)], record, paper.run_id
@@ -661,17 +680,6 @@ def purge_demo_cache(client: PurgeClient, trader_id: str) -> int:
 
 def warn_on_settings(settings: PaperLoopSettings) -> None:
     """Log the start warnings for settings that are allowed but unusual (spec 0006)."""
-    if settings.placeholder_notional_usd > settings.risk_max_order_notional_usd:
-        log.warning(
-            "placeholder notional is above the order cap, every entry will be refused",
-            extra={
-                "fields": {
-                    "code": "placeholder_notional_over_cap",
-                    "notional": str(settings.placeholder_notional_usd),
-                    "cap": str(settings.risk_max_order_notional_usd),
-                }
-            },
-        )
     if settings.sandbox_reject_stop_orders:
         log.warning(
             "the sandbox rejects every stop order, for the AC-7 drill only",

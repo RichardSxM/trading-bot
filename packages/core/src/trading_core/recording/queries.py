@@ -209,6 +209,12 @@ class RoundTrip:
     fees: Decimal
     currency: str
     exit_reason: ExitReason | None
+    funding: Decimal
+
+    @property
+    def net_pnl(self) -> Decimal:
+        """``realized_pnl`` (net of fees, before funding) plus the booked funding (spec 0011 AC-14)."""
+        return self.realized_pnl + self.funding
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -308,6 +314,7 @@ def round_trips_page(session: Session, env: Env, page: int, size: int = PAGE_SIZ
             avg_exit_px=p.avg_exit_px,
             realized_pnl=p.realized_pnl,
             fees=p.fees_total,
+            funding=p.funding_total,
             currency=p.currency,
             exit_reason=_exit_reason(is_abandoned, order_type, intent, origin),
         )
@@ -358,12 +365,18 @@ class LossSeed:
     ``(position_ref, opened_ns)`` of positions closed since ``total_since`` (today's are among
     them), ``opened_today_keys`` those opened since UTC midnight, so live events already in the
     seed are skipped.
+
+    ``funding_today`` and ``funding_total`` sum the booked funding payments by ``paid_at``
+    (spec 0011 AC-16); ``funding_keys`` are their ``(instrument_id, paid_ns, position_id)``.
     """
 
     realized_today: Decimal
     realized_total: Decimal
     closed_keys: frozenset[tuple[str, int]]
     opened_today_keys: frozenset[tuple[str, int]]
+    funding_today: Decimal = Decimal(0)
+    funding_total: Decimal = Decimal(0)
+    funding_keys: frozenset[tuple[str, int, UUID]] = frozenset()
     last_loss_closed_at: datetime | None
     daily_halt_today: bool
 
@@ -425,11 +438,39 @@ def loss_seed(session: Session, env: Env, mode: RunMode, day_start: datetime, to
         )
         .limit(1)
     ).first()
+    payment = models.FundingPayment
+    payments = session.execute(
+        select(payment.instrument_id, payment.paid_ns, payment.position_id, payment.paid_at, payment.amount)
+        .join(run, run.id == payment.run_id)
+        .where(run.mode == mode, run.env == env, payment.env == env, payment.paid_at >= window)
+    ).all()
+    funding_today = funding_total = Decimal(0)
+    funding_keys: set[tuple[str, int, UUID]] = set()
+    for instrument_id, paid_ns, position_id, paid_at, amount in payments:
+        if paid_at >= total_since:
+            funding_total += amount
+            if position_id is not None:
+                funding_keys.add((instrument_id, paid_ns, position_id))
+        if paid_at >= day_start:
+            funding_today += amount
+            if position_id is not None:
+                funding_keys.add((instrument_id, paid_ns, position_id))
     return LossSeed(
         realized_today=realized_today,
         realized_total=realized_total,
         closed_keys=frozenset(closed),
         opened_today_keys=frozenset(opened),
+        funding_today=funding_today,
+        funding_total=funding_total,
+        funding_keys=frozenset(funding_keys),
         last_loss_closed_at=last_loss,
         daily_halt_today=daily_halt is not None,
     )
+
+
+def run_funding_total(session: Session, run_id: UUID) -> Decimal:
+    """``SUM(funding_payments.amount)`` of one run, 0 when it booked none (spec 0011 AC-17)."""
+    total = session.execute(
+        select(func.coalesce(func.sum(models.FundingPayment.amount), 0)).where(models.FundingPayment.run_id == run_id)
+    ).scalar_one()
+    return Decimal(total)
