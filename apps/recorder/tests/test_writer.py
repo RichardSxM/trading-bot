@@ -233,6 +233,85 @@ def test_a_slow_flush_warns_once_a_minute(tmp_path, caplog, monkeypatch):
     assert caplog.records[0].fields["messages"] == 1
 
 
+def test_an_error_at_close_logs_and_trips_without_stopping_the_gone_node(tmp_path, caplog):
+    # covers: AC-5 (an error during close logs recorder_write_failed and leads to exit 75)
+    stops = _Stops()
+    w = buffered(tmp_path, _clock(), cache_with(BTC), stop=stops)
+    w.write(_deltas(H0))
+    stream = w._streams[("order_book_deltas", "BTCUSDT-PERP.BINANCE")]
+    real = stream.writer
+
+    class FailsAtClose:
+        def write_table(self, table):
+            real.write_table(table)
+
+        def close(self):
+            real.close()
+            raise OSError("close failed")
+
+    stream.writer = FailsAtClose()
+    with caplog.at_level(logging.INFO):
+        w.close()
+
+    assert w.tripped
+    assert stops.calls == 0  # at close the node is already gone; main.py exits 75 on tripped
+    assert _codes(caplog) == [("CRITICAL", "recorder_write_failed")]
+    assert "close failed" in caplog.records[0].fields["error"]
+    (path,) = stream_files(tmp_path)[DELTAS]
+    assert read_feather(path).column("ts_init").to_pylist() == [H0]  # the held row was flushed first
+
+
+def _flush_actor(writer, clock, *, depth=0):
+    from nautilus_trader.test_kit.stubs.component import TestComponentStubs
+
+    from recorder.actor import WriterFlushActor, WriterFlushConfig
+
+    actor = WriterFlushActor(WriterFlushConfig(flush_ms=1_000), writer=writer, probe=lambda: depth)
+    actor.register_base(
+        portfolio=TestComponentStubs.portfolio(),
+        msgbus=TestComponentStubs.msgbus(),
+        cache=TestComponentStubs.cache(),
+        clock=clock,
+    )
+    return actor
+
+
+def test_the_flush_actor_ticks_on_the_node_clock_and_flushes_what_is_held_at_stop(tmp_path):
+    # covers: AC-2 (the flush tick every RECORDER_FLUSH_MS), AC-5 (on_stop flushes every stream)
+    clock = _clock()
+    w = buffered(tmp_path, clock, cache_with(BTC))
+    actor = _flush_actor(w, clock, depth=9)
+    actor.start()
+    w.write(_deltas(H0 + SECOND_NS))
+    (path,) = stream_files(tmp_path)[DELTAS]
+    assert path.stat().st_size == 0
+
+    for handler in clock.advance_time(H0 + 2 * SECOND_NS):
+        handler.handle()
+    assert read_feather(path).column("ts_init").to_pylist() == [H0 + SECOND_NS]
+
+    w.write(_deltas(H0 + 2 * SECOND_NS + 1))
+    actor.stop()
+    assert clock.timer_names == []
+    assert read_feather(path).column("ts_init").to_pylist() == [H0 + SECOND_NS, H0 + 2 * SECOND_NS + 1]
+    assert w.take_stats(H0 + 3 * SECOND_NS)["max_queue_depth"] == 9
+
+
+def test_the_flush_actor_passes_the_ticks_lag_behind_its_schedule(tmp_path):
+    # covers: AC-6 (max_tick_lag_ms is the tick's actual time minus its scheduled time)
+    from nautilus_trader.common.events import TimeEvent
+    from nautilus_trader.core.uuid import UUID4
+
+    clock = _clock()
+    w = buffered(tmp_path, clock, cache_with(BTC))
+    actor = _flush_actor(w, clock)
+    due = H0 + 2 * SECOND_NS
+    actor._flush(TimeEvent("writer_flush", UUID4(), due, due + 40 * MS))
+    actor._flush(TimeEvent("writer_flush", UUID4(), due, due - 5 * MS))  # never negative
+
+    assert w.take_stats(H0 + 3 * SECOND_NS)["max_tick_lag_ms"] == 40
+
+
 class _WriterNode:
     """Stands in for ``TradingNode`` in ``main``: ``run`` writes one held message, then trips the writer
     or not, and ``dispose`` may raise."""

@@ -188,7 +188,7 @@ spec [0012](../specs/0012-recorder-buffered-writer/index.md) · code in [apps/re
   - [x] Failure and stats: fail closed, the drop paths, shutdown, the 60 s stats with queue depth and tick lag, the benchmark (AC-4, AC-5, AC-6, AC-7)
   - [ ] VPS: deploy, the VPS benchmark, the 24 h check (AC-7, AC-8)
 - [ ] Verify it: `/check verify recorder buffered writer`
-- [ ] Test it: `/test recorder buffered writer`
+- [x] Test it: `/test recorder buffered writer`
 - [ ] Review it (fresh model): `/check review recorder buffered writer`
 - [ ] Document it: `/document recorder buffered writer`
 
