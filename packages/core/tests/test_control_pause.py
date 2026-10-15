@@ -51,9 +51,12 @@ def test_decode_refuses_anything_encode_would_not_write(raw):
         decode(raw)
 
 
-def test_a_paused_trader_reduces_and_a_running_one_is_active():
-    assert target_trading_state(paused=True) == "REDUCING"
-    assert target_trading_state(paused=False) == "ACTIVE"
+def test_a_paused_or_halted_trader_reduces_and_a_running_one_is_active():
+    """covers: spec 0010 (a halt maps to REDUCING, never HALTED)"""
+    assert target_trading_state(paused=True, halted=False) == "REDUCING"
+    assert target_trading_state(paused=False, halted=True) == "REDUCING"
+    assert target_trading_state(paused=True, halted=True) == "REDUCING"
+    assert target_trading_state(paused=False, halted=False) == "ACTIVE"
 
 
 def test_paused_at_from_other_zones_encodes_as_utc():

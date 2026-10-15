@@ -6,7 +6,8 @@ spec 0006 AC-18 (why entries are blocked).
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from typing import Final, Literal
 
 from trading_core.control.messages import (
@@ -106,6 +107,29 @@ _OUTCOMES: Final[dict[ControlOutcome, tuple[str, CommandLevel, bool, CommandStat
     ControlOutcome.FAILED: ("failed", "bad", True, "failed"),
     ControlOutcome.EXPIRED: ("expired", "bad", True, "expired"),
 }
+
+
+# A ``failed`` result's reason in plain words (spec 0010 AC-18); an unknown reason shows its code.
+FAILURE_WORDS: Final = {
+    "not_flat": "not flat yet",
+    "total_loss_limit": "total loss limit",
+    "loss_unknown": "loss not known yet",
+    "halted_during_resume": "a loss limit halted it again",
+    "flatten_timeout": "flatten timeout",
+    "halt_key_write_failed": "halt not saved, a restart would run",
+    "halt_key_delete_failed": "halt not cleared",
+    "pause_key_write_failed": "pause not saved",
+    "pause_key_delete_failed": "pause not cleared",
+    "not_implemented": "not implemented",
+    "error": "error in the trader",
+}
+
+
+def failure_words(reason: str | None) -> str | None:
+    """The plain words for a ``failed`` reason, the code itself when unknown, None without one."""
+    if not reason:
+        return None
+    return FAILURE_WORDS.get(reason, reason)
 
 
 def ago(seconds: float) -> str:
@@ -293,6 +317,9 @@ def _outcome(msg: ControlMessage, outcome: ControlResult | None, now: datetime) 
         # Not final: a late result from the trader still replaces it.
         return _State("not handled, expired", "bad", False, "unhandled", msg.expires_at, msg.expires_at)
     label, level, final, status = _OUTCOMES[outcome.outcome]
+    words = failure_words(outcome.reason) if outcome.outcome is ControlOutcome.FAILED else None
+    if words is not None:
+        label = f"{label} · {words}"
     return _State(label, level, final, status, outcome.outcome_at, outcome.outcome_at if final else None)
 
 
@@ -306,17 +333,51 @@ class PauseView:
 
 RUNNING: Final = PauseView("", "ok")
 PAUSE_NO_DATA: Final = PauseView("no data", "lost")
-_PAUSED_BY: Final = {"dashboard": "paused · by you", "deploy": "paused · by deploy"}
+_PAUSED_BY: Final = {"dashboard": "paused · by you", "deploy": "paused · by deploy", "cli": "paused · by command line"}
 
 
-def pause_view(raw: str | bytes | None) -> PauseView:
-    """The pause cue for the raw ``{env}:snapshot:trader_state`` value (None when the key is missing)."""
+# A halt's reason in plain words (spec 0010 AC-17).
+HALT_WORDS: Final = {
+    "manual_stop": "manual stop",
+    "daily_loss_limit": "daily loss limit",
+    "total_loss_limit": "total loss limit",
+    "unknown": "unknown reason",
+}
+
+
+def short_age(seconds: float) -> str:
+    """``ago`` without the ``ago``: ``12s``, ``3m``, ``2h``."""
+    return ago(seconds).removesuffix(" ago")
+
+
+def halt_text(data: Mapping[str, object], now: datetime) -> str:
+    """``HALTED · <reason words> · <age>`` from trader_state's halt fields; the age is left out when unreadable."""
+    reason = data.get("halt_reason")
+    parts = ["HALTED", HALT_WORDS.get(reason, reason) if isinstance(reason, str) else "unknown reason"]
+    halted_at = data.get("halted_at")
+    if isinstance(halted_at, str):
+        try:
+            since = datetime.fromisoformat(halted_at)
+        except ValueError:
+            since = None
+        if since is not None and since.tzinfo is not None:
+            parts.append(short_age((now - since).total_seconds()))
+    return " · ".join(parts)
+
+
+def pause_view(raw: str | bytes | None, now: datetime | None = None) -> PauseView:
+    """The pause cue for the raw ``{env}:snapshot:trader_state`` value (None when the key is missing).
+
+    A halt wins over a pause (spec 0010 AC-17): ``HALTED · daily loss limit · 12m``, aged from ``now``.
+    """
     if raw is None:
         return PAUSE_NO_DATA
     try:
         snapshot = decode(raw)
     except SnapshotFormatError:
         return PauseView("bad snapshot", "bad")
+    if snapshot.data.get("halted") is True:
+        return PauseView(halt_text(snapshot.data, now or datetime.now(UTC)), "bad")
     if snapshot.data.get("paused") is not True:
         return RUNNING
     source = snapshot.data.get("pause_source")
@@ -364,3 +425,67 @@ def blocked_view(raw: str | bytes | None) -> BlockedView:
     if not isinstance(codes, list):
         return NOT_BLOCKED
     return BlockedView(tuple(BlockedReason(code, _words(code)) for code in codes if isinstance(code, str)))
+
+
+@dataclass(frozen=True)
+class LossesView:
+    """The loss limits on System (spec 0010 AC-17): each figure against its limit; None shows as ``unknown``.
+
+    ``known`` is False when trader_state is missing or unreadable (the whole box says ``no data``).
+    ``cooldown_left`` is the time left (``8m``), None while no cooldown runs.
+    """
+
+    known: bool
+    loss_today: Decimal | None = None
+    daily_limit: Decimal | None = None
+    loss_total: Decimal | None = None
+    total_limit: Decimal | None = None
+    trades_today: int | None = None
+    max_trades: int | None = None
+    cooldown_left: str | None = None
+
+
+LOSSES_NO_DATA: Final = LossesView(known=False)
+
+
+def _decimal(value: object) -> Decimal | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        decimal = Decimal(value)
+    except InvalidOperation:
+        return None
+    return decimal if decimal.is_finite() else None
+
+
+def _count(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def losses_view(raw: str | bytes | None, now: datetime) -> LossesView:
+    """The loss figures in the raw ``{env}:snapshot:trader_state`` value; a field it lacks reads ``unknown``."""
+    if raw is None:
+        return LOSSES_NO_DATA
+    try:
+        data = decode(raw).data
+    except SnapshotFormatError:
+        return LOSSES_NO_DATA
+    cooldown_left = None
+    until = data.get("cooldown_until")
+    if isinstance(until, str):
+        try:
+            end = datetime.fromisoformat(until)
+        except ValueError:
+            end = None
+        if end is not None and end.tzinfo is not None and end > now:
+            cooldown_left = short_age((end - now).total_seconds())
+    return LossesView(
+        known=True,
+        loss_today=_decimal(data.get("loss_today_usd")),
+        daily_limit=_decimal(data.get("daily_loss_limit_usd")),
+        loss_total=_decimal(data.get("loss_total_usd")),
+        total_limit=_decimal(data.get("total_loss_limit_usd")),
+        trades_today=_count(data.get("trades_today")),
+        max_trades=_count(data.get("max_trades_per_day")),
+        cooldown_left=cooldown_left,
+    )

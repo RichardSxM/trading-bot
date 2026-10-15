@@ -1,15 +1,32 @@
-{#- Pause and Resume (spec 0005 AC-13): the stop's path, one form per command. Pause blocks new
-    entries; exits and protective stops still go through. Resume clears any pause, whoever set it. -#}
+{#- Pause, Resume, and Flatten (spec 0005 AC-13, spec 0010 AC-18): the stop's path, one form per
+    command. Pause blocks new entries; exits and protective stops still go through. Resume lifts a
+    halt and any pause, whoever set it. Flatten closes every position without halting. Resume and
+    Flatten take a confirm step rendered by the server (``confirm``), so it works without JavaScript. -#}
 {% from "components/button.html" import button %}
 <div id="pause-area" class="pause-area">
   {% if error %}<span class="pause-area__error" role="alert">{{ error }}</span>{% endif %}
+  {% if confirm == "resume" or confirm == "flatten" %}
+  {% set label = "Resume" if confirm == "resume" else "Flatten" %}
+  <p class="pause-area__confirm" role="alert">{% if confirm == "resume" %}Resume trading? This lifts the halt and any pause. Entry blocks such as the daily loss limit stay.{% else %}Close every open position now? Trading is not halted, so the strategy may enter again later.{% endif %}</p>
+  <form method="post" action="/control/{{ confirm }}" hx-post="/control/{{ confirm }}" hx-target="#pause-area" hx-swap="outerHTML" data-not-sent="{{ label }} NOT sent: no connection to the dashboard">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="hidden" name="confirm" value="1">
+    {{ button("Confirm " ~ label | lower, kind="danger" if confirm == "flatten" else "primary", type="submit") }}
+  </form>
+  <a class="button button--quiet" href="/system"><span class="button__label">Cancel</span></a>
+  {% else %}
   <form method="post" action="/control/pause" hx-post="/control/pause" hx-target="#pause-area" hx-swap="outerHTML" data-not-sent="Pause NOT sent: no connection to the dashboard">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     {{ button("Pause", type="submit") }}
   </form>
-  <form method="post" action="/control/unpause" hx-post="/control/unpause" hx-target="#pause-area" hx-swap="outerHTML" data-not-sent="Resume NOT sent: no connection to the dashboard">
+  <form method="post" action="/control/resume" hx-post="/control/resume" hx-target="#pause-area" hx-swap="outerHTML" data-not-sent="Resume NOT sent: no connection to the dashboard">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     {{ button("Resume", type="submit") }}
   </form>
-  <p class="pause-area__note">Pause stops new entries; open positions keep their exits and stops. Resume lifts any pause, also one a deploy set. The top bar shows who paused.</p>
+  <form method="post" action="/control/flatten" hx-post="/control/flatten" hx-target="#pause-area" hx-swap="outerHTML" data-not-sent="Flatten NOT sent: no connection to the dashboard">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    {{ button("Flatten", kind="danger", type="submit") }}
+  </form>
+  <p class="pause-area__note">Pause stops new entries; open positions keep their exits and stops. Resume lifts a halt and any pause, also one a deploy set. Flatten closes every position without halting. Resume and Flatten ask you to confirm first.</p>
+  {% endif %}
 </div>

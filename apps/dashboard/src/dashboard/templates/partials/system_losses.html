@@ -1,0 +1,14 @@
+{#- The loss limits (spec 0010 AC-17): today's and the total loss against their limits, trades today
+    against the cap, and the cooldown left. A loss is positive; a profit shows as a negative loss.
+    A figure the trader does not know yet (its seed has not landed) reads unknown. -#}
+{%- macro figure(value) -%}{% if value is none %}<span class="losses__unknown">unknown</span>{% else %}{{ value | num }}{% endif %}{%- endmacro -%}
+{%- if not view.known -%}
+<p class="losses__lost">no data</p>
+{%- else -%}
+<dl class="losses">
+  <div class="losses__row"><dt>Loss today</dt><dd>{{ figure(view.loss_today) }} of {{ figure(view.daily_limit) }} USD</dd></div>
+  <div class="losses__row"><dt>Total loss</dt><dd>{{ figure(view.loss_total) }} of {{ figure(view.total_limit) }} USD</dd></div>
+  <div class="losses__row"><dt>Trades today</dt><dd>{{ view.trades_today if view.trades_today is not none else figure(none) }} of {{ view.max_trades if view.max_trades is not none else figure(none) }}</dd></div>
+  <div class="losses__row"><dt>Cooldown</dt><dd>{% if view.cooldown_left %}{{ view.cooldown_left }} left{% else %}none{% endif %}</dd></div>
+</dl>
+{%- endif -%}

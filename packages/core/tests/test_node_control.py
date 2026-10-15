@@ -1,5 +1,6 @@
-"""covers: spec 0005 AC-6 (pause in two layers, the key at start, not_implemented), AC-7 (trader_state),
-AC-9 (entry orders cancelled on stop, stops and positions kept).
+"""covers: spec 0005 AC-6 (pause in two layers, the key at start), AC-7 (trader_state),
+AC-9 (entry orders cancelled on stop, stops and positions kept); spec 0010 AC-5 (halt key at start),
+AC-15 (the gate refuses entries while halted), the single trading state owner.
 
 Needs the ``node`` extra (NautilusTrader), so it runs in the trader image. The strategy tests use a
 BacktestEngine: its Trader starts actors and strategies in the same order as the live node.
@@ -17,16 +18,20 @@ pytest.importorskip("nautilus_trader")
 from nautilus_trader.backtest.engine import BacktestEngine, BacktestEngineConfig
 from nautilus_trader.config import LoggingConfig
 from nautilus_trader.model.currencies import USD
+from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.enums import AccountType, OmsType, OrderSide, OrderStatus, OrderType, TradingState
 from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.objects import Money, Price, Quantity
 from nautilus_trader.test_kit.providers import TestInstrumentProvider
 from redis.exceptions import ConnectionError as RedisConnectionError
 
+from trading_core.control import halt
+from trading_core.control.halt import HaltReason, HaltSource, HaltState
 from trading_core.control.messages import pause_command, stop_command, unpause_command
 from trading_core.control.pause import PauseState, decode, encode
 from trading_core.node.control import (
     ControlActor,
+    KillSwitch,
     PaperStatus,
     PauseController,
     load_pause,
@@ -38,6 +43,7 @@ from trading_core.recording.enums import ControlCmd, ControlOutcome, ControlSour
 
 NOW = datetime(2026, 10, 3, 9, 30, tzinfo=UTC)
 KEY = "demo:trader:pause"
+HALT_KEY = "demo:trader:halt"
 INSTRUMENT = TestInstrumentProvider.btcusdt_binance()
 
 
@@ -105,7 +111,8 @@ def test_unpause_deletes_the_key_and_sets_active():
 
 
 @pytest.mark.parametrize("cmd", [ControlCmd.STOP, ControlCmd.RESUME, ControlCmd.FLATTEN])
-def test_stop_resume_and_flatten_fail_not_implemented_with_one_warning(cmd, caplog):
+def test_the_pause_controller_answers_not_implemented_for_kill_switch_commands(cmd, caplog):
+    # ``control_execute`` routes these to the kill switch; the pause controller never runs them.
     controller, gate, risk, _ = _controller()
     msg = stop_command(NOW, 60)
     msg = type(msg)(msg.id, cmd, msg.issued_at, msg.expires_at)
@@ -130,6 +137,23 @@ def test_a_pause_whose_key_cannot_be_written_fails_but_stays_paused(caplog):
     assert gate.paused
     assert risk.trading_state == TradingState.REDUCING
     assert "pause_key_write_failed" in _codes(caplog)
+
+
+def test_an_unpause_on_a_halted_trader_keeps_reducing():
+    """covers: spec 0010 AC-20 (a deploy's pause and unpause leave a halt and its key alone)"""
+    controller, gate, risk, redis = _controller()
+    state = HaltState(HaltReason.MANUAL_STOP, HaltSource.DASHBOARD, NOW, uuid.uuid4())
+    gate.halt(state)
+    redis.values[HALT_KEY] = halt.encode(state)
+    asyncio.run(controller.execute(pause_command(NOW, 60, ControlSource.DEPLOY)))
+
+    outcome = asyncio.run(controller.execute(unpause_command(NOW, 60, ControlSource.DEPLOY)))
+
+    assert outcome.outcome is ControlOutcome.EXECUTED
+    assert not gate.paused
+    assert gate.halted
+    assert risk.trading_state == TradingState.REDUCING
+    assert redis.values == {HALT_KEY: halt.encode(state)}
 
 
 def test_an_unpause_whose_key_cannot_be_deleted_fails_and_stays_paused():
@@ -203,7 +227,7 @@ class Probe(KfsStrategy):
         self.submit_order(self.stop_order)
 
 
-def _engine(gate, pause_key_value, reduce_first=False):
+def _engine(gate, pause_key_value, reduce_first=False, halt_key_value=None, read_halt_key=None, seconds=0):
     engine = BacktestEngine(BacktestEngineConfig(logging=LoggingConfig(bypass_logging=True)))
     engine.add_venue(
         Venue("BINANCE"),
@@ -213,12 +237,34 @@ def _engine(gate, pause_key_value, reduce_first=False):
         base_currency=USD,
     )
     engine.add_instrument(INSTRUMENT)
-    controller = PauseController(gate, engine.kernel.risk_engine, FakeRedis(), "demo", lambda: NOW)
+    if seconds:  # one quote a second, so the clock moves past timers set at start
+        start_ns = int(NOW.timestamp() * 1_000_000_000)
+        engine.add_data(
+            [
+                QuoteTick(
+                    instrument_id=INSTRUMENT.id,
+                    bid_price=Price.from_str("50000.00"),
+                    ask_price=Price.from_str("50001.00"),
+                    bid_size=Quantity.from_str("1.000000"),
+                    ask_size=Quantity.from_str("1.000000"),
+                    ts_event=start_ns + s * 1_000_000_000,
+                    ts_init=start_ns + s * 1_000_000_000,
+                )
+                for s in range(seconds)
+            ]
+        )
+    redis = FakeRedis()
+    controller = PauseController(gate, engine.kernel.risk_engine, redis, "demo", lambda: NOW)
+    kill_switch = KillSwitch(gate, engine.kernel.risk_engine, redis, "demo", lambda: NOW, engine.cache, 20)
 
     async def consume():
         await asyncio.sleep(3600)
 
-    engine.add_actor(ControlActor(controller, lambda: pause_key_value, consume))
+    engine.add_actor(
+        ControlActor(
+            controller, kill_switch, lambda: pause_key_value, read_halt_key or (lambda: halt_key_value), consume
+        )
+    )
     strategy = Probe(
         KfsStrategyConfig(instrument_id=INSTRUMENT.id.value), gate, engine.kernel.risk_engine if reduce_first else None
     )
@@ -229,6 +275,7 @@ def _engine(gate, pause_key_value, reduce_first=False):
 def _run(engine):
     async def run():
         engine.run()
+        await asyncio.sleep(0.01)  # callbacks the actor handed to the event loop
 
     asyncio.run(run())
 
@@ -247,6 +294,68 @@ def test_a_paused_flat_trader_refuses_an_entry_and_accepts_a_reduce_only_stop(ca
     assert engine.cache.order(strategy.entry.client_order_id) is None
     assert engine.cache.order(strategy.stop_order.client_order_id) is not None
     assert "entry_denied_paused" in _codes(caplog)
+
+
+def test_a_halted_trader_starts_halted_refuses_an_entry_and_accepts_a_reduce_only_stop(caplog):
+    gate = PauseGate()
+    state = HaltState(HaltReason.DAILY_LOSS_LIMIT, HaltSource.TRADER, NOW, uuid.uuid4())
+    engine, strategy = _engine(gate, None, halt_key_value=halt.encode(state))
+
+    with caplog.at_level(logging.WARNING):
+        _run(engine)
+
+    assert gate.halt_state == state
+    assert engine.kernel.risk_engine.trading_state == TradingState.REDUCING
+    assert engine.cache.order(strategy.entry.client_order_id) is None
+    assert engine.cache.order(strategy.stop_order.client_order_id) is not None
+    assert "entry_denied_halted" in _codes(caplog)
+
+
+def test_a_malformed_halt_key_starts_halted_unknown(caplog):
+    gate = PauseGate()
+    engine, _ = _engine(gate, None, halt_key_value=b"notjson")
+
+    with caplog.at_level(logging.WARNING):
+        _run(engine)
+
+    assert gate.halt_state is not None
+    assert gate.halt_state.reason is HaltReason.UNKNOWN
+    assert engine.kernel.risk_engine.trading_state == TradingState.REDUCING
+    assert _codes(caplog).count("halt_key_invalid") == 1
+
+
+def test_a_halt_key_redis_cannot_read_starts_halted_unknown(caplog):
+    """covers: spec 0010 AC-5 (unreadable at start: fail closed)"""
+
+    def read_halt_key():
+        raise RedisConnectionError("redis down")
+
+    gate = PauseGate()
+    engine, strategy = _engine(gate, None, read_halt_key=read_halt_key)
+
+    with caplog.at_level(logging.WARNING):
+        _run(engine)
+
+    assert gate.halt_state is not None
+    assert gate.halt_state.reason is HaltReason.UNKNOWN
+    assert engine.kernel.risk_engine.trading_state == TradingState.REDUCING
+    assert engine.cache.order(strategy.entry.client_order_id) is None
+    assert [r.levelname for r in caplog.records if getattr(r, "fields", {}).get("code") == "halt_key_invalid"] == [
+        "CRITICAL"
+    ]
+
+
+@pytest.mark.parametrize(("halted", "flattens"), [(True, 1), (False, 0)])
+def test_a_trader_that_starts_halted_flattens_again_5_s_after_start(caplog, halted, flattens):
+    """covers: spec 0010 AC-7 (the restart flatten, armed only when halted)"""
+    state = HaltState(HaltReason.MANUAL_STOP, HaltSource.DASHBOARD, NOW, uuid.uuid4())
+    paused = encode(PauseState(ControlSource.DEPLOY, NOW, uuid.uuid4()))  # no entry reaches the venue either way
+    engine, _ = _engine(PauseGate(), paused, halt_key_value=halt.encode(state) if halted else None, seconds=10)
+
+    with caplog.at_level(logging.INFO, logger="trading_core.node.control"):
+        _run(engine)
+
+    assert _codes(caplog).count("restart_flatten") == flattens
 
 
 def test_reducing_alone_lets_a_flat_entry_through_which_is_why_the_gate_exists():
@@ -326,7 +435,81 @@ def test_trader_state_reports_the_pause_and_the_counts():
         "recording_backlog": 0,
         "exiting": False,
         "position_opened_ns": None,
+        "halted": False,
+        "halt_reason": None,
+        "halted_at": None,
+        "flattening": False,
+        "loss_today_usd": None,
+        "loss_total_usd": None,
+        "daily_loss_limit_usd": None,
+        "total_loss_limit_usd": None,
+        "trades_today": None,
+        "max_trades_per_day": None,
+        "cooldown_until": None,
     }
+
+
+def test_trader_state_reports_the_halt_and_the_loss_fields():
+    """covers: spec 0010 AC-16"""
+    gate = PauseGate()
+    gate.unpause()
+    gate.halt(HaltState(HaltReason.DAILY_LOSS_LIMIT, HaltSource.TRADER, NOW, uuid.uuid4()))
+    risk = FakeRiskEngine()
+    risk.trading_state = TradingState.REDUCING
+    fields = {"loss_today_usd": "21.50", "trades_today": 3}
+
+    state = trader_state(gate, risk, FakeCache(), "x", losses=lambda: fields)
+
+    assert state is not None
+    assert (state["trading_state"], state["halted"], state["halt_reason"], state["halted_at"]) == (
+        "REDUCING",
+        True,
+        "daily_loss_limit",
+        "2026-10-03T09:30:00.000000Z",
+    )
+    assert state["entries_blocked"] == ["halted"]
+    assert (state["loss_today_usd"], state["trades_today"]) == ("21.50", 3)
+
+
+class _Cache(FakeCache):
+    def positions_open(self, strategy_id=None):
+        return self._positions
+
+
+class _StuckStrategy:
+    id = "S-1"
+
+    def flatten(self, halt_id):
+        pass
+
+
+def _kill_switch(gate, risk, cache):
+    return KillSwitch(gate, risk, FakeRedis(), "demo", lambda: NOW, cache, 20, poll_s=0.001)
+
+
+def test_trader_state_reads_flattening_while_a_stop_waits_for_flat():
+    """covers: spec 0010 AC-16 (flattening)"""
+    gate = PauseGate()
+    gate.unpause()
+    risk = FakeRiskEngine()
+    cache = _Cache(positions=1)
+    kill_switch = _kill_switch(gate, risk, cache)
+    kill_switch.attach([_StuckStrategy()], None, None)
+
+    async def run():
+        stop = asyncio.create_task(kill_switch.stop(stop_command(NOW, 60)))
+        await asyncio.sleep(0.01)
+        during = trader_state(gate, risk, cache, "x", kill_switch=kill_switch)
+        cache._positions = []
+        await stop
+        return during, trader_state(gate, risk, cache, "x", kill_switch=kill_switch)
+
+    during, after = asyncio.run(run())
+
+    assert during is not None
+    assert after is not None
+    assert (during["flattening"], during["halted"], during["trading_state"]) == (True, True, "REDUCING")
+    assert after["flattening"] is False
 
 
 def test_trader_state_carries_the_paper_status_when_the_paper_loop_runs():

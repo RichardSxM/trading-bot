@@ -2,9 +2,13 @@
 
 Every ``interval_s`` seconds on the UTC clock, while flat, it draws a side from the seed and the
 boundary (``trading_core.strategy.random_taker``), sizes ``notional_usd`` at the mid, runs the
-pure risk check, records the decision, and submits a market entry. It closes with a reduce only
-market order ``hold_s`` seconds after the entry's first fill. It places no stop. Like every
-trader strategy it honours the pause gate and records through ``record``.
+pure risk check on that fixed quantity (spec 0011 AC-3), records the decision, and submits a
+market entry. It closes with a reduce only market order ``hold_s`` seconds after the entry's
+first fill. It places no stop. Like every trader strategy it honours the pause and halt gate and
+records through ``record``.
+
+``flatten`` (the kill switch, spec 0010) is the simple version: it cancels the entry and closes
+any position at market with the kill switch tags, retried like any exit.
 
 Round trip: ``flat`` → ``entering`` (entry submitted) → ``holding`` (filled) → ``exiting`` → ``flat``.
 """
@@ -35,13 +39,15 @@ from nautilus_trader.model.objects import Currency, Quantity
 from nautilus_trader.model.orders.base import Order
 from nautilus_trader.model.position import Position
 
+from trading_core.node import guard
+from trading_core.node.guard import GuardedConfig
 from trading_core.node.placeholder import Record
-from trading_core.node.strategy import KfsStrategy, KfsStrategyConfig, PauseGate
-from trading_core.recording.enums import Env, Intent, OrderSide, RiskEventKind, RiskVerdict, Severity
-from trading_core.recording.mappers import DECISION_TAG
+from trading_core.node.strategy import KfsStrategy, PauseGate
+from trading_core.recording.enums import Env, Intent, OrderOrigin, OrderSide, RiskEventKind, RiskVerdict, Severity
+from trading_core.recording.mappers import DECISION_TAG, HALT_TAG, ORIGIN_TAG
 from trading_core.recording.rows import DecisionRow, JsonObject, RiskEventRow
 from trading_core.recording.spool import WriteCall, WriteItem
-from trading_core.risk.check import EntryRequest, InvalidRiskInput, RiskLimits, check_entry, refusal_severity
+from trading_core.risk.check import EntryRequest, InvalidRiskInput, check_entry, refusal_severity
 from trading_core.risk.sizing import entry_quantity
 from trading_core.strategy.blocks import EntryBlocks
 from trading_core.strategy.random_taker import NS_PER_S, draw_side, next_boundary_ns
@@ -66,14 +72,12 @@ class Phase(StrEnum):
     EXITING = "exiting"
 
 
-class RandomTakerConfig(KfsStrategyConfig, frozen=True):
+class RandomTakerConfig(GuardedConfig, frozen=True):
     """The random taker's ``[strategy.config]`` settings, the run's seed and risk caps, and the run it records under."""
 
     env: str
     run_id: str
     seed: int
-    max_order_notional_usd: Decimal
-    max_leverage: Decimal
     interval_s: int = 60
     hold_s: int = 30
     notional_usd: Decimal = Decimal(1000)
@@ -93,7 +97,7 @@ class RandomTaker(KfsStrategy):
         self._env = Env(config.env)
         self._run_id = UUID(config.run_id)
         self._instrument_id = InstrumentId.from_str(config.instrument_id)
-        self._limits = RiskLimits(max_order_notional=config.max_order_notional_usd, max_leverage=config.max_leverage)
+        self._limits = config.risk_limits()
         self._boundary_ns = 0
         self._reset()
 
@@ -103,6 +107,7 @@ class RandomTaker(KfsStrategy):
         self._entry_id: ClientOrderId | None = None
         self._exit_decision: UUID | None = None
         self._exit_id: ClientOrderId | None = None
+        self._kill_switch_tags: list[str] | None = None
 
     # Lifecycle ------------------------------------------------------------------------------
 
@@ -115,6 +120,20 @@ class RandomTaker(KfsStrategy):
     def on_stop(self) -> None:
         """Cancel entries and pause (the base class); a position stays."""
         super().on_stop()
+
+    def flatten(self, halt_id: UUID) -> None:
+        """Cancel the entry and close any position at market, tagged for the kill switch (spec 0010).
+
+        While flat nothing is tagged, since no round trip end would clear the tags.
+        """
+        position = self._position()
+        if position is not None or self.phase != Phase.FLAT:
+            self._kill_switch_tags = [f"{ORIGIN_TAG}{OrderOrigin.KILL_SWITCH}", f"{HALT_TAG}{halt_id}"]
+        if position is not None and self.phase != Phase.EXITING:
+            self._cancel_timer(_HOLD)
+            self.phase = Phase.EXITING
+            self._submit_exit()
+        self._cancel_entries()
 
     def on_quote_tick(self, tick: QuoteTick) -> None:
         """The mid is read from the cache at the boundary; nothing to do here."""
@@ -144,30 +163,29 @@ class RandomTaker(KfsStrategy):
         instrument = self._instrument()
         side = draw_side(self._cfg.seed, boundary_ns)
         mid = (quote.bid_price.as_decimal() + quote.ask_price.as_decimal()) / 2
-        quantity = entry_quantity(self._cfg.notional_usd, mid, instrument.size_increment.as_decimal())
-        equity = self._equity()
-        request = EntryRequest(
-            quantity=quantity,
-            mid=mid,
-            equity=equity,
-            open_notional=Decimal(0),
-            has_position=False,
-            paused=self._gate.paused,
-            blocks=[str(r) for r in self._blocks.active()],
-        )
         try:
+            request = EntryRequest(
+                side=side,
+                mid=mid,
+                equity=self._equity(),
+                open_notional=guard.open_notional(self.cache),
+                size_step=instrument.size_increment.as_decimal(),
+                taker_fee=instrument.taker_fee,
+                instrument_maintenance_rate=guard.margin_maint(instrument),
+                funding_periods=0,  # a lab probe with no market context (spec 0011 AC-9)
+                fixed_quantity=entry_quantity(self._cfg.notional_usd, mid, instrument.size_increment.as_decimal()),
+                has_position=False,
+                paused=self._gate.paused,
+                halted=self._gate.halted,
+                blocks=[str(r) for r in self._blocks.active()],
+            )
             verdict = check_entry(request, self._limits)
         except InvalidRiskInput:
             log.exception("risk check could not judge the entry", extra={"fields": {"code": "risk_input_invalid"}})
             return
+        quantity = verdict.quantity
         decision = uuid.uuid7()
-        inputs: JsonObject = {
-            "boundary_ns": boundary_ns,
-            "mid": mid,
-            "equity": equity,
-            "open_notional": Decimal(0),
-            "quantity": quantity,
-        }
+        inputs: JsonObject = {"boundary_ns": boundary_ns, "mid": mid, **verdict.figures.as_inputs()}
         self._record_decision(decision, Intent.ENTER, side, "random_entry", inputs, verdict.approved, verdict.reason)
         if not verdict.approved:
             reason = verdict.reason or ""
@@ -179,6 +197,9 @@ class RandomTaker(KfsStrategy):
                 decision,
                 {"reason": reason},
             )
+            return
+        if self._gate.halted or self._gate.paused:  # the gate again, right before submitting
+            log.info("entry denied by the gate", extra={"fields": {"code": "entry_denied_gate"}})
             return
         order = self._entry_order(side, instrument.make_qty(quantity), quote, decision)
         self.phase = Phase.ENTERING
@@ -280,7 +301,7 @@ class RandomTaker(KfsStrategy):
             position.quantity,
             time_in_force=TimeInForce.GTC,
             reduce_only=True,
-            tags=[f"{DECISION_TAG}{self._exit_decision}"],
+            tags=self._kill_switch_tags or [f"{DECISION_TAG}{self._exit_decision}"],
         )
         self._exit_id = order.client_order_id
         self.submit_order(order)

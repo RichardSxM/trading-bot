@@ -18,7 +18,17 @@ from sqlalchemy import Date, ScalarSelect, String, cast, func, literal, select, 
 from sqlalchemy.orm import InstrumentedAttribute, Session, aliased
 
 from trading_core.recording import models
-from trading_core.recording.enums import Env, Intent, OrderSide, OrderType, PositionSide, PositionStatus, RunMode
+from trading_core.recording.enums import (
+    Env,
+    Intent,
+    OrderOrigin,
+    OrderSide,
+    OrderType,
+    PositionSide,
+    PositionStatus,
+    RiskEventKind,
+    RunMode,
+)
 from trading_core.recording.errors import UnsupportedInstrumentError
 from trading_core.strategy.placeholder import ExitReason, exit_reason
 
@@ -199,6 +209,12 @@ class RoundTrip:
     fees: Decimal
     currency: str
     exit_reason: ExitReason | None
+    funding: Decimal
+
+    @property
+    def net_pnl(self) -> Decimal:
+        """``realized_pnl`` (net of fees, before funding) plus the booked funding (spec 0011 AC-14)."""
+        return self.realized_pnl + self.funding
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -224,11 +240,14 @@ def _offset(page: int, size: int) -> int:
     return (page - 1) * size
 
 
-def _exit_reason(abandoned: bool, order_type: str | None, intent: str | None) -> ExitReason | None:
+def _exit_reason(abandoned: bool, order_type: str | None, intent: str | None, origin: str | None) -> ExitReason | None:
     if not abandoned and order_type is None:
         return None
     return exit_reason(
-        abandoned, None if order_type is None else OrderType(order_type), None if intent is None else Intent(intent)
+        abandoned,
+        None if order_type is None else OrderType(order_type),
+        None if intent is None else Intent(intent),
+        None if origin is None else OrderOrigin(origin),
     )
 
 
@@ -237,8 +256,8 @@ def round_trips_page(session: Session, env: Env, page: int, size: int = PAGE_SIZ
 
     The side comes from the position's earliest fill (``filled_ns``, then ``id``): ``buy`` is long,
     ``sell`` is short. The exit reason is ``abandoned`` when a ``risk_events`` row keyed
-    ``abandoned:<position_id>`` exists, otherwise ``exit_reason`` on the order (and its decision)
-    of the position's last fill. A page past the end is empty. Raises ``ValueError`` for a page
+    ``abandoned:<position_id>`` exists, otherwise ``exit_reason`` on the order (its type, origin,
+    and decision) of the position's last fill. A page past the end is empty. Raises ``ValueError`` for a page
     or size below 1.
     """
     offset = _offset(page, size)
@@ -252,7 +271,7 @@ def round_trips_page(session: Session, env: Env, page: int, size: int = PAGE_SIZ
         .lateral("opening")
     )
     closing = (
-        select(order.order_type, decision.intent)
+        select(order.order_type, order.origin, decision.intent)
         .select_from(last)
         .join(order, order.id == last.order_id)
         .outerjoin(decision, decision.id == order.decision_id)
@@ -270,7 +289,7 @@ def round_trips_page(session: Session, env: Env, page: int, size: int = PAGE_SIZ
         .exists()
     )
     rows = session.execute(
-        select(position, opening.c.side, closing.c.order_type, closing.c.intent, abandoned)
+        select(position, opening.c.side, closing.c.order_type, closing.c.intent, closing.c.origin, abandoned)
         .join(run, run.id == position.run_id)
         .outerjoin(opening, true())
         .outerjoin(closing, true())
@@ -295,10 +314,11 @@ def round_trips_page(session: Session, env: Env, page: int, size: int = PAGE_SIZ
             avg_exit_px=p.avg_exit_px,
             realized_pnl=p.realized_pnl,
             fees=p.fees_total,
+            funding=p.funding_total,
             currency=p.currency,
-            exit_reason=_exit_reason(is_abandoned, order_type, intent),
+            exit_reason=_exit_reason(is_abandoned, order_type, intent, origin),
         )
-        for p, side, order_type, intent, is_abandoned in rows
+        for p, side, order_type, intent, origin, is_abandoned in rows
     ]
 
 
@@ -335,3 +355,122 @@ def fills_page(session: Session, env: Env, page: int, size: int = PAGE_SIZE) -> 
 def control_command_known(session: Session, command_id: UUID) -> bool:
     """True when the trader already recorded the control command ``command_id`` (spec 0005 AC-6)."""
     return session.get(models.ControlCommand, command_id) is not None
+
+
+@dataclass(frozen=True, kw_only=True)
+class LossSeed:
+    """What the loss limits start from (spec 0010 AC-13), read once at start.
+
+    Realized sums are net of fees (a loss is negative). ``closed_keys`` are the
+    ``(position_ref, opened_ns)`` of positions closed since ``total_since`` (today's are among
+    them), ``opened_today_keys`` those opened since UTC midnight, so live events already in the
+    seed are skipped.
+
+    ``funding_today`` and ``funding_total`` sum the booked funding payments by ``paid_at``
+    (spec 0011 AC-16); ``funding_keys`` are their ``(instrument_id, paid_ns, position_id)``.
+    """
+
+    realized_today: Decimal
+    realized_total: Decimal
+    closed_keys: frozenset[tuple[str, int]]
+    opened_today_keys: frozenset[tuple[str, int]]
+    funding_today: Decimal = Decimal(0)
+    funding_total: Decimal = Decimal(0)
+    funding_keys: frozenset[tuple[str, int, UUID]] = frozenset()
+    last_loss_closed_at: datetime | None
+    daily_halt_today: bool
+
+
+def loss_seed(session: Session, env: Env, mode: RunMode, day_start: datetime, total_since: datetime) -> LossSeed:
+    """The loss figures of ``env``'s ``mode`` runs: realized today and since ``total_since``, today's
+    opened positions, the newest losing close, and whether a ``daily_loss_limit`` halt was recorded today.
+
+    ``day_start`` (UTC midnight) and ``total_since`` are aware UTC datetimes.
+    """
+    position, run = models.Position, models.StrategyRun
+    window = min(day_start, total_since)
+    rows = session.execute(
+        select(position.position_ref, position.opened_ns, position.opened_at, position.closed_at, position.realized_pnl)
+        .join(run, run.id == position.run_id)
+        .where(
+            run.mode == mode,
+            run.env == env,
+            position.env == env,
+            (
+                (position.status == PositionStatus.CLOSED) & (position.closed_at >= window)
+                | (position.opened_at >= day_start)
+            ),
+        )
+    ).all()
+    realized_today = realized_total = Decimal(0)
+    closed: set[tuple[str, int]] = set()
+    opened: set[tuple[str, int]] = set()
+    for ref, opened_ns, opened_at, closed_at, realized in rows:
+        key = (ref, opened_ns)
+        if opened_at >= day_start:
+            opened.add(key)
+        if closed_at is None:
+            continue
+        if closed_at >= total_since:
+            closed.add(key)
+            realized_total += realized
+        if closed_at >= day_start:
+            realized_today += realized
+    last_loss = session.execute(
+        select(func.max(position.closed_at))
+        .join(run, run.id == position.run_id)
+        .where(
+            run.mode == mode,
+            run.env == env,
+            position.env == env,
+            position.status == PositionStatus.CLOSED,
+            position.realized_pnl < 0,
+        )
+    ).scalar_one()
+    event = models.RiskEvent
+    daily_halt = session.execute(
+        select(event.id)
+        .where(
+            event.env == env,
+            event.kind == RiskEventKind.HALT,
+            func.jsonb_extract_path_text(event.details, "reason") == "daily_loss_limit",
+            event.occurred_at >= day_start,
+        )
+        .limit(1)
+    ).first()
+    payment = models.FundingPayment
+    payments = session.execute(
+        select(payment.instrument_id, payment.paid_ns, payment.position_id, payment.paid_at, payment.amount)
+        .join(run, run.id == payment.run_id)
+        .where(run.mode == mode, run.env == env, payment.env == env, payment.paid_at >= window)
+    ).all()
+    funding_today = funding_total = Decimal(0)
+    funding_keys: set[tuple[str, int, UUID]] = set()
+    for instrument_id, paid_ns, position_id, paid_at, amount in payments:
+        if paid_at >= total_since:
+            funding_total += amount
+            if position_id is not None:
+                funding_keys.add((instrument_id, paid_ns, position_id))
+        if paid_at >= day_start:
+            funding_today += amount
+            if position_id is not None:
+                funding_keys.add((instrument_id, paid_ns, position_id))
+    return LossSeed(
+        realized_today=realized_today,
+        realized_total=realized_total,
+        closed_keys=frozenset(closed),
+        opened_today_keys=frozenset(opened),
+        funding_today=funding_today,
+        funding_total=funding_total,
+        funding_keys=frozenset(funding_keys),
+        last_loss_closed_at=last_loss,
+        daily_halt_today=daily_halt is not None,
+    )
+
+
+def run_funding_total(session: Session, run_id: UUID) -> Decimal:
+    """``SUM(funding_payments.amount)`` of one run, 0 when it booked none (spec 0011 AC-17)."""
+    total = session.execute(
+        select(func.coalesce(func.sum(models.FundingPayment.amount), 0)).where(models.FundingPayment.run_id == run_id)
+    ).scalar_one()
+    return Decimal(total)

@@ -77,7 +77,7 @@ def position_snapshot(
 def paper_status(gate: PauseGate, blocks: EntryBlocks, backlog: int, strategy: PlaceholderTimed) -> PaperStatus:
     """The paper loop's ``trader_state`` fields: blocks plus pause, the recording backlog, the exit state."""
     return PaperStatus(
-        entries_blocked=entries_blocked(blocks, gate.paused),
+        entries_blocked=entries_blocked(blocks, gate.paused, gate.halted),
         recording_backlog=backlog,
         exiting=strategy.exiting,
         position_opened_ns=strategy.position_opened_ns,

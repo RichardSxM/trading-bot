@@ -26,6 +26,7 @@ from dashboard.data.pnl import PnlFigures
 from dashboard.live.position import LOST, PositionView, position_view
 from dashboard.live.state import (
     COMMAND_NO_DATA,
+    LOSSES_NO_DATA,
     NO_DATA,
     NOT_BLOCKED,
     PAUSE_NO_DATA,
@@ -35,6 +36,7 @@ from dashboard.live.state import (
     BlockedView,
     CommandView,
     Entry,
+    LossesView,
     PauseView,
     activity_row,
     alert_state,
@@ -42,6 +44,7 @@ from dashboard.live.state import (
     command_state,
     find_result,
     heartbeat_view,
+    losses_view,
     pause_view,
 )
 from trading_core.control.messages import ControlMessage, Fields, field, to_fields
@@ -56,6 +59,7 @@ PAUSE_EVENT: Final = "topbar-pause"
 POSITION_EVENT: Final = "overview-position"
 BLOCKED_EVENT: Final = "topbar-blocked"
 BLOCKED_REASONS_EVENT: Final = "overview-blocked"
+LOSSES_EVENT: Final = "system-losses"
 PNL_REFRESH_S: Final = 5.0
 PNL_TIMEOUT_S: Final = 2.0
 PNL_WARN_EVERY_S: Final = 60.0
@@ -97,6 +101,7 @@ class Poller:
         render_position: Callable[[PositionView], str] | None = None,
         render_blocked: Callable[[BlockedView], str] | None = None,
         render_blocked_reasons: Callable[[BlockedView], str] | None = None,
+        render_losses: Callable[[LossesView], str] | None = None,
         pnl_refresh_s: float = PNL_REFRESH_S,
         pnl_timeout_s: float = PNL_TIMEOUT_S,
     ) -> None:
@@ -107,6 +112,7 @@ class Poller:
         self._render_position = render_position
         self._render_blocked = render_blocked
         self._render_blocked_reasons = render_blocked_reasons
+        self._render_losses = render_losses
         self._pnl_refresh_s = pnl_refresh_s
         self._pnl_timeout_s = pnl_timeout_s
         self._pnl: PnlFigures | None = None
@@ -179,9 +185,11 @@ class Poller:
             COMMAND_EVENT: self._render_command(_tinted(command, alert)),
             ALERT_EVENT: self._render_alert(alert),
             ACTIVITY_EVENT: self._render_activity(rows),
-            PAUSE_EVENT: self._render_pause(pause_view(state)),
+            PAUSE_EVENT: self._render_pause(pause_view(state, self._now())),
             **self._blocked(blocked_view(state)),
         }
+        if self._render_losses is not None:
+            partials[LOSSES_EVENT] = self._render_losses(losses_view(state, self._now()))
         if self._render_position is not None:
             await self._refresh_pnl()
             raw_position, raw_account = snapshots
@@ -200,9 +208,14 @@ class Poller:
             PAUSE_EVENT: self._render_pause(PAUSE_NO_DATA),
             **self._blocked(NOT_BLOCKED),
         }
+        if self._render_losses is not None:
+            partials[LOSSES_EVENT] = self._render_losses(LOSSES_NO_DATA)
         if self._render_position is not None:
             partials[POSITION_EVENT] = self._render_position(dataclasses.replace(LOST, pnl=self._pnl))
         return partials
+
+    def _now(self) -> datetime:
+        return datetime.fromtimestamp(self._clock_ns() / 1_000_000_000, tz=UTC)
 
     def _blocked(self, view: BlockedView) -> dict[str, str]:
         partials: dict[str, str] = {}
@@ -316,9 +329,6 @@ class Poller:
 
     def _alert(self, age: AgeView, command: CommandView) -> AlertView | None:
         return alert_state(age, command, self._now(), self._ack_warn_s)
-
-    def _now(self) -> datetime:
-        return datetime.fromtimestamp(self._clock_ns() / 1_000_000_000, tz=UTC)
 
     def _warn_invalid(self, key: tuple[object, ...]) -> None:
         if key not in self._warned_invalid:

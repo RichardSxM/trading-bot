@@ -25,6 +25,7 @@ from trading_core.recording.rows import (
     AccountSnapshotRow,
     DecisionRow,
     FillRow,
+    FundingRow,
     InstrumentRow,
     OrderEventRow,
     OrderRow,
@@ -45,6 +46,7 @@ type QueuedRow = (
     | PositionSnapshotRow
     | AccountSnapshotRow
     | RiskEventRow
+    | FundingRow
 )
 
 
@@ -60,6 +62,7 @@ class WriteCall(StrEnum):
     RECORD_POSITION_SNAPSHOT = "record_position_snapshot"
     RECORD_ACCOUNT_SNAPSHOT = "record_account_snapshot"
     RECORD_RISK_EVENT = "record_risk_event"
+    RECORD_FUNDING = "record_funding"
 
 
 ROW_TYPES: Final[dict[WriteCall, type[QueuedRow]]] = {
@@ -72,6 +75,7 @@ ROW_TYPES: Final[dict[WriteCall, type[QueuedRow]]] = {
     WriteCall.RECORD_POSITION_SNAPSHOT: PositionSnapshotRow,
     WriteCall.RECORD_ACCOUNT_SNAPSHOT: AccountSnapshotRow,
     WriteCall.RECORD_RISK_EVENT: RiskEventRow,
+    WriteCall.RECORD_FUNDING: FundingRow,
 }
 """The row type each call takes."""
 

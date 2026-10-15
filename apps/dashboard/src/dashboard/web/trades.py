@@ -30,6 +30,7 @@ ROUND_TRIP_COLUMNS: Final = [
     ("Exit", True),
     ("Net P&L", True),
     ("Fees", True),
+    ("Funding", True),
     ("Exit reason", False),
 ]
 
@@ -52,7 +53,7 @@ def _market(instrument_id: str) -> str:
 
 
 def round_trip_cells(trip: RoundTrip) -> list[Cell]:
-    """One table row; fees show as money paid (a loss), blanks where the spec leaves a value unknown."""
+    """One table row: net P&L includes funding, fees show as money paid (a loss), blanks are unknown values."""
     return [
         ts(trip.opened_at),
         "" if trip.closed_at is None else ts(trip.closed_at),
@@ -60,9 +61,10 @@ def round_trip_cells(trip: RoundTrip) -> list[Cell]:
         num(trip.size),
         num(trip.avg_entry_px),
         "" if trip.avg_exit_px is None else num(trip.avg_exit_px),
-        pnl(trip.realized_pnl),
+        pnl(trip.net_pnl),
         pnl(-trip.fees),
-        "" if trip.exit_reason is None else trip.exit_reason.value,
+        pnl(trip.funding),
+        "" if trip.exit_reason is None else trip.exit_reason.value.replace("_", " "),
     ]
 
 

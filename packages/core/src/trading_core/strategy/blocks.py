@@ -10,8 +10,9 @@ from typing import Final
 
 
 class BlockReason(StrEnum):
-    """One reason entries are blocked. ``paused`` comes from the pause gate, not from ``EntryBlocks``."""
+    """One reason entries are blocked. ``halted`` and ``paused`` come from the gate, not from ``EntryBlocks``."""
 
+    HALTED = "halted"
     PAUSED = "paused"
     STALE_FEED = "stale_feed"
     RECORDING_UNHEALTHY = "recording_unhealthy"
@@ -19,9 +20,14 @@ class BlockReason(StrEnum):
     EXIT_FAILED = "exit_failed"
     RECORD_CONFLICT = "record_conflict"
     RECORDING_FAILED = "recording_failed"
+    DAILY_LOSS_LIMIT = "daily_loss_limit"
+    TRADE_CAP = "trade_cap"
+    LOSS_COOLDOWN = "loss_cooldown"
+    LOSS_UNKNOWN = "loss_unknown"
 
 
 PLAIN_WORDS: Final[dict[BlockReason, str]] = {
+    BlockReason.HALTED: "Halted by the stop button or a loss limit (press Resume to clear)",
     BlockReason.PAUSED: "Paused from the dashboard or by a deploy",
     BlockReason.STALE_FEED: "No fresh prices from Kraken",
     BlockReason.RECORDING_UNHEALTHY: "The database is behind or not answering",
@@ -29,10 +35,24 @@ PLAIN_WORDS: Final[dict[BlockReason, str]] = {
     BlockReason.EXIT_FAILED: "Closing a position failed 5 times (restart to clear)",
     BlockReason.RECORD_CONFLICT: "A record contradicted the database (restart to clear)",
     BlockReason.RECORDING_FAILED: "A record could not be written (restart to clear)",
+    BlockReason.DAILY_LOSS_LIMIT: "Today's loss reached the daily limit (clears at midnight UTC)",
+    BlockReason.TRADE_CAP: "Today's trade cap is reached (clears at midnight UTC)",
+    BlockReason.LOSS_COOLDOWN: "Cooling down after a losing trade",
+    BlockReason.LOSS_UNKNOWN: "Today's loss is not known yet (waiting for the database)",
 }
 """What the dashboard shows for each reason."""
 
-SELF_CLEARING: Final = frozenset({BlockReason.PAUSED, BlockReason.STALE_FEED, BlockReason.RECORDING_UNHEALTHY})
+SELF_CLEARING: Final = frozenset(
+    {
+        BlockReason.PAUSED,
+        BlockReason.STALE_FEED,
+        BlockReason.RECORDING_UNHEALTHY,
+        BlockReason.DAILY_LOSS_LIMIT,
+        BlockReason.TRADE_CAP,
+        BlockReason.LOSS_COOLDOWN,
+        BlockReason.LOSS_UNKNOWN,
+    }
+)
 """Reasons that clear by themselves; the rest hold until the trader restarts."""
 
 
@@ -67,9 +87,11 @@ class EntryBlocks:
             return tuple(sorted(self._active))
 
 
-def entries_blocked(blocks: EntryBlocks, paused: bool) -> list[str]:
-    """The ``entries_blocked`` snapshot field: the active reasons plus ``paused`` when paused, sorted."""
+def entries_blocked(blocks: EntryBlocks, paused: bool, halted: bool) -> list[str]:
+    """The ``entries_blocked`` snapshot field: the active reasons plus ``paused`` and ``halted`` when set, sorted."""
     reasons = {str(r) for r in blocks.active()}
     if paused:
         reasons.add(BlockReason.PAUSED)
+    if halted:
+        reasons.add(BlockReason.HALTED)
     return sorted(reasons)

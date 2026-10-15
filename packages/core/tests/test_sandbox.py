@@ -42,6 +42,14 @@ def test_sandbox_config_is_a_usd_margin_netting_account_filling_on_quotes():
     # A stop whose trigger is already in the market is rejected, so AC-7 handles it.
     assert config.reject_stop_orders is True
     assert config.reject_every_stop is False
+    assert config.delay_entry_fills_s == 0
+
+
+def test_the_entry_hold_drill_setting_reaches_the_sandbox_config():
+    """covers: spec 0010 SANDBOX_DELAY_ENTRY_FILLS_S"""
+    settings = PaperLoopSettings(trading_env="demo", sandbox_delay_entry_fills_s=Decimal(30))
+
+    assert sandbox_exec_client(settings).delay_entry_fills_s == Decimal(30)
 
 
 def test_the_stop_reject_drill_setting_reaches_the_sandbox_config():
@@ -58,16 +66,16 @@ def make_client():
 
     loops = []
 
-    def make(reject_every_stop):
+    def make(reject_every_stop, reject_kill_switch=False):
         loops.append(asyncio.new_event_loop())
-        return _client(loops[-1], reject_every_stop)
+        return _client(loops[-1], reject_every_stop, reject_kill_switch)
 
     yield make
     for loop in loops:
         loop.close()
 
 
-def _client(loop, reject_every_stop):
+def _client(loop, reject_every_stop, reject_kill_switch=False):
     from nautilus_trader.cache.cache import Cache
     from nautilus_trader.common.component import LiveClock, MessageBus
     from nautilus_trader.portfolio.portfolio import Portfolio
@@ -80,7 +88,13 @@ def _client(loop, reject_every_stop):
     cache = Cache()
     events: list[object] = []
     msgbus.register("ExecEngine.process", events.append)
-    config = sandbox_exec_client(PaperLoopSettings(trading_env="demo", sandbox_reject_stop_orders=reject_every_stop))
+    config = sandbox_exec_client(
+        PaperLoopSettings(
+            trading_env="demo",
+            sandbox_reject_stop_orders=reject_every_stop,
+            sandbox_reject_kill_switch_orders=reject_kill_switch,
+        )
+    )
     client = FeeSandboxExecutionClient(
         loop=loop,
         portfolio=Portfolio(msgbus, cache, clock),
@@ -141,6 +155,38 @@ def test_the_stop_reject_drill_rejects_a_stop_and_passes_other_orders_on(make_cl
     assert events[1].reason == DRILL_REJECT_REASON
 
 
+def test_the_kill_switch_drill_rejects_only_orders_tagged_kill_switch(make_client):
+    """covers: spec 0010 SANDBOX_REJECT_KILL_SWITCH_ORDERS"""
+    from nautilus_trader.common.component import TestClock
+    from nautilus_trader.common.factories import OrderFactory
+    from nautilus_trader.model.enums import OrderSide
+    from nautilus_trader.model.events import OrderRejected, OrderSubmitted
+    from nautilus_trader.model.identifiers import InstrumentId
+    from nautilus_trader.model.objects import Quantity
+    from nautilus_trader.test_kit.stubs.identifiers import TestIdStubs
+
+    from trading_core.node.sandbox import KILL_SWITCH_DRILL_REASON
+
+    client, events, sent = make_client(reject_every_stop=False, reject_kill_switch=True)
+    market, stop = _orders()
+    factory = OrderFactory(TestIdStubs.trader_id(), TestIdStubs.strategy_id(), TestClock())
+    close = factory.market(
+        InstrumentId.from_str("PF_XBTUSD.KRAKEN"),
+        OrderSide.SELL,
+        Quantity.from_str("0.0011"),
+        reduce_only=True,
+        tags=["origin:kill_switch", "halt:x"],
+    )
+
+    for order in (market, stop, close):
+        client.submit_order(_submit(order))
+
+    assert [command.order for command in sent] == [market, stop]
+    assert [type(event) for event in events] == [OrderSubmitted, OrderRejected]
+    assert events[1].client_order_id == close.client_order_id
+    assert events[1].reason == KILL_SWITCH_DRILL_REASON
+
+
 def test_without_the_drill_a_stop_goes_to_the_exchange(make_client):
     client, events, sent = make_client(reject_every_stop=False)
     _, stop = _orders()
@@ -162,7 +208,7 @@ def make_exchange():
 
     loops = []
 
-    def make():
+    def make(delay_entry_fills_s=Decimal(0)):
         from nautilus_trader.cache.cache import Cache
         from nautilus_trader.common.component import LiveClock, MessageBus
         from nautilus_trader.portfolio.portfolio import Portfolio
@@ -183,7 +229,9 @@ def make_exchange():
             msgbus=msgbus,
             cache=cache,
             clock=clock,
-            config=sandbox_exec_client(PaperLoopSettings(trading_env="demo")),
+            config=sandbox_exec_client(
+                PaperLoopSettings(trading_env="demo", sandbox_delay_entry_fills_s=delay_entry_fills_s)
+            ),
         )
         client.connect()
         return client, cache, events
@@ -267,3 +315,120 @@ def test_deep_quote_raises_thin_sizes_and_keeps_prices_and_times():
         thin.ts_init,
     )
     assert deep_quote(_thin_quote(bid_size="5000")).bid_size == Quantity.from_str("5000.0000")  # deeper is kept
+
+
+# The entry hold drill (spec 0010 SANDBOX_DELAY_ENTRY_FILLS_S, the "Entry hold drill (unit)" scenario).
+HOLD = Decimal("0.05")
+
+
+def _wait(client, seconds):
+    import asyncio
+
+    client._loop.run_until_complete(asyncio.sleep(seconds))
+
+
+def _cancel(order):
+    from nautilus_trader.execution.messages import CancelOrder
+    from nautilus_trader.test_kit.stubs.identifiers import TestIdStubs
+
+    return CancelOrder(
+        trader_id=TestIdStubs.trader_id(),
+        strategy_id=TestIdStubs.strategy_id(),
+        instrument_id=order.instrument_id,
+        client_order_id=order.client_order_id,
+        venue_order_id=None,
+        command_id=TestIdStubs.uuid(),
+        ts_init=0,
+    )
+
+
+def _of(events, cls):
+    return [event for event in events if isinstance(event, cls)]
+
+
+def test_a_held_entry_fills_only_after_the_hold_with_one_submitted(make_exchange):
+    """covers: spec 0010 SANDBOX_DELAY_ENTRY_FILLS_S"""
+    from nautilus_trader.model.events import OrderFilled, OrderSubmitted
+
+    client, cache, events = make_exchange(HOLD)
+    client.on_data(_thin_quote())
+    market, _ = _orders()
+    cache.add_order(market)
+
+    client.submit_order(_submit(market))
+
+    assert [type(event) for event in events] == [OrderSubmitted]
+    _wait(client, float(HOLD) * 3)
+    assert len(_of(events, OrderSubmitted)) == 1
+    assert sum(fill.last_qty.as_decimal() for fill in _of(events, OrderFilled)) == Decimal("0.0011")
+
+
+def test_a_cancel_during_the_hold_cancels_the_entry_once_and_it_never_fills(make_exchange):
+    """covers: spec 0010 SANDBOX_DELAY_ENTRY_FILLS_S"""
+    from nautilus_trader.model.events import OrderCanceled, OrderFilled, OrderSubmitted
+
+    client, cache, events = make_exchange(HOLD)
+    client.on_data(_thin_quote())
+    market, _ = _orders()
+    cache.add_order(market)
+    client.submit_order(_submit(market))
+
+    client.cancel_order(_cancel(market))
+    client.cancel_order(_cancel(market))  # a second cancel emits nothing more
+    _wait(client, float(HOLD) * 3)
+
+    assert [type(event) for event in events] == [OrderSubmitted, OrderCanceled]
+    assert events[1].client_order_id == market.client_order_id
+    assert events[1].venue_order_id is None
+    assert _of(events, OrderFilled) == []
+
+
+def test_a_reduce_only_order_is_never_held(make_client):
+    """covers: spec 0010 SANDBOX_DELAY_ENTRY_FILLS_S"""
+    client, events, sent = make_client(reject_every_stop=False)
+    client._delay_entry_fills_s = HOLD
+    _, stop = _orders()
+
+    client.submit_order(_submit(stop))
+
+    assert [command.order for command in sent] == [stop]
+    assert events == []
+
+
+def test_a_disconnect_mid_hold_cancels_the_held_entry(make_exchange):
+    """covers: spec 0010 SANDBOX_DELAY_ENTRY_FILLS_S"""
+    from nautilus_trader.model.events import OrderCanceled, OrderFilled, OrderSubmitted
+
+    client, cache, events = make_exchange(HOLD)
+    client.on_data(_thin_quote())
+    market, _ = _orders()
+    cache.add_order(market)
+    client.submit_order(_submit(market))
+
+    client.disconnect()
+    _wait(client, float(HOLD) * 3)
+
+    assert [type(event) for event in events] == [OrderSubmitted, OrderCanceled]
+    assert _of(events, OrderFilled) == []
+
+
+def test_a_release_that_raises_rejects_the_held_entry(make_exchange, caplog):
+    """covers: spec 0010 SANDBOX_DELAY_ENTRY_FILLS_S"""
+    from nautilus_trader.model.events import OrderRejected, OrderSubmitted
+
+    from trading_core.node.sandbox import DELAY_RELEASE_FAILED_REASON
+
+    client, cache, events = make_exchange(HOLD)
+    market, _ = _orders()
+    cache.add_order(market)
+    client.submit_order(_submit(market))
+
+    def broken_send(command):
+        raise RuntimeError("exchange down")
+
+    client.exchange = type("Exchange", (), {"send": staticmethod(broken_send)})()
+    _wait(client, float(HOLD) * 3)
+
+    assert [type(event) for event in events] == [OrderSubmitted, OrderRejected]
+    assert events[1].reason == DELAY_RELEASE_FAILED_REASON
+    assert any(getattr(r, "fields", {}).get("code") == "sandbox_delay_release_failed" for r in caplog.records)

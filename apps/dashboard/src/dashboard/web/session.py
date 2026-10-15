@@ -15,9 +15,10 @@ from dashboard.web.context import AppContext, app_context
 EVENTS_PATH: Final = "/events"
 STOP_PATH: Final = "/control/stop"
 PAUSE_PATH: Final = "/control/pause"
-UNPAUSE_PATH: Final = "/control/unpause"
-# Which command a POST without a session lost, for the login page's notice (spec 0005 AC-13).
-LOST_COMMANDS: Final = {PAUSE_PATH: "pause", UNPAUSE_PATH: "resume"}
+RESUME_PATH: Final = "/control/resume"
+FLATTEN_PATH: Final = "/control/flatten"
+# Which command a POST without a session lost, for the login page's notice (spec 0005 AC-13, spec 0010 AC-18).
+LOST_COMMANDS: Final = {PAUSE_PATH: "pause", RESUME_PATH: "resume", FLATTEN_PATH: "flatten"}
 CSRF_HEADER: Final = "x-csrf-token"
 CSRF_FIELD: Final = "csrf"
 # Show the "session ends" cue in the top bar this long before the session expires.
@@ -82,8 +83,8 @@ def is_htmx(request: Request) -> bool:
 def login_redirect_target(request: Request) -> str:
     """``/login?next=<path>``: the page itself for a GET, the referring page for a POST.
 
-    A stop tap without a session adds ``stop_lost=1``, a Pause or Resume tap ``lost=pause`` or
-    ``lost=resume``, so the login page says that command was NOT sent.
+    A stop tap without a session adds ``stop_lost=1``, a Pause, Resume, or Flatten tap ``lost=pause``,
+    ``lost=resume``, or ``lost=flatten``, so the login page says that command was NOT sent.
     """
     path = request.url.path if request.method == "GET" else referer_page(request.headers.get("referer"))
     query = {"next": safe_next(path)}

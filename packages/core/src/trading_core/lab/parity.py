@@ -19,7 +19,7 @@ from trading_core.lab.errors import LabError
 from trading_core.marketdata.hours import HOUR_NS
 from trading_core.recording.enums import Intent
 from trading_core.recording.rows import JsonObject, canonical_json
-from trading_core.risk.check import BLOCKED_PREFIX
+from trading_core.risk.check import BLOCKED_PREFIX, RiskLimits
 
 NS_PER_S: Final = 1_000_000_000
 NS_PER_MIN: Final = 60 * NS_PER_S
@@ -29,7 +29,7 @@ THRESHOLD: Final = Decimal("0.95")
 PAUSED: Final = "paused"
 
 type PaperValue = int | Decimal
-type Kind = Literal["int", "decimal"]
+type Kind = Literal["int", "decimal", "decimal_or_zero"]
 
 # The trader's ``strategy_config()`` keys (spec 0006 ``PaperLoopSettings``), in the order of the settings.
 PAPER_KEYS: Final[Mapping[str, Kind]] = {
@@ -37,10 +37,15 @@ PAPER_KEYS: Final[Mapping[str, Kind]] = {
     "placeholder_hold_min": "int",
     "placeholder_lookback_min": "int",
     "placeholder_stop_pct": "decimal",
-    "placeholder_notional_usd": "decimal",
     "risk_max_order_notional_usd": "decimal",
     "risk_max_leverage": "decimal",
     "risk_stale_quote_s": "decimal",
+    "risk_per_trade": "decimal",
+    "risk_max_total_exposure_usd": "decimal",
+    "risk_maintenance_margin_rate": "decimal",
+    "risk_min_liq_distance_pct": "decimal",
+    "risk_liq_stop_multiple": "decimal",
+    "risk_stop_slippage_bps": "decimal_or_zero",
 }
 
 
@@ -60,10 +65,8 @@ class PaperStrategy:
     hold_min: int
     lookback_min: int
     stop_pct: Decimal
-    notional_usd: Decimal
-    max_order_notional: Decimal
-    max_leverage: Decimal
     stale_quote_s: Decimal
+    risk: RiskLimits
 
     @property
     def warmup_ns(self) -> int:
@@ -83,7 +86,9 @@ def _value(key: str, kind: Kind, raw: object) -> PaperValue | str:
         number = Decimal(raw)
     except InvalidOperation:
         return f"{key}: {raw!r} is not a number"
-    if not number.is_finite() or number <= 0:
+    if kind == "decimal_or_zero" and (not number.is_finite() or number < 0):
+        return f"{key}: must be 0 or above, got {raw!r}"
+    if kind == "decimal" and (not number.is_finite() or number <= 0):
         return f"{key}: must be above 0, got {raw!r}"
     return number
 
@@ -113,10 +118,17 @@ def paper_config(table: Mapping[str, object]) -> PaperStrategy:
         hold_min=int(values["placeholder_hold_min"]),
         lookback_min=int(values["placeholder_lookback_min"]),
         stop_pct=Decimal(values["placeholder_stop_pct"]),
-        notional_usd=Decimal(values["placeholder_notional_usd"]),
-        max_order_notional=Decimal(values["risk_max_order_notional_usd"]),
-        max_leverage=Decimal(values["risk_max_leverage"]),
         stale_quote_s=Decimal(values["risk_stale_quote_s"]),
+        risk=RiskLimits(
+            max_order_notional=Decimal(values["risk_max_order_notional_usd"]),
+            max_leverage=Decimal(values["risk_max_leverage"]),
+            max_total_exposure=Decimal(values["risk_max_total_exposure_usd"]),
+            risk_per_trade=Decimal(values["risk_per_trade"]),
+            maintenance_margin_rate=Decimal(values["risk_maintenance_margin_rate"]),
+            min_liq_distance_pct=Decimal(values["risk_min_liq_distance_pct"]),
+            liq_stop_multiple=Decimal(values["risk_liq_stop_multiple"]),
+            stop_slippage_bps=Decimal(values["risk_stop_slippage_bps"]),
+        ),
     )
     if 60 % strategy.interval_min:
         problems.append("placeholder_interval_min: must divide 60")

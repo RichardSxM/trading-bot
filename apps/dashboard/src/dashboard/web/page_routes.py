@@ -70,12 +70,14 @@ async def render_page(
     status_code: int = 200,
     live: Mapping[str, str] | None = None,
     data: Mapping[str, object] | None = None,
+    confirm: str | None = None,
 ) -> Response:
     """A page inside the shell, its live partials read from Redis right now.
 
     ``path`` marks the current nav item (the request path when None). ``errors`` renders a
     control area in its ``NOT sent`` state after a plain form post failed: ``stop_error`` for the
-    stop, ``pause_error`` for Pause and Resume. ``live`` replaces the Redis read with these
+    stop, ``pause_error`` for Pause, Resume, and Flatten. ``confirm`` (``resume`` or ``flatten``)
+    renders the Trading area in that command's confirm step. ``live`` replaces the Redis read with these
     partials (a failed send already proved Redis down). ``data`` is the page's own context; when
     None, Trades reads its first pages and other pages take ``PAGE_DATA``.
     """
@@ -98,6 +100,7 @@ async def render_page(
             "session_end": session_end_cue(context, session),
             "stop_error": (errors or {}).get("stop_error"),
             "pause_error": (errors or {}).get("pause_error"),
+            "confirm": confirm,
             # Rendered by our own autoescaping templates.
             "live": {name: Markup(html) for name, html in partials.items()},
             **data,
@@ -111,11 +114,12 @@ async def render_referring_page(
     context: AppContext,
     session: Session,
     *,
-    errors: Mapping[str, str],
+    errors: Mapping[str, str] | None = None,
     status_code: int,
     live: Mapping[str, str] | None = None,
+    confirm: str | None = None,
 ) -> Response:
-    """The page the ``Referer`` names (Overview when unknown), with a control area in its error state."""
+    """The page the ``Referer`` names (Overview when unknown), with a control area in its error or confirm state."""
     path = referer_page(request.headers.get("referer"))
     template, title = PAGES[path]
     return await render_page(
@@ -128,6 +132,7 @@ async def render_referring_page(
         errors=errors,
         status_code=status_code,
         live=live,
+        confirm=confirm,
     )
 
 

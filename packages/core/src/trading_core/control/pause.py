@@ -63,9 +63,10 @@ def decode(raw: str | bytes) -> PauseState:
     return PauseState(source, paused_at.astimezone(UTC), command_id)
 
 
-def target_trading_state(paused: bool) -> TradingStateName:
-    """The risk engine state for a trader that is (or is not) paused: ``REDUCING`` or ``ACTIVE``.
+def target_trading_state(paused: bool, halted: bool) -> TradingStateName:
+    """The risk engine state for the trader's two flags: ``REDUCING`` when either is set, else ``ACTIVE``.
 
-    Feature 9 extends this with its stop state (``HALTED``).
+    A halt never maps to NautilusTrader's ``HALTED``: that would deny the reduce only close
+    the halt's own flatten sends (spec 0010).
     """
-    return "REDUCING" if paused else "ACTIVE"
+    return "REDUCING" if paused or halted else "ACTIVE"

@@ -32,10 +32,15 @@ PAPER: JsonObject = {
     "placeholder_hold_min": 10,
     "placeholder_lookback_min": 5,
     "placeholder_stop_pct": "0.3",
-    "placeholder_notional_usd": "100",
     "risk_max_order_notional_usd": "250",
     "risk_max_leverage": "2",
     "risk_stale_quote_s": "10",
+    "risk_per_trade": "0.005",
+    "risk_max_total_exposure_usd": "500",
+    "risk_maintenance_margin_rate": "0.01",
+    "risk_min_liq_distance_pct": "10",
+    "risk_liq_stop_multiple": "3",
+    "risk_stop_slippage_bps": "5",
 }
 
 
@@ -61,7 +66,8 @@ def test_the_paper_table_reads_as_the_paper_loops_settings():
 
     assert (strategy.interval_min, strategy.hold_min, strategy.lookback_min) == (15, 10, 5)
     assert strategy.stop_pct == Decimal("0.3")
-    assert (strategy.max_order_notional, strategy.max_leverage) == (Decimal(250), Decimal(2))
+    assert (strategy.risk.max_order_notional, strategy.risk.max_leverage) == (Decimal(250), Decimal(2))
+    assert (strategy.risk.max_total_exposure, strategy.risk.stop_slippage_bps) == (Decimal(500), Decimal(5))
     assert strategy.warmup_ns == 15 * MIN
 
 

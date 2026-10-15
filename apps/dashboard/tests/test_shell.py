@@ -322,6 +322,7 @@ def test_the_event_stream_carries_the_security_headers(logged_in, monkeypatch):
         "overview-position",
         "topbar-blocked",
         "overview-blocked",
+        "system-losses",
     }
     assert "event: topbar-age\n" in response.text
 

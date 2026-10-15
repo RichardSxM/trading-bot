@@ -4,6 +4,7 @@ Secrets never come from the environment: they are files read by ``trading_core.s
 (spec 0003). Settings only says where those files live.
 """
 
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
@@ -128,17 +129,25 @@ class PaperLoopSettings(Settings):
     placeholder_hold_min: int = Field(default=10, ge=1)
     placeholder_lookback_min: int = Field(default=5, ge=1)
     placeholder_stop_pct: Decimal = Field(default=Decimal("0.3"), gt=0, lt=100)
-    placeholder_notional_usd: Decimal = Field(default=Decimal(100), gt=0)
 
     risk_max_order_notional_usd: Decimal = Field(default=Decimal(250), gt=0)
     risk_max_leverage: Decimal = Field(default=Decimal(2), gt=0)
     risk_stale_quote_s: Decimal = Field(default=Decimal(10), gt=0)
+    # Spec 0011 AC-19: the guard's sizing, exposure, and liquidation settings.
+    risk_per_trade: Decimal = Field(default=Decimal("0.005"), gt=0, le=Decimal("0.02"))
+    risk_max_total_exposure_usd: Decimal = Field(default=Decimal(500), gt=0)
+    risk_maintenance_margin_rate: Decimal = Field(default=Decimal("0.01"), gt=0, lt=Decimal("0.5"))
+    risk_min_liq_distance_pct: Decimal = Field(default=Decimal(10), gt=0, lt=100)
+    risk_liq_stop_multiple: Decimal = Field(default=Decimal(3), ge=1)
+    risk_stop_slippage_bps: Decimal = Field(default=Decimal(5), ge=0, le=500)
     stop_accept_timeout_s: Decimal = Field(default=Decimal(5), gt=0)
 
     sandbox_starting_balance_usd: Decimal = Field(default=Decimal(1000), gt=0)
     sandbox_maker_fee: Decimal = Field(default=Decimal("0.0002"), ge=0, lt=1)
     sandbox_taker_fee: Decimal = Field(default=Decimal("0.0005"), ge=0, lt=1)
     sandbox_reject_stop_orders: bool = False
+    sandbox_reject_kill_switch_orders: bool = False
+    sandbox_delay_entry_fills_s: Decimal = Field(default=Decimal(0), ge=0, le=60)
 
     recording_max_backlog_s: Decimal = Field(default=Decimal(30), gt=0)
     recording_queue_max: int = Field(default=10_000, gt=0)
@@ -154,9 +163,19 @@ class PaperLoopSettings(Settings):
         return self
 
     @model_validator(mode="after")
+    def _exposure_fits_the_order_cap(self) -> Self:
+        if self.risk_max_total_exposure_usd < self.risk_max_order_notional_usd:
+            raise ValueError("RISK_MAX_TOTAL_EXPOSURE_USD must not be below RISK_MAX_ORDER_NOTIONAL_USD")
+        return self
+
+    @model_validator(mode="after")
     def _sandbox_drill_in_demo_only(self) -> Self:
         if self.sandbox_reject_stop_orders and self.trading_env != "demo":
             raise ValueError("SANDBOX_REJECT_STOP_ORDERS is for the demo drill only")
+        if self.sandbox_reject_kill_switch_orders and self.trading_env != "demo":
+            raise ValueError("SANDBOX_REJECT_KILL_SWITCH_ORDERS is for the demo drill only")
+        if self.sandbox_delay_entry_fills_s > 0 and self.trading_env != "demo":
+            raise ValueError("SANDBOX_DELAY_ENTRY_FILLS_S is for the demo drill only")
         return self
 
     def strategy_config(self) -> dict[str, str | int]:
@@ -166,6 +185,29 @@ class PaperLoopSettings(Settings):
             for name, value in self.model_dump().items()
             if name.startswith(("placeholder_", "risk_"))
         }
+
+
+class LossLimitSettings(Settings):
+    """The kill switch and loss limit settings (spec 0010 AC-21); the trader's settings subclass it in every env.
+
+    ``RISK_TOTAL_LOSS_SINCE`` has no default: the trader refuses to start without it. The ``risk_``
+    names put these in the strategy version config.
+    """
+
+    risk_daily_loss_limit_usd: Decimal = Field(default=Decimal(20), gt=0)
+    risk_total_loss_limit_usd: Decimal = Field(default=Decimal(100), gt=0)
+    risk_total_loss_since: date
+    risk_max_trades_per_day: int = Field(default=50, ge=1)
+    risk_loss_cooldown_s: int = Field(default=600, ge=0)
+    kill_switch_flat_timeout_s: int = Field(default=20, ge=5, le=120)
+
+    @model_validator(mode="after")
+    def _limits_fit(self) -> Self:
+        if self.risk_total_loss_limit_usd < self.risk_daily_loss_limit_usd:
+            raise ValueError("RISK_TOTAL_LOSS_LIMIT_USD must not be below RISK_DAILY_LOSS_LIMIT_USD")
+        if self.risk_total_loss_since > datetime.now(UTC).date():
+            raise ValueError("RISK_TOTAL_LOSS_SINCE must not be in the future")
+        return self
 
 
 @lru_cache(maxsize=1)

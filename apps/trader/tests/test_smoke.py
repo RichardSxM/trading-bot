@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 from typing import Any, ClassVar, cast
@@ -116,7 +117,11 @@ class _FakeNode:
         self.calls.append(("factory", name))
 
     def add_strategy(self, strategy):
+        self.strategies_added = [*getattr(self, "strategies_added", []), strategy]
         self.calls.append(("add_strategy", type(strategy).__name__))
+
+    def strategies(self):
+        return list(getattr(self, "strategies_added", []))
 
     def add_exec_client_factory(self, name, factory):
         self.calls.append(("exec_factory", name))
@@ -170,11 +175,23 @@ class ControlActor:
     """Stands in for the control actor, which needs a real node and Redis."""
 
 
+class KillSwitch:
+    """Stands in for the kill switch; records the strategies handed over."""
+
+    def attach(self, strategies, record, run_id):
+        self.attached = (strategies, record, run_id)
+
+    def watch_losses(self, losses):
+        self.losses = losses
+
+
 def _fake_control_parts(node, settings, secrets):
     from trader.main import ControlParts
 
+    node.kill_switch = KillSwitch()
     return ControlParts(
         actor=cast(Any, ControlActor()),
+        kill_switch=cast(Any, node.kill_switch),
         risk_engine=cast(Any, object()),
         shutdown_counts=lambda: {"cancelled": 0, "unacknowledged_cancels": 0, "positions_kept": 0, "stops_kept": 0},
     )
@@ -190,7 +207,9 @@ def fake_main(monkeypatch):
     monkeypatch.setattr(trader_main, "TradingNode", _FakeNode)
     monkeypatch.setattr(trader_main, "snapshot_client", lambda settings, password: _FakeRedis())
     monkeypatch.setattr(trader_main, "control_parts", _fake_control_parts)
-    monkeypatch.setattr(trader_main, "trader_state", lambda gate, risk, cache, commit, paper=None: {"paused": False})
+    monkeypatch.setattr(
+        trader_main, "trader_state", lambda gate, risk, cache, commit, paper=None, *_: {"paused": False}
+    )
     monkeypatch.setattr(trader_main, "cache_client", lambda settings, password: _PurgeRedis())
     monkeypatch.setattr(trader_main, "start_paper_loop", lambda settings, secrets, trader_id: None)
     return trader_main
@@ -693,16 +712,6 @@ def test_main_purges_the_demo_cache_before_the_node_exists(fake_main, monkeypatc
     assert ("exec_factory", "SANDBOX") in _FakeNode.instances[0].calls
 
 
-def test_main_warns_when_the_placeholder_notional_is_over_the_cap(fake_main, monkeypatch, caplog):
-    monkeypatch.setattr(fake_main, "redis_reachable", lambda host, port: True)
-    settings = _settings("demo").model_copy(update={"placeholder_notional_usd": 300})
-    monkeypatch.setattr(fake_main, "boot", lambda kind, **kw: Boot(settings, SECRETS))
-
-    fake_main.main()
-
-    assert any(getattr(r, "fields", {}).get("code") == "placeholder_notional_over_cap" for r in caplog.records)
-
-
 @pytest.mark.parametrize("drill", [True, False])
 def test_main_warns_only_while_the_stop_reject_drill_is_on(fake_main, monkeypatch, caplog, drill):
     monkeypatch.setattr(fake_main, "redis_reachable", lambda host, port: True)
@@ -740,10 +749,15 @@ def _paper(writer=None):
     import uuid
 
     from trader.main import PaperLoop
+    from trading_core.node.funding import FundingLedger
     from trading_core.strategy.blocks import EntryBlocks
 
     return PaperLoop(
-        run_id=uuid.uuid7(), blocks=EntryBlocks(), writer=cast(Any, writer or _FakeWriter()), sessions=cast(Any, None)
+        run_id=uuid.uuid7(),
+        blocks=EntryBlocks(),
+        writer=cast(Any, writer or _FakeWriter()),
+        sessions=cast(Any, None),
+        ledger=FundingLedger(),
     )
 
 
@@ -769,6 +783,14 @@ def test_demo_registers_recording_then_the_strategy_after_control_and_finishes_t
     registered = [c for c in node.calls if c[0] in ("add_actor", "add_strategy")]
     assert registered[0] == ("add_actor", "ControlActor")
     assert registered.index(("add_actor", "RecordingActor")) < registered.index(("add_strategy", "PlaceholderTimed"))
+    # The loss limits come after the control actor and before the strategy, and resume reads them.
+    assert registered.index(("add_actor", "LossLimitActor")) < registered.index(("add_strategy", "PlaceholderTimed"))
+    assert type(node.kill_switch.losses).__name__ == "LossLimitActor"
+    # The kill switch gets the strategies (spec 0010): the placeholder, with the paper run's recorder.
+    strategies, record, run_id = node.kill_switch.attached
+    assert [type(s).__name__ for s in strategies] == ["PlaceholderTimed"]
+    assert record is not None
+    assert run_id is not None
     assert (code, finished) == (0, [0])
     assert node.calls[-1] == "dispose"
 
@@ -799,7 +821,7 @@ def test_an_undrained_queue_is_spilled_under_the_run_id(monkeypatch, tmp_path):
         def __call__(self):
             raise ConnectionError("postgres down")
 
-    paper = type(paper)(run_id=paper.run_id, blocks=paper.blocks, writer=paper.writer, sessions=Sessions())
+    paper = replace(paper, sessions=Sessions())
     settings = TraderSettings(trading_env="demo", spool_dir=tmp_path, recording_drain_s=Decimal(7))
 
     finish_paper_loop(paper, settings, positions_open=0)  # a failed finish is logged, not raised
@@ -869,3 +891,53 @@ def test_the_placeholder_reads_the_market_context_with_the_trader_settings():
         settings.context_max_age_funding_s,
         settings.context_liquidation_window_s,
     )
+
+
+# spec 0010 AC-21: the loss limit settings refuse a bad start --------------------------------
+
+
+@pytest.mark.parametrize(
+    ("env", "match"),
+    [
+        ({"RISK_DAILY_LOSS_LIMIT_USD": "0"}, "greater than 0"),
+        ({"RISK_TOTAL_LOSS_LIMIT_USD": "-1"}, "greater than 0"),
+        ({"RISK_DAILY_LOSS_LIMIT_USD": "20", "RISK_TOTAL_LOSS_LIMIT_USD": "10"}, "must not be below"),
+        ({"RISK_TOTAL_LOSS_SINCE": "2999-01-01"}, "in the future"),
+        ({"RISK_TOTAL_LOSS_SINCE": ""}, "risk_total_loss_since"),  # unset in Compose reaches the trader empty
+        ({"RISK_MAX_TRADES_PER_DAY": "0"}, "greater than or equal to 1"),
+        ({"RISK_LOSS_COOLDOWN_S": "-1"}, "greater than or equal to 0"),
+        ({"KILL_SWITCH_FLAT_TIMEOUT_S": "4"}, "greater than or equal to 5"),
+        ({"KILL_SWITCH_FLAT_TIMEOUT_S": "121"}, "less than or equal to 120"),
+    ],
+)
+def test_bad_loss_limit_settings_refuse_the_start(monkeypatch, env, match):
+    from pydantic import ValidationError
+
+    monkeypatch.setenv("TRADING_ENV", "demo")
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    with pytest.raises(ValidationError, match=match):
+        TraderSettings()
+
+
+def test_a_missing_total_loss_since_refuses_the_start(monkeypatch):
+    from pydantic import ValidationError
+
+    monkeypatch.setenv("TRADING_ENV", "demo")
+    monkeypatch.delenv("RISK_TOTAL_LOSS_SINCE")
+    with pytest.raises(ValidationError, match="risk_total_loss_since"):
+        TraderSettings()
+
+
+def test_the_loss_limit_defaults_match_the_spec(monkeypatch):
+    monkeypatch.setenv("TRADING_ENV", "demo")
+    settings = TraderSettings()
+
+    assert (
+        settings.risk_daily_loss_limit_usd,
+        settings.risk_total_loss_limit_usd,
+        settings.risk_max_trades_per_day,
+        settings.risk_loss_cooldown_s,
+        settings.kill_switch_flat_timeout_s,
+    ) == (Decimal(20), Decimal(100), 50, 600, 20)
+    assert "risk_daily_loss_limit_usd" in settings.strategy_config()

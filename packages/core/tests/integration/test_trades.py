@@ -1,5 +1,5 @@
 """covers: spec 0006 AC-19 (the Trades lists: closed paper round trips with side from the earliest fill
-and exit reason, and fills, each newest first and paged by 50).
+and exit reason, and fills, each newest first and paged by 50); spec 0010 AC-1 (a kill switch exit).
 
 Other tests commit demo positions and fills to the same database, so every row here sits in 2090
 and later, newer than anything else, and the assertions look at the head of each list.
@@ -15,7 +15,9 @@ from sqlalchemy.orm import Session
 from trading_core.recording import repository
 from trading_core.recording.enums import (
     Env,
+    FundingSource,
     Intent,
+    OrderOrigin,
     OrderSide,
     OrderStatus,
     OrderType,
@@ -26,10 +28,10 @@ from trading_core.recording.enums import (
     Severity,
 )
 from trading_core.recording.queries import fills_page, round_trips_page
-from trading_core.recording.rows import RiskEventRow
+from trading_core.recording.rows import FundingRow, RiskEventRow
 from trading_core.strategy.placeholder import ExitReason
 
-from .conftest import World
+from .conftest import INSTRUMENT, World
 
 BASE = datetime(2090, 1, 1, tzinfo=UTC)
 OPPOSITE = {OrderSide.BUY: OrderSide.SELL, OrderSide.SELL: OrderSide.BUY}
@@ -56,11 +58,13 @@ def _round_trip(
     exit_type: OrderType | None = OrderType.MARKET,
     exit_intent: Intent | None = Intent.EXIT,
     linked: bool = True,
+    kill_switch: bool = False,
 ) -> UUID:
     """A closed position, entered by market on ``entry`` and closed by ``exit_type``.
 
     ``exit_intent`` is the exit order's own decision (``None``: it carries the entry's).
     ``exit_type=None`` leaves the exit fill out; ``linked=False`` leaves out every fill.
+    ``kill_switch`` makes the exit a kill switch order: its origin, and no decision.
     """
     opened_at = closed_at - timedelta(minutes=10)
     position = world.position(
@@ -93,7 +97,8 @@ def _round_trip(
         position.id,
         OPPOSITE[entry],
         closed_at,
-        decision_id=exit_decision_id,
+        decision_id=None if kill_switch else exit_decision_id,
+        origin=OrderOrigin.KILL_SWITCH if kill_switch else OrderOrigin.STRATEGY,
         order_type=exit_type,
         trigger_price=trigger,
     )
@@ -140,10 +145,12 @@ def test_each_exit_reason(session: Session, world: World):
     abandoned_bare = _round_trip(session, world, at + timedelta(hours=2), linked=False)
     _abandon(session, world, abandoned_bare)
     bare = _round_trip(session, world, at + timedelta(hours=1), linked=False)
+    killed = _round_trip(session, world, at + timedelta(hours=7), exit_intent=None, kill_switch=True)
 
-    rows = {r.position_id: r.exit_reason for r in _head(session, 6)}
+    rows = {r.position_id: r.exit_reason for r in _head(session, 7)}
 
     assert rows == {
+        killed: ExitReason.KILL_SWITCH,
         stop: ExitReason.STOP,
         timed: ExitReason.TIME,
         failure: ExitReason.STOP_FAILURE,
@@ -163,6 +170,31 @@ def test_a_round_trip_carries_its_position_figures(session: Session, world: Worl
     assert (row.opened_at, row.closed_at) == (closed_at - timedelta(minutes=10), closed_at)
     assert (row.size, row.avg_entry_px, row.avg_exit_px) == (Decimal("0.001"), Decimal("60000.5"), Decimal("60100"))
     assert (row.realized_pnl, row.fees, row.currency) == (Decimal("0.04"), Decimal("0.03000025"), "USD")
+    assert (row.funding, row.net_pnl) == (Decimal(0), Decimal("0.04"))
+
+
+def test_a_round_trip_nets_its_booked_funding(session: Session, world: World):
+    closed_at = BASE + timedelta(days=2, hours=12)
+    position_id = _round_trip(session, world, closed_at)
+    repository.record_funding(
+        session,
+        FundingRow(
+            env=Env.DEMO,
+            run_id=world.run_id,
+            position_id=position_id,
+            instrument_id=INSTRUMENT,
+            amount=Decimal("-0.006"),
+            currency="USD",
+            rate=Decimal("0.0001"),
+            source=FundingSource.COMPUTED,
+            paid_ns=_ns(closed_at - timedelta(minutes=5)),
+        ),
+    )
+
+    (row,) = _head(session, 1)
+
+    assert row.position_id == position_id
+    assert (row.realized_pnl, row.funding, row.net_pnl) == (Decimal("0.04"), Decimal("-0.006"), Decimal("0.034"))
 
 
 def test_open_positions_and_other_modes_are_left_out(session: Session, world: World):

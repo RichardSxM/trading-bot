@@ -121,11 +121,19 @@ def test_paper_loop_defaults_match_the_spec():
 
     assert (s.placeholder_interval_min, s.placeholder_hold_min, s.placeholder_lookback_min) == (15, 10, 5)
     assert s.placeholder_stop_pct == Decimal("0.3")
-    assert (s.placeholder_notional_usd, s.risk_max_order_notional_usd, s.risk_max_leverage) == (
-        Decimal(100),
-        Decimal(250),
-        Decimal(2),
+    assert (s.risk_max_order_notional_usd, s.risk_max_leverage) == (Decimal(250), Decimal(2))
+    # spec 0011 AC-19
+    assert (s.risk_per_trade, s.risk_max_total_exposure_usd, s.risk_maintenance_margin_rate) == (
+        Decimal("0.005"),
+        Decimal(500),
+        Decimal("0.01"),
     )
+    assert (s.risk_min_liq_distance_pct, s.risk_liq_stop_multiple, s.risk_stop_slippage_bps) == (
+        Decimal(10),
+        Decimal(3),
+        Decimal(5),
+    )
+    assert "placeholder_notional_usd" not in PaperLoopSettings.model_fields
     assert (s.sandbox_maker_fee, s.sandbox_taker_fee) == (Decimal("0.0002"), Decimal("0.0005"))
     assert (s.recording_queue_max, s.spool_dir) == (10_000, Path("/data/spool"))
 
@@ -153,7 +161,6 @@ def test_paper_loop_reads_decimals_exactly_from_the_environment(monkeypatch):
         ("PLACEHOLDER_LOOKBACK_MIN", "0"),
         ("PLACEHOLDER_STOP_PCT", "0"),
         ("PLACEHOLDER_STOP_PCT", "100"),
-        ("PLACEHOLDER_NOTIONAL_USD", "0"),
         ("RISK_MAX_ORDER_NOTIONAL_USD", "-1"),
         ("RISK_MAX_LEVERAGE", "0"),
         ("RISK_STALE_QUOTE_S", "0"),
@@ -164,6 +171,18 @@ def test_paper_loop_reads_decimals_exactly_from_the_environment(monkeypatch):
         ("RECORDING_MAX_BACKLOG_S", "0"),
         ("RECORDING_QUEUE_MAX", "0"),
         ("RECORDING_DRAIN_S", "0"),
+        # spec 0011 AC-19, one case per rule edge
+        ("RISK_PER_TRADE", "0"),
+        ("RISK_PER_TRADE", "0.021"),
+        ("RISK_MAX_TOTAL_EXPOSURE_USD", "0"),
+        ("RISK_MAX_TOTAL_EXPOSURE_USD", "249"),  # below the 250 USD order cap
+        ("RISK_MAINTENANCE_MARGIN_RATE", "0"),
+        ("RISK_MAINTENANCE_MARGIN_RATE", "0.5"),
+        ("RISK_MIN_LIQ_DISTANCE_PCT", "0"),
+        ("RISK_MIN_LIQ_DISTANCE_PCT", "100"),
+        ("RISK_LIQ_STOP_MULTIPLE", "0.9"),
+        ("RISK_STOP_SLIPPAGE_BPS", "-1"),
+        ("RISK_STOP_SLIPPAGE_BPS", "501"),
     ],
 )
 def test_paper_loop_refuses_a_bad_value(monkeypatch, name, value):
@@ -181,6 +200,35 @@ def test_the_stop_reject_drill_is_off_by_default_and_allowed_in_demo(monkeypatch
 
     monkeypatch.setenv("SANDBOX_REJECT_STOP_ORDERS", "true")
     assert PaperLoopSettings(trading_env="demo").sandbox_reject_stop_orders is True
+
+
+def test_the_kill_switch_drill_is_off_by_default_and_refused_outside_demo(monkeypatch):
+    """covers: spec 0010 SANDBOX_REJECT_KILL_SWITCH_ORDERS"""
+    from trading_core.settings import PaperLoopSettings
+
+    assert PaperLoopSettings(trading_env="demo").sandbox_reject_kill_switch_orders is False
+    monkeypatch.setenv("SANDBOX_REJECT_KILL_SWITCH_ORDERS", "true")
+    assert PaperLoopSettings(trading_env="demo").sandbox_reject_kill_switch_orders is True
+    with pytest.raises(ValidationError, match="SANDBOX_REJECT_KILL_SWITCH_ORDERS"):
+        PaperLoopSettings(trading_env="live")
+
+
+def test_the_entry_hold_drill_is_off_by_default_bounded_and_refused_outside_demo(monkeypatch):
+    """covers: spec 0010 SANDBOX_DELAY_ENTRY_FILLS_S"""
+    from decimal import Decimal
+
+    from trading_core.settings import PaperLoopSettings
+
+    assert PaperLoopSettings(trading_env="demo").sandbox_delay_entry_fills_s == 0
+    monkeypatch.setenv("SANDBOX_DELAY_ENTRY_FILLS_S", "30")
+    assert PaperLoopSettings(trading_env="demo").sandbox_delay_entry_fills_s == Decimal(30)
+    with pytest.raises(ValidationError, match="SANDBOX_DELAY_ENTRY_FILLS_S"):
+        PaperLoopSettings(trading_env="live")
+    monkeypatch.setenv("SANDBOX_DELAY_ENTRY_FILLS_S", "61")
+    with pytest.raises(ValidationError):
+        PaperLoopSettings(trading_env="demo")
+    monkeypatch.setenv("SANDBOX_DELAY_ENTRY_FILLS_S", "0")
+    assert PaperLoopSettings(trading_env="live").sandbox_delay_entry_fills_s == 0
 
 
 def test_the_stop_reject_drill_is_refused_outside_demo(monkeypatch):

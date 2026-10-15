@@ -11,8 +11,10 @@ Runs ``PlaceholderTimed`` in a BacktestEngine on synthetic quotes for a PF_XBTUS
 import asyncio
 import logging
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Any
 
 import pytest
 
@@ -30,6 +32,8 @@ from nautilus_trader.model.identifiers import InstrumentId, Symbol, Venue
 from nautilus_trader.model.instruments import CryptoPerpetual
 from nautilus_trader.model.objects import Money, Price, Quantity
 
+from trading_core.control.halt import HaltReason, HaltSource, HaltState
+from trading_core.node.funding import FundingLedger
 from trading_core.node.placeholder import Phase, PlaceholderConfig, PlaceholderTimed
 from trading_core.node.recording import RecordingActor
 from trading_core.node.strategy import PauseGate
@@ -37,6 +41,7 @@ from trading_core.recording.enums import (
     Env,
     Intent,
     OrderEventKind,
+    OrderOrigin,
     OrderSide,
     OrderStatus,
     PositionStatus,
@@ -123,6 +128,9 @@ def _run(
     strategy_cls=None,
     extra_data=(),
     custom_data=(),
+    gate=None,
+    add_actor=None,
+    liq_alarm_pct=Decimal(10),
     **overrides,
 ):
     engine = BacktestEngine(BacktestEngineConfig(logging=LoggingConfig(bypass_logging=True)))
@@ -152,19 +160,37 @@ def _run(
         "hold_min": 10,
         "lookback_min": 5,
         "stop_pct": Decimal("0.3"),
-        "notional_usd": Decimal(100),
         "max_order_notional_usd": Decimal(250),
         "max_leverage": Decimal(2),
+        "max_total_exposure_usd": Decimal(500),
+        "risk_per_trade": Decimal("0.005"),
+        "maintenance_margin_rate": Decimal("0.01"),
+        "min_liq_distance_pct": Decimal(10),
+        "liq_stop_multiple": Decimal(3),
+        "stop_slippage_bps": Decimal(5),
         "stale_quote_s": Decimal(10),
         "stop_accept_timeout_s": Decimal(5),
     } | overrides
     records: list[WriteItem] = []
     blocks = EntryBlocks()
     engine.add_actor(
-        RecordingActor(env=Env.DEMO, run_id=run_id, instrument_id=INSTRUMENT_ID, record=records.append, blocks=blocks)
+        RecordingActor(
+            env=Env.DEMO,
+            run_id=run_id,
+            instrument_id=INSTRUMENT_ID,
+            record=records.append,
+            blocks=blocks,
+            maintenance_margin_rate=Decimal("0.01"),
+            min_liq_distance_pct=liq_alarm_pct,
+            stale_quote_s=Decimal(10),
+            ledger=FundingLedger(),
+        )
     )
     config = PlaceholderConfig(**values)  # type: ignore[arg-type]  # each value has its own type
-    strategy = (strategy_cls or PlaceholderTimed)(config, PauseGate(), blocks, records.append)
+    gate = gate or PauseGate()
+    if add_actor is not None:  # registered before the strategy, as the trader does
+        engine.add_actor(add_actor(engine, gate, blocks, records.append))
+    strategy = (strategy_cls or PlaceholderTimed)(config, gate, blocks, records.append)
     engine.add_strategy(strategy)
 
     async def run():
@@ -194,7 +220,10 @@ def test_a_rising_market_buys_at_the_boundary_rests_a_stop_and_closes_on_time():
     )
     # 2 s after 12:15, from bars closed by then.
     assert enter.decided_ns == _ns(START + timedelta(minutes=15, seconds=2))
-    assert enter.inputs["quantity"] == "0.0011"  # 100 USD at about 85150, floored to 0.0001
+    # Spec 0011: the 0.3 % stop sizes about 0.012 from risk; the 250 USD order cap binds at about 85150.
+    assert (enter.inputs["quantity"], enter.inputs["limited_by"]) == ("0.0029", "notional_cap")
+    assert Decimal(enter.inputs["risk_quantity"]) > Decimal(enter.inputs["quantity"])
+    assert enter.inputs["funding_periods"] == 0  # 12:15 plus a 10 minute hold never crosses the hour
     assert (exit_.intent, exit_.side, exit_.reason) == (Intent.EXIT, OrderSide.SELL, "time")
     assert _risk_events(rows) == []
 
@@ -231,13 +260,14 @@ def test_too_few_bars_at_the_boundary_skips_without_a_decision():
 
 
 def test_a_refused_entry_records_the_decision_and_a_limit_hit_and_places_nothing():
-    engine, _, rows = _run(Prices(20, lambda t: 85000 - int(t * 10)), notional_usd=Decimal(300))
+    # No exposure headroom below one size step (spec 0011 AC-2).
+    engine, _, rows = _run(Prices(20, lambda t: 85000 - int(t * 10)), max_total_exposure_usd=Decimal(1))
 
     (decision,) = _decisions(rows)
     assert (decision.side, decision.risk_verdict, decision.risk_reason) == (
         OrderSide.SELL,
         RiskVerdict.REJECTED,
-        "notional_cap",
+        "exposure_cap",
     )
     (event,) = _risk_events(rows)
     assert (event.kind, event.event_key) == (RiskEventKind.LIMIT_HIT, f"limit_hit:{decision.id}")
@@ -246,6 +276,36 @@ def test_a_refused_entry_records_the_decision_and_a_limit_hit_and_places_nothing
 
 def _of(rows, cls):
     return [r for r in rows if isinstance(r, cls)]
+
+
+def test_every_snapshot_of_a_short_carries_its_liquidation_estimate():
+    # covers: spec 0011 AC-8. Falling into 12:15, a short of about 250 USD on 1000 USD equity.
+    _, _, rows = _run(Prices(29, lambda t: 85000 - int(t * 10)))
+
+    snapshots = _of(rows, PositionSnapshotRow)
+    assert snapshots
+    for snap in snapshots:
+        # (E + q * mark - m * 0) ÷ (q * 1.01): far above the mark, so no alarm.
+        assert snap.liquidation_px > 4 * snap.mark_px
+    assert [e for e in _risk_events(rows) if e.event_key.startswith("liq_near:")] == []
+
+
+def test_a_mark_too_close_to_liquidation_raises_one_critical_alarm_per_position():
+    # covers: spec 0011 AC-8, with an alarm distance no position can clear. The short's estimate is
+    # over 4 times the mark (the test above), a distance above 300 %, so the alarm sits at 1000 %.
+    _, _, rows = _run(Prices(29, lambda t: 85000 - int(t * 10)), liq_alarm_pct=Decimal(1000))
+
+    position_ids = {s.position_id for s in _of(rows, PositionSnapshotRow)}
+    alarms = [e for e in _risk_events(rows) if e.event_key.startswith("liq_near:")]
+    assert len(_of(rows, PositionSnapshotRow)) > 1
+    assert [e.event_key for e in alarms] == [f"liq_near:{p}" for p in position_ids]
+    assert {(e.kind, e.severity) for e in alarms} == {(RiskEventKind.LIMIT_HIT, Severity.CRITICAL)}
+
+
+def test_a_long_below_1x_has_no_liquidation_price():
+    _, _, rows = _run(Prices(29, lambda t: 85000 + int(t * 10)))
+
+    assert {s.liquidation_px for s in _of(rows, PositionSnapshotRow)} == {None}
 
 
 def test_the_recording_actor_queues_every_order_fill_and_position_row_in_order(caplog):
@@ -655,3 +715,461 @@ def test_the_hold_timer_during_the_exit_loop_writes_no_decision(caplog):
     _, exit_order = _by_type(engine, OrderType.MARKET)
     assert exit_order.tags == [f"{DECISION_TAG}{enter.id}"]  # still a stop_failure exit
     assert engine.cache.positions_open() == []
+
+
+# The kill switch (spec 0010) -------------------------------------------------------------
+
+HALT_ID = uuid.UUID("0199d7a4-6d2f-7c4e-9a7b-0f1e2d3c4b5a")
+KILL_SWITCH_TAGS = ["origin:kill_switch", f"halt:{HALT_ID}"]
+ONE_TRIP = Prices(29, lambda t: 85000 + int(t * 10))  # one round trip: the 12:15 boundary only
+
+
+class _FlattenAt(PlaceholderTimed):
+    """Calls ``flatten(HALT_ID)`` once, ``at`` minutes after START."""
+
+    at = 17.0
+
+    def on_start(self):
+        super().on_start()
+        at_ns = _ns(START + timedelta(minutes=type(self).at))
+        self.clock.set_time_alert_ns("test_flatten", at_ns, lambda _: self.flatten(HALT_ID))
+
+
+def test_flatten_with_a_protected_position_closes_it_with_tagged_orders_and_no_decision():
+    """covers: spec 0010 AC-1 (tags, no decision, the stop stays until the position closed)"""
+    _FlattenAt.at = 17.0
+    engine, strategy, rows = _run(ONE_TRIP, strategy_cls=_FlattenAt)
+
+    assert [d.intent for d in _decisions(rows)] == [Intent.ENTER]
+    _, exit_order = _by_type(engine, OrderType.MARKET)
+    assert exit_order.is_reduce_only
+    assert exit_order.tags == KILL_SWITCH_TAGS
+    assert exit_order.filled_qty == exit_order.quantity
+    (stop,) = _by_type(engine, OrderType.STOP_MARKET)
+    assert stop.is_closed
+    assert engine.cache.positions_open() == []
+    assert strategy.phase == Phase.FLAT
+    assert strategy._kill_switch_tags is None
+    assert _risk_events(rows) == []
+    # The recording mapper takes the origin from the tag and leaves the decision empty.
+    order_rows = [r for r in rows if isinstance(r, OrderRow) and r.client_order_id == str(exit_order.client_order_id)]
+    assert {(r.origin, r.decision_id) for r in order_rows} == {(OrderOrigin.KILL_SWITCH, None)}
+
+
+class _FlattenRefused(_FlattenAt):
+    """The first ``refusals`` exits are refused before the venue, so the flatten adopts a running loop."""
+
+    refusals = 2
+
+    def _submit_exit(self, event=None):
+        if self._position() is not None and type(self).refusals > 0:
+            type(self).refusals -= 1
+            self._exit_refused("rejected: test")
+            return
+        super()._submit_exit(event)
+
+
+def test_flatten_adopts_an_exit_loop_already_running_and_its_retries_carry_the_tags():
+    # The time exit (12:25:02) is refused and retried every 1 s; the flatten lands at 12:25:04.5.
+    _FlattenRefused.at = 25 + 4.5 / 60
+    _FlattenRefused.refusals = 6
+    engine, _, rows = _run(ONE_TRIP, strategy_cls=_FlattenRefused)
+
+    assert [d.intent for d in _decisions(rows)] == [Intent.ENTER, Intent.EXIT]
+    exits = [o for o in _by_type(engine, OrderType.MARKET) if o.is_reduce_only]
+    assert [o.tags for o in exits] == [KILL_SWITCH_TAGS]
+    assert engine.cache.positions_open() == []
+
+
+def test_a_late_entry_fill_after_flatten_gets_its_stop_then_closes_at_once():
+    """covers: spec 0010 AC-3 (a late fill)"""
+    # Every venue message takes 20 s: the entry sent at 12:15:02 fills about 12:15:22. The flatten
+    # at 12:15:10 finds no position yet, so it cancels the entry and remembers; the fill wins.
+    _FlattenAt.at = 15 + 10 / 60
+    engine, _, rows = _run(ONE_TRIP, strategy_cls=_FlattenAt, latency_s=20, stop_accept_timeout_s=Decimal(60))
+
+    entry, exit_order = _by_type(engine, OrderType.MARKET)
+    assert entry.filled_qty == entry.quantity
+    assert exit_order.tags == KILL_SWITCH_TAGS
+    assert len(_by_type(engine, OrderType.STOP_MARKET)) == 1
+    assert engine.cache.positions_open() == []
+    assert [d.intent for d in _decisions(rows)] == [Intent.ENTER]
+    assert _risk_events(rows) == []
+
+
+class _HeldEntry(_FlattenAt):
+    """The entry never reaches the venue; after the flatten the venue cancels it."""
+
+    def submit_order(self, order, *args, **kwargs):
+        if order.client_order_id == self._entry_id:
+            return
+        super().submit_order(order, *args, **kwargs)
+
+    def flatten(self, halt_id):
+        entry_id = self._entry_id
+        super().flatten(halt_id)
+        if entry_id is not None:
+            _ended(self, entry_id)
+
+
+def test_an_entry_cancelled_by_the_flatten_logs_info_and_records_no_rejection(caplog):
+    """covers: spec 0010 AC-1 (expected cancels raise no order_rejected event)"""
+    _HeldEntry.at = 15 + 10 / 60
+    with caplog.at_level(logging.INFO, logger="trading_core.node.placeholder"):
+        _, strategy, rows = _run(Prices(20, lambda t: 85000 + int(t * 10)), strategy_cls=_HeldEntry)
+
+    assert _risk_events(rows) == []
+    assert "entry_canceled_kill_switch" in [getattr(r, "fields", {}).get("code") for r in caplog.records]
+    assert strategy.phase == Phase.FLAT
+    assert strategy._kill_switch_tags is None
+
+
+def test_a_flatten_while_flat_leaves_the_next_round_trip_its_own_tags():
+    """covers: spec 0010 AC-1 (the record: only the kill switch's orders say kill_switch), AC-2 (enters
+    again once flat). A stop or flatten while flat, or the restart flatten, must not tag later exits."""
+    _FlattenAt.at = 5.0  # flat: before the 12:15 boundary
+    engine, strategy, rows = _run(ONE_TRIP, strategy_cls=_FlattenAt)
+
+    enter, exit_ = _decisions(rows)
+    assert (enter.intent, exit_.intent, exit_.reason) == (Intent.ENTER, Intent.EXIT, "time")
+    _, exit_order = _by_type(engine, OrderType.MARKET)
+    assert exit_order.tags == [f"{DECISION_TAG}{exit_.id}"]
+    order_rows = [r for r in rows if isinstance(r, OrderRow) and r.client_order_id == str(exit_order.client_order_id)]
+    assert {(r.origin, r.decision_id) for r in order_rows} == {(OrderOrigin.STRATEGY, exit_.id)}
+    assert strategy._kill_switch_tags is None
+
+
+def test_flatten_exits_keep_retrying_past_five_refusals_and_report_exit_failed_once(caplog):
+    """covers: spec 0010 AC-1 (exit failed under a flatten), AC-3 (the exits keep retrying, past the
+    kill switch's 20 s wait)"""
+    _FlattenRefused.at = 17.0
+    _FlattenRefused.refusals = 30  # 30 s of refusals, one a second
+    with caplog.at_level(logging.WARNING, logger="trading_core.node.placeholder"):
+        engine, _, rows = _run(ONE_TRIP, strategy_cls=_FlattenRefused)
+
+    exit_failed = [e for e in _risk_events(rows) if e.event_key.startswith("exit_failed:")]
+    assert [e.severity for e in exit_failed] == [Severity.CRITICAL]
+    refused = [r for r in caplog.records if getattr(r, "fields", {}).get("code") == "exit_refused"]
+    assert len(refused) == 30
+    exits = [o for o in _by_type(engine, OrderType.MARKET) if o.is_reduce_only]
+    assert [o.tags for o in exits] == [KILL_SWITCH_TAGS]
+    assert engine.cache.positions_open() == []
+
+
+def test_a_halted_gate_refuses_the_entry_as_halted_and_records_an_info_limit_hit():
+    """covers: spec 0010 AC-15"""
+    gate = PauseGate()
+    gate.halt(HaltState(HaltReason.MANUAL_STOP, HaltSource.DASHBOARD, START, HALT_ID))
+    engine, _, rows = _run(Prices(20, lambda t: 85000 + int(t * 10)), gate=gate)
+
+    (decision,) = _decisions(rows)
+    assert (decision.risk_verdict, decision.risk_reason) == (RiskVerdict.REJECTED, "halted")
+    (event,) = _risk_events(rows)
+    assert (event.kind, event.severity) == (RiskEventKind.LIMIT_HIT, Severity.INFO)
+    assert engine.cache.orders() == []
+
+
+# The loss limit actor (spec 0010 AC-8 to AC-14) -----------------------------------------
+
+
+class _Redis:
+    async def set(self, name, value):
+        pass
+
+    async def delete(self, *names):
+        pass
+
+
+def _loss_actor(read_seed, limits, own_blocks=None, seeded_at_start=None):
+    """A factory for ``_run(add_actor=...)``: a ``LossLimitActor`` with a real ``KillSwitch`` on the engine."""
+    from trading_core.node.control import KillSwitch
+    from trading_core.node.loss_limits import LossLimitActor
+
+    made: dict[str, Any] = {}
+
+    class _Actor(LossLimitActor):
+        def _on_position_event(self, event):
+            made.setdefault("events", []).append(event)
+            super()._on_position_event(event)
+
+        def on_start(self):
+            super().on_start()
+            if seeded_at_start is not None:  # the backtest never yields to the seed task: land it here
+                self._land(seeded_at_start, self.clock.utc_now())
+
+    def build(engine, gate, blocks, record):
+        kill_switch = KillSwitch(gate, engine.kernel.risk_engine, _Redis(), "demo", lambda: START, engine.cache, 20)
+        actor = _Actor(
+            limits=limits,
+            env=Env.DEMO,
+            read_seed=read_seed,
+            kill_switch=kill_switch,
+            blocks=own_blocks if own_blocks is not None else blocks,
+            record=record,
+            run_id=uuid.uuid7(),
+            seed_retry_s=0,
+        )
+        kill_switch.watch_losses(actor)
+        made["actor"], made["kill_switch"] = actor, kill_switch
+        return actor
+
+    return build, made
+
+
+def _limits(**changes):
+    from trading_core.risk.limits import LossLimits
+
+    base = LossLimits(
+        daily_usd=Decimal(20), total_usd=Decimal(100), total_since=START.date(), max_trades_per_day=50, cooldown_s=600
+    )
+    return replace(base, **changes)
+
+
+def _empty_seed(**changes):
+    from trading_core.recording.queries import LossSeed
+
+    base = LossSeed(
+        realized_today=Decimal(0),
+        realized_total=Decimal(0),
+        closed_keys=frozenset(),
+        opened_today_keys=frozenset(),
+        last_loss_closed_at=None,
+        daily_halt_today=False,
+    )
+    return replace(base, **changes)
+
+
+FALLING_AFTER_ENTRY = Prices(29, lambda t: 85000 + int(t * 10) if t < 16 else 84900)
+
+
+def test_an_unrealized_loss_over_the_daily_limit_halts_and_blocks_until_midnight():
+    """covers: spec 0010 AC-8, AC-9, AC-14 (the 1 s timer sees the open loss)"""
+    build, made = _loss_actor(
+        lambda *_: _empty_seed(), _limits(daily_usd=Decimal("0.05")), seeded_at_start=_empty_seed()
+    )
+    gate = PauseGate()
+
+    _, strategy, _ = _run(FALLING_AFTER_ENTRY, add_actor=build, gate=gate)
+
+    assert gate.halt_state is not None
+    assert gate.halt_state.reason is HaltReason.DAILY_LOSS_LIMIT
+    assert gate.halt_state.source is HaltSource.TRADER
+    assert BlockReason.DAILY_LOSS_LIMIT in strategy._blocks.active()
+    tally, verdict = made["actor"].figures()
+    assert tally.trades_today == 1
+    assert tally.daily_tripped
+    assert verdict.loss_today > Decimal("0.05")
+    fields = made["actor"].snapshot_fields()
+    assert fields["daily_loss_limit_usd"] == "0.05"
+    assert fields["total_loss_limit_usd"] == "100.00"
+    assert fields["trades_today"] == 1
+    assert Decimal(fields["loss_today_usd"]) > Decimal("0.05")
+
+
+def test_when_the_total_trips_too_the_halt_reason_is_total_loss_limit_and_resume_is_refused():
+    """covers: spec 0010 AC-10 (total wins; resume answers total_loss_limit while over)"""
+    from trading_core.control.messages import command
+    from trading_core.recording.enums import ControlCmd, ControlOutcome
+
+    build, made = _loss_actor(
+        lambda *_: _empty_seed(),
+        _limits(daily_usd=Decimal("0.05"), total_usd=Decimal("0.05")),
+        seeded_at_start=_empty_seed(),
+    )
+    gate = PauseGate()
+
+    _run(FALLING_AFTER_ENTRY, add_actor=build, gate=gate)
+    outcome = asyncio.run(made["kill_switch"].resume(command(ControlCmd.RESUME, START, 60)))
+
+    assert gate.halt_state is not None
+    assert gate.halt_state.reason is HaltReason.TOTAL_LOSS_LIMIT
+    assert (outcome.outcome, outcome.reason) == (ControlOutcome.FAILED, "total_loss_limit")
+    assert gate.halted
+
+
+def test_resume_is_refused_with_the_total_loss_exactly_at_its_limit():
+    """covers: spec 0010 AC-4 (total_loss_limit while the total is at or over the limit)"""
+    from trading_core.control.messages import command
+    from trading_core.recording.enums import ControlCmd, ControlOutcome
+
+    seed = _empty_seed(realized_total=Decimal(-100))
+    build, made = _loss_actor(lambda *_: seed, _limits(total_usd=Decimal(100)), seeded_at_start=seed)
+    gate = PauseGate()
+    gate.halt(HaltState(HaltReason.MANUAL_STOP, HaltSource.DASHBOARD, START, HALT_ID))
+
+    _run(Prices(5, lambda t: 85000), add_actor=build, gate=gate)
+    outcome = asyncio.run(made["kill_switch"].resume(command(ControlCmd.RESUME, START, 60)))
+
+    assert (outcome.outcome, outcome.reason) == (ControlOutcome.FAILED, "total_loss_limit")
+    assert gate.halt_state is not None
+    assert gate.halt_state.halt_id == HALT_ID  # the limit tripping while halted kept the first halt
+
+
+def test_resume_after_a_daily_halt_lifts_the_halt_but_keeps_the_daily_block():
+    """covers: spec 0010 AC-4 (resume never clears an entry block), AC-9 (one trip per day)"""
+    from trading_core.control.messages import command
+    from trading_core.recording.enums import ControlCmd, ControlOutcome
+
+    build, made = _loss_actor(
+        lambda *_: _empty_seed(), _limits(daily_usd=Decimal("0.05")), seeded_at_start=_empty_seed()
+    )
+    gate = PauseGate()
+
+    _, strategy, _ = _run(FALLING_AFTER_ENTRY, add_actor=build, gate=gate)
+    outcome = asyncio.run(made["kill_switch"].resume(command(ControlCmd.RESUME, START, 60)))
+    made["actor"]._evaluate()  # the next 1 s check, with the loss still over the limit
+
+    assert outcome.outcome is ControlOutcome.EXECUTED
+    assert not gate.halted
+    assert BlockReason.DAILY_LOSS_LIMIT in strategy._blocks.active()
+
+
+def test_a_restart_with_today_s_realized_loss_at_the_limit_blocks_without_a_new_halt():
+    """covers: spec 0010 AC-9 (a restart the same day blocks again from the realized loss alone)"""
+    seed = _empty_seed(realized_today=Decimal(-20), realized_total=Decimal(-20))
+    build, made = _loss_actor(lambda *_: seed, _limits(daily_usd=Decimal(20)), seeded_at_start=seed)
+    gate = PauseGate()
+
+    _, strategy, _ = _run(Prices(5, lambda t: 85000), add_actor=build, gate=gate)
+
+    assert not gate.halted
+    assert BlockReason.DAILY_LOSS_LIMIT in strategy._blocks.active()
+    tally, _ = made["actor"].figures()
+    assert tally.daily_tripped
+
+
+def test_a_restart_inside_the_cooldown_blocks_from_the_newest_losing_close():
+    """covers: spec 0010 AC-12 (a restart within the wait blocks again), AC-16 (cooldown_until in ISO UTC)"""
+    seed = _empty_seed(last_loss_closed_at=START - timedelta(minutes=1))
+    build, made = _loss_actor(lambda *_: seed, _limits(cooldown_s=600), seeded_at_start=seed)
+
+    _, strategy, _ = _run(Prices(5, lambda t: 85000), add_actor=build)
+
+    assert BlockReason.LOSS_COOLDOWN in strategy._blocks.active()
+    _, verdict = made["actor"].figures()
+    assert verdict.cooldown_until == START + timedelta(minutes=9)
+    assert made["actor"].snapshot_fields()["cooldown_until"] == "2026-10-04T12:09:00.000000Z"
+
+
+def test_the_loss_fields_are_null_until_the_seed_lands_and_the_limits_never_are():
+    """covers: spec 0010 AC-16"""
+
+    def read_seed(*_):
+        raise OSError("postgres down")
+
+    build, made = _loss_actor(read_seed, _limits())
+
+    _run(Prices(5, lambda t: 85000), add_actor=build)
+
+    assert made["actor"].snapshot_fields() == {
+        "loss_today_usd": None,
+        "loss_total_usd": None,
+        "daily_loss_limit_usd": "20.00",
+        "total_loss_limit_usd": "100.00",
+        "trades_today": None,
+        "max_trades_per_day": 50,
+        "cooldown_until": None,
+    }
+
+
+def test_a_losing_close_starts_the_cooldown_and_counts_one_trade():
+    """covers: spec 0010 AC-11, AC-12"""
+    build, made = _loss_actor(
+        lambda *_: _empty_seed(), _limits(max_trades_per_day=1, cooldown_s=3600), seeded_at_start=_empty_seed()
+    )
+
+    _, strategy, rows = _run(FALLING_AFTER_ENTRY, add_actor=build)
+
+    tally, verdict = made["actor"].figures()
+    assert tally.trades_today == 1
+    assert tally.realized_today < 0
+    assert verdict.cooldown_until is not None
+    assert {BlockReason.TRADE_CAP, BlockReason.LOSS_COOLDOWN} <= set(strategy._blocks.active())
+    trade_cap = [e for e in _risk_events(rows) if e.event_key.startswith("trade_cap:")]
+    assert [(e.kind, e.severity) for e in trade_cap] == [(RiskEventKind.LIMIT_HIT, Severity.WARNING)]
+
+
+def test_a_close_after_midnight_before_the_next_tick_counts_in_the_new_day():
+    """covers: spec 0010 AC-9, AC-11 (the day rolls before an event is folded, not only on the 1 s tick)"""
+    from nautilus_trader.model.events import PositionClosed
+
+    build, made = _loss_actor(lambda *_: _empty_seed(), _limits(), seeded_at_start=_empty_seed())
+    _run(FALLING_AFTER_ENTRY, add_actor=build)
+    actor = made["actor"]
+    (closed,) = [e for e in made["events"] if isinstance(e, PositionClosed)]
+    tally, _ = actor.figures()
+    # The tick has not rolled yet: the tally still holds yesterday, empty.
+    actor._tally = replace(
+        tally,
+        day=tally.day - timedelta(days=1),
+        realized_today=Decimal(0),
+        trades_today=0,
+        opened_keys=frozenset(),
+        closed_keys=frozenset(),
+    )
+
+    actor._on_position_event(closed)
+
+    tally, _ = actor.figures()
+    assert tally.day == actor.clock.utc_now().date()
+    assert tally.realized_today == closed.realized_pnl.as_decimal()
+    assert tally.trades_today == 1
+
+
+def test_events_before_the_seed_are_held_and_a_key_in_the_seed_counts_once(caplog):
+    """covers: spec 0010 AC-13 (subscribe first, fold the buffer, skip seeded keys; retry on failure)"""
+    from trading_core.strategy.blocks import EntryBlocks
+
+    own = EntryBlocks()  # the strategy trades; only the actor's own blocks wait for the seed
+    calls = []
+    engine_box: dict[str, Any] = {}
+
+    def read_seed(day_start, total_since):
+        calls.append((day_start, total_since))
+        if len(calls) == 1:
+            raise OSError("postgres down")
+        # The recording writer already wrote the round trip before the seed read it.
+        closed = engine_box["engine"].cache.positions_closed()
+        keys = frozenset((p.id.value, p.ts_opened) for p in closed)
+        realized = sum((p.realized_pnl.as_decimal() for p in closed), Decimal(0))
+        return _empty_seed(realized_today=realized, realized_total=realized, closed_keys=keys, opened_today_keys=keys)
+
+    build, made = _loss_actor(read_seed, _limits(), own_blocks=own)
+
+    def add(engine, gate, blocks, record):
+        engine_box["engine"] = engine
+        return build(engine, gate, blocks, record)
+
+    engine, _, _ = _run(FALLING_AFTER_ENTRY, add_actor=add)
+    actor = made["actor"]
+    assert not actor.seeded
+    assert actor.snapshot_fields()["loss_today_usd"] is None  # unknown until the seed lands
+    assert BlockReason.LOSS_UNKNOWN in own.active()
+    assert actor._buffer  # the opened and closed events, held
+
+    with caplog.at_level(logging.WARNING, logger="trading_core.node.loss_limits"):
+        asyncio.run(actor._seed_until_landed())
+
+    assert actor.seeded
+    assert BlockReason.LOSS_UNKNOWN not in own.active()
+    assert "loss_seed_failed" in [getattr(r, "fields", {}).get("code") for r in caplog.records]
+    assert calls[0][0] == datetime(2026, 10, 4, tzinfo=UTC)  # UTC midnight of the trader's clock
+    tally, _ = actor.figures()
+    (position,) = engine.cache.positions_closed()
+    assert tally.trades_today == 1
+    assert tally.realized_today == position.realized_pnl.as_decimal()
+
+
+def test_resume_reads_the_loss_limits():
+    """covers: spec 0010 AC-4 (loss_unknown until seeded)"""
+    from trading_core.control.messages import command
+    from trading_core.recording.enums import ControlCmd, ControlOutcome
+
+    build, made = _loss_actor(lambda *_: _empty_seed(), _limits())
+    gate = PauseGate()
+    gate.halt(HaltState(HaltReason.MANUAL_STOP, HaltSource.DASHBOARD, START, HALT_ID))
+
+    _run(Prices(5, lambda t: 85000), add_actor=build, gate=gate)
+    outcome = asyncio.run(made["kill_switch"].resume(command(ControlCmd.RESUME, START, 60)))
+
+    assert (outcome.outcome, outcome.reason) == (ControlOutcome.FAILED, "loss_unknown")

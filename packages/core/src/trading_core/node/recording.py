@@ -6,6 +6,14 @@ plain facts, maps them with ``trading_core.recording.mappers``, and hands the ro
 
 Order of rows on the queue matters, and the queue keeps it: the order row before its events
 and fills, the position row before the fills that point at it and its snapshots.
+
+Every position snapshot carries the account's liquidation estimate, and a mark closer to it than
+``min_liq_distance_pct`` raises one critical ``liq_near`` risk event per position (spec 0011 AC-8).
+
+At every top of the UTC hour it books demo funding for each position open across it (spec 0011
+AC-13): the rate from its own ``FundingRateUpdate`` subscription, the mid from the cache. Each
+payment is queued once, added to the ``FundingLedger``, and published on ``FUNDING_BOOKED_TOPIC``.
+Boundaries missed while the trader was down are never booked.
 """
 
 import logging
@@ -18,6 +26,9 @@ from uuid import UUID
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.actor import Actor
 from nautilus_trader.config import ActorConfig
+from nautilus_trader.model.data import FundingRateUpdate
+from nautilus_trader.model.enums import OrderSide as NautilusOrderSide
+from nautilus_trader.model.enums import PositionSide
 from nautilus_trader.model.events import (
     AccountState,
     OrderDenied,
@@ -34,7 +45,10 @@ from nautilus_trader.model.orders.base import Order
 from nautilus_trader.model.orders.unpacker import OrderUnpacker
 from nautilus_trader.model.position import Position
 
-from trading_core.recording.enums import Env
+from trading_core.lab.funding import FundingRate, funding_amount
+from trading_core.node import guard
+from trading_core.node.funding import FUNDING_BOOKED_TOPIC, FundingBooked, FundingLedger
+from trading_core.recording.enums import Env, FundingSource, OrderSide, RiskEventKind, Severity
 from trading_core.recording.mappers import (
     FillFacts,
     OrderFacts,
@@ -45,14 +59,28 @@ from trading_core.recording.mappers import (
     position_row,
     weighted_avg,
 )
-from trading_core.recording.rows import AccountSnapshotRow, InstrumentRow, JsonObject, PositionSnapshotRow
+from trading_core.recording.rows import (
+    AccountSnapshotRow,
+    FundingRow,
+    InstrumentRow,
+    JsonObject,
+    PositionSnapshotRow,
+    RiskEventRow,
+)
 from trading_core.recording.spool import QueuedRow, WriteCall, WriteItem
+from trading_core.risk.check import InvalidRiskInput
+from trading_core.risk.funding import charged, next_boundary_ns, qty_at, usable_rate
+from trading_core.risk.liquidation import distance_pct, liquidation_price, maintenance_rate
 from trading_core.strategy.blocks import BlockReason, EntryBlocks
 
 log = logging.getLogger(__name__)
 
-SNAPSHOT_INTERVAL_NS: Final = 60 * 1_000_000_000
+NS_PER_S: Final = 1_000_000_000
+SNAPSHOT_INTERVAL_NS: Final = 60 * NS_PER_S
 _SNAPSHOT_TIMER: Final = "recording_snapshots"
+_FUNDING_ALERT: Final = "recording_funding"
+# Enough rates to pick the one at a boundary when a newer one arrived just before the alert ran.
+_RATES_KEPT: Final = 8
 
 type Record = Callable[[WriteItem], None]
 
@@ -191,6 +219,10 @@ class RecordingActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
         instrument_id: InstrumentId,
         record: Record,
         blocks: EntryBlocks,
+        maintenance_margin_rate: Decimal,
+        min_liq_distance_pct: Decimal,
+        stale_quote_s: Decimal,
+        ledger: FundingLedger,
     ) -> None:
         super().__init__(ActorConfig(component_id="RecordingActor"))
         self._env = env
@@ -201,6 +233,13 @@ class RecordingActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
         self._blocks = blocks
         self._position_ids: dict[tuple[str, int], UUID] = {}
         self._linked_trades: set[str] = set()
+        self._maintenance_floor = maintenance_margin_rate
+        self._min_liq_distance_pct = min_liq_distance_pct
+        self._liq_alarmed: set[UUID] = set()
+        self._stale_quote_ns = int(stale_quote_s * NS_PER_S)
+        self._ledger = ledger
+        self._rates: list[FundingRate] = []
+        self._funding_boundary_ns = 0
 
     def on_start(self) -> None:
         """Queue the instrument, subscribe to every order, position, and account event, and start the snapshot timer.
@@ -212,11 +251,21 @@ class RecordingActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
         self.msgbus.subscribe(topic="events.position.*", handler=self._guarded(self._on_position_event))
         self.msgbus.subscribe(topic="events.account.*", handler=self._guarded(self._on_account_state))
         self.clock.set_timer_ns(_SNAPSHOT_TIMER, SNAPSHOT_INTERVAL_NS, 0, 0, self._guarded(self._on_snapshot_timer))
+        self.subscribe_funding_rates(self._instrument_id)
+        self._arm_funding(next_boundary_ns(self.clock.timestamp_ns()))
 
     def on_stop(self) -> None:
-        """Stop the snapshot timer; events already queued stay for the drain (AC-13)."""
-        if _SNAPSHOT_TIMER in self.clock.timer_names:
-            self.clock.cancel_timer(_SNAPSHOT_TIMER)
+        """Stop the snapshot timer and the funding alert; events already queued stay for the drain (AC-13)."""
+        for name in (_SNAPSHOT_TIMER, _FUNDING_ALERT):
+            if name in self.clock.timer_names:
+                self.clock.cancel_timer(name)
+
+    def on_funding_rate(self, update: FundingRateUpdate) -> None:
+        """Keep the latest funding rates with the ``ts_init`` they became known at (spec 0011 AC-13)."""
+        if update.instrument_id != self._instrument_id:
+            return
+        rates = [*self._rates, FundingRate(update.ts_init, Decimal(str(update.rate)))]
+        self._rates = sorted(rates, key=lambda r: r.ts_ns)[-_RATES_KEPT:]
 
     def _guarded(self, handler: Callable[[object], None]) -> Callable[[object], None]:
         def run(event: object) -> None:
@@ -337,6 +386,7 @@ class RecordingActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
         mark = (quote.bid_price.as_decimal() + quote.ask_price.as_decimal()) / 2
         pnl = position.unrealized_pnl(instrument.make_price(mark))
         currency: Currency = position.settlement_currency
+        liq_px = self._liquidation_px(position, instrument, mark, currency)
         self._put(
             WriteCall.RECORD_POSITION_SNAPSHOT,
             PositionSnapshotRow(
@@ -345,10 +395,146 @@ class RecordingActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
                 quantity=position.signed_decimal_qty(),
                 mark_px=mark,
                 unrealized_pnl=pnl.as_decimal(),
+                liquidation_px=liq_px,
                 currency=currency.code,
                 captured_ns=self.clock.timestamp_ns(),
             ),
         )
+        distance = distance_pct(mark, liq_px)
+        if distance is not None and distance < self._min_liq_distance_pct and row_id not in self._liq_alarmed:
+            self._liq_alarmed.add(row_id)
+            self._liq_near(row_id, mark, liq_px, distance)
+
+    def _equity(self, currency: Currency) -> Decimal | None:
+        """Balance, every open position's unrealized P&L, and the run's booked funding; ``None`` without a balance."""
+        account = self.portfolio.account(self._venue)
+        balance = None if account is None else account.balance_total(currency)
+        if balance is None:
+            return None
+        equity: Decimal = balance.as_decimal() + guard.unrealized(self.cache) + self._ledger.run_total
+        return equity
+
+    def _liquidation_px(
+        self, position: Position, instrument: Instrument, mark: Decimal, currency: Currency
+    ) -> Decimal | None:
+        # Spec 0011 AC-8: the AC-5 estimate at the mark, full equity, no fee, the other open notional.
+        try:
+            equity = self._equity(currency)
+            if equity is None:
+                return None
+            return liquidation_price(
+                OrderSide.BUY if position.side == PositionSide.LONG else OrderSide.SELL,
+                abs(position.signed_decimal_qty()),
+                mark,
+                equity,
+                guard.open_notional(self.cache, exclude=position.id),
+                Decimal(0),
+                maintenance_rate(guard.margin_maint(instrument), self._maintenance_floor),
+            )
+        except InvalidRiskInput:
+            return None  # another open instrument has no mid yet
+
+    def _liq_near(self, row_id: UUID, mark: Decimal, liq_px: Decimal | None, distance: Decimal) -> None:
+        key = f"liq_near:{row_id}"
+        self._put(
+            WriteCall.RECORD_RISK_EVENT,
+            RiskEventRow(
+                env=self._env,
+                event_key=key,
+                kind=RiskEventKind.LIMIT_HIT,
+                severity=Severity.CRITICAL,
+                message=f"liquidation {distance.quantize(Decimal('0.01'))} % from the mark",
+                details={"mark_px": mark, "liquidation_px": liq_px, "distance_pct": distance},
+                run_id=self._run_id,
+                occurred_ns=self.clock.timestamp_ns(),
+            ),
+        )
+        log.critical("liquidation near", extra={"fields": {"code": "liq_near", "event_key": key}})
+
+    # Funding --------------------------------------------------------------------------------
+
+    def _arm_funding(self, boundary_ns: int) -> None:
+        self._funding_boundary_ns = boundary_ns
+        self.clock.set_time_alert_ns(_FUNDING_ALERT, boundary_ns, self._guarded(self._on_funding_alert))
+
+    def _on_funding_alert(self, event: object) -> None:
+        boundary = self._funding_boundary_ns
+        now = self.clock.timestamp_ns()
+        if now < boundary:
+            # A live alert can wake early (the monotonic clock runs ahead): sleep the rest.
+            self._arm_funding(boundary)
+            return
+        self._arm_funding(next_boundary_ns(now))
+        self._book_funding(boundary)
+
+    def _book_funding(self, boundary_ns: int) -> None:
+        positions = [
+            p
+            for p in self.cache.positions(instrument_id=self._instrument_id)
+            if charged(p.ts_opened, p.ts_closed if p.is_closed else None, boundary_ns)
+        ]
+        if not positions:
+            return
+        rate = usable_rate(self._rates, boundary_ns)
+        quote = self.cache.quote_tick(self._instrument_id)
+        fresh = quote is not None and boundary_ns - quote.ts_event < self._stale_quote_ns
+        if rate is None or quote is None or not fresh:
+            self._funding_unbooked(boundary_ns, rate is None, not fresh)
+            return
+        mid = (quote.bid_price.as_decimal() + quote.ask_price.as_decimal()) / 2
+        for position in positions:
+            row_id = self._position_ids.get((position.id.value, position.ts_opened))
+            if row_id is None:
+                log.warning(
+                    "funding skipped, position never recorded",
+                    extra={"fields": {"code": "funding_position_unknown", "position_ref": position.id.value}},
+                )
+                continue
+            fills = [
+                (f.ts_event, f.last_qty.as_decimal() * (1 if f.order_side == NautilusOrderSide.BUY else -1))
+                for f in _fills(position.events)
+            ]
+            amount = funding_amount(qty_at(fills, boundary_ns), mid, rate)
+            self._put(
+                WriteCall.RECORD_FUNDING,
+                FundingRow(
+                    env=self._env,
+                    run_id=self._run_id,
+                    position_id=row_id,
+                    instrument_id=self._instrument_id.value,
+                    amount=amount,
+                    currency=position.settlement_currency.code,
+                    rate=rate,
+                    source=FundingSource.COMPUTED,
+                    paid_ns=boundary_ns,
+                ),
+            )
+            self._ledger.add(amount)
+            self.msgbus.publish(
+                topic=FUNDING_BOOKED_TOPIC,
+                msg=FundingBooked(self._instrument_id.value, boundary_ns, row_id, amount),
+            )
+            log.info(
+                "funding booked",
+                extra={"fields": {"code": "funding_booked", "paid_ns": boundary_ns, "amount": str(amount)}},
+            )
+
+    def _funding_unbooked(self, boundary_ns: int, rate_missing: bool, quote_missing: bool) -> None:
+        key = f"funding_unbooked:{self._instrument_id.value}:{boundary_ns}"
+        self._put(
+            WriteCall.RECORD_RISK_EVENT,
+            RiskEventRow(
+                env=self._env,
+                event_key=key,
+                kind=RiskEventKind.LIMIT_HIT,
+                severity=Severity.WARNING,
+                message="funding not booked: no usable rate or quote at the boundary",
+                details={"paid_ns": boundary_ns, "rate_missing": rate_missing, "quote_missing": quote_missing},
+                run_id=self._run_id,
+                occurred_ns=self.clock.timestamp_ns(),
+            ),
+        )
+        log.warning("funding not booked", extra={"fields": {"code": "funding_unbooked", "event_key": key}})
 
     def _put(self, call: WriteCall, row: QueuedRow) -> None:
         self._record(WriteItem(call, row))

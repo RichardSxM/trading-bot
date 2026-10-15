@@ -1,4 +1,5 @@
-"""covers: spec 0006 AC-17, Overview's position card (open, flat, offline never flat, P&L before funding)."""
+"""covers: spec 0006 AC-17, Overview's position card (open, flat, offline never flat); spec 0011 AC-18
+(P&L net of funding, the funding an open position paid so far)."""
 
 import asyncio
 import logging
@@ -111,12 +112,14 @@ def _overview(client, clock, redis, position=None, account=ACCOUNT):
     return client.get("/").text
 
 
-def test_overview_shows_the_open_position_and_the_figures_before_funding(client, clock, redis):
+def test_overview_shows_the_open_position_and_the_figures_net_of_funding(client, clock, redis):
     page = _overview(client, clock, redis, OPEN)
 
     assert 'sse-swap="overview-position"' in page
-    assert "Unrealized P&amp;L, before funding" in page
-    assert "Paper P&amp;L, before funding" in page
+    assert "before funding" not in page
+    assert "Unrealized P&amp;L" in page
+    assert "Paper P&amp;L, net of fees and funding" in page
+    assert "Funding so far" in page
     for figure in ("64,210.50", "64,018", "accepted"):
         assert figure in page
     assert "Trader offline" not in page

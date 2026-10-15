@@ -10,7 +10,7 @@ from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from enum import StrEnum
 from typing import Final
 
-from trading_core.recording.enums import Intent, OrderSide, OrderType, PositionSide
+from trading_core.recording.enums import Intent, OrderOrigin, OrderSide, OrderType, PositionSide
 
 NS_PER_MIN: Final = 60 * 1_000_000_000
 # The decision fires this long after each boundary, so the boundary's bar has closed.
@@ -24,6 +24,7 @@ class ExitReason(StrEnum):
     TIME = "time"
     STOP_FAILURE = "stop_failure"
     ABANDONED = "abandoned"
+    KILL_SWITCH = "kill_switch"
 
 
 def next_boundary_ns(now_ns: int, interval_min: int) -> int:
@@ -62,15 +63,23 @@ def stop_price(avg_px: Decimal, side: PositionSide, pct: Decimal, tick: Decimal)
     return ((raw / tick).to_integral_value(rounding=rounding) * tick).quantize(tick)
 
 
-def exit_reason(abandoned: bool, last_fill_order_type: OrderType | None, decision_intent: Intent | None) -> ExitReason:
+def exit_reason(
+    abandoned: bool,
+    last_fill_order_type: OrderType | None,
+    decision_intent: Intent | None,
+    last_fill_origin: OrderOrigin | None = None,
+) -> ExitReason:
     """Why a round trip closed, from how its last fill came about.
 
-    Abandoned at restart wins. Otherwise a stop market fill is ``stop``; a market fill carrying
+    Abandoned at restart wins, then a fill of a kill switch order (spec 0010 AC-1). Otherwise
+    a stop market fill is ``stop``; a market fill carrying
     an ``exit`` decision is ``time``; any other market fill (it carries the entry's decision, the
     exit loop after a failed stop) is ``stop_failure``.
     """
     if abandoned:
         return ExitReason.ABANDONED
+    if last_fill_origin == OrderOrigin.KILL_SWITCH:
+        return ExitReason.KILL_SWITCH
     if last_fill_order_type == OrderType.STOP_MARKET:
         return ExitReason.STOP
     if decision_intent == Intent.EXIT:
