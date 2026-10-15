@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
+from writer_fixture import fake_kernel
 
 import recorder.main as recorder_main
 from recorder.actor import RecordingActor
@@ -136,7 +137,8 @@ class FakeNode:
 
     def __init__(self, config):
         self.actors: list[object] = []
-        self.trader = SimpleNamespace(add_actor=self.actors.append)
+        self.trader = SimpleNamespace(add_actor=self.actors.append, subscribe=lambda topic, handler: None)
+        self.kernel = fake_kernel()
 
     def add_data_client_factory(self, *a):
         pass
