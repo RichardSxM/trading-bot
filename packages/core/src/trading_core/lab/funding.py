@@ -64,6 +64,11 @@ class FundingPayment:
     amount: Decimal
 
 
+def funding_amount(signed_qty: Decimal, mid: Decimal, rate: Decimal) -> Decimal:
+    """What a position books at one boundary: ``-signed_qty * mid * rate`` (negative when it pays)."""
+    return -signed_qty * mid * rate
+
+
 def funding_boundaries(start_ns: int, end_ns: int) -> list[int]:
     """The funding boundaries strictly inside ``start_ns``..``end_ns`` (a segment is flat at both ends)."""
     first = start_ns - start_ns % FUNDING_PERIOD_NS + FUNDING_PERIOD_NS
@@ -110,6 +115,6 @@ def apply_funding(samples: Iterable[FundingSample], rates: Iterable[FundingRate]
             continue
         if sample.position is None:
             raise ValueError(f"an open position at {sample.boundary_ns} has no position key")
-        amount = -sample.signed_qty * sample.mid * rate
+        amount = funding_amount(sample.signed_qty, sample.mid, rate)
         payments.append(FundingPayment(sample.boundary_ns, sample.position, rate, amount))
     return payments

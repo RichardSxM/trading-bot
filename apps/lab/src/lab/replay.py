@@ -276,10 +276,7 @@ def _run_config(batch: Batch, variant: VariantSpec, *, segment_end_partial: bool
         "queue_model": "pessimistic" if variant.queue_position else "optimistic",
         "starting_balance_usd": run.starting_balance_usd,
         "leverage": run.leverage,
-        "risk_limits": {
-            "max_order_notional": run.risk_limits().max_order_notional,
-            "max_leverage": run.risk_limits().max_leverage,
-        },
+        "risk_limits": dict(vars(run.risk_limits())),
         "funding_source": batch.funding_source,
         "context": {
             **run.context.model_dump(),

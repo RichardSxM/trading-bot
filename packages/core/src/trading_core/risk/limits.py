@@ -2,20 +2,25 @@
 
 ``LossTally`` holds the realized figures and counts, keyed by ``(position_ref, opened_ns)`` so a
 position counts once even when NETTING reuses its id for every round trip. ``on_opened`` and
-``on_closed`` fold one position in (a no op for a key already counted), ``roll`` starts a new UTC
-day, and ``evaluate`` adds the open positions' unrealized P&L and answers which limit trips (only
-on the edge) and which entry blocks hold. No I/O and no clock: the caller passes ``now``.
+``on_closed`` fold one position in (a no op for a key already counted), ``on_funding`` folds one
+booked funding payment in as realized (spec 0011 AC-16), ``roll`` starts a new UTC day, and
+``evaluate`` adds the open positions' unrealized P&L and answers which limit trips (only on the
+edge) and which entry blocks hold. No I/O and no clock: the caller passes ``now``.
 """
 
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from uuid import UUID
 
 from trading_core.control.halt import HaltReason
 from trading_core.strategy.blocks import BlockReason
 
 type PositionKey = tuple[str, int]
 """A position's identity: ``(position_ref, opened_ns)``, the recorder's own key."""
+
+type FundingKey = tuple[str, int, UUID]
+"""A funding payment's identity: ``(instrument_id, paid_ns, position row id)``."""
 
 _NS_PER_S = 1_000_000_000
 
@@ -35,8 +40,9 @@ class LossLimits:
 class LossTally:
     """The realized side of the loss figures for one UTC ``day``, and whether each limit already tripped.
 
-    ``realized_*`` are P&L sums (a loss is negative). ``opened_keys`` are the positions opened
-    today (the trade count); ``closed_keys`` the positions closed since ``total_since``.
+    ``realized_*`` are P&L sums (a loss is negative), booked funding included. ``opened_keys`` are
+    the positions opened today (the trade count); ``closed_keys`` the positions closed since
+    ``total_since``; ``funding_keys`` the funding payments already counted.
     """
 
     day: date
@@ -45,6 +51,7 @@ class LossTally:
     trades_today: int = 0
     opened_keys: frozenset[PositionKey] = field(default_factory=frozenset)
     closed_keys: frozenset[PositionKey] = field(default_factory=frozenset)
+    funding_keys: frozenset[FundingKey] = field(default_factory=frozenset)
     last_loss_closed_at: datetime | None = None
     daily_tripped: bool = False
     total_tripped: bool = False
@@ -118,6 +125,22 @@ def on_closed(
         realized_total=tally.realized_total + (realized if in_total else Decimal(0)),
         closed_keys=tally.closed_keys | {key},
         last_loss_closed_at=last,
+    )
+
+
+def on_funding(tally: LossTally, key: FundingKey, amount: Decimal, paid_at: datetime, limits: LossLimits) -> LossTally:
+    """Add one booked funding payment as realized, once (spec 0011 AC-16); negative when paid.
+
+    It counts today when it was paid today, and in the total when paid on or after ``total_since``.
+    """
+    if key in tally.funding_keys:
+        return tally
+    paid_day = utc_day(paid_at)
+    return replace(
+        tally,
+        realized_today=tally.realized_today + (amount if paid_day == tally.day else Decimal(0)),
+        realized_total=tally.realized_total + (amount if paid_day >= limits.total_since else Decimal(0)),
+        funding_keys=tally.funding_keys | {key},
     )
 
 

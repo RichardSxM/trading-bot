@@ -85,7 +85,16 @@ _CHECK_CONTEXT: Final = RunContext(
     run_id=UUID(int=0),
     instrument_id="PF_XBTUSD.KRAKEN",
     seed=0,
-    risk=RiskLimits(max_order_notional=Decimal(1), max_leverage=Decimal(1)),
+    risk=RiskLimits(
+        max_order_notional=Decimal(1),
+        max_leverage=Decimal(1),
+        max_total_exposure=Decimal(1),
+        risk_per_trade=Decimal("0.005"),
+        maintenance_margin_rate=Decimal("0.01"),
+        min_liq_distance_pct=Decimal(10),
+        liq_stop_multiple=Decimal(3),
+        stop_slippage_bps=Decimal(5),
+    ),
     order_id_tag="S1",
 )
 
@@ -139,14 +148,27 @@ class StrategyEntry:
         return self.factory(config, gate, blocks, record)
 
 
+def _risk_fields(risk: RiskLimits) -> dict[str, object]:
+    """The ``GuardedConfig`` fields of the run's ``RiskLimits`` (spec 0011)."""
+    return {
+        "max_order_notional_usd": str(risk.max_order_notional),
+        "max_leverage": str(risk.max_leverage),
+        "max_total_exposure_usd": str(risk.max_total_exposure),
+        "risk_per_trade": str(risk.risk_per_trade),
+        "maintenance_margin_rate": str(risk.maintenance_margin_rate),
+        "min_liq_distance_pct": str(risk.min_liq_distance_pct),
+        "liq_stop_multiple": str(risk.liq_stop_multiple),
+        "stop_slippage_bps": str(risk.stop_slippage_bps),
+    }
+
+
 def _random_taker_fields(context: RunContext) -> dict[str, object]:
     return {
         "env": context.env.value,
         "run_id": str(context.run_id),
         "instrument_id": context.instrument_id,
         "seed": context.seed,
-        "max_order_notional_usd": str(context.risk.max_order_notional),
-        "max_leverage": str(context.risk.max_leverage),
+        **_risk_fields(context.risk),
         "order_id_tag": context.order_id_tag,
         **context.market.config_fields(),
     }
@@ -158,8 +180,7 @@ def _placeholder_fields(context: RunContext) -> dict[str, object]:
         "env": context.env.value,
         "run_id": str(context.run_id),
         "instrument_id": context.instrument_id,
-        "max_order_notional_usd": str(context.risk.max_order_notional),
-        "max_leverage": str(context.risk.max_leverage),
+        **_risk_fields(context.risk),
         "order_id_tag": context.order_id_tag,
         **context.market.config_fields(),
     }

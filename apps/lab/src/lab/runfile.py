@@ -56,10 +56,33 @@ class _Section(BaseModel):
 
 
 class RiskSection(_Section):
-    """The ``RiskLimits`` of spec 0006's ``check_entry``, same field names."""
+    """The ``RiskLimits`` of ``check_entry`` (spec 0006, spec 0011), same field names.
+
+    The spec 0011 rules default to the trader's ``RISK_*`` defaults; ``max_total_exposure``
+    defaults to ``max_order_notional`` (a replay holds one position at a time).
+    """
 
     max_order_notional: DecimalStr = Field(gt=0)
     max_leverage: DecimalStr = Field(gt=0)
+    max_total_exposure: DecimalStr | None = Field(default=None, gt=0)
+    risk_per_trade: DecimalStr = Field(default=Decimal("0.005"), gt=0, le=Decimal("0.02"))
+    maintenance_margin_rate: DecimalStr = Field(default=Decimal("0.01"), gt=0, lt=Decimal("0.5"))
+    min_liq_distance_pct: DecimalStr = Field(default=Decimal(10), gt=0, lt=100)
+    liq_stop_multiple: DecimalStr = Field(default=Decimal(3), ge=1)
+    stop_slippage_bps: DecimalStr = Field(default=Decimal(5), ge=0, le=500)
+
+    def limits(self) -> RiskLimits:
+        """This section as the guard's ``RiskLimits``."""
+        return RiskLimits(
+            max_order_notional=self.max_order_notional,
+            max_leverage=self.max_leverage,
+            max_total_exposure=self.max_order_notional if self.max_total_exposure is None else self.max_total_exposure,
+            risk_per_trade=self.risk_per_trade,
+            maintenance_margin_rate=self.maintenance_margin_rate,
+            min_liq_distance_pct=self.min_liq_distance_pct,
+            liq_stop_multiple=self.liq_stop_multiple,
+            stop_slippage_bps=self.stop_slippage_bps,
+        )
 
 
 class ContextSection(_Section):
@@ -144,9 +167,9 @@ class RunFile(_Section):
         """The ``check_entry`` limits, from ``[risk]`` or ``[paper]``."""
         paper = self.paper_strategy()
         if paper is not None:
-            return RiskLimits(max_order_notional=paper.max_order_notional, max_leverage=paper.max_leverage)
+            return paper.risk
         assert self.risk is not None  # the validator requires one of them
-        return RiskLimits(max_order_notional=self.risk.max_order_notional, max_leverage=self.risk.max_leverage)
+        return self.risk.limits()
 
     def strategy_values(self) -> dict[str, ConfigValue]:
         """The strategy's own settings: ``[strategy.config]``, or what ``[paper]`` gives the placeholder."""
@@ -158,7 +181,6 @@ class RunFile(_Section):
             "hold_min": paper.hold_min,
             "lookback_min": paper.lookback_min,
             "stop_pct": str(paper.stop_pct),
-            "notional_usd": str(paper.notional_usd),
             "stale_quote_s": str(paper.stale_quote_s),
             # Not in strategy_config(), so not in the hash; it never changes an entry decision.
             "stop_accept_timeout_s": str(STOP_ACCEPT_TIMEOUT_S),

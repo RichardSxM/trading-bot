@@ -47,7 +47,10 @@ from nautilus_trader.model.orders.base import Order
 from nautilus_trader.model.position import Position
 
 from trading_core.marketdata.context import context_log_fields
-from trading_core.node.strategy import KfsStrategy, KfsStrategyConfig, PauseGate
+from trading_core.node import guard
+from trading_core.node.funding import FundingLedger
+from trading_core.node.guard import GuardedConfig
+from trading_core.node.strategy import KfsStrategy, PauseGate
 from trading_core.recording.enums import (
     Env,
     Intent,
@@ -61,8 +64,8 @@ from trading_core.recording.enums import (
 from trading_core.recording.mappers import DECISION_TAG, HALT_TAG, ORIGIN_TAG, PARENT_TAG, weighted_avg
 from trading_core.recording.rows import DecisionRow, JsonObject, RiskEventRow
 from trading_core.recording.spool import WriteCall, WriteItem
-from trading_core.risk.check import EntryRequest, InvalidRiskInput, RiskLimits, check_entry, refusal_severity
-from trading_core.risk.sizing import entry_quantity
+from trading_core.risk.check import EntryRequest, InvalidRiskInput, check_entry, refusal_severity
+from trading_core.risk.funding import funding_periods
 from trading_core.strategy.blocks import BlockReason, EntryBlocks
 from trading_core.strategy.placeholder import DECISION_DELAY_NS, NS_PER_MIN, entry_side, next_boundary_ns, stop_price
 
@@ -101,7 +104,7 @@ class Phase(StrEnum):
     EXITING = "exiting"
 
 
-class PlaceholderConfig(KfsStrategyConfig, frozen=True):
+class PlaceholderConfig(GuardedConfig, frozen=True):
     """The placeholder's settings (``PLACEHOLDER_*``, ``RISK_*``) plus the run it records under."""
 
     env: str
@@ -110,9 +113,6 @@ class PlaceholderConfig(KfsStrategyConfig, frozen=True):
     hold_min: int
     lookback_min: int
     stop_pct: Decimal
-    notional_usd: Decimal
-    max_order_notional_usd: Decimal
-    max_leverage: Decimal
     stale_quote_s: Decimal
     stop_accept_timeout_s: Decimal
 
@@ -124,16 +124,25 @@ def _ns(seconds: Decimal) -> int:
 class PlaceholderTimed(KfsStrategy):
     """Enters on a fixed beat, protects with a stop, closes on time (see the module docstring)."""
 
-    def __init__(self, config: PlaceholderConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> None:
+    def __init__(
+        self,
+        config: PlaceholderConfig,
+        gate: PauseGate,
+        blocks: EntryBlocks,
+        record: Record,
+        ledger: FundingLedger | None = None,
+    ) -> None:
         super().__init__(config, gate)
         self._cfg = config
+        # The run's booked funding (spec 0011 AC-17); a replay books none, so it starts empty.
+        self._ledger = ledger or FundingLedger()
         self._blocks = blocks
         self._record = record
         self._env = Env(config.env)
         self._run_id = UUID(config.run_id)
         self._instrument_id = InstrumentId.from_str(config.instrument_id)
         self._bar_type = BarType.from_str(f"{config.instrument_id}-1-MINUTE-MID-INTERNAL")
-        self._limits = RiskLimits(max_order_notional=config.max_order_notional_usd, max_leverage=config.max_leverage)
+        self._limits = config.risk_limits()
         self._boundary_ns = 0
         self._stale_since_ns: int | None = None
         self._started_ns = 0
@@ -247,33 +256,37 @@ class PlaceholderTimed(KfsStrategy):
             log.warning("entry skipped, no quote", extra={"fields": {"code": "entry_skipped_no_quote"}})
             return
         mid = (quote.bid_price.as_decimal() + quote.ask_price.as_decimal()) / 2
-        quantity = entry_quantity(self._cfg.notional_usd, mid, instrument.size_increment.as_decimal())
-        equity = self._equity(mid)
-        request = EntryRequest(
-            quantity=quantity,
-            mid=mid,
-            equity=equity,
-            open_notional=Decimal(0),
-            has_position=False,
-            paused=self._gate.paused,
-            halted=self._gate.halted,
-            blocks=[str(r) for r in self._blocks.active()],
-        )
+        now = self.clock.timestamp_ns()
+        position_side = PositionSide.LONG if side == OrderSide.BUY else PositionSide.SHORT
         try:
+            request = EntryRequest(
+                side=side,
+                mid=mid,
+                equity=self._equity(),
+                open_notional=guard.open_notional(self.cache),
+                size_step=instrument.size_increment.as_decimal(),
+                taker_fee=instrument.taker_fee,
+                instrument_maintenance_rate=guard.margin_maint(instrument),
+                funding_periods=funding_periods(now, self._cfg.hold_min * NS_PER_MIN),
+                funding_rate=self._funding_rate(),
+                stop_px=stop_price(mid, position_side, self._cfg.stop_pct, instrument.price_increment.as_decimal()),
+                has_position=False,
+                paused=self._gate.paused,
+                halted=self._gate.halted,
+                blocks=[str(r) for r in self._blocks.active()],
+            )
             verdict = check_entry(request, self._limits)
         except InvalidRiskInput:
             log.exception("risk check could not judge the entry", extra={"fields": {"code": "risk_input_invalid"}})
             return
+        quantity = verdict.quantity
         decision = uuid.uuid7()
-        now = self.clock.timestamp_ns()
         inputs: JsonObject = {
             "close_now": closes[-1],
             "close_lookback": closes[-1 - self._cfg.lookback_min],
             "mid": mid,
-            "equity": equity,
-            "open_notional": Decimal(0),
             "quote_age_ms": (now - quote.ts_event) // 1_000_000,
-            "quantity": quantity,
+            **verdict.figures.as_inputs(),
         }
         self._record_decision(
             decision, Intent.ENTER, side, "timed_entry", inputs, verdict.approved, verdict.reason, now
@@ -607,16 +620,21 @@ class PlaceholderTimed(KfsStrategy):
         positions = self.cache.positions_open(instrument_id=self._instrument_id)
         return positions[0] if positions else None
 
-    def _equity(self, mid: Decimal) -> Decimal:
+    def _equity(self) -> Decimal:
+        # Spec 0011 AC-17: the sandbox balance, every open position's unrealized P&L, and booked funding.
         account = self.portfolio.account(self._instrument_id.venue)
         if account is None:
             raise LookupError(f"no account for {self._instrument_id.venue}")
         balance = account.balance_total(USD)
         equity = Decimal(0) if balance is None else balance.as_decimal()
-        position = self._position()
-        if position is not None:
-            equity += position.unrealized_pnl(self._instrument().make_price(mid)).as_decimal()
-        return equity
+        return equity + guard.unrealized(self.cache) + self._ledger.run_total
+
+    def _funding_rate(self) -> Decimal | None:
+        # Spec 0011 AC-10: the context's rate, or ``None`` when the context is off, the rate missing or stale.
+        if not self._cfg.use_market_context:
+            return None
+        rate = self.market_context().funding_rate
+        return None if rate is None or rate.is_stale else rate.value
 
     def _alert(self, name: str, at_ns: int, callback: Callable[[object], None]) -> None:
         self._cancel_timer(name)

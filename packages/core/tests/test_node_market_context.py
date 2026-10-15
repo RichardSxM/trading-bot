@@ -90,6 +90,12 @@ def _live_strategy():
         seed=1,
         max_order_notional_usd=Decimal(1),
         max_leverage=Decimal(1),
+        max_total_exposure_usd=Decimal(1),
+        risk_per_trade=Decimal("0.005"),
+        maintenance_margin_rate=Decimal("0.01"),
+        min_liq_distance_pct=Decimal(10),
+        liq_stop_multiple=Decimal(3),
+        stop_slippage_bps=Decimal(5),
         use_market_context=True,
     )
     strategy = RandomTaker(config, PauseGate(), EntryBlocks(), lambda item: None)

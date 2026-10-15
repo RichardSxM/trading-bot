@@ -33,6 +33,7 @@ from nautilus_trader.model.instruments import CryptoPerpetual
 from nautilus_trader.model.objects import Money, Price, Quantity
 
 from trading_core.control.halt import HaltReason, HaltSource, HaltState
+from trading_core.node.funding import FundingLedger
 from trading_core.node.placeholder import Phase, PlaceholderConfig, PlaceholderTimed
 from trading_core.node.recording import RecordingActor
 from trading_core.node.strategy import PauseGate
@@ -129,6 +130,7 @@ def _run(
     custom_data=(),
     gate=None,
     add_actor=None,
+    liq_alarm_pct=Decimal(10),
     **overrides,
 ):
     engine = BacktestEngine(BacktestEngineConfig(logging=LoggingConfig(bypass_logging=True)))
@@ -158,16 +160,31 @@ def _run(
         "hold_min": 10,
         "lookback_min": 5,
         "stop_pct": Decimal("0.3"),
-        "notional_usd": Decimal(100),
         "max_order_notional_usd": Decimal(250),
         "max_leverage": Decimal(2),
+        "max_total_exposure_usd": Decimal(500),
+        "risk_per_trade": Decimal("0.005"),
+        "maintenance_margin_rate": Decimal("0.01"),
+        "min_liq_distance_pct": Decimal(10),
+        "liq_stop_multiple": Decimal(3),
+        "stop_slippage_bps": Decimal(5),
         "stale_quote_s": Decimal(10),
         "stop_accept_timeout_s": Decimal(5),
     } | overrides
     records: list[WriteItem] = []
     blocks = EntryBlocks()
     engine.add_actor(
-        RecordingActor(env=Env.DEMO, run_id=run_id, instrument_id=INSTRUMENT_ID, record=records.append, blocks=blocks)
+        RecordingActor(
+            env=Env.DEMO,
+            run_id=run_id,
+            instrument_id=INSTRUMENT_ID,
+            record=records.append,
+            blocks=blocks,
+            maintenance_margin_rate=Decimal("0.01"),
+            min_liq_distance_pct=liq_alarm_pct,
+            stale_quote_s=Decimal(10),
+            ledger=FundingLedger(),
+        )
     )
     config = PlaceholderConfig(**values)  # type: ignore[arg-type]  # each value has its own type
     gate = gate or PauseGate()
@@ -203,7 +220,10 @@ def test_a_rising_market_buys_at_the_boundary_rests_a_stop_and_closes_on_time():
     )
     # 2 s after 12:15, from bars closed by then.
     assert enter.decided_ns == _ns(START + timedelta(minutes=15, seconds=2))
-    assert enter.inputs["quantity"] == "0.0011"  # 100 USD at about 85150, floored to 0.0001
+    # Spec 0011: the 0.3 % stop sizes about 0.012 from risk; the 250 USD order cap binds at about 85150.
+    assert (enter.inputs["quantity"], enter.inputs["limited_by"]) == ("0.0029", "notional_cap")
+    assert Decimal(enter.inputs["risk_quantity"]) > Decimal(enter.inputs["quantity"])
+    assert enter.inputs["funding_periods"] == 0  # 12:15 plus a 10 minute hold never crosses the hour
     assert (exit_.intent, exit_.side, exit_.reason) == (Intent.EXIT, OrderSide.SELL, "time")
     assert _risk_events(rows) == []
 
@@ -240,13 +260,14 @@ def test_too_few_bars_at_the_boundary_skips_without_a_decision():
 
 
 def test_a_refused_entry_records_the_decision_and_a_limit_hit_and_places_nothing():
-    engine, _, rows = _run(Prices(20, lambda t: 85000 - int(t * 10)), notional_usd=Decimal(300))
+    # No exposure headroom below one size step (spec 0011 AC-2).
+    engine, _, rows = _run(Prices(20, lambda t: 85000 - int(t * 10)), max_total_exposure_usd=Decimal(1))
 
     (decision,) = _decisions(rows)
     assert (decision.side, decision.risk_verdict, decision.risk_reason) == (
         OrderSide.SELL,
         RiskVerdict.REJECTED,
-        "notional_cap",
+        "exposure_cap",
     )
     (event,) = _risk_events(rows)
     assert (event.kind, event.event_key) == (RiskEventKind.LIMIT_HIT, f"limit_hit:{decision.id}")
@@ -255,6 +276,36 @@ def test_a_refused_entry_records_the_decision_and_a_limit_hit_and_places_nothing
 
 def _of(rows, cls):
     return [r for r in rows if isinstance(r, cls)]
+
+
+def test_every_snapshot_of_a_short_carries_its_liquidation_estimate():
+    # covers: spec 0011 AC-8. Falling into 12:15, a short of about 250 USD on 1000 USD equity.
+    _, _, rows = _run(Prices(29, lambda t: 85000 - int(t * 10)))
+
+    snapshots = _of(rows, PositionSnapshotRow)
+    assert snapshots
+    for snap in snapshots:
+        # (E + q * mark - m * 0) ÷ (q * 1.01): far above the mark, so no alarm.
+        assert snap.liquidation_px > 4 * snap.mark_px
+    assert [e for e in _risk_events(rows) if e.event_key.startswith("liq_near:")] == []
+
+
+def test_a_mark_too_close_to_liquidation_raises_one_critical_alarm_per_position():
+    # covers: spec 0011 AC-8, with an alarm distance no position can clear. The short's estimate is
+    # over 4 times the mark (the test above), a distance above 300 %, so the alarm sits at 1000 %.
+    _, _, rows = _run(Prices(29, lambda t: 85000 - int(t * 10)), liq_alarm_pct=Decimal(1000))
+
+    position_ids = {s.position_id for s in _of(rows, PositionSnapshotRow)}
+    alarms = [e for e in _risk_events(rows) if e.event_key.startswith("liq_near:")]
+    assert len(_of(rows, PositionSnapshotRow)) > 1
+    assert [e.event_key for e in alarms] == [f"liq_near:{p}" for p in position_ids]
+    assert {(e.kind, e.severity) for e in alarms} == {(RiskEventKind.LIMIT_HIT, Severity.CRITICAL)}
+
+
+def test_a_long_below_1x_has_no_liquidation_price():
+    _, _, rows = _run(Prices(29, lambda t: 85000 + int(t * 10)))
+
+    assert {s.liquidation_px for s in _of(rows, PositionSnapshotRow)} == {None}
 
 
 def test_the_recording_actor_queues_every_order_fill_and_position_row_in_order(caplog):

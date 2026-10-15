@@ -34,6 +34,7 @@ from test_node_placeholder import (
 )
 
 from trading_core.control.halt import HaltReason, HaltSource, HaltState
+from trading_core.node.funding import FundingLedger
 from trading_core.node.random_taker import Phase, RandomTaker, RandomTakerConfig
 from trading_core.node.recording import RecordingActor
 from trading_core.node.strategy import PauseGate
@@ -73,7 +74,17 @@ def _run(prices, strategy_cls=RandomTaker, gate=None):
     records: list[WriteItem] = []
     blocks = EntryBlocks()
     engine.add_actor(
-        RecordingActor(env=Env.DEMO, run_id=run_id, instrument_id=INSTRUMENT_ID, record=records.append, blocks=blocks)
+        RecordingActor(
+            env=Env.DEMO,
+            run_id=run_id,
+            instrument_id=INSTRUMENT_ID,
+            record=records.append,
+            blocks=blocks,
+            maintenance_margin_rate=Decimal("0.01"),
+            min_liq_distance_pct=Decimal(10),
+            stale_quote_s=Decimal(10),
+            ledger=FundingLedger(),
+        )
     )
     config = RandomTakerConfig(
         env="demo",
@@ -82,6 +93,12 @@ def _run(prices, strategy_cls=RandomTaker, gate=None):
         seed=1,
         max_order_notional_usd=Decimal(250),
         max_leverage=Decimal(2),
+        max_total_exposure_usd=Decimal(500),
+        risk_per_trade=Decimal("0.005"),
+        maintenance_margin_rate=Decimal("0.01"),
+        min_liq_distance_pct=Decimal(10),
+        liq_stop_multiple=Decimal(3),
+        stop_slippage_bps=Decimal(5),
         notional_usd=Decimal(100),
     )
     strategy = strategy_cls(config, gate or PauseGate(), blocks, records.append)

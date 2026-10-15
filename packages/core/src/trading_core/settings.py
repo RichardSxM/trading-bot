@@ -129,11 +129,17 @@ class PaperLoopSettings(Settings):
     placeholder_hold_min: int = Field(default=10, ge=1)
     placeholder_lookback_min: int = Field(default=5, ge=1)
     placeholder_stop_pct: Decimal = Field(default=Decimal("0.3"), gt=0, lt=100)
-    placeholder_notional_usd: Decimal = Field(default=Decimal(100), gt=0)
 
     risk_max_order_notional_usd: Decimal = Field(default=Decimal(250), gt=0)
     risk_max_leverage: Decimal = Field(default=Decimal(2), gt=0)
     risk_stale_quote_s: Decimal = Field(default=Decimal(10), gt=0)
+    # Spec 0011 AC-19: the guard's sizing, exposure, and liquidation settings.
+    risk_per_trade: Decimal = Field(default=Decimal("0.005"), gt=0, le=Decimal("0.02"))
+    risk_max_total_exposure_usd: Decimal = Field(default=Decimal(500), gt=0)
+    risk_maintenance_margin_rate: Decimal = Field(default=Decimal("0.01"), gt=0, lt=Decimal("0.5"))
+    risk_min_liq_distance_pct: Decimal = Field(default=Decimal(10), gt=0, lt=100)
+    risk_liq_stop_multiple: Decimal = Field(default=Decimal(3), ge=1)
+    risk_stop_slippage_bps: Decimal = Field(default=Decimal(5), ge=0, le=500)
     stop_accept_timeout_s: Decimal = Field(default=Decimal(5), gt=0)
 
     sandbox_starting_balance_usd: Decimal = Field(default=Decimal(1000), gt=0)
@@ -154,6 +160,12 @@ class PaperLoopSettings(Settings):
             raise ValueError("PLACEHOLDER_INTERVAL_MIN must divide 60")
         if self.placeholder_hold_min >= self.placeholder_interval_min:
             raise ValueError("PLACEHOLDER_HOLD_MIN must be below PLACEHOLDER_INTERVAL_MIN")
+        return self
+
+    @model_validator(mode="after")
+    def _exposure_fits_the_order_cap(self) -> Self:
+        if self.risk_max_total_exposure_usd < self.risk_max_order_notional_usd:
+            raise ValueError("RISK_MAX_TOTAL_EXPOSURE_USD must not be below RISK_MAX_ORDER_NOTIONAL_USD")
         return self
 
     @model_validator(mode="after")
