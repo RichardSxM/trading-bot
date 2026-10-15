@@ -214,7 +214,7 @@ code in [packages/core/src/trading_core/risk/check.py](../../packages/core/src/t
   - [x] Dashboard: net P&L with funding, "before funding" removed (AC-18)
 - [x] Verify it: `/check verify leverage & liquidation guard`
 - [x] Test it: `/test leverage & liquidation guard`
-- [ ] Review it (fresh model): `/check review leverage & liquidation guard`
+- [x] Review it (fresh model): `/check review leverage & liquidation guard`
 - [ ] Document it: `/document leverage & liquidation guard`
 
 ### 11. Restart & outage safety · needs a decision
