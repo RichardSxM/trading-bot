@@ -128,7 +128,7 @@ spec [0005](../specs/0005-always-on-cloud-deployment/index.md) · code in [deplo
   - [x] Safe deploy: pause and unpause commands, `KfsStrategy` gate, trader control consumer and `trader_state`, graceful shutdown, wait for flat, rollback, dashboard Pause and Resume (AC-6 to AC-13)
   - [x] Self healing: autoheal timer, safe reboot, missing disk guard, the four restart drills (AC-14 to AC-18)
   - [x] Backups: append only key gate, backup image and nightly loop, restore drill with prune (AC-19 to AC-21)
-  - [ ] Soak, after feature 6: `kfs-soak`, a deploy during an open demo position, the 72 h run (AC-8, AC-9, AC-24)
+  - [x] Soak, after feature 6: `kfs-soak`, a deploy during an open demo position, the 72 h run (AC-8, AC-9, AC-24)
 - [ ] Verify it: `/check verify always on cloud deployment`
 - [ ] Test it: `/test always on cloud deployment`
 - [ ] Review it (fresh model): `/check review always on cloud deployment`
