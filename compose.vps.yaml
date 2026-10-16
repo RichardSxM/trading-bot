@@ -15,6 +15,23 @@ services:
       - postgres_trader_password
       - postgres_dashboard_password
       - postgres_backup_password
+      - postgres_alerter_password
+
+  # No default here: a missing ALERTS_DELIVERY line in /etc/kfs/kfs.env refuses the deploy
+  # instead of silently running the VPS alerter dry (spec 0013).
+  # The host log folder, read only: host.jsonl and deploys.jsonl (the deploy window, autoheal,
+  # rollbacks), and the root filesystem's free space. A folder, not file binds, so logrotate's
+  # copytruncate and a recreated file stay visible (spec 0013 Build plan 3.1, 3.2).
+  alerter:
+    environment:
+      ALERTS_DELIVERY: ${ALERTS_DELIVERY:?set ALERTS_DELIVERY=pushover in /etc/kfs/kfs.env}
+    volumes:
+      - type: bind
+        source: /var/log/kfs
+        target: /host/kfs-log
+        read_only: true
+        bind:
+          create_host_path: true
 
   recorder:
     environment:

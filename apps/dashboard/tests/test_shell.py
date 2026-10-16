@@ -34,14 +34,14 @@ def test_the_overview_page_shows_the_shell_and_its_empty_state(logged_in):
     assert "<title>DEMO · Overview</title>" in page
     assert 'class="topbar"' in page
     assert 'sse-connect="/events"' in page
-    assert "Stop, pause, and resume commands appear here as they happen." in page
+    assert "Stop, pause, and resume commands and phone alerts appear here as they happen." in page
     assert "Trader offline" in page  # no position snapshot: never shown as flat (spec 0006 AC-17)
 
 
 @pytest.mark.parametrize(
     ("path", "title", "empty"),
     [
-        ("/", "Overview", "Stop, pause, and resume commands appear here as they happen."),
+        ("/", "Overview", "Stop, pause, and resume commands and phone alerts appear here as they happen."),
         ("/trades", "Trades", "Each paper position appears here once it closes."),
         ("/strategies", "Strategies", "Backtests and strategy scores appear here."),
         ("/system", "System", "Command history and service health appear here."),
@@ -323,6 +323,7 @@ def test_the_event_stream_carries_the_security_headers(logged_in, monkeypatch):
         "topbar-blocked",
         "overview-blocked",
         "system-losses",
+        "overview-mute",
     }
     assert "event: topbar-age\n" in response.text
 

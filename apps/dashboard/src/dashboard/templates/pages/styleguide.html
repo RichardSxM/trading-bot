@@ -138,6 +138,17 @@
   <div data-sample="activity:collapsed">{% with groups=activity_run %}{% include "partials/overview_activity.html" %}{% endwith %}</div>
   <div data-sample="activity:empty">{% with groups=[] %}{% include "partials/overview_activity.html" %}{% endwith %}</div>
   <div data-sample="activity:error">{% with groups=none %}{% include "partials/overview_activity.html" %}{% endwith %}</div>
+  <div data-sample="activity:alerts">{% with groups=activity_alerts %}{% include "partials/overview_activity.html" %}{% endwith %}</div>
+  <div data-sample="activity:alerts_unavailable">{% with groups=activity_alerts_down %}{% include "partials/overview_activity.html" %}{% endwith %}</div>
+</section>
+
+<section class="sg-section" id="alert-controls" aria-labelledby="alert-controls-sample-h">
+  <h2 class="sg-h" id="alert-controls-sample-h">Phone alert controls</h2>
+  <div data-sample="mute:muted">{% with view=mute_sample %}{% include "partials/overview_mute.html" %}{% endwith %}</div>
+  <div data-sample="alerts_area:default">{% with area_id="sg-alerts-default", csrf="sample", error=none, note=none %}{% include "partials/alerts_area.html" %}{% endwith %}</div>
+  <div data-sample="alerts_area:note">{% with area_id="sg-alerts-note", csrf="sample", error=none, note="Test sent: one push per tier" %}{% include "partials/alerts_area.html" %}{% endwith %}</div>
+  <div data-sample="alerts_area:error">{% with area_id="sg-alerts-error", csrf="sample", error="Mute for 1 h NOT sent: Redis did not answer", note=none %}{% include "partials/alerts_area.html" %}{% endwith %}</div>
+  <p class="sg-note">Sample controls: the forms here post a sample token, so they are refused.</p>
 </section>
 
 <section class="sg-section" id="position" aria-labelledby="position-sample-h">

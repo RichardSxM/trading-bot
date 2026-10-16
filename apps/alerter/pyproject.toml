@@ -1,0 +1,31 @@
+[project]
+name = "alerter"
+version = "0.1.0"
+description = "Phone alerts (spec 0013): turns the trader's heartbeat and the logs into Pushover pushes. Never imports NautilusTrader."
+requires-python = ">=3.14,<3.15"
+dependencies = [
+    "trading-core",
+    "redis>=5.2",
+    "httpx>=0.28",
+    "tzdata>=2025.2",
+]
+
+[project.scripts]
+alerter = "alerter.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+# Tests that need a running service are opt in (a later -m overrides this one).
+addopts = "-m 'not redis'"
+markers = [
+    "redis: needs the Compose Redis and this service's mounted password (run with -m redis)",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/alerter"]

@@ -10,6 +10,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal, Self
 from urllib.parse import quote
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -210,6 +211,42 @@ class LossLimitSettings(Settings):
         if self.risk_total_loss_since > datetime.now(UTC).date():
             raise ValueError("RISK_TOTAL_LOSS_SINCE must not be in the future")
         return self
+
+
+class AlertSettings(Settings):
+    """The alerter's settings (spec 0013, *Configuration required*).
+
+    ``ALERTS_DELIVERY`` defaults to ``log`` (dry run); the VPS sets ``pushover`` in its env file,
+    with no default in ``compose.vps.yaml``, so a missing line refuses the deploy.
+    """
+
+    alerts_delivery: Literal["log", "pushover"] = "log"
+    alerts_trader_down_s: int = Field(default=45, ge=5)
+    alerts_hourly_cap: int = Field(default=30, ge=2)
+    alerts_renotify_s: int = Field(default=3600, ge=60)
+    alerts_critical_renotify_s: int = Field(default=14_400, ge=3600)
+    alerts_entry_block_s: int = Field(default=3600, ge=60)
+    alerts_disk_free_gb: Decimal = Field(default=Decimal(5), gt=0)
+    alerts_daily_at: str = "08:00"
+    alerts_daily_tz: str = "Europe/Amsterdam"
+
+    @field_validator("alerts_daily_at")
+    @classmethod
+    def _hh_mm(cls, value: str) -> str:
+        try:
+            datetime.strptime(value, "%H:%M")  # noqa: DTZ007 (a time of day, no date or zone)
+        except ValueError:
+            raise ValueError("ALERTS_DAILY_AT must be HH:MM") from None
+        return value
+
+    @field_validator("alerts_daily_tz")
+    @classmethod
+    def _iana_zone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError, ValueError:
+            raise ValueError(f"ALERTS_DAILY_TZ {value!r} is not an IANA time zone") from None
+        return value
 
 
 @lru_cache(maxsize=1)

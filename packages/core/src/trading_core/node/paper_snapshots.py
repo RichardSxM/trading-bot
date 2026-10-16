@@ -81,6 +81,7 @@ def paper_status(gate: PauseGate, blocks: EntryBlocks, backlog: int, strategy: P
         recording_backlog=backlog,
         exiting=strategy.exiting,
         position_opened_ns=strategy.position_opened_ns,
+        entries_blocked_since=blocks.since(),
     )
 
 

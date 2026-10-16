@@ -18,15 +18,17 @@
   ];
 
   // The request never reached the dashboard: say the stop was NOT sent and offer a retry.
-  // Pause and Resume (spec 0005 AC-13) say so in their own area, from the form's data-not-sent.
+  // Pause and Resume (spec 0005 AC-13), and the alert controls (spec 0013 AC-16), say so in their
+  // own area, from the form's data-not-sent.
   document.addEventListener("htmx:sendError", function (event) {
     var control = event.detail.elt && event.detail.elt.closest("form[data-not-sent]");
-    var area = control && control.closest("#pause-area");
+    var area = control && control.closest("#pause-area, #alerts-area");
     if (area) {
-      var previous = area.querySelector(".pause-area__error");
+      var errorClass = area.id === "alerts-area" ? "alerts-area__error" : "pause-area__error";
+      var previous = area.querySelector("." + errorClass);
       if (previous) previous.remove();
       var message = document.createElement("span");
-      message.className = "pause-area__error";
+      message.className = errorClass;
       message.setAttribute("role", "alert");
       message.textContent = control.dataset.notSent;
       area.insertBefore(message, area.firstChild);

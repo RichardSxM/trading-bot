@@ -128,7 +128,13 @@ NO_TRADES = TradesView(round_trips=(), fills=())
 
 
 def make_app(
-    redis, clock, env="demo", read_pnl=lambda: ZERO_PNL, read_trades=lambda page, fills_page: NO_TRADES, **settings
+    redis,
+    clock,
+    env="demo",
+    read_pnl=lambda: ZERO_PNL,
+    read_trades=lambda page, fills_page: NO_TRADES,
+    read_alerts=lambda: (),
+    **settings,
 ):
     settings.setdefault("dashboard_cookie_secure", False)
     return create_app(
@@ -139,6 +145,7 @@ def make_app(
         clock_ns=clock.ns,
         read_pnl=read_pnl,
         read_trades=read_trades,
+        read_alerts=read_alerts,
     )
 
 

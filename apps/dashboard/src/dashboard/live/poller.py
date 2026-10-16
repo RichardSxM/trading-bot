@@ -10,6 +10,11 @@ partial ``no data`` and the next tick tries again.
 With a position renderer (spec 0006 AC-17) it also reads the ``position`` and ``account``
 snapshots every tick, and the P&L figures from Postgres at most every ``pnl_refresh_s``, off
 the event loop. A Postgres error keeps the live card and shows the figures as unavailable.
+
+With an alerts reader (spec 0013 AC-16) the Activity feed also lists the last 24 h of alert
+episodes, read from Postgres at most every ``alerts_refresh_s``; a Postgres error keeps the
+commands and says the alerts are unavailable. With a mute renderer it reads the newest alert
+command results every tick for the mute badge.
 """
 
 import asyncio
@@ -22,7 +27,9 @@ from typing import Final, Protocol
 
 from redis.exceptions import RedisError
 
+from dashboard.data.alerts import AlertLine
 from dashboard.data.pnl import PnlFigures
+from dashboard.live.alerts import MUTE_OFF, MuteView, merge_activity, mute_view
 from dashboard.live.position import LOST, PositionView, position_view
 from dashboard.live.state import (
     COMMAND_NO_DATA,
@@ -60,6 +67,8 @@ POSITION_EVENT: Final = "overview-position"
 BLOCKED_EVENT: Final = "topbar-blocked"
 BLOCKED_REASONS_EVENT: Final = "overview-blocked"
 LOSSES_EVENT: Final = "system-losses"
+MUTE_EVENT: Final = "overview-mute"
+ALERTS_REFRESH_S: Final = 10.0
 PNL_REFRESH_S: Final = 5.0
 PNL_TIMEOUT_S: Final = 2.0
 PNL_WARN_EVERY_S: Final = 60.0
@@ -104,7 +113,18 @@ class Poller:
         render_losses: Callable[[LossesView], str] | None = None,
         pnl_refresh_s: float = PNL_REFRESH_S,
         pnl_timeout_s: float = PNL_TIMEOUT_S,
+        read_alerts: Callable[[], Awaitable[Sequence[AlertLine]]] | None = None,
+        read_alert_results: Callable[[], Awaitable[Sequence[Entry] | None]] | None = None,
+        render_mute: Callable[[MuteView], str] | None = None,
+        alerts_refresh_s: float = ALERTS_REFRESH_S,
     ) -> None:
+        self._read_alerts = read_alerts
+        self._read_alert_results = read_alert_results
+        self._render_mute = render_mute
+        self._alerts_refresh_s = alerts_refresh_s
+        self._alerts: Sequence[AlertLine] | None = ()
+        self._alerts_read_at: float | None = None
+        self._last_alerts_warning: float | None = None
         self._read_heartbeat = read_heartbeat
         self._read_position = read_position
         self._read_account = read_account
@@ -169,6 +189,7 @@ class Poller:
         try:
             raw, state, (command, rows) = await asyncio.wait_for(self._read_all(), timeout=self._read_timeout_s)
             snapshots = await asyncio.wait_for(self._read_snapshots(), timeout=self._read_timeout_s)
+            alert_results = await asyncio.wait_for(self._read_mute(), timeout=self._read_timeout_s)
         except REDIS_ERRORS as exc:
             log.warning(
                 "redis read failed", extra={"fields": {"code": "redis_read_failed", "error": type(exc).__name__}}
@@ -180,6 +201,9 @@ class Poller:
             self._warn_skew()
         self._age = age
         alert = self._alert(age, command)
+        if self._read_alerts is not None:
+            await self._refresh_alerts()
+            rows = merge_activity(rows, self._alerts)
         partials = {
             AGE_EVENT: self._render_age(age),
             COMMAND_EVENT: self._render_command(_tinted(command, alert)),
@@ -190,6 +214,8 @@ class Poller:
         }
         if self._render_losses is not None:
             partials[LOSSES_EVENT] = self._render_losses(losses_view(state, self._now()))
+        if self._render_mute is not None:
+            partials[MUTE_EVENT] = self._render_mute(mute_view(alert_results, self._now()))
         if self._render_position is not None:
             await self._refresh_pnl()
             raw_position, raw_account = snapshots
@@ -210,6 +236,8 @@ class Poller:
         }
         if self._render_losses is not None:
             partials[LOSSES_EVENT] = self._render_losses(LOSSES_NO_DATA)
+        if self._render_mute is not None:
+            partials[MUTE_EVENT] = self._render_mute(MUTE_OFF)
         if self._render_position is not None:
             partials[POSITION_EVENT] = self._render_position(dataclasses.replace(LOST, pnl=self._pnl))
         return partials
@@ -229,6 +257,31 @@ class Poller:
         if self._render_position is None or self._read_position is None or self._read_account is None:
             return None, None
         return await self._read_position(), await self._read_account()
+
+    async def _read_mute(self) -> Sequence[Entry] | None:
+        if self._render_mute is None or self._read_alert_results is None:
+            return None
+        return await self._read_alert_results()
+
+    async def _refresh_alerts(self) -> None:
+        """Read the alert episodes when the last read is older than ``alerts_refresh_s``; None on failure."""
+        if self._read_alerts is None:
+            return
+        now = self._monotonic()
+        if self._alerts_read_at is not None and now - self._alerts_read_at < self._alerts_refresh_s:
+            return
+        self._alerts_read_at = now
+        try:
+            self._alerts = await asyncio.wait_for(self._read_alerts(), timeout=self._pnl_timeout_s)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._alerts = None
+            if self._last_alerts_warning is None or now - self._last_alerts_warning >= PNL_WARN_EVERY_S:
+                self._last_alerts_warning = now
+                log.warning(
+                    "alerts read failed", extra={"fields": {"code": "alerts_read_failed", "error": type(exc).__name__}}
+                )
 
     async def _refresh_pnl(self) -> None:
         """Read the P&L figures when the last read is older than ``pnl_refresh_s``; keep None on failure."""

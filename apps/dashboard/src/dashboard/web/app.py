@@ -22,8 +22,10 @@ from dashboard.auth.password import PasswordChecker
 from dashboard.auth.proxy import default_gateway
 from dashboard.auth.session import SessionCodec
 from dashboard.auth.totp import TotpGuard
+from dashboard.data.alerts import AlertLine, recent_alerts
 from dashboard.data.pnl import PnlFigures, pnl_figures
 from dashboard.data.trades import TradesView, trades_view
+from dashboard.live.alerts import MuteView
 from dashboard.live.poller import ACTIVITY_SIZE, Poller, supervise
 from dashboard.live.position import PositionView
 from dashboard.live.state import (
@@ -37,11 +39,12 @@ from dashboard.live.state import (
     collapse,
 )
 from dashboard.settings import DashboardSettings, normalize_seed
-from dashboard.ui.format import num, pnl, ts
-from dashboard.web import auth_routes, control_routes, page_routes
+from dashboard.ui.format import local_hm, num, pnl, ts
+from dashboard.web import alert_routes, auth_routes, control_routes, page_routes
 from dashboard.web.context import AppContext, LiveRedis
 from dashboard.web.middleware import ShellMiddleware
 from dashboard.web.session import CsrfRefused, LoginRequired, handle_login_required
+from trading_core.control.alerts import alerts_results_stream
 from trading_core.control.messages import control_stream, results_stream
 from trading_core.secrets import (
     DASHBOARD_PASSWORD_HASH,
@@ -99,16 +102,17 @@ def create_app(
     clock_ns: Callable[[], int] = time.time_ns,
     read_pnl: Callable[[], PnlFigures] | None = None,
     read_trades: Callable[[int, int], TradesView] | None = None,
+    read_alerts: Callable[[], Sequence[AlertLine]] | None = None,
 ) -> FastAPI:
     """Build the dashboard app. Tests pass fake settings, secrets, a fake Redis, fake clocks, and Postgres readers.
 
-    ``read_pnl`` and ``read_trades`` are blocking (they query Postgres as ``dashboard_app``); the
+    ``read_pnl``, ``read_trades``, and ``read_alerts`` are blocking (they query Postgres as ``dashboard_app``); the
     poller and the Trades route run them in a thread.
     """
     client: LiveRedis = redis if redis is not None else redis_client(settings, secrets[REDIS_PASSWORD])
     engine = None
     env = settings.trading_env
-    if read_pnl is None or read_trades is None:
+    if read_pnl is None or read_trades is None or read_alerts is None:
         # Two connections: a Trades page load never waits behind the poller's P&L read.
         engine = create_engine(
             settings.database_url(secrets[POSTGRES_PASSWORD]), pool_size=2, max_overflow=0, pool_pre_ping=True
@@ -121,11 +125,15 @@ def create_app(
         def postgres_trades(page: int, fills_page: int) -> TradesView:
             return trades_view(sessions, env, page, fills_page)
 
+        def postgres_alerts() -> Sequence[AlertLine]:
+            return recent_alerts(sessions, env, datetime.fromtimestamp(clock(), UTC))
+
         read_pnl = read_pnl or postgres_pnl
         read_trades = read_trades or postgres_trades
-    pnl_reader, trades_reader = read_pnl, read_trades
+        read_alerts = read_alerts or postgres_alerts
+    pnl_reader, trades_reader, alerts_reader = read_pnl, read_trades, read_alerts
     templates = Jinja2Templates(directory=PACKAGE_DIR / "templates")
-    templates.env.filters.update(num=num, pnl=pnl, ts=ts)
+    templates.env.filters.update(num=num, pnl=pnl, ts=ts, local_hm=local_hm)
     age_template = templates.get_template("partials/topbar_age.html")
     command_template = templates.get_template("partials/topbar_command.html")
     alert_template = templates.get_template("partials/topbar_alert.html")
@@ -134,6 +142,7 @@ def create_app(
     position_template = templates.get_template("partials/overview_position.html")
     blocked_template = templates.get_template("partials/topbar_blocked.html")
     blocked_reasons_template = templates.get_template("partials/overview_blocked.html")
+    mute_template = templates.get_template("partials/overview_mute.html")
     losses_template = templates.get_template("partials/system_losses.html")
     position_key = snapshot_key(settings.trading_env, "position")
     account_key = snapshot_key(settings.trading_env, "account")
@@ -143,6 +152,7 @@ def create_app(
 
     commands = control_stream(settings.trading_env)
     results = results_stream(settings.trading_env)
+    alert_results = alerts_results_stream(settings.trading_env)
 
     def render_age(view: AgeView) -> str:
         return age_template.render(view=view)
@@ -172,6 +182,9 @@ def create_app(
 
     def render_losses(view: LossesView) -> str:
         return losses_template.render(view=view)
+
+    def render_mute(view: MuteView) -> str:
+        return mute_template.render(view=view)
 
     context = AppContext(
         settings=settings,
@@ -209,6 +222,9 @@ def create_app(
             render_blocked=render_blocked,
             render_blocked_reasons=render_blocked_reasons,
             render_losses=render_losses,
+            read_alerts=lambda: asyncio.to_thread(alerts_reader),
+            read_alert_results=lambda: client.xrevrange(alert_results, count=RESULTS_SEARCHED),
+            render_mute=render_mute,
         ),
         redis=client,
         clock=clock,
@@ -239,7 +255,7 @@ def create_app(
     app.state.context = context
     app.add_middleware(ShellMiddleware, codec=context.codec, clock=clock, secure=settings.dashboard_cookie_secure)
     app.add_exception_handler(LoginRequired, handle_login_required)
-    app.add_exception_handler(CsrfRefused, control_routes.handle_csrf_refused_on_stop)
+    app.add_exception_handler(CsrfRefused, alert_routes.handle_csrf_refused)
     app.mount("/static", StaticFiles(directory=PACKAGE_DIR / "static"), name="static")
 
     @app.get("/healthz")
@@ -249,4 +265,5 @@ def create_app(
     app.include_router(auth_routes.router)
     app.include_router(page_routes.router)
     app.include_router(control_routes.router)
+    app.include_router(alert_routes.router)
     return app

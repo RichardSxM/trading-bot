@@ -1,5 +1,6 @@
 """covers: spec 0003 AC-10 and spec 0004 AC-14, the `dashboard` Redis user reads snapshots, reads and appends
-to control, reads control results, and nothing else.
+to control, reads control results, and nothing else; spec 0013 AC-12 and AC-20, it appends alert commands
+and reads their results, but can't touch the alerter's mute key.
 
 Needs the Compose Redis and the dashboard's mounted password:
 ``docker compose run --rm -T dashboard pytest -q -m redis``.
@@ -77,9 +78,16 @@ def test_dashboard_appends_to_the_control_stream(dashboard):
     assert not isinstance(reply, Error)
 
 
+def test_dashboard_appends_to_the_alert_command_stream(dashboard):
+    reply = dashboard("XADD", "acltest:control:alerts", "*", "probe", "1")
+    assert isinstance(reply, str)
+    assert not isinstance(reply, Error)
+
+
 @pytest.mark.parametrize(
     "command",
     [
+        ("XREVRANGE", "acltest:control:alerts:results", "+", "-", "COUNT", "200"),
         ("XRANGE", "acltest:control", "-", "+"),
         ("XREVRANGE", "acltest:control", "+", "-", "COUNT", "1"),
         ("XREAD", "COUNT", "1", "STREAMS", "acltest:control", "0"),
@@ -107,6 +115,11 @@ def test_dashboard_reads_the_control_and_result_streams(dashboard, command):
         ("SET", "acltest:trader:pause", "1"),
         ("DEL", "acltest:trader:pause"),
         ("XADD", "acltest:other", "*", "probe", "1"),
+        # The mute lives in the alerter's key; the dashboard mutes only through the stream (AC-12).
+        ("SET", "acltest:alerts:mute", "1"),
+        ("DEL", "acltest:alerts:mute"),
+        ("GET", "acltest:alerts:mute"),
+        ("XADD", "acltest:control:alerts:results", "*", "probe", "1"),
         ("FLUSHDB",),
     ],
 )

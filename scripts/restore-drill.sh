@@ -16,6 +16,9 @@
 # B2 recovery steps), and a dry run of the forget must remove at most 40 snapshots, none younger
 # than 15 days and none dated in the future (else the prune is refused).
 #
+# After a PASS it pings healthchecks.io's `restore-drill` check when ./secrets/hc_restore_drill_url
+# holds its URL (spec 0013 AC-5), so a drill skipped for 35 days alerts you.
+#
 # It asks for the restic password and the delete capable B2 key (password manager) without
 # echo. They live only in this script's environment and reach containers as `docker run -e NAME`,
 # never as a value in an argument and never on disk. The repository is $RESTIC_REPOSITORY, or
@@ -41,7 +44,7 @@ for arg in "$@"; do
     --allow-stale) ALLOW_STALE=1 ;;
     --force-prune) FORCE_PRUNE=1 ;;
     *)
-        sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//' >&2
+        sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//' >&2
         exit 64
         ;;
     esac
@@ -76,6 +79,8 @@ RETENTION=(--host "$RESTIC_HOST" --group-by host,paths --keep-daily 14 --keep-we
 STALE_H=36
 MAX_FORGET=40
 RECENT_DAYS=15
+# Optional: the healthchecks.io `restore-drill` check's ping URL (spec 0013 AC-5).
+HC_DRILL_FILE=${SECRETS_DIR:-./secrets}/hc_restore_drill_url
 SUFFIX=$$
 NET=kfs-drill-$SUFFIX
 VOL=kfs-drill-$SUFFIX
@@ -192,6 +197,20 @@ if [ "$age_h" -lt -1 ] || { [ "$age_h" -ge "$STALE_H" ] && [ "$ALLOW_STALE" = 0 
     echo "  The restore matches its manifest, but newer snapshots may be hidden. See the B2 recovery"
     echo "  steps in spec 0005. Prune skipped. --allow-stale accepts it when you know why."
     exit 1
+fi
+
+# The healthchecks.io `restore-drill` ping (spec 0013 AC-5): its silence for 35 days is the alert.
+# The URL is a secret, so curl reads it from stdin. A --local drill is not the VPS's, so it never pings.
+if [ "$LOCAL" = 1 ]; then
+    say "local drill: no restore-drill ping"
+elif [ -r "$HC_DRILL_FILE" ] && [ "$(head -c 8 "$HC_DRILL_FILE")" = "https://" ]; then
+    if printf 'url = "%s"\n' "$(cat "$HC_DRILL_FILE")" | curl -fsS -m 10 --retry 3 -o /dev/null -K - 2>/dev/null; then
+        say "restore-drill ping sent"
+    else
+        say "warning: the restore-drill ping failed; healthchecks.io will alert in 35 days unless the next drill pings"
+    fi
+else
+    say "reminder: put the healthchecks.io restore-drill ping URL in $HC_DRILL_FILE, so a missed drill alerts you"
 fi
 
 say "retention dry run: 14 daily, 8 weekly, 24 monthly"

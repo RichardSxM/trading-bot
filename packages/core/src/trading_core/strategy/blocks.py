@@ -5,6 +5,8 @@ writer thread. Exits and stops are never blocked; only entries look at it.
 """
 
 import threading
+import time
+from collections.abc import Callable
 from enum import StrEnum
 from typing import Final
 
@@ -57,11 +59,16 @@ SELF_CLEARING: Final = frozenset(
 
 
 class EntryBlocks:
-    """The active block reasons, safe to change from any thread."""
+    """The active block reasons, safe to change from any thread, with when each became active.
 
-    def __init__(self) -> None:
+    ``now_ns`` gives the UTC time in nanoseconds (the wall clock unless a test passes its own).
+    """
+
+    def __init__(self, now_ns: Callable[[], int] = time.time_ns) -> None:
         self._lock = threading.Lock()
         self._active: set[BlockReason] = set()
+        self._since: dict[BlockReason, int] = {}
+        self._now_ns = now_ns
 
     def add(self, reason: BlockReason) -> bool:
         """Block entries for ``reason``; True when it was not already active."""
@@ -69,6 +76,7 @@ class EntryBlocks:
             if reason in self._active:
                 return False
             self._active.add(reason)
+            self._since[reason] = self._now_ns()
             return True
 
     def clear(self, reason: BlockReason) -> bool:
@@ -79,12 +87,19 @@ class EntryBlocks:
             if reason not in self._active:
                 return False
             self._active.discard(reason)
+            self._since.pop(reason, None)
             return True
 
     def active(self) -> tuple[BlockReason, ...]:
         """The active reasons, sorted."""
         with self._lock:
             return tuple(sorted(self._active))
+
+    def since(self) -> dict[str, int]:
+        """The ``entries_blocked_since`` snapshot field (spec 0013 AC-6): each active reason to when
+        it became active, in UTC nanoseconds."""
+        with self._lock:
+            return {str(reason): ns for reason, ns in sorted(self._since.items())}
 
 
 def entries_blocked(blocks: EntryBlocks, paused: bool, halted: bool) -> list[str]:

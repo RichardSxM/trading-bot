@@ -63,3 +63,7 @@ class UnknownCommitError(RecordingError):
 
 class UnsupportedInstrumentError(RecordingError):
     """A journal range holds a fill on an inverse instrument; only linear contracts are supported."""
+
+
+class AlertConflictError(RecordingError):
+    """An episode whose fingerprint already has a different open episode stored (spec 0013)."""

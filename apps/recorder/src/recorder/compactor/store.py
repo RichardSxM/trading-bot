@@ -42,6 +42,7 @@ __all__ = [
     "CONTEXT_TABLES",
     "DELTAS_TABLE",
     "FUNDING_TABLE",
+    "HOURLY_CONTEXT_TABLES",
     "INDEX_TABLE",
     "INSTRUMENTS_TABLE",
     "LIQUIDATION_TABLE",
@@ -68,6 +69,9 @@ CONTEXT_TABLES: Final = (MARK_TABLE, INDEX_TABLE, FUNDING_TABLE, OPEN_INTEREST_T
 SILENCE_TABLES: Final = (MARK_TABLE, INDEX_TABLE, OPEN_INTEREST_TABLE)
 # The raw feed's streams: its outages are their `reconnect` gaps (AC-7).
 RAW_FEED_TABLES: Final = (OPEN_INTEREST_TABLE, LIQUIDATION_TABLE)
+# The context streams with a file for every closed hour (spec 0009 AC-17); a missing one logs
+# `context_hour_missing` (spec 0013 AC-7). Liquidations have quiet hours by nature.
+HOURLY_CONTEXT_TABLES: Final = (MARK_TABLE, INDEX_TABLE, FUNDING_TABLE, OPEN_INTEREST_TABLE)
 # Each stream's folder under `live/<run>/` has the catalog table's name; instruments are
 # `live/<run>/crypto_perpetual_<ns>.feather`.
 STREAM_TABLES: Final = (DELTAS_TABLE, TRADES_TABLE, *CONTEXT_TABLES)
@@ -118,6 +122,10 @@ class DoneRecord:
     - ``days``: the closed days (``YYYY-MM-DD``), each with its manifest written.
     - ``holes``: per run, its holes file as last read: the bytes read, the last ``checked_to_ns``,
       and whether it was ``closed``; or ``unchecked`` for a run without one (AC-16).
+    - ``context_checked``: per instrument, the last book hour checked for missing context files
+      (spec 0013 AC-7), so each hour is checked and logged once.
+    - ``feed_down``: hours wholly inside a context feed outage, which the raw feed's tables are
+      excused from; dropped once every instrument has checked past them.
     """
 
     hours: dict[str, dict[int, dict[str, int]]] = field(default_factory=dict)
@@ -137,6 +145,8 @@ class DoneRecord:
     empty: dict[str, set[int]] = field(default_factory=dict)
     days: set[str] = field(default_factory=set)
     holes: dict[str, dict[str, object]] = field(default_factory=dict)
+    context_checked: dict[str, int] = field(default_factory=dict)
+    feed_down: set[int] = field(default_factory=set)
 
     def is_done(self, key: str, hour: int) -> bool:
         """Whether a stream's hour is finished."""
@@ -167,6 +177,8 @@ class DoneRecord:
                 "empty": {k: sorted(v) for k, v in sorted(self.empty.items())},
                 "days": sorted(self.days),
                 "holes": dict(sorted(self.holes.items())),
+                "context_checked": dict(sorted(self.context_checked.items())),
+                "feed_down": sorted(self.feed_down),
             },
             indent=1,
             sort_keys=True,
@@ -194,6 +206,8 @@ class DoneRecord:
             empty={k: set(v) for k, v in raw.get("empty", {}).items()},
             days=set(raw.get("days", [])),
             holes=dict(raw.get("holes", {})),
+            context_checked=dict(raw.get("context_checked", {})),
+            feed_down=set(raw.get("feed_down", [])),
         )
 
 

@@ -1,5 +1,5 @@
-"""covers: spec 0002 AC-1 (18 tables, plus spec 0008's run_fill_stats), AC-9 (no float column, numeric money,
-timestamptz, ns bigint)."""
+"""covers: spec 0002 AC-1 (18 tables, plus spec 0008's run_fill_stats and spec 0013's alerts), AC-9 (no float
+column, numeric money, timestamptz, ns bigint)."""
 
 from sqlalchemy import BigInteger, DateTime, Numeric
 from sqlalchemy.dialects import postgresql
@@ -27,6 +27,7 @@ EXPECTED_TABLES = {
     "risk_events",
     "control_commands",
     "run_fill_stats",
+    "alerts",
 }
 
 

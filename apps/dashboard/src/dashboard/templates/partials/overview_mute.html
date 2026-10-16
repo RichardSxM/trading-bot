@@ -1,0 +1,3 @@
+{# The mute badge on Overview (spec 0013 AC-16): from the newest executed mute or unmute result the
+   alerter wrote, in Amsterdam time as the spec asks (UTC in the tooltip). Nothing while not muted. #}
+{% if view.until %}<span class="badge badge--warn">Warnings muted until {{ view.until|local_hm }}</span>{% endif %}

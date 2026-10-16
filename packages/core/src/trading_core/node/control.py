@@ -18,7 +18,7 @@ import asyncio
 import logging
 import uuid
 from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Final, Protocol
 
@@ -609,12 +609,17 @@ def protective_stops(orders: Iterable[Order]) -> int:
 
 @dataclass(frozen=True)
 class PaperStatus:
-    """The paper loop's part of ``trader_state`` (spec 0006 AC-16)."""
+    """The paper loop's part of ``trader_state`` (spec 0006 AC-16).
+
+    ``entries_blocked_since`` maps each ``EntryBlocks`` reason to when it became active (UTC ns,
+    spec 0013 AC-6); ``paused`` and ``halted`` have their own ``paused_at`` and ``halted_at``.
+    """
 
     entries_blocked: list[str]
     recording_backlog: int
     exiting: bool
     position_opened_ns: int | None
+    entries_blocked_since: dict[str, int] = field(default_factory=dict)
 
 
 def trader_state(
@@ -659,6 +664,7 @@ def trader_state(
         "protective_stops": protective_stops(orders),
         "git_commit": git_commit,
         "entries_blocked": status.entries_blocked,
+        "entries_blocked_since": status.entries_blocked_since,
         "recording_backlog": status.recording_backlog,
         "exiting": status.exiting,
         "position_opened_ns": status.position_opened_ns,

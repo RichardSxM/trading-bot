@@ -24,7 +24,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 9 | Kill switch & loss limits | Slice 4 | done |
 | 10 | Leverage & liquidation guard | Slice 4 | done |
 | 11 | Restart & outage safety | Slice 4 | planned |
-| 12 | Phone alerts & health checks | Slice 5 | planned |
+| 12 | Phone alerts & health checks | Slice 5 | in-progress |
 | 13 | Candle backtest lab | Slice 6 | planned |
 | 14 | Scalping simulator | Slice 6 | done |
 | 15 | Strategy scoring & promotion gate | Slice 6 | planned |
@@ -246,7 +246,7 @@ After a crash, restart, or dropped connection, the bot rebuilds its view from th
 
 ## Slice 5: Stay informed
 
-### 12. Phone alerts & health checks · needs a decision
+### 12. Phone alerts & health checks · in-progress
 Push alerts to your phone for fills, limit hits, errors, and a missing heartbeat, so you know within a minute when something is wrong.
 **Done when:** each alert type reaches your phone within a minute, and a stopped bot triggers an alert on its own.
 **Carried over from specs 0005 and 0006:** alert on:
@@ -255,7 +255,18 @@ Push alerts to your phone for fills, limit hits, errors, and a missing heartbeat
 - a newest `kfs-vps` B2 snapshot older than 26 h, checked from outside the VPS
 - the trader's critical risk events: `stop_not_accepted`, `exit_failed`, an abandoned position, `record_conflict`
 - an entry block that lasts longer than an hour
-- [ ] Design it (spec): `/architect phone alerts & health checks`
+
+spec [0013](../specs/0013-phone-alerts-health-checks/index.md) · code in `apps/alerter`, `packages/core/src/trading_core/alerts`
+- [x] Design it (spec): `/architect phone alerts & health checks`
+- [x] Build it: `/develop phone alerts & health checks`
+  - [x] Thin thread: core alert engine, `alerts` migration and roles, secrets and settings, the alerter with heartbeat to Pushover, dry run, watchdog ping, `alerter test` (AC-1, AC-2, AC-9, AC-13, AC-14, AC-15, AC-17, AC-20)
+  - [x] Container logs: socket proxy, log polling with cursors and replay set, the full rule table, storm cap, Postgres down queue, coverage test (AC-3, AC-4, AC-7, AC-10, AC-15, AC-19)
+  - [x] Host, backup, and block age: `host.jsonl`, deploy window, disk check, verified backup and drill pings, `entries_blocked_since`, `context_hour_missing` (AC-4, AC-5, AC-6, AC-7, AC-11)
+  - [x] Phone polish and dashboard: live fills, mute and test commands, Activity feed, daily note (AC-8, AC-12, AC-16, AC-18)
+- [ ] Verify it: `/check verify phone alerts & health checks`
+- [ ] Test it: `/test phone alerts & health checks`
+- [ ] Review it (fresh model): `/check review phone alerts & health checks`
+- [ ] Document it: `/document phone alerts & health checks`
 
 ## Slice 6: The strategy lab
 
@@ -381,6 +392,7 @@ Out of scope for the current build pass, kept so the plan stays honest.
 - **Scale up**: larger capital or leverage after a long profitable live record · needs a decision
 - **Spot or other exchanges**: diversify venues · needs a decision
 - **Market context extras** (from spec 0009): a Fear & Greed regime tag, a news or event blackout filter, Deribit options implied volatility and put/call · needs a decision
+- **Automatic maintenance mute** (from spec 0013): open a warning mute by itself from Kraken's scheduled maintenance windows (status.kraken.com) instead of muting by hand · needs a decision
 
 ## Legend
 

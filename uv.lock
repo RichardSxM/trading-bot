@@ -10,6 +10,7 @@ supported-markers = [
 
 [manifest]
 members = [
+    "alerter",
     "dashboard",
     "kraken-futures-scalper",
     "lab",
@@ -106,6 +107,33 @@ sdist = { url = "https://files.pythonhosted.org/packages/ed/aa/02910bdb8e2f1444f
 wheels = [
     { url = "https://files.pythonhosted.org/packages/3f/27/78a89b55b0904d222183164e079b4ca56208e94eff1d35ad1f1ad5be9b06/alembic-1.20.0-py3-none-any.whl", hash = "sha256:77eb101048d95f982c0353e9233404889dcd7a6fc244c107836c0e2fc9cf7d9d", size = 268719, upload-time = "2026-09-11T19:09:12.88Z" },
 ]
+
+[[package]]
+name = "alerter"
+version = "0.1.0"
+source = { editable = "apps/alerter" }
+dependencies = [
+    { name = "httpx" },
+    { name = "redis" },
+    { name = "trading-core" },
+    { name = "tzdata" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.28" },
+    { name = "redis", specifier = ">=5.2" },
+    { name = "trading-core", editable = "packages/core" },
+    { name = "tzdata", specifier = ">=2025.2" },
+]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=8" }]
 
 [[package]]
 name = "annotated-doc"

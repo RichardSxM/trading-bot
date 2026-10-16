@@ -18,9 +18,8 @@ def _feed(page):
 
 
 def test_with_no_commands_activity_shows_its_empty_state(logged_in):
-    assert (
-        "Stop, pause, and resume commands appear here as they happen. Fills and alerts join this feed later."
-        in _feed(logged_in.get("/").text)
+    assert "Stop, pause, and resume commands and phone alerts appear here as they happen." in _feed(
+        logged_in.get("/").text
     )
 
 

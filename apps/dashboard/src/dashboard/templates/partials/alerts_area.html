@@ -1,0 +1,25 @@
+{#- Phone alerts on Overview (spec 0013 AC-12, AC-16): mute warnings for 1, 4, or 12 h, or unmute, and
+    send one marked test push per tier. ``area_id`` (default ``alerts-area``) lets the styleguide show
+    several. Plain forms that HTMX enhances, like Pause. ``error`` says a
+    command was NOT sent; ``note`` says what happened (sent, or the test's answer). A mute never
+    holds a critical alert, so the hint says so. -#}
+{% from "components/button.html" import button %}
+{% set area_id = area_id | default("alerts-area") %}
+<div id="{{ area_id }}" class="alerts-area">
+  {% if error %}<span class="alerts-area__error" role="alert">{{ error }}</span>{% endif %}
+  {% if note %}<span class="alerts-area__note" role="status">{{ note }}</span>{% endif %}
+  <form class="alerts-area__mute" method="post" action="/alerts/mute" hx-post="/alerts/mute" hx-target="#{{ area_id }}" hx-swap="outerHTML" data-not-sent="Mute NOT sent: no connection to the dashboard">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <span class="alerts-area__label" id="{{ area_id }}-mute">Mute warnings</span>
+    <span class="alerts-area__choices" role="group" aria-labelledby="{{ area_id }}-mute">
+      {%- for hours, label in ((1, "1 h"), (4, "4 h"), (12, "12 h"), (0, "Unmute")) %}
+      <button type="submit" class="button button--quiet" name="hours" value="{{ hours }}"><span class="button__label">{{ label }}</span></button>
+      {%- endfor %}
+    </span>
+  </form>
+  <form class="alerts-area__test" method="post" action="/alerts/test" hx-post="/alerts/test" hx-target="#{{ area_id }}" hx-swap="outerHTML" data-not-sent="Test NOT sent: no connection to the dashboard">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    {{ button("Send test alert", type="submit", glyph="bell") }}
+  </form>
+  <p class="alerts-area__hint">A mute holds warning and info pushes; critical alerts always reach your phone.</p>
+</div>

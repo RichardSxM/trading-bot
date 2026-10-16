@@ -1,7 +1,7 @@
 """What the top bar, its alert bar, and Overview's Activity show for live values, as pure functions.
 
 Spec 0004 AC-9, AC-10, AC-12, AC-20, and AC-21; spec 0005 AC-13 (the pause in the top bar);
-spec 0006 AC-18 (why entries are blocked).
+spec 0006 AC-18 (why entries are blocked); spec 0013 AC-16 (alert episodes in the Activity feed).
 """
 
 from collections.abc import Mapping, Sequence
@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Final, Literal
 
+from dashboard.data.alerts import AlertLine
 from trading_core.control.messages import (
     ControlFormatError,
     ControlMessage,
@@ -188,7 +189,8 @@ class ActivityRow:
     """One command in Overview's Activity feed (AC-20); unlike the top bar, a final outcome stays.
 
     ``issued_at`` is None only for an entry that does not parse. ``final`` and ``invalid`` mean
-    what they mean on ``CommandView``.
+    what they mean on ``CommandView``. ``alert`` makes the row an alert episode instead (spec
+    0013 AC-16): ``issued_at`` is then when it opened, and ``cmd`` and ``text`` are unused.
     """
 
     cmd: str
@@ -197,6 +199,7 @@ class ActivityRow:
     level: CommandLevel
     final: bool = False
     invalid: bool = False
+    alert: AlertLine | None = None
 
 
 UNKNOWN_ENTRY: Final = ActivityRow("unknown entry", None, "", "warn", invalid=True)
@@ -245,7 +248,12 @@ def collapse(rows: Sequence[ActivityRow]) -> list[ActivityGroup]:
 
 
 def _same(a: ActivityRow, b: ActivityRow) -> bool:
-    return (a.cmd, a.text, a.level, a.invalid) == (b.cmd, b.text, b.level, b.invalid)
+    # Alert rows never merge: each is its own episode.
+    return (
+        a.alert is None
+        and b.alert is None
+        and (a.cmd, a.text, a.level, a.invalid) == (b.cmd, b.text, b.level, b.invalid)
+    )
 
 
 @dataclass(frozen=True)

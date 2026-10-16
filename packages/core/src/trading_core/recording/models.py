@@ -1,4 +1,6 @@
-"""The 18 Postgres tables of spec 0002 plus ``run_fill_stats`` (spec 0008), on ``trading_core.db.Base``.
+"""The 18 Postgres tables of spec 0002, ``run_fill_stats`` (spec 0008), and ``alerts`` (spec 0013).
+
+All live on ``trading_core.db.Base``.
 
 Market data never lands here (it stays in the Parquet catalog). Env scoped tables link to
 their parents with a composite ``(<parent>_id, env)`` foreign key against the parent's
@@ -17,6 +19,7 @@ from sqlalchemy import (
     CheckConstraint,
     ForeignKey,
     ForeignKeyConstraint,
+    Identity,
     Index,
     PrimaryKeyConstraint,
     UniqueConstraint,
@@ -25,6 +28,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
+from trading_core.alerts.model import Delivery, Tier
 from trading_core.db import Base
 from trading_core.recording.enums import (
     CLOSED_ORDER_STATUSES,
@@ -590,3 +594,42 @@ class ControlCommand(Base):
     details: Mapped[dict[str, object]]
     created_at: Mapped[datetime] = _created()
     updated_at: Mapped[datetime] = _updated()
+
+
+# Alerts (spec 0013) -------------------------------------------------------------------------
+
+
+class Alert(Base):
+    """One alert episode: opened, repeated, pushed, resolved. Kept forever; written only by the alerter.
+
+    ``uq_alerts_open`` allows one open episode per ``(env, fingerprint)``; a resolved one frees the
+    fingerprint for the next episode.
+    """
+
+    __tablename__ = "alerts"
+    __table_args__ = (
+        _env_check(),
+        _one_of("severity", Tier),
+        _one_of("delivery", Delivery),
+        CheckConstraint("occurrences >= 1", name="occurrences_positive"),
+        CheckConstraint("sends >= 0", name="sends_nonnegative"),
+        Index("uq_alerts_open", "env", "fingerprint", unique=True, postgresql_where=text("resolved_at IS NULL")),
+        _ix("alerts", "env", "opened_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    env: Mapped[str]
+    rule: Mapped[str]
+    fingerprint: Mapped[str]
+    severity: Mapped[str]
+    source: Mapped[str]
+    title: Mapped[str]
+    message: Mapped[str]
+    details: Mapped[dict[str, object]]
+    opened_at: Mapped[datetime]
+    last_seen_at: Mapped[datetime]
+    resolved_at: Mapped[datetime | None]
+    occurrences: Mapped[int] = mapped_column(server_default=text("1"))
+    sends: Mapped[int] = mapped_column(server_default=text("0"))
+    last_sent_at: Mapped[datetime | None]
+    delivery: Mapped[str]

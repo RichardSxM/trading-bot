@@ -7,7 +7,9 @@ from typing import Final
 
 from markupsafe import Markup
 
+from dashboard.data.alerts import AlertLine
 from dashboard.data.pnl import PnlFigures
+from dashboard.live.alerts import ALERTS_UNAVAILABLE, MuteView, merge_activity
 from dashboard.live.position import LOST, PositionView
 from dashboard.live.state import (
     COMMAND_NO_DATA,
@@ -26,6 +28,7 @@ from dashboard.live.state import (
 from dashboard.ui.format import num, pnl, ts
 from dashboard.ui.tokens import color_tokens, contrast_ratio, read_tokens
 from dashboard.web.trades import FILL_COLUMNS, PagerView
+from trading_core.alerts.model import Delivery, Tier
 from trading_core.strategy.blocks import PLAIN_WORDS, BlockReason
 
 # The text color each swatch is read against: surfaces carry text, alarms carry white or night.
@@ -53,6 +56,25 @@ ACTIVITY_RUN: Final = (
     *(ActivityRow("stop", SAMPLE_TIME - timedelta(seconds=s), "not handled, expired", "bad") for s in (0, 2, 5)),
     ActivityRow("stop", SAMPLE_TIME - timedelta(minutes=9), "confirmed", "ok", final=True),
 )
+# Alert episodes between the commands (spec 0013 AC-16): each tier, open and resolved, and each delivery word.
+ALERT_SAMPLE: Final = tuple(
+    AlertLine(n, SAMPLE_TIME - timedelta(minutes=m), Tier(tier), title, resolved, Delivery(delivery))
+    for n, (m, tier, title, resolved, delivery) in enumerate(
+        (
+            (1, "critical", "Stop not accepted", False, "sent"),
+            (2, "warning", "Context feed down on recorder", False, "muted"),
+            (6, "info", "Resolved: Trader down", True, "dry_run"),
+            (12, "warning", "Container unhealthy: recorder", True, "held"),
+            (20, "warning", "Book gap long on compactor", False, "failed"),
+            (25, "info", "Fill PF_XBTUSD.KRAKEN", True, "capped"),
+            (40, "critical", "Disk space low", False, "pending"),
+        )
+    )
+)
+ACTIVITY_WITH_ALERTS: Final = tuple(merge_activity(ACTIVITY_SAMPLE[:3], ALERT_SAMPLE))
+ACTIVITY_ALERTS_DOWN: Final = tuple(merge_activity(ACTIVITY_SAMPLE[:2], None))
+assert ACTIVITY_ALERTS_DOWN[0] is ALERTS_UNAVAILABLE
+MUTE_SAMPLE: Final = MuteView(SAMPLE_TIME + timedelta(hours=4))
 # The top bar's command state, one per level, each with its age.
 COMMAND_SAMPLES: Final[dict[str, CommandView]] = {
     "none": NO_COMMAND,
@@ -197,6 +219,9 @@ def styleguide_context() -> dict[str, object]:
         "stale_s": (3, 10),
         "activity_groups": collapse(ACTIVITY_SAMPLE),
         "activity_run": collapse(ACTIVITY_RUN),
+        "activity_alerts": collapse(ACTIVITY_WITH_ALERTS),
+        "activity_alerts_down": collapse(ACTIVITY_ALERTS_DOWN),
+        "mute_sample": MUTE_SAMPLE,
         "command_samples": COMMAND_SAMPLES,
         "position_samples": POSITION_SAMPLES,
         "blocked_samples": BLOCKED_SAMPLES,

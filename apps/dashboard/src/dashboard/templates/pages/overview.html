@@ -7,7 +7,8 @@
     {{ pulse("pulse-h", stale_s) }}
   </section>
   <section class="region region--main" aria-labelledby="activity-h">
-    <header class="region__head"><h2 class="region__title" id="activity-h">Activity</h2><span class="region__meta">newest first</span></header>
+    <header class="region__head"><h2 class="region__title" id="activity-h">Activity</h2><span class="region__meta">newest first</span><span class="activity-mute" sse-swap="overview-mute">{{ live["overview-mute"] }}</span></header>
+    {% with csrf=csrf, error=alerts_error, note=alerts_note %}{% include "partials/alerts_area.html" %}{% endwith %}
     <div class="activity-feed" sse-swap="overview-activity">{{ live["overview-activity"] }}</div>
   </section>
   <section class="region region--side" aria-labelledby="position-h">
