@@ -52,8 +52,8 @@ These steps fake the VPS's `/var/log/kfs` so you can check the host side without
 
 ### Value sourcing checks
 
-- [ ] `entry_block` since: vary `entries_blocked_since` (2 h back, now, in the future, missing). → the push comes at once, after `ALERTS_ENTRY_BLOCK_S`, or counts from now in the last two cases. → AC-6
-- [ ] `disk_low` free GB: a value just under the floor (for example 4.99 GB under 5) reads 4.9, never 5.0. → AC-4
+- [x] `entry_block` since: vary `entries_blocked_since` (2 h back, now, in the future, missing). → the push comes at once, after `ALERTS_ENTRY_BLOCK_S`, or counts from now in the last two cases. → AC-6
+- [x] `disk_low` free GB: a value just under the floor (for example 4.99 GB under 5) reads 4.9, never 5.0. → AC-4
 - [ ] Deploy window start: on the VPS, the "deploy started" line in `host.jsonl` carries the same `started_at` as that deploy's `deploys.jsonl` line, so the window closes on the outcome line, not after 15 min. → AC-11
 
 ### Acceptance criteria coverage (Part C)
@@ -112,11 +112,11 @@ These add to step 9 in Part B. You may run the laptop steps after `docker compos
 
 ### Value sourcing checks
 
-- [ ] When to send: the note goes out at 06:00 UTC in summer time (October before the last Sunday) and at 07:00 UTC in winter time. → 08:00 Amsterdam both times. → AC-18
-- [ ] Trades and realized P&L yesterday: a position closed at 23:59 UTC counts toward that UTC day; one closed at 00:30 UTC the next day does not. → the count and P&L match `positions` for yesterday's UTC day only. → AC-18
-- [ ] Trader down minutes: a `trader_down` episode that opened more than 24 h ago and is still open (or resolved inside the window) counts only the part inside the last 24 h. → AC-18
+- [x] When to send: the note goes out at 06:00 UTC in summer time (October before the last Sunday) and at 07:00 UTC in winter time. → 08:00 Amsterdam both times. → AC-18
+- [x] Trades and realized P&L yesterday: a position closed at 23:59 UTC counts toward that UTC day; one closed at 00:30 UTC the next day does not. → the count and P&L match `positions` for yesterday's UTC day only. → AC-18
+- [x] Trader down minutes: a `trader_down` episode that opened more than 24 h ago and is still open (or resolved inside the window) counts only the part inside the last 24 h. → AC-18
 - [ ] Counts by tier: `daily` rows are left out; `test` rows still count. → the opened counts match `alerts` rows of the last 24 h minus the `daily` ones. → AC-18
-- [ ] Sent today: the marker is the `daily:<local date>` row in this `env`, whatever its delivery; a `failed` note row still blocks a second note and is retried by the 60 s cycle. → AC-18, AC-14
+- [x] Sent today: the marker is the `daily:<local date>` row in this `env`, whatever its delivery; a `failed` note row still blocks a second note and is retried by the 60 s cycle. → AC-18, AC-14
 
 ### Acceptance criteria coverage (Part E)
 
