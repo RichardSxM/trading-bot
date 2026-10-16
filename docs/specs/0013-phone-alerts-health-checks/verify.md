@@ -28,3 +28,34 @@ To read alert rows: `docker compose exec -T postgres psql -U postgres -d kfs -c 
 7. **Stuck entry block (AC-6).** Stop the recorder's Postgres writes long enough for `recording_unhealthy`, or set `ALERTS_ENTRY_BLOCK_S=120` for this step and cause a `stale_feed` block. After the threshold an `entry_block:<reason>` warning arrives in plain words; it resolves when the block clears. Set the threshold back.
 8. **Live fills (AC-8).** Only once live trading starts (feature 19): each fill arrives as a silent push with side, size, price, and fee. In demo, check that no fill pushes arrive.
 9. **Daily note (AC-18).** At 08:00 Amsterdam the next day a silent note arrives with counts by tier, down minutes, yesterday's trades and realized P&L, and the backup health. The numbers match the `alerts` and `positions` tables.
+
+## Part C: Milestone 3 on the laptop (host lines, disk, backup, block age, context hours) · added 2026-10-16
+
+These steps fake the VPS's `/var/log/kfs` so you can check the host side without the VPS. You may run them after `docker compose build alerter backup trader recorder` (one service at a time on the Mac) and `scripts/dev-secrets.sh` (it adds the `hc_backup_url` placeholder). Read rows as the database owner: `docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'`. Bring the stack down afterwards.
+
+### UI / manual
+
+- [ ] **Fake host folder.** Make a folder with empty `host.jsonl` and `deploys.jsonl` (mode 0644), and a Compose override that binds it read only at `/host/kfs-log` in the alerter. Start `trader alerter` with the override and `ALERTS_ENTRY_BLOCK_S=60`. → the `alerter_started` line shows `host_lines: true`. → AC-4, AC-11
+- [ ] **Deploy window holds, then summarises.** Append a `host.jsonl` line `{"msg":"deploy started","sha":"<sha>","started_at":"<now>",...}`. Stop the trader, and every 5 s write a fresh `demo:snapshot:trader_state` naming `stale_feed`, with `entries_blocked_since` 2 h back (redis-cli as the `trader` user). → no `alert_dry_run` line for `trader_down` or `entry_block` during the window. Append the `deploys.jsonl` line with the same `sha` and `started_at`. → one warning "1 warning during deploy" naming "Entries blocked for over an hour", then a critical `trader_down`. The `entry_block` row shows `sends=1` and `details.since` 2 h back. → AC-11, AC-6
+- [ ] **Silent resolves.** Start the trader. → info "Resolved:" lines for `entry_block:stale_feed` and `trader_down`. → AC-6, AC-1
+- [ ] **Host criticals, once each.** Append `{"msg":"autoheal_gave_up","container":"x",...}` and `{"msg":"rollback failed","sha":"cafe"}` to `host.jsonl`, and `{"sha":"cafe",...,"outcome":"rollback_failed"}` to `deploys.jsonl`. → exactly one critical `autoheal_gave_up:x` and one critical `rollback_failed:cafe`; the host's "rollback failed" line pushes nothing. → AC-4
+- [ ] **No replay after a recreate.** Recreate the alerter. → none of the old host lines push again. → AC-11
+- [ ] **Disk low.** Recreate the alerter with `ALERTS_DISK_FREE_GB=100000`. → one critical `disk_low` saying "N GB free on the host root filesystem (the floor is 100000 GB)", where N matches `df` inside Docker's disk. → AC-4
+
+### Commands
+
+- [ ] `TRADING_ENV=demo docker compose run --rm -T --no-deps backup kfs-backup once` → `backup done`, `backup verified` with a small `newest_age_s`, and `backup-verified ping skipped` (the laptop placeholder). A failing step's line carries `"code":"backup_failed"` with its `step`. → AC-5
+- [ ] `docker compose run --rm -T migrate pytest -q -m integration tests/integration -k backup_app` → passes, including every sequence being readable by `backup_app` (`pg_dump` needs `alerts_id_seq`). → AC-5
+- [ ] `docker compose run --rm --no-deps -T -w /app/packages/core trader pytest -q tests/test_alerts_hold.py tests/test_alerts_checks.py tests/test_marketdata_context_hours.py` → pass: hold and summary rules, a critical passing a deploy, `trader_down` held then pushed, the 15 min end; disk; the entry block set, its since, and the 5 min restart rule (a reason back after 7 min starts over). → AC-4, AC-6, AC-11
+- [ ] `docker compose run --rm --no-deps -T recorder pytest -q tests/test_compactor_context.py -k context_hour` → one `context_hour_missing` per missing table for an hour followed by a finished book hour, nothing on the first check or on a rerun, and an outage hour excusing `open_interest_update` only. → AC-7
+- [ ] `docker compose run --rm --no-deps -T alerter pytest -q tests/test_host_sources.py` → the file follower starts at the end, waits for a newline, and rereads after truncation or a new inode; a stale or missing `trader_state` changes nothing; the ping waits for a fresh host read. → AC-2, AC-4, AC-6
+
+### Value sourcing checks
+
+- [ ] `entry_block` since: vary `entries_blocked_since` (2 h back, now, in the future, missing). → the push comes at once, after `ALERTS_ENTRY_BLOCK_S`, or counts from now in the last two cases. → AC-6
+- [ ] `disk_low` free GB: a value just under the floor (for example 4.99 GB under 5) reads 4.9, never 5.0. → AC-4
+- [ ] Deploy window start: on the VPS, the "deploy started" line in `host.jsonl` carries the same `started_at` as that deploy's `deploys.jsonl` line, so the window closes on the outcome line, not after 15 min. → AC-11
+
+### Acceptance criteria coverage (Part C)
+
+- AC-2 by the host ping gating test · AC-4 by host criticals, disk low, and Commands 3 and 5 · AC-5 by the backup run and the sequence grant test · AC-6 by the deploy window step, silent resolves, and the since checks · AC-7 by the compactor test · AC-11 by the deploy window, no replay, and the start time check
