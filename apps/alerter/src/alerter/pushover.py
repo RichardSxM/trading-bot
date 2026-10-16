@@ -20,6 +20,8 @@ log = logging.getLogger(__name__)
 MESSAGES_URL: Final = "https://api.pushover.net/1/messages.json"
 TIMEOUT_S: Final = 10.0
 RETRY_DELAYS_S: Final = (5.0, 15.0, 30.0, 60.0)
+# Pushover's ``info`` when the user has no device to send to; the push is accepted but goes nowhere.
+NO_DEVICES: Final = "no active devices"
 
 # Critical breaks through Do Not Disturb and repeats every 60 s until acknowledged, for 1 h.
 _PRIORITY: Final = {Tier.CRITICAL: 2, Tier.WARNING: 0, Tier.INFO: -1}
@@ -106,8 +108,16 @@ class PushoverClient:
 
 
 def _status_one(response: httpx.Response) -> bool:
+    """Pushover took the push and has a device to send it to.
+
+    With no device logged in to the user's account it still answers ``status: 1``, with ``info``
+    "no active devices to send to": the push reaches nobody, so it counts as failed (AC-14).
+    """
     try:
         body = response.json()
     except ValueError:
         return False
-    return isinstance(body, dict) and body.get("status") == 1
+    if not isinstance(body, dict) or body.get("status") != 1:
+        return False
+    info = body.get("info")
+    return not (isinstance(info, str) and NO_DEVICES in info)

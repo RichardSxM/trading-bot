@@ -104,6 +104,20 @@ def test_a_200_without_status_1_is_a_failure():
     assert not asyncio.run(run()).ok
 
 
+def test_an_accepted_push_with_no_active_devices_fails_without_a_quick_retry():
+    def answer(request):
+        return httpx.Response(200, json={"status": 1, "request": "r1", "info": "no active devices to send to"})
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(answer)) as http:
+            return await PushoverDelivery(PushoverClient(http, TOKEN, USER)).send(_push(Tier.CRITICAL))
+
+    outcome = asyncio.run(run())
+
+    # The engine's retry cycle sends it again once a device is logged in.
+    assert outcome.delivery is Delivery.FAILED
+
+
 def test_pushover_delivery_maps_results_to_sent_or_failed():
     async def run(status):
         async with httpx.AsyncClient(transport=httpx.MockTransport(Recorder(status))) as http:
