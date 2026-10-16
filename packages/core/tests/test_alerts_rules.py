@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from trading_core.alerts.messages import log_line
 from trading_core.alerts.model import Observation, Tier
 from trading_core.alerts.rules import BY_ID, first_match, partner_of
 
@@ -137,3 +138,22 @@ def test_tiers_follow_the_table():
     assert BY_ID["context_feed_down"].min_open_s == 300
     assert BY_ID["postgres_unreachable"].min_open_s == BY_ID["redis_unreachable"].min_open_s == 60
     assert BY_ID["service_down"].min_open_s == BY_ID["container_unhealthy"].min_open_s == 120
+
+
+def test_a_sequence_hole_is_keyed_by_its_code_even_with_an_instrument():
+    obs = line("recorder", "book_sequence_hole", "WARNING", instrument_id="PF_XBTUSD.KRAKEN", missing=3)
+
+    rule = first_match(obs)
+
+    assert rule is BY_ID["book_sequence_hole"]
+    assert rule.key is not None
+    assert rule.key(obs) == "book_sequence_hole"
+
+
+def test_a_record_conflict_push_names_its_table():
+    obs = line("trader", "record_conflict", "ERROR", msg="record conflict", table="fills", run="r-1")
+
+    head, body = log_line("trader_critical_codes", "trader", obs.code, obs.fields, obs.text)
+
+    assert head == "Record conflict on trader"
+    assert body == "record conflict table=fills"

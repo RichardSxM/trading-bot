@@ -90,7 +90,6 @@ PROMISES: Final[tuple[Promise, ...]] = (
     ),
     _line("0007", "book_sequence_hole", "book_sequence_hole", "recorder"),
     _line("0009", "context_feed_down", "context_feed_down", "recorder", "WARNING"),
-    Promise("0009", "context_feed_lagging", "context_feed_lagging"),
     Promise("0009", "context hour missing", "context_hour_missing"),
     _risk("0010", "halt:H-1", "halt"),
     _risk("0010", "flatten_timeout:F-1", "halt"),
@@ -110,7 +109,6 @@ PENDING: Final[Mapping[str, str]] = MappingProxyType(
         "entry_block": "entries_blocked_since, Build plan 3.4",
         "context_hour_missing": "compactor line, Build plan 3.5",
         "fill": "live fill pushes, Build plan 4.1",
-        "context_feed_lagging": "no producer logs this code; open question for /architect",
     }
 )
 """Promised rules not in the table yet, with what adds them; each entry leaves when its rule lands."""

@@ -155,7 +155,7 @@ RISK_HALT_MANUAL: Final = _code_rule(
     "risk_halt_manual", Tier.INFO, ["halt"], services=_TRADER_ONLY, level="WARNING", key=_event_key
 )
 # ``record_conflict`` is logged at ERROR with no ``event_key``, so ``risk_critical`` misses it;
-# it joins this row (decided during the build, owed to spec 0013's table).
+# spec 0013's ``trader_critical_codes`` row names it, keyed by its code.
 TRADER_CRITICAL_CODES: Final = _code_rule(
     "trader_critical_codes",
     Tier.CRITICAL,
@@ -195,10 +195,7 @@ CONTEXT_FEED_DOWN: Final = _code_rule(
 BOOK_GAP_LONG: Final = _code_rule(
     "book_gap_long", Tier.WARNING, ["book_gap"], key=_subject("book_gap_long", "kind"), extra=_long_gap
 )
-# The recorder keeps one sequence watch for the whole feed, so its line names no instrument.
-BOOK_SEQUENCE_HOLE: Final = _code_rule(
-    "book_sequence_hole", Tier.WARNING, ["book_sequence_hole"], key=_subject("book_sequence_hole", "instrument_id")
-)
+BOOK_SEQUENCE_HOLE: Final = _code_rule("book_sequence_hole", Tier.WARNING, ["book_sequence_hole"])
 RECORDER_CODES: Final = _code_rule(
     "recorder_codes",
     Tier.WARNING,

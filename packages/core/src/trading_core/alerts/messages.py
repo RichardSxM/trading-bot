@@ -64,7 +64,7 @@ def words(code: str) -> str:
 
 
 # The fields worth naming in a push body, in order; the rest stay in ``details``.
-_BODY_FIELDS: Final = ("event_key", "reason", "step", "kind", "duration_s", "missing", "error", "secret")
+_BODY_FIELDS: Final = ("event_key", "reason", "step", "kind", "duration_s", "missing", "table", "error", "secret")
 _RISK_RULES: Final = frozenset({"loss_limit_halt", "risk_critical", "risk_halt_manual", "trade_cap"})
 
 
