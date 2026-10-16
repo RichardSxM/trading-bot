@@ -35,20 +35,20 @@ These steps fake the VPS's `/var/log/kfs` so you can check the host side without
 
 ### UI / manual
 
-- [ ] **Fake host folder.** Make a folder with empty `host.jsonl` and `deploys.jsonl` (mode 0644), and a Compose override that binds it read only at `/host/kfs-log` in the alerter. Start `trader alerter` with the override and `ALERTS_ENTRY_BLOCK_S=60`. → the `alerter_started` line shows `host_lines: true`. → AC-4, AC-11
-- [ ] **Deploy window holds, then summarises.** Append a `host.jsonl` line `{"msg":"deploy started","sha":"<sha>","started_at":"<now>",...}`. Stop the trader, and every 5 s write a fresh `demo:snapshot:trader_state` naming `stale_feed`, with `entries_blocked_since` 2 h back (redis-cli as the `trader` user). → no `alert_dry_run` line for `trader_down` or `entry_block` during the window. Append the `deploys.jsonl` line with the same `sha` and `started_at`. → one warning "1 warning during deploy" naming "Entries blocked for over an hour", then a critical `trader_down`. The `entry_block` row shows `sends=1` and `details.since` 2 h back. → AC-11, AC-6
-- [ ] **Silent resolves.** Start the trader. → info "Resolved:" lines for `entry_block:stale_feed` and `trader_down`. → AC-6, AC-1
-- [ ] **Host criticals, once each.** Append `{"msg":"autoheal_gave_up","container":"x",...}` and `{"msg":"rollback failed","sha":"cafe"}` to `host.jsonl`, and `{"sha":"cafe",...,"outcome":"rollback_failed"}` to `deploys.jsonl`. → exactly one critical `autoheal_gave_up:x` and one critical `rollback_failed:cafe`; the host's "rollback failed" line pushes nothing. → AC-4
-- [ ] **No replay after a recreate.** Recreate the alerter. → none of the old host lines push again. → AC-11
-- [ ] **Disk low.** Recreate the alerter with `ALERTS_DISK_FREE_GB=100000`. → one critical `disk_low` saying "N GB free on the host root filesystem (the floor is 100000 GB)", where N matches `df` inside Docker's disk. → AC-4
+- [x] **Fake host folder.** Make a folder with empty `host.jsonl` and `deploys.jsonl` (mode 0644), and a Compose override that binds it read only at `/host/kfs-log` in the alerter. Start `trader alerter` with the override and `ALERTS_ENTRY_BLOCK_S=60`. → the `alerter_started` line shows `host_lines: true`. → AC-4, AC-11
+- [x] **Deploy window holds, then summarises.** Append a `host.jsonl` line `{"msg":"deploy started","sha":"<sha>","started_at":"<now>",...}`. Stop the trader, and every 5 s write a fresh `demo:snapshot:trader_state` naming `stale_feed`, with `entries_blocked_since` 2 h back (redis-cli as the `trader` user). → no `alert_dry_run` line for `trader_down` or `entry_block` during the window. Append the `deploys.jsonl` line with the same `sha` and `started_at`. → one warning "1 warning during deploy" naming "Entries blocked for over an hour", then a critical `trader_down`. The `entry_block` row shows `sends=1` and `details.since` 2 h back. → AC-11, AC-6
+- [x] **Silent resolves.** Start the trader. → info "Resolved:" lines for `entry_block:stale_feed` and `trader_down`. → AC-6, AC-1
+- [x] **Host criticals, once each.** Append `{"msg":"autoheal_gave_up","container":"x",...}` and `{"msg":"rollback failed","sha":"cafe"}` to `host.jsonl`, and `{"sha":"cafe",...,"outcome":"rollback_failed"}` to `deploys.jsonl`. → exactly one critical `autoheal_gave_up:x` and one critical `rollback_failed:cafe`; the host's "rollback failed" line pushes nothing. → AC-4
+- [x] **No replay after a recreate.** Recreate the alerter. → none of the old host lines push again. → AC-11
+- [x] **Disk low.** Recreate the alerter with `ALERTS_DISK_FREE_GB=100000`. → one critical `disk_low` saying "N GB free on the host root filesystem (the floor is 100000 GB)", where N matches `df` inside Docker's disk. → AC-4
 
 ### Commands
 
-- [ ] `TRADING_ENV=demo docker compose run --rm -T --no-deps backup kfs-backup once` → `backup done`, `backup verified` with a small `newest_age_s`, and `backup-verified ping skipped` (the laptop placeholder). A failing step's line carries `"code":"backup_failed"` with its `step`. → AC-5
-- [ ] `docker compose run --rm -T migrate pytest -q -m integration tests/integration -k backup_app` → passes, including every sequence being readable by `backup_app` (`pg_dump` needs `alerts_id_seq`). → AC-5
-- [ ] `docker compose run --rm --no-deps -T -w /app/packages/core trader pytest -q tests/test_alerts_hold.py tests/test_alerts_checks.py tests/test_marketdata_context_hours.py` → pass: hold and summary rules, a critical passing a deploy, `trader_down` held then pushed, the 15 min end; disk; the entry block set, its since, and the 5 min restart rule (a reason back after 7 min starts over). → AC-4, AC-6, AC-11
-- [ ] `docker compose run --rm --no-deps -T recorder pytest -q tests/test_compactor_context.py -k context_hour` → one `context_hour_missing` per missing table for an hour followed by a finished book hour, nothing on the first check or on a rerun, and an outage hour excusing `open_interest_update` only. → AC-7
-- [ ] `docker compose run --rm --no-deps -T alerter pytest -q tests/test_host_sources.py` → the file follower starts at the end, waits for a newline, and rereads after truncation or a new inode; a stale or missing `trader_state` changes nothing; the ping waits for a fresh host read. → AC-2, AC-4, AC-6
+- [x] `TRADING_ENV=demo docker compose run --rm -T --no-deps backup kfs-backup once` → `backup done`, `backup verified` with a small `newest_age_s`, and `backup-verified ping skipped` (the laptop placeholder). A failing step's line carries `"code":"backup_failed"` with its `step`. → AC-5
+- [x] `docker compose run --rm -T migrate pytest -q -m integration tests/integration -k backup_app` → passes, including every sequence being readable by `backup_app` (`pg_dump` needs `alerts_id_seq`). → AC-5
+- [x] `docker compose run --rm --no-deps -T -w /app/packages/core trader pytest -q tests/test_alerts_hold.py tests/test_alerts_checks.py tests/test_marketdata_context_hours.py` → pass: hold and summary rules, a critical passing a deploy, `trader_down` held then pushed, the 15 min end; disk; the entry block set, its since, and the 5 min restart rule (a reason back after 7 min starts over). → AC-4, AC-6, AC-11
+- [x] `docker compose run --rm --no-deps -T recorder pytest -q tests/test_compactor_context.py -k "closed_hour or first_check or feed_outage"` → one `context_hour_missing` per missing table for an hour followed by a finished book hour, nothing on the first check or on a rerun, and an outage hour excusing `open_interest_update` only. → AC-7
+- [x] `docker compose run --rm --no-deps -T alerter pytest -q tests/test_host_sources.py` → the file follower starts at the end, waits for a newline, and rereads after truncation or a new inode; a stale or missing `trader_state` changes nothing; the ping waits for a fresh host read. → AC-2, AC-4, AC-6
 
 ### Value sourcing checks
 
@@ -69,18 +69,18 @@ _The laptop half runs in dry run with `alerter dashboard` up (no trader or recor
 - [ ] **Mute holds warnings, never criticals.** On Overview, tap Mute warnings · 1 h. → the alert area says "Mute for 1 h sent", then the Activity head shows "Warnings muted until HH:MM" in Amsterdam time (UTC in the tooltip). A warning while muted gets `delivery=muted` and no `alert_dry_run` line; a critical still logs `alert_dry_run`. → AC-12, AC-16
 - [ ] **Unmute sends one summary.** With a warning still open under the mute, tap Unmute. → the badge goes away and one warning "N warnings while muted" listing its title is pushed (or logged). → AC-12
 - [ ] **A mute that runs out.** Mute 1 h, then wait it out (or set the key's TTL short with redis-cli as the `alerter` user and restart the alerter). → the summary comes on its own and the badge hides once `until` is past. → AC-12, AC-16
-- [ ] **A mute survives an alerter restart.** Mute 4 h, then `docker compose restart alerter`. → the log has `alert_mute_restored` with the same `until`; warnings stay muted. → AC-12
+- [x] **A mute survives an alerter restart.** Mute 4 h, then `docker compose restart alerter`. → the log has `alert_mute_restored` with the same `until`; warnings stay muted. → AC-12
 - [ ] **Test button.** Tap Send test alert. → within a few seconds "Test sent: one push per tier", three `test:<id>:<tier>` rows (critical, warning, info), even while muted. With the alerter stopped, the button says "no answer from the alerter" after 10 s. → AC-16
 - [ ] **Activity feed.** → the last 24 h of episodes sit between the commands by time, each with its tier badge, title (no `[demo]` tag), open or resolved, and the delivery word (`dry run` on the laptop). Stop Postgres: the commands stay and a row says "unavailable: Postgres did not answer". → AC-16
 - [ ] **VPS: a live fill.** In `live`, after a fill. → one silent push "Bought|Sold <qty> <base> at <price>, fee <fee> <currency>", quantity and price at the instrument's lot and tick precision. → AC-8
 
 ### Commands
 
-- [ ] `docker compose run --rm migrate` then, as `trading`, `\dp instruments` → `alerter_app=r`. → AC-8
-- [ ] `docker compose run --rm -T migrate pytest -q -m integration tests/integration -k "fill_fields or privileges"` → the fill lookup as `alerter_app` reads the fill and its instrument, and the grant table matches. → AC-8
-- [ ] `docker compose run --rm --no-deps -T alerter pytest -q tests/test_fills.py tests/test_commands.py` → a live fill already stored pushes at once, one stored late is found on a later read, one never stored pushes its trade id after six reads over 10 s, a demo fill is never read or pushed; mute, unmute, replace, expiry summary, expired, `failed invalid`, test per tier, `push_failed`, restart restore. → AC-8, AC-12, AC-16
-- [ ] `docker compose run --rm -T dashboard pytest -q -m redis` and `docker compose run --rm -T alerter pytest -q -m redis` (after `docker compose up -d redis` picks up the ACL) → the dashboard appends to `*:control:alerts` and reads `*:control:alerts:results`, and is refused SET, DEL, and GET on `*:alerts:mute` and XADD on the results; the alerter reads the command stream in group `alerter`. → AC-12, AC-20
-- [ ] `docker compose run --rm --no-deps -T dashboard pytest -q tests/test_alerts_ui.py` → mute lengths 1, 4, 12, unmute 0, other lengths 422, CSRF refused 403, Redis down 503, the badge from the newest executed mute or unmute, the test answer, timeout, and failure, and the feed merge. → AC-12, AC-16
+- [x] `docker compose run --rm migrate` then, as `trading`, `\dp instruments` → `alerter_app=r`. → AC-8
+- [x] `docker compose run --rm -T migrate pytest -q -m integration tests/integration -k "fill_fields or privileges"` → the fill lookup as `alerter_app` reads the fill and its instrument, and the grant table matches. → AC-8
+- [x] `docker compose run --rm --no-deps -T alerter pytest -q tests/test_fills.py tests/test_commands.py` → a live fill already stored pushes at once, one stored late is found on a later read, one never stored pushes its trade id after six reads over 10 s, a demo fill is never read or pushed; mute, unmute, replace, expiry summary, expired, `failed invalid`, test per tier, `push_failed`, restart restore. → AC-8, AC-12, AC-16
+- [x] `docker compose run --rm -T dashboard pytest -q -m redis` and `docker compose run --rm -T alerter pytest -q -m redis` (after `docker compose up -d redis` picks up the ACL) → the dashboard appends to `*:control:alerts` and reads `*:control:alerts:results`, and is refused SET, DEL, and GET on `*:alerts:mute` and XADD on the results; the alerter reads the command stream in group `alerter`. → AC-12, AC-20
+- [x] `docker compose run --rm --no-deps -T dashboard pytest -q tests/test_alerts_ui.py` → mute lengths 1, 4, 12, unmute 0, other lengths 422, CSRF refused 403, Redis down 503, the badge from the newest executed mute or unmute, the test answer, timeout, and failure, and the feed merge. → AC-12, AC-16
 
 ### Value sourcing checks
 
@@ -98,17 +98,17 @@ These add to step 9 in Part B. You may run the laptop steps after `docker compos
 
 ### UI / manual
 
-- [ ] Set `ALERTS_DAILY_AT` two minutes ahead and recreate the alerter. → at that minute one `daily_note` log line, one `daily` row with fingerprint `daily:<today>`, `resolved_at = opened_at`, `delivery=dry_run`. → AC-18
-- [ ] Restart the alerter the same day. → no second `daily` row and no second log line. → AC-18
-- [ ] Set `ALERTS_DAILY_AT` a few hours in the past and start the alerter on a day with no `daily` row. → the note goes out once within a minute (the catch up). → AC-18
-- [ ] Send a 1 h mute, then trigger the note. → the note still goes out; its row is never `muted` or `held`. → AC-18, AC-12
-- [ ] Stop Postgres, let the note come due, wait two minutes, start Postgres. → `daily_note_waiting` warnings while it is down, then one note once it answers. → AC-18
+- [x] Set `ALERTS_DAILY_AT` two minutes ahead and recreate the alerter. → at that minute one `daily_note` log line, one `daily` row with fingerprint `daily:<today>`, `resolved_at = opened_at`, `delivery=dry_run`. → AC-18
+- [x] Restart the alerter the same day. → no second `daily` row and no second log line. → AC-18
+- [x] Set `ALERTS_DAILY_AT` a few hours in the past and start the alerter on a day with no `daily` row. → the note goes out once within a minute (the catch up). → AC-18
+- [x] Send a 1 h mute, then trigger the note. → the note still goes out; its row is never `muted` or `held`. → AC-18, AC-12
+- [x] Stop Postgres, let the note come due, wait two minutes, start Postgres. → `daily_note_waiting` warnings while it is down, then one note once it answers. → AC-18
 
 ### Commands
 
-- [ ] `docker compose run --rm --no-deps -T -w /app/packages/core trader pytest -q tests/test_alerts_daily.py` → green → AC-18
-- [ ] `docker compose run --rm --no-deps -T alerter pytest -q tests/test_daily.py` → green → AC-18
-- [ ] `docker compose run --rm -T migrate pytest -q -m integration tests/integration/test_alerts_repository.py` → green, the figures read as `alerter_app` → AC-18
+- [x] `docker compose run --rm --no-deps -T -w /app/packages/core trader pytest -q tests/test_alerts_daily.py` → green → AC-18
+- [x] `docker compose run --rm --no-deps -T alerter pytest -q tests/test_daily.py` → green → AC-18
+- [x] `docker compose run --rm -T migrate pytest -q -m integration tests/integration/test_alerts_repository.py` → green, the figures read as `alerter_app` → AC-18
 
 ### Value sourcing checks
 
