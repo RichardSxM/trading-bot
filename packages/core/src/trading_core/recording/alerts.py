@@ -5,7 +5,7 @@ and is safe to repeat: counts and times only move forward, and a resolved row ne
 stale or replayed save cannot undo a newer one. Sync, for a worker thread.
 """
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -148,7 +148,7 @@ class AlertRepository:
             still_open = session.execute(
                 select(func.count()).where(alerts.c.env == env, alerts.c.resolved_at.is_(None))
             ).scalar_one()
-            failed = (
+            failed: Sequence[str] = (
                 session.execute(
                     select(alerts.c.title)
                     .where(alerts.c.env == env, alerts.c.delivery == Delivery.FAILED.value)

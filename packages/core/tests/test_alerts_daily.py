@@ -4,21 +4,22 @@ its push never held, muted, capped, or counted, also on a retry).
 Pure: no clock, no I/O.
 """
 
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 from trading_core.alerts import daily
 from trading_core.alerts.engine import AlertEngine, EngineConfig
-from trading_core.alerts.model import Delivery, Hold, HoldKind, Observation, PushReason, Tier
-from trading_core.alerts.rules import BY_ID, DAILY, RuleKind
+from trading_core.alerts.model import Delivery, Hold, HoldKind, Observation, PushReason, RuleKind, Tier
+from trading_core.alerts.rules import BY_ID, DAILY
 
 AMS = "Europe/Amsterdam"
 DAY = date(2026, 10, 17)
 
 
 def figures(**overrides):
-    values = {"opened": {}, "still_open": 0, "failed": 0, "failed_titles": (), "down_s": 0, "trades": 0}
-    return daily.DailyFigures(**(values | overrides))
+    base = daily.DailyFigures(opened={}, still_open=0, failed=0, failed_titles=(), down_s=0, trades=0)
+    return replace(base, **overrides)
 
 
 def engine_error(at, service):
