@@ -176,14 +176,15 @@ def test_backup_app_runs_the_downsample(role_engine):
         assert conn.execute(text("SELECT downsample_snapshots()")).scalar_one() >= 0
 
 
-def test_backup_app_can_read_every_table_pg_dump_locks(engine: Engine):
-    """covers: spec 0005 AC-19 (pg_dump as backup_app locks every table, alembic_version too)."""
+def test_backup_app_can_read_every_table_and_sequence_pg_dump_reads(engine: Engine):
+    """covers: spec 0005 AC-19 (pg_dump as backup_app locks every table, alembic_version too, and
+    reads every sequence's state, such as alerts_id_seq)."""
     with engine.connect() as conn:
         unreadable: Sequence[str] = (
             conn.execute(
                 text(
                     "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace"
-                    " WHERE n.nspname = 'public' AND c.relkind = 'r'"
+                    " WHERE n.nspname = 'public' AND c.relkind IN ('r', 'S')"
                     " AND NOT has_table_privilege(:role, c.oid, 'SELECT')"
                 ),
                 {"role": BACKUP_ROLE},
