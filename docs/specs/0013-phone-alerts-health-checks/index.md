@@ -37,7 +37,7 @@ Every alert episode is a row in a new Postgres `alerts` table, which keeps dedup
 
 *Quiet when it should be*
 
-- **AC-11** (deploy window): a window opens on a `host.jsonl` line with `msg` "deploy started" and closes on the `deploys.jsonl` line with the same `sha` and a `started_at` at or after the window's start, or after 15 min, whichever comes first. A second "deploy started" replaces the open window. An alerter that starts in the middle of a deploy opens no window. During the window, warning and info pushes are held (`delivery=held`). When it ends, warnings still open are pushed as one summary; those that cleared are dropped. Critical pushes go through, except `trader_down`, whose episode opens as usual but is held. A normal deploy restart resolves it silently, and it still counts in the daily note's down minutes. If the heartbeat is still missing when the window ends, it is pushed then.
+- **AC-11** (deploy window): a window opens on a `host.jsonl` line with `msg` "deploy started" and closes on the `deploys.jsonl` line with the same `sha` and a `started_at` at or after the window's start, or after 15 min, whichever comes first. A second "deploy started" replaces the open window. An alerter that starts in the middle of a deploy opens no window. During the window, warning and info pushes are held (`delivery=held`). When it ends, warnings still open are pushed as one summary; those that cleared are dropped. Critical pushes go through, except `trader_down`, whose episode opens as usual but is held. A normal deploy restart resolves it silently, and it still counts in the daily note's down minutes. If the heartbeat is still missing when the window ends, it is pushed then. The daily note is never held.
 - **AC-12** (mute): a mute command for 1, 4, or 12 h holds warning and info pushes (`delivery=muted`) until it expires or an unmute arrives. A new mute replaces the current one; unmute deletes it. When the mute ends, warnings still open are pushed as one summary. Critical is never muted. The daily note is never muted.
 - **AC-13** (laptop dry run): with `ALERTS_DELIVERY=log` (the laptop default), every alert is evaluated and stored with `delivery=dry_run`, and the push it would have sent is logged as `alert_dry_run`. Nothing reaches Pushover, and no healthchecks.io ping is sent.
 
@@ -50,7 +50,7 @@ Every alert episode is a row in a new Postgres `alerts` table, which keeps dedup
 
 - **AC-16** (dashboard): the Overview's Activity feed shows alert episodes from the last 24 h, newest first, next to the control commands, with tier, title, open or resolved, and the delivery state. A "Mute warnings" control (1 h, 4 h, 12 h, Unmute) and a badge "warnings muted until HH:MM" (Amsterdam time) appear on the Overview. The badge comes from the newest executed `alerts_mute` or `alerts_unmute` result on `{env}:control:alerts:results`, which carries `until`. A "Send test alert" button sends one push per tier, each marked as a test. The button's fragment waits up to 10 s for the command's result, then shows "test sent", the failure reason, or "no answer from the alerter".
 - **AC-17** (CLI test): `docker compose run --rm alerter alerter test [--tier critical|warning|info]` sends one marked test push per tier (or the one tier given) through the same delivery path, and prints the Pushover response.
-- **AC-18** (daily note): at `ALERTS_DAILY_AT` (08:00) in `ALERTS_DAILY_TZ` (Europe/Amsterdam), one silent push reports: alerts opened in the last 24 h by tier, alerts still open, rows still `failed`, minutes the trader was down in the last 24 h, closed trades and realized P&L for yesterday (UTC day), and the backup container's health. If the alerter was down at 08:00, it sends the note once on start the same day.
+- **AC-18** (daily note): at `ALERTS_DAILY_AT` (08:00) in `ALERTS_DAILY_TZ` (Europe/Amsterdam), one silent push reports: alerts opened in the last 24 h by tier, alerts still open, rows still `failed`, minutes the trader was down in the last 24 h, closed trades and realized P&L for yesterday (UTC day), and the backup container's health. If the alerter was down at 08:00, it sends the note once on start the same day. Its `alerts` row (rule `daily`, fingerprint `daily:<local date>` in `ALERTS_DAILY_TZ`) is the sent marker: before sending, the alerter looks for that row in this `env` and sends only if none exists, whatever the row's delivery (`sent`, `dry_run`, `failed`). The note is never muted, held, or capped, and never counts toward the cap. The note needs Postgres for its numbers and its marker, so while Postgres is unreachable it waits, retrying each minute, and sends once Postgres answers, if it is still the same local day; otherwise that day has no note.
 - **AC-19** (rule coverage): a unit test fails when a code promised by an earlier spec (the list in rationale.md, *Promise inventory*) has no rule, or a rule names a code no file in the repo logs.
 - **AC-20** (secrets): the Pushover app token, the Pushover user key, and the healthchecks.io ping URLs are secret files under `/run/secrets`, loaded with `load_required`, granted only to the service that uses them (alerter, or backup for `backup-verified`), and redacted from every log line. A missing secret file stops the alerter at start, in `pushover` mode only.
 
@@ -148,12 +148,15 @@ Rule kinds:
 | `alert_storm` | warning | internal | 0 | AC-10 | `alert_storm:<hour>` |
 | `summary` | warning | internal | 0 | AC-11, AC-12 | `summary:<window id>` |
 | `test` | each tier | internal | 0 | AC-16, AC-17 | `test:<command id>:<tier>` |
+| `daily` | info | internal | 0 | AC-18 | `daily:<local date>` (`YYYY-MM-DD` in `ALERTS_DAILY_TZ`) |
 
 A loss limit halt logs both `loss_limit_halt` and a critical `halt:<halt_id>` event. Both share the fingerprint `halt:<halt_id>`, so they make one push.
 
 **Replay safety.** The engine keeps an in memory set of the line keys `(service, docker timestamp, sha256 of the line)` it has seen in the last 30 min, and drops any line older than its service's cursor. A cursor that falls back 5 min, or a reader reattaching after a container restart, can't push a closed event twice.
 
 **Summaries.** A summary (end of a deploy window or a mute) is one warning push titled "N warnings while muted" or "N warnings during deploy". It lists up to 10 titles, then "and N more". It counts toward the cap. Each row it covers becomes `delivery=sent` with `sends + 1`.
+
+**Daily note row.** The `daily` episode is stored resolved at once (`resolved_at = opened_at`), like a test, so it never shows as still open. Its source is `self` and its `details` is `{}`. A failed push is retried by the AC-14 cycle like any row, and the existing row keeps the note from being sent twice. There is no unique index for it: there is one alerter, and it checks for the row before it inserts.
 
 **Pushover fields.** Critical uses priority `2`, `retry=60`, `expire=3600`, and sound `persistent`. Warning uses priority `0`. Info uses priority `-1` ("silent": it shows in the list and on the lock screen, with no sound or vibration). The title is cut to 250 characters and the message to 1,024, with "…" at the end.
 
@@ -241,7 +244,8 @@ The alerter consumes `{env}:control:alerts` in its own consumer group `alerter` 
 | `rollback_failed` | sha | `deploys.jsonl` outcome line |
 | mute badge | until | `until` of the newest executed mute or unmute result on `{env}:control:alerts:results` (the dashboard has no read on `*:alerts:*`), shown in `Europe/Amsterdam`; hidden once past |
 | mute in the engine | until | `{env}:alerts:mute` `until`, set by the alerter with that TTL, deleted on unmute |
-| daily note | counts by tier, still open, still failed | `alerts` rows with `opened_at` in the last 24 h; rows with `resolved_at IS NULL`; rows with `delivery='failed'` |
+| daily note | counts by tier, still open, still failed | `alerts` rows with `opened_at` in the last 24 h, leaving out `rule='daily'` (test rows still count); rows with `resolved_at IS NULL`; rows with `delivery='failed'` |
+| daily note | sent today | an `alerts` row of this `env` with `rule='daily'` and fingerprint `daily:<local date>`, the date taken in `ALERTS_DAILY_TZ` |
 | daily note | trader down minutes | for each `trader_down` episode overlapping the last 24 h: `min(resolved_at or now, now) − max(opened_at, now − 24 h)`, summed, whatever its delivery |
 | daily note | trades and realized P&L yesterday | `positions` of this `env` with `closed_at` in yesterday's UTC day: count and sum of `realized_pnl` (Decimal, net of fees as stored, spec 0002); "no trades" when the count is 0 |
 | daily note | backup health | the backup container's Docker health (healthy means a backup in the last 26 h, spec 0005) |
@@ -252,7 +256,7 @@ The alerter consumes `{env}:control:alerts` in its own consumer group `alerter` 
 
 **Key invariants**:
 - At most one open episode per `(env, fingerprint)` (DB partial unique index; the engine checks it first).
-- A critical push is never muted, held by a mute, or capped. Only `trader_down` is held, and only during a deploy window.
+- A critical push, a test push, and the daily note are never muted or capped. Of these, only `trader_down` is held, and only during a deploy window.
 - Delivery never waits on Postgres (AC-15).
 - Nothing is pushed from `ALERTS_DELIVERY=log`, and no ping is sent from it.
 - Every stored or pushed text has passed `trading_core.secrets.redact`.
@@ -290,6 +294,7 @@ The alerter consumes `{env}:control:alerts` in its own consumer group `alerter` 
 - Deploy window: a warning during a deploy is held and dropped if it resolved; one still open is sent as a summary after; a critical goes straight through. Verifies **AC-11**.
 - Auth/permission: the dashboard Redis user can't write `{env}:alerts:mute` directly (ACL denies); an `alerts_mute` with `mute_s=999999` is answered `failed invalid`; a critical during a mute still pushes. Verifies **AC-12**, **AC-20**.
 - Coverage: remove the `book_sequence_hole` rule, and the coverage test fails. Verifies **AC-19**.
+- Daily note: at 08:00 local the engine sends one note and stores `daily:<date>`; a restart the same day sends nothing; a start after 08:00 with no row sends once; during a mute or a deploy window it still sends; with Postgres down it waits, then sends once. Verifies **AC-18**.
 
 ## Build plan
 
@@ -316,7 +321,7 @@ Tracer Bullet: the first slice is one real thread from a real signal (the trader
    1. Live fill pushes with the `fills` lookup. Satisfies **AC-8**. (built)
    2. Alert command stream: `AlertCmd`, the `alerter` consumer group, mute and unmute with the summary on expiry, `alerts_test`; dashboard Redis ACL change. Satisfies **AC-12**, **AC-16**. (built)
    3. Dashboard: Activity feed rows from `alerts`, mute control and badge, test button; styleguide samples. Satisfies **AC-16**. (built)
-   4. Daily note with its catch up on start. Satisfies **AC-18**.
+   4. Daily note with its catch up on start, the `daily` rule, and a `PushReason.DAILY` that passes the hold and the cap as `TEST` does (`engine._holding`, `engine._gate`). Satisfies **AC-18**.
    5. Full verify on the VPS (verify.md), including a real night time critical. Satisfies **AC-1** to **AC-20**.
 
 ## Consequences

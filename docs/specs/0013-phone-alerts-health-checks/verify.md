@@ -27,7 +27,7 @@ To read alert rows: `docker compose exec -T postgres psql -U postgres -d kfs -c 
 6. **Host and backup (AC-4, AC-5).** `grep autoheal /var/log/kfs/host.jsonl` shows autoheal lines. After the next nightly backup, healthchecks.io shows a `backup-verified` ping. Run the restore drill from the laptop with `./secrets/hc_restore_drill_url` in place: after PASS, `restore-drill` shows a ping. `df -h /` matches the free space the alerter logs at start.
 7. **Stuck entry block (AC-6).** Stop the recorder's Postgres writes long enough for `recording_unhealthy`, or set `ALERTS_ENTRY_BLOCK_S=120` for this step and cause a `stale_feed` block. After the threshold an `entry_block:<reason>` warning arrives in plain words; it resolves when the block clears. Set the threshold back.
 8. **Live fills (AC-8).** Only once live trading starts (feature 19): each fill arrives as a silent push with side, size, price, and fee. In demo, check that no fill pushes arrive.
-9. **Daily note (AC-18).** At 08:00 Amsterdam the next day a silent note arrives with counts by tier, down minutes, yesterday's trades and realized P&L, and the backup health. The numbers match the `alerts` and `positions` tables.
+9. **Daily note (AC-18).** At 08:00 Amsterdam the next day a silent note arrives with counts by tier, down minutes, yesterday's trades and realized P&L, and the backup health. The numbers match the `alerts` and `positions` tables. Restart the alerter after the note: no second note arrives, and the `alerts` table holds one `daily` row for today.
 
 ## Part C: Milestone 3 on the laptop (host lines, disk, backup, block age, context hours) · added 2026-10-16
 
