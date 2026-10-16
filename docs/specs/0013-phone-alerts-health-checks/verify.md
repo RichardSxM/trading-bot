@@ -66,12 +66,12 @@ _The laptop half runs in dry run with `alerter dashboard` up (no trader or recor
 
 ### UI / manual
 
-- [ ] **Mute holds warnings, never criticals.** On Overview, tap Mute warnings · 1 h. → the alert area says "Mute for 1 h sent", then the Activity head shows "Warnings muted until HH:MM" in Amsterdam time (UTC in the tooltip). A warning while muted gets `delivery=muted` and no `alert_dry_run` line; a critical still logs `alert_dry_run`. → AC-12, AC-16
-- [ ] **Unmute sends one summary.** With a warning still open under the mute, tap Unmute. → the badge goes away and one warning "N warnings while muted" listing its title is pushed (or logged). → AC-12
-- [ ] **A mute that runs out.** Mute 1 h, then wait it out (or set the key's TTL short with redis-cli as the `alerter` user and restart the alerter). → the summary comes on its own and the badge hides once `until` is past. → AC-12, AC-16
+- [x] **Mute holds warnings, never criticals.** On Overview, tap Mute warnings · 1 h. → the alert area says "Mute for 1 h sent", then the Activity head shows "Warnings muted until HH:MM" in Amsterdam time (UTC in the tooltip). A warning while muted gets `delivery=muted` and no `alert_dry_run` line; a critical still logs `alert_dry_run`. → AC-12, AC-16
+- [x] **Unmute sends one summary.** With a warning still open under the mute, tap Unmute. → the badge goes away and one warning "N warnings while muted" listing its title is pushed (or logged). → AC-12
+- [x] **A mute that runs out.** Mute 1 h, then wait it out (or set the key's TTL short with redis-cli as the `alerter` user and restart the alerter). → the summary comes on its own and the badge hides once `until` is past. → AC-12, AC-16
 - [x] **A mute survives an alerter restart.** Mute 4 h, then `docker compose restart alerter`. → the log has `alert_mute_restored` with the same `until`; warnings stay muted. → AC-12
-- [ ] **Test button.** Tap Send test alert. → within a few seconds "Test sent: one push per tier", three `test:<id>:<tier>` rows (critical, warning, info), even while muted. With the alerter stopped, the button says "no answer from the alerter" after 10 s. → AC-16
-- [ ] **Activity feed.** → the last 24 h of episodes sit between the commands by time, each with its tier badge, title (no `[demo]` tag), open or resolved, and the delivery word (`dry run` on the laptop). Stop Postgres: the commands stay and a row says "unavailable: Postgres did not answer". → AC-16
+- [x] **Test button.** Tap Send test alert. → within a few seconds "Test sent: one push per tier", three `test:<id>:<tier>` rows (critical, warning, info), even while muted. With the alerter stopped, the button says "no answer from the alerter" after 10 s. → AC-16
+- [x] **Activity feed.** → the last 24 h of episodes sit between the commands by time, each with its tier badge, title (no `[demo]` tag), open or resolved, and the delivery word (`dry run` on the laptop). Stop Postgres: the commands stay and a row says "unavailable: Postgres did not answer". → AC-16
 - [ ] **VPS: a live fill.** In `live`, after a fill. → one silent push "Bought|Sold <qty> <base> at <price>, fee <fee> <currency>", quantity and price at the instrument's lot and tick precision. → AC-8
 
 ### Commands
