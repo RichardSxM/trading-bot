@@ -54,7 +54,7 @@ These steps fake the VPS's `/var/log/kfs` so you can check the host side without
 
 - [x] `entry_block` since: vary `entries_blocked_since` (2 h back, now, in the future, missing). → the push comes at once, after `ALERTS_ENTRY_BLOCK_S`, or counts from now in the last two cases. → AC-6
 - [x] `disk_low` free GB: a value just under the floor (for example 4.99 GB under 5) reads 4.9, never 5.0. → AC-4
-- [ ] Deploy window start: on the VPS, the "deploy started" line in `host.jsonl` carries the same `started_at` as that deploy's `deploys.jsonl` line, so the window closes on the outcome line, not after 15 min. → AC-11
+- [x] Deploy window start: on the VPS, the "deploy started" line in `host.jsonl` carries the same `started_at` as that deploy's `deploys.jsonl` line, so the window closes on the outcome line, not after 15 min. → AC-11 (2026-10-16, deploy of b8949f8: both lines carry `started_at` 2026-10-16T23:09:54Z)
 
 ### Acceptance criteria coverage (Part C)
 
