@@ -7,7 +7,7 @@ Runs as ``alerter_app``, the role the alerter starts with, so its grants are che
 
 from collections.abc import Iterator
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -148,3 +148,100 @@ def test_fill_fields_reads_the_fill_and_its_instrument_as_alerter_app(repo, sess
     assert Decimal(fields["quantity"]) == Decimal("0.001")
     assert Decimal(fields["price"]) == Decimal("67412.5")
     assert repo.fill_fields("T-not-stored") is None
+
+
+# The daily note (AC-18) ----------------------------------------------------------------------
+
+DAILY_NOW = datetime(2031, 5, 2, 6, 0, tzinfo=UTC)
+
+
+def test_daily_sent_finds_only_the_daily_row_of_that_date(repo):
+    fp = "daily:2031-05-02"
+    assert repo.daily_sent(fp) is False
+
+    repo.save(
+        episode(
+            fp,
+            rule="daily",
+            severity=Tier.INFO,
+            source="self",
+            details={},
+            opened_at=DAILY_NOW,
+            last_seen_at=DAILY_NOW,
+            resolved_at=DAILY_NOW,
+            delivery=Delivery.FAILED,
+        )
+    )
+
+    assert repo.daily_sent(fp) is True  # whatever its delivery
+    assert repo.daily_sent("daily:2031-05-03") is False
+
+
+def test_daily_figures_count_alerts_down_time_and_yesterdays_trades(repo, session, world):
+    before = repo.daily_figures(DAILY_NOW)
+    hour = timedelta(hours=1)
+    # Opened in the window: a critical trader_down 10 min long, a failed warning still open, a daily row (left out).
+    repo.save(
+        episode(
+            "fig-down",
+            opened_at=DAILY_NOW - 3 * hour,
+            last_seen_at=DAILY_NOW - 3 * hour,
+            resolved_at=DAILY_NOW - 3 * hour + timedelta(minutes=10),
+        )
+    )
+    repo.save(
+        episode(
+            "fig-warn",
+            rule="engine_error",
+            severity=Tier.WARNING,
+            title="[demo] Engine error on trader",
+            opened_at=DAILY_NOW - hour,
+            last_seen_at=DAILY_NOW - hour,
+            delivery=Delivery.FAILED,
+        )
+    )
+    repo.save(
+        episode(
+            "daily:2031-05-01",
+            rule="daily",
+            severity=Tier.INFO,
+            opened_at=DAILY_NOW - 2 * hour,
+            last_seen_at=DAILY_NOW - 2 * hour,
+            resolved_at=DAILY_NOW - 2 * hour,
+        )
+    )
+    # Opened before the window: not counted.
+    repo.save(
+        episode(
+            "fig-old",
+            rule="engine_error",
+            severity=Tier.WARNING,
+            opened_at=DAILY_NOW - 30 * hour,
+            last_seen_at=DAILY_NOW - 30 * hour,
+            resolved_at=DAILY_NOW - 29 * hour,
+        )
+    )
+    # Two positions closed yesterday (UTC 2031-05-01) and one today.
+    for closed_at, pnl in (
+        (datetime(2031, 5, 1, 9, 0, tzinfo=UTC), Decimal("0.40")),
+        (datetime(2031, 5, 1, 23, 59, tzinfo=UTC), Decimal("-0.15")),
+        (datetime(2031, 5, 2, 0, 30, tzinfo=UTC), Decimal("5")),
+    ):
+        repository.upsert_position(session, world.position(realized_pnl=pnl, closed_at=closed_at))
+    session.commit()
+
+    figures = repo.daily_figures(DAILY_NOW)
+
+    def opened(f, tier):
+        return f.opened.get(tier, 0)
+
+    assert opened(figures, Tier.CRITICAL) - opened(before, Tier.CRITICAL) == 1
+    assert opened(figures, Tier.WARNING) - opened(before, Tier.WARNING) == 1
+    assert opened(figures, Tier.INFO) - opened(before, Tier.INFO) == 0
+    assert figures.still_open - before.still_open == 1
+    assert figures.failed - before.failed == 1
+    assert "[demo] Engine error on trader" in figures.failed_titles
+    assert figures.down_s - before.down_s == 600
+    assert figures.trades - before.trades == 2
+    assert figures.pnl["USD"] - before.pnl.get("USD", Decimal(0)) == Decimal("0.25")
+    assert figures.trade_day == date(2031, 5, 1)

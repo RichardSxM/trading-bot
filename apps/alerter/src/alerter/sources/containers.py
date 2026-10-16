@@ -19,6 +19,20 @@ PROFILE_ONLY: Final = frozenset({"clock"})
 SKIPPED: Final = frozenset({"migrate", "tools", "lab", "dashboard-credentials"})
 
 
+BACKUP: Final = "backup"
+
+
+def backup_health(containers: Iterable[Container]) -> str:
+    """The backup container's Docker health in plain words, for the daily note (AC-18)."""
+    status = next((c.status for c in containers if c.service == BACKUP), None)
+    if status is None:
+        return "no backup container"
+    for marker, words in (("(healthy)", "healthy"), ("(unhealthy)", "unhealthy"), ("(health: starting)", "starting")):
+        if marker in status:
+            return words
+    return status
+
+
 def container_checks(containers: Iterable[Container], now: datetime, known: Iterable[str] = ()) -> list[CheckResult]:
     """One ``service_down`` result per core service and one ``container_unhealthy`` per service.
 

@@ -46,6 +46,7 @@ class PushReason(StrEnum):
     RESOLVED = "resolved"
     TEST = "test"
     SUMMARY = "summary"
+    DAILY = "daily"
 
 
 @dataclass(frozen=True)

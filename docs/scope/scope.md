@@ -257,11 +257,11 @@ Push alerts to your phone for fills, limit hits, errors, and a missing heartbeat
 
 spec [0013](../specs/0013-phone-alerts-health-checks/index.md) · code in `apps/alerter`, `packages/core/src/trading_core/alerts`
 - [x] Design it (spec): `/architect phone alerts & health checks`
-- [ ] Build it: `/develop phone alerts & health checks`
-  - [ ] Thin thread: core alert engine, `alerts` migration and roles, secrets and settings, the alerter with heartbeat to Pushover, dry run, watchdog ping, `alerter test` (AC-1, AC-2, AC-9, AC-13, AC-14, AC-15, AC-17, AC-20)
+- [x] Build it: `/develop phone alerts & health checks`
+  - [x] Thin thread: core alert engine, `alerts` migration and roles, secrets and settings, the alerter with heartbeat to Pushover, dry run, watchdog ping, `alerter test` (AC-1, AC-2, AC-9, AC-13, AC-14, AC-15, AC-17, AC-20)
   - [x] Container logs: socket proxy, log polling with cursors and replay set, the full rule table, storm cap, Postgres down queue, coverage test (AC-3, AC-4, AC-7, AC-10, AC-15, AC-19)
   - [x] Host, backup, and block age: `host.jsonl`, deploy window, disk check, verified backup and drill pings, `entries_blocked_since`, `context_hour_missing` (AC-4, AC-5, AC-6, AC-7, AC-11)
-  - [ ] Phone polish and dashboard: live fills, mute and test commands, Activity feed, daily note (AC-8, AC-12, AC-16, AC-18)
+  - [x] Phone polish and dashboard: live fills, mute and test commands, Activity feed, daily note (AC-8, AC-12, AC-16, AC-18)
 - [ ] Verify it: `/check verify phone alerts & health checks`
 - [ ] Test it: `/test phone alerts & health checks`
 - [ ] Review it (fresh model): `/check review phone alerts & health checks`

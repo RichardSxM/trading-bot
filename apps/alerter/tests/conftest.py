@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from alerter.delivery import Outcome
+from trading_core.alerts.daily import DailyFigures
 from trading_core.alerts.model import Delivery, Episode, Push
 from trading_core.secrets import reset_registry
 
@@ -62,6 +63,7 @@ class FakeStore:
         self.down = False
         self.fills: dict[str, dict[str, str]] = {}
         self.fill_reads: list[str] = []
+        self.figure_reads: list[datetime] = []
 
     def _check(self) -> None:
         if self.down:
@@ -82,6 +84,15 @@ class FakeStore:
         self.fill_reads.append(trade_id)
         self._check()
         return self.fills.get(trade_id)
+
+    def daily_sent(self, fingerprint: str) -> bool:
+        self._check()
+        return any(e.rule == "daily" and e.fingerprint == fingerprint for e in self.rows.values())
+
+    def daily_figures(self, now: datetime) -> DailyFigures:
+        self._check()
+        self.figure_reads.append(now)
+        return DailyFigures(opened={}, still_open=0, failed=0, failed_titles=(), down_s=0, trades=0)
 
     def load_active(self, failed_since: datetime) -> list[Episode]:
         self._check()

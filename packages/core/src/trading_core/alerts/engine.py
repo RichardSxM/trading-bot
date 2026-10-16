@@ -10,10 +10,11 @@ I/O, no clock.
 from collections import OrderedDict, deque
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
+from types import MappingProxyType
 from typing import Final
 
-from trading_core.alerts import messages
+from trading_core.alerts import daily, messages
 from trading_core.alerts.model import (
     CheckResult,
     Decision,
@@ -30,6 +31,7 @@ from trading_core.alerts.model import (
 from trading_core.alerts.rules import (
     ALERT_STORM,
     BY_ID,
+    DAILY,
     DASHBOARD,
     DEPLOY,
     ENTRY_BLOCK,
@@ -54,6 +56,8 @@ DEPLOY_STARTED: Final = "deploy started"
 # Fills push only from this env (AC-8).
 LIVE: Final = "live"
 _HELD: Final = frozenset({Delivery.HELD, Delivery.MUTED})
+# A retried test or daily push keeps its reason, so it still passes the holds and the cap.
+_RETRY_REASONS: Final = MappingProxyType({TEST.id: PushReason.TEST, DAILY.id: PushReason.DAILY})
 
 EpisodeKey = tuple[str, datetime]
 
@@ -295,6 +299,28 @@ class AlertEngine:
             decision += Decision(store=(episode,), pushes=(push,))
         return decision
 
+    def daily_note(self, day: date, figures: daily.DailyFigures, now: datetime) -> Decision:
+        """The daily note's episode and silent push (AC-18). Stored resolved, never held or capped."""
+        now = _utc(now)
+        text_title, text_body = daily.text(day, figures)
+        episode = Episode(
+            env=self._config.env,
+            rule=DAILY.id,
+            fingerprint=daily.fingerprint(day),
+            severity=DAILY.tier,
+            source=DAILY.source,
+            title=messages.title(self._config.env, text_title),
+            message=messages.message(text_body),
+            details={},
+            opened_at=now,
+            last_seen_at=now,
+            resolved_at=now,
+        )
+        self._remember(episode)
+        self._inflight.add(key_of(episode))
+        push = Push(episode, PushReason.DAILY, episode.severity, episode.title, episode.message)
+        return Decision(store=(episode,), pushes=(push,))
+
     def retry(self, now: datetime) -> Decision:
         """Pushes for failed episodes: critical first, then oldest, at most ``retry_limit`` (AC-14).
 
@@ -313,7 +339,8 @@ class AlertEngine:
         pushes = []
         for episode in due:
             self._inflight.add(key_of(episode))
-            pushes.append(Push(episode, PushReason.OPEN, episode.severity, episode.title, episode.message))
+            reason = _RETRY_REASONS.get(episode.rule, PushReason.OPEN)
+            pushes.append(Push(episode, reason, episode.severity, episode.title, episode.message))
         return self._gate(Decision(pushes=tuple(pushes)), now)
 
     def record(self, push: Push, delivery: Delivery, at: datetime) -> tuple[Episode, ...]:
@@ -510,9 +537,9 @@ class AlertEngine:
         return Decision(store=tuple(store), pushes=tuple(pushes))
 
     def _holding(self, push: Push) -> Hold | None:
-        """The window that holds ``push``: test and summary pushes never; a critical only when it
-        is ``trader_down`` in a deploy window; a deploy window before a mute."""
-        if push.reason in (PushReason.TEST, PushReason.SUMMARY):
+        """The window that holds ``push``: test, summary, and daily pushes never; a critical only
+        when it is ``trader_down`` in a deploy window; a deploy window before a mute."""
+        if push.reason in (PushReason.TEST, PushReason.SUMMARY, PushReason.DAILY):
             return None
         if push.tier is Tier.CRITICAL:
             return self._holds.get(HoldKind.DEPLOY) if push.episode.rule == TRADER_DOWN.id else None
@@ -535,8 +562,8 @@ class AlertEngine:
 
         The push that would reach the cap is replaced by one storm push; later warning and info
         pushes that hour are capped. A capped open or re-notify push marks its episode ``capped``;
-        a capped note is dropped. Critical and test pushes always pass and never count. Pushes an
-        open hold window covers are held first and never reach the cap.
+        a capped note is dropped. Critical, test, and daily pushes always pass and never count.
+        Pushes an open hold window covers are held first and never reach the cap.
         """
         decision = self._hold(decision)
         if not decision.pushes:
@@ -545,7 +572,7 @@ class AlertEngine:
         store = list(decision.store)
         pushes: list[Push] = []
         for push in decision.pushes:
-            if push.tier is Tier.CRITICAL or push.reason is PushReason.TEST:
+            if push.tier is Tier.CRITICAL or push.reason in (PushReason.TEST, PushReason.DAILY):
                 pushes.append(push)
                 continue
             if self._storm is None and self._hour_sent + len(self._counted) < self._config.hourly_cap - 1:

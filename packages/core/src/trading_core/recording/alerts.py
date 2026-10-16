@@ -7,15 +7,18 @@ stale or replayed save cannot undo a newer one. Sync, for a worker thread.
 
 from collections.abc import Mapping
 from datetime import UTC, datetime
+from decimal import Decimal
 
 from sqlalchemy import RowMapping, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session, sessionmaker
 
+from trading_core.alerts import daily
 from trading_core.alerts.messages import FILL_FIELDS
 from trading_core.alerts.model import Delivery, Episode, Tier
+from trading_core.alerts.rules import DAILY, TRADER_DOWN
 from trading_core.recording.errors import AlertConflictError
-from trading_core.recording.models import Alert, Fill, Instrument
+from trading_core.recording.models import Alert, Fill, Instrument, Position
 from trading_core.recording.repository import _check_env, _table
 from trading_core.settings import get_settings
 
@@ -115,6 +118,73 @@ class AlertRepository:
             return None
         return {name: str(value) for name, value in zip(FILL_FIELDS, row, strict=True)}
 
+    def daily_sent(self, fingerprint: str) -> bool:
+        """True when this env holds a ``daily`` row with ``fingerprint`` (AC-18's sent marker), any delivery."""
+        env = get_settings().trading_env
+        table = _table(Alert)
+        query = select(table.c.id).where(
+            table.c.env == env, table.c.rule == DAILY.id, table.c.fingerprint == fingerprint
+        )
+        with self._sessions() as session:
+            return session.execute(query.limit(1)).first() is not None
+
+    def daily_figures(self, now: datetime) -> daily.DailyFigures:
+        """The note's numbers at ``now`` (AC-18, *Value sourcing*); ``backup`` is left for the caller.
+
+        Alerts opened in the last 24 h by tier (``daily`` rows left out), rows still open, rows still
+        ``failed`` (newest titles first), ``trader_down`` time in the last 24 h, and the count and
+        realized P&L per currency of positions closed in the UTC day before ``now``'s.
+        """
+        env = get_settings().trading_env
+        alerts, positions = _table(Alert), _table(Position)
+        since = now - daily.WINDOW
+        day_start, day_end = daily.yesterday(now)
+        with self._sessions() as session:
+            opened = session.execute(
+                select(alerts.c.severity, func.count())
+                .where(alerts.c.env == env, alerts.c.opened_at >= since, alerts.c.rule != DAILY.id)
+                .group_by(alerts.c.severity)
+            ).all()
+            still_open = session.execute(
+                select(func.count()).where(alerts.c.env == env, alerts.c.resolved_at.is_(None))
+            ).scalar_one()
+            failed = (
+                session.execute(
+                    select(alerts.c.title)
+                    .where(alerts.c.env == env, alerts.c.delivery == Delivery.FAILED.value)
+                    .order_by(alerts.c.opened_at.desc())
+                )
+                .scalars()
+                .all()
+            )
+            spans = session.execute(
+                select(alerts.c.opened_at, alerts.c.resolved_at).where(
+                    alerts.c.env == env,
+                    alerts.c.rule == TRADER_DOWN.id,
+                    alerts.c.opened_at < now,
+                    or_(alerts.c.resolved_at.is_(None), alerts.c.resolved_at > since),
+                )
+            ).all()
+            closed = session.execute(
+                select(positions.c.currency, func.count(), func.sum(positions.c.realized_pnl))
+                .where(
+                    positions.c.env == env,
+                    positions.c.closed_at >= day_start,
+                    positions.c.closed_at < day_end,
+                )
+                .group_by(positions.c.currency)
+            ).all()
+        return daily.DailyFigures(
+            opened={Tier(str(severity)): _int(count) for severity, count in opened},
+            still_open=_int(still_open),
+            failed=len(failed),
+            failed_titles=tuple(str(t) for t in failed[: daily.FAILED_TITLES]),
+            down_s=daily.down_seconds(((_at(o), _at_or_none(r)) for o, r in spans), now),
+            trades=sum(_int(count) for _, count, _ in closed),
+            pnl={str(currency): _decimal(total) for currency, _, total in closed},
+            trade_day=day_start.date(),
+        )
+
     def ping(self) -> None:
         """``SELECT 1``; raises a SQLAlchemy error when Postgres is unreachable (spec 0013 AC-4)."""
         with self._sessions() as session:
@@ -171,6 +241,12 @@ def _at(value: object) -> datetime:
 
 def _at_or_none(value: object) -> datetime | None:
     return None if value is None else _at(value)
+
+
+def _decimal(value: object) -> Decimal:
+    if not isinstance(value, Decimal):
+        raise TypeError(f"expected a Decimal, got {value!r}")
+    return value
 
 
 def _int(value: object) -> int:

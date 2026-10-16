@@ -122,6 +122,8 @@ async def serve(started: Boot[AlerterSettings]) -> None:
             disk_free_gb=settings.alerts_disk_free_gb,
             control=redis,
             mute=MuteKey(redis, settings.trading_env),
+            daily_at=settings.alerts_daily_at,
+            daily_tz=settings.alerts_daily_tz,
         )
         log.info(
             "alerter running",

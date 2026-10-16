@@ -321,7 +321,7 @@ Tracer Bullet: the first slice is one real thread from a real signal (the trader
    1. Live fill pushes with the `fills` lookup. Satisfies **AC-8**. (built)
    2. Alert command stream: `AlertCmd`, the `alerter` consumer group, mute and unmute with the summary on expiry, `alerts_test`; dashboard Redis ACL change. Satisfies **AC-12**, **AC-16**. (built)
    3. Dashboard: Activity feed rows from `alerts`, mute control and badge, test button; styleguide samples. Satisfies **AC-16**. (built)
-   4. Daily note with its catch up on start, the `daily` rule, and a `PushReason.DAILY` that passes the hold and the cap as `TEST` does (`engine._holding`, `engine._gate`). Satisfies **AC-18**.
+   4. Daily note with its catch up on start, the `daily` rule, and a `PushReason.DAILY` that passes the hold and the cap as `TEST` does (`engine._holding`, `engine._gate`). Satisfies **AC-18**. (built)
    5. Full verify on the VPS (verify.md), including a real night time critical. Satisfies **AC-1** to **AC-20**.
 
 ## Consequences

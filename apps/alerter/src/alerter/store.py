@@ -17,6 +17,7 @@ from typing import Final, Protocol
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from trading_core.alerts.daily import DailyFigures
 from trading_core.alerts.engine import AlertEngine, EpisodeKey, key_of
 from trading_core.alerts.model import Episode, Tier
 from trading_core.recording.errors import RecordingError
@@ -39,6 +40,10 @@ class EpisodeStore(Protocol):
     def ping(self) -> None: ...
 
     def fill_fields(self, trade_id: str) -> dict[str, str] | None: ...
+
+    def daily_sent(self, fingerprint: str) -> bool: ...
+
+    def daily_figures(self, now: datetime) -> DailyFigures: ...
 
 
 class StoreWriter:
@@ -127,6 +132,34 @@ class StoreWriter:
         except SQLAlchemyError as exc:
             log.warning("fill lookup failed", extra={"fields": {"code": "alert_fill_lookup_failed", "error": str(exc)}})
             return None
+
+    async def daily_sent(self, fingerprint: str) -> bool | None:
+        """Whether the daily note's row exists (AC-18); None while Postgres is unavailable."""
+        try:
+            return await asyncio.to_thread(self._store.daily_sent, fingerprint)
+        except SQLAlchemyError as exc:
+            log.warning("daily note waits", extra={"fields": {"code": "daily_note_waiting", "error": str(exc)}})
+            return None
+
+    async def daily_figures(self, now: datetime) -> DailyFigures | None:
+        """The daily note's numbers (AC-18); None while Postgres is unavailable."""
+        try:
+            return await asyncio.to_thread(self._store.daily_figures, now)
+        except SQLAlchemyError as exc:
+            log.warning("daily note waits", extra={"fields": {"code": "daily_note_waiting", "error": str(exc)}})
+            return None
+
+    async def write_now(self, episode: Episode) -> bool:
+        """Write ``episode`` before its push goes out (the daily note's sent marker).
+
+        False when Postgres is unavailable. Later states of the same episode go through the queue as usual.
+        """
+        try:
+            await asyncio.to_thread(self._store.save, episode)
+        except SQLAlchemyError as exc:
+            log.warning("daily note waits", extra={"fields": {"code": "daily_note_waiting", "error": str(exc)}})
+            return False
+        return True
 
     async def flush_one(self) -> bool:
         """Write the oldest queued episode; False (kept queued) when Postgres is unavailable."""

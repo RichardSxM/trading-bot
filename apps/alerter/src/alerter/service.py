@@ -1,5 +1,5 @@
 """The alerter's loops (spec 0013): heartbeat, entry blocks, logs, host lines, containers, disk,
-Postgres, tick, retry, store, ping, the liveness file, and the alert commands.
+Postgres, tick, retry, store, ping, the daily note, the liveness file, and the alert commands.
 
 Every loop runs supervised: a crash logs ``alerter_task_crashed`` and restarts it. Pushes run as
 their own tasks, so a push retrying for two minutes never stalls a check.
@@ -17,8 +17,9 @@ from typing import Final
 from redis.exceptions import RedisError
 
 from alerter.commands import AlertCommands, MuteKey
+from alerter.daily import DailyNote
 from alerter.delivery import Deliverer, Outcome
-from alerter.sources.containers import container_checks
+from alerter.sources.containers import backup_health, container_checks
 from alerter.sources.disk import free_bytes
 from alerter.sources.docker_api import DockerApiError
 from alerter.sources.docker_watch import DockerWatch
@@ -48,6 +49,7 @@ POSTGRES_S: Final = 15.0
 TICK_S: Final = 5.0
 RETRY_CYCLE_S: Final = 60.0
 PING_S: Final = 60.0
+DAILY_S: Final = 60.0
 # The watchdog pings only while the Redis read and the log pass succeeded this recently (AC-2).
 SOURCE_FRESH_S: Final = 60.0
 LIVENESS_S: Final = 10.0
@@ -89,6 +91,8 @@ class Alerter:
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         control: ControlRedis | None = None,
         mute: MuteKey | None = None,
+        daily_at: str = "08:00",
+        daily_tz: str = "Europe/Amsterdam",
     ) -> None:
         self._env = env
         self._sleep = sleep
@@ -113,6 +117,15 @@ class Alerter:
         self._pushes: set[asyncio.Task[object]] = set()
         self._mute = mute
         self._commands = None if control is None else AlertCommands(control, env, self.execute, clock)
+        self.daily = DailyNote(
+            engine=engine,
+            store=store,
+            deliver=self.deliver,
+            backup=self.backup_health,
+            at=daily_at,
+            tz=daily_tz,
+            clock=clock,
+        )
 
     # One step of each loop (the tests drive these) --------------------------------------------
 
@@ -226,6 +239,18 @@ class Alerter:
         self._known_services |= {c.service for c in containers}
         for service, started_at in starts.items():
             self.apply(self._engine.service_started(service, started_at))
+
+    async def backup_health(self) -> str:
+        """The backup container's Docker health for the daily note (AC-18); "unknown" without Docker."""
+        if self._docker is None:
+            return "unknown"
+        try:
+            return backup_health(await self._docker.containers())
+        except DockerApiError as exc:
+            log.warning(
+                "backup health read failed", extra={"fields": {"code": "alerter_containers_failed", "error": str(exc)}}
+            )
+            return "unknown"
 
     async def check_postgres(self) -> None:
         """``postgres_unreachable`` from a ``SELECT 1`` (AC-4); alerts keep flowing either way (AC-15)."""
@@ -355,6 +380,7 @@ class Alerter:
             ("tick", _sync(self.tick), TICK_S),
             ("retry", _sync(self.retry), RETRY_CYCLE_S),
             ("ping", self.ping, PING_S),
+            ("daily", self.daily.step, DAILY_S),
             ("liveness", _sync(self.touch_liveness), LIVENESS_S),
         ]
         async with asyncio.TaskGroup() as group:

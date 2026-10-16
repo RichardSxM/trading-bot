@@ -268,6 +268,8 @@ ALERT_STORM: Final = Rule("alert_storm", Tier.WARNING, RuleKind.INTERNAL, source
 SUMMARY: Final = Rule("summary", Tier.WARNING, RuleKind.INTERNAL, source="self")
 # A test push takes the tier it tests; ``tier`` here is only the default.
 TEST: Final = Rule("test", Tier.INFO, RuleKind.INTERNAL, source="self")
+# The daily note (AC-18); its row is also the "sent today" marker.
+DAILY: Final = Rule("daily", Tier.INFO, RuleKind.INTERNAL, source="self")
 
 RULES: Final[tuple[Rule, ...]] = (
     TRADER_DOWN,
@@ -302,6 +304,7 @@ RULES: Final[tuple[Rule, ...]] = (
     ALERT_STORM,
     SUMMARY,
     TEST,
+    DAILY,
 )
 
 BY_ID: Final[Mapping[str, Rule]] = MappingProxyType({rule.id: rule for rule in RULES})
