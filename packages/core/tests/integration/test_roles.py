@@ -1,4 +1,5 @@
-"""covers: spec 0002 AC-11 (what each app role may do), AC-13 (role setup is idempotent), spec 0008 AC-17 (lab_app)."""
+"""covers: spec 0002 AC-11 (what each app role may do), AC-13 (role setup is idempotent), spec 0008 AC-17 (lab_app),
+spec 0013 Security model (alerter_app writes only alerts; nobody else writes them)."""
 
 from collections.abc import Callable, Iterator, Sequence
 
@@ -7,7 +8,15 @@ import pytest
 from sqlalchemy import Engine, create_engine, pool, text
 from sqlalchemy.exc import ProgrammingError
 
-from trading_core.db_roles import BACKUP_ROLE, DASHBOARD_ROLE, LAB_ROLE, TRADER_ROLE, role_passwords, setup_roles
+from trading_core.db_roles import (
+    ALERTER_ROLE,
+    BACKUP_ROLE,
+    DASHBOARD_ROLE,
+    LAB_ROLE,
+    TRADER_ROLE,
+    role_passwords,
+    setup_roles,
+)
 
 from .conftest import migrate_secrets, owner_url, role_url
 
@@ -31,6 +40,7 @@ TABLES = (
     "risk_events",
     "control_commands",
     "run_fill_stats",
+    "alerts",
 )
 TRADER_UPDATES = {"orders", "positions", "strategy_runs", "control_commands", "fills", "funding_payments"}
 # What a replay bundle writes (spec 0008 AC-17): lab_app may read and insert these, nothing else.
@@ -51,7 +61,21 @@ LAB_TABLES = {
 }
 
 
+# The alerter (spec 0013): reads and writes alerts (no DELETE), reads fills and positions.
+ALERTER_GRANTS = {
+    ("alerts", "SELECT"),
+    ("alerts", "INSERT"),
+    ("alerts", "UPDATE"),
+    ("fills", "SELECT"),
+    ("positions", "SELECT"),
+}
+
+
 def _expected(role: str, table: str, privilege: str) -> bool:
+    if role == ALERTER_ROLE:
+        return (table, privilege) in ALERTER_GRANTS
+    if table == "alerts":
+        return privilege == "SELECT" and role != LAB_ROLE
     if role == LAB_ROLE:
         return privilege in {"SELECT", "INSERT"} and table in LAB_TABLES
     if privilege == "SELECT":
@@ -79,7 +103,7 @@ def test_table_privileges_match_the_security_model(engine: Engine):
     actual: dict[tuple[str, str, str], bool] = {}
     expected: dict[tuple[str, str, str], bool] = {}
     with engine.connect() as conn:
-        for role in (TRADER_ROLE, DASHBOARD_ROLE, BACKUP_ROLE, LAB_ROLE):
+        for role in (TRADER_ROLE, DASHBOARD_ROLE, BACKUP_ROLE, LAB_ROLE, ALERTER_ROLE):
             for table in TABLES:
                 for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE"):
                     key = (role, table, privilege)
@@ -125,6 +149,14 @@ def test_only_backup_app_may_run_the_downsample(engine: Engine):
             " VALUES (gen_random_uuid(), 'demo', 'pause', now(), now(), now())",
         ),
         (LAB_ROLE, "SELECT count(*) FROM control_commands"),
+        (ALERTER_ROLE, "DELETE FROM alerts"),
+        (ALERTER_ROLE, "SELECT count(*) FROM orders"),
+        (
+            TRADER_ROLE,
+            "INSERT INTO alerts (env, rule, fingerprint, severity, source, title, message, details,"
+            " opened_at, last_seen_at, delivery)"
+            " VALUES ('demo', 'x', 'x', 'info', 'self', 't', 'm', '{}', now(), now(), 'pending')",
+        ),
     ],
 )
 def test_a_role_is_refused_what_it_may_not_do(role_engine, role, statement):

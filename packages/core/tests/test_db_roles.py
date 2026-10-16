@@ -21,6 +21,7 @@ def test_role_passwords_cover_every_app_role():
         "trader_app": PASSWORDS["postgres_trader_password"],
         "dashboard_app": PASSWORDS["postgres_dashboard_password"],
         "backup_app": PASSWORDS["postgres_backup_password"],
+        "alerter_app": PASSWORDS["postgres_alerter_password"],
         "lab_app": None,
     }
     assert set(role_passwords(secrets)) == set(APP_ROLES)
@@ -47,12 +48,13 @@ def test_an_unusable_lab_password_file_still_refuses(tmp_path):
     assert raised.value.reason == "empty"
 
 
-def test_migrate_reads_the_owner_and_three_role_files():
+def test_migrate_reads_the_owner_and_every_required_role_file():
     assert MIGRATE_SECRETS == (
         "postgres_password",
         "postgres_trader_password",
         "postgres_dashboard_password",
         "postgres_backup_password",
+        "postgres_alerter_password",
     )
 
 

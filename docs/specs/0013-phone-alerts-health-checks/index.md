@@ -1,7 +1,7 @@
 # 0013. Push alerts to the iPhone through Pushover from one alerter that reads the logs, with healthchecks.io watching from outside
 
 **Date**: 2026-10-16
-**Status**: Proposed
+**Status**: In Progress
 
 ## Summary
 
@@ -296,11 +296,11 @@ The alerter consumes `{env}:control:alerts` in its own consumer group `alerter` 
 Tracer Bullet: the first slice is one real thread from a real signal (the trader's heartbeat) to a real push and a stored row, then each source is added end to end.
 
 1. **Thin thread: heartbeat to phone**
-   1. Core `trading_core/alerts/` pure model and engine with the `trader_down`, `test`, and internal rules; unit tests for open, resolve, re-notify, restart load. Satisfies **AC-1**, **AC-9**.
-   2. Migration: `alerts` table and indexes, `alerter_app` role and grants (`db_roles.py`), `dashboard_app` SELECT; `AlertRepository` with integration tests. Satisfies **AC-9**, **AC-15**.
-   3. Secrets and settings via the recipes: the six secret files, the `ALERTS_*` settings class, `dev-secrets.sh`, `.env.example`, `deploy/kfs.env.example`; the `alerter` Redis ACL user in `docker/redis/start.sh`. Satisfies **AC-20**.
-   4. `apps/alerter`: boot, Redis heartbeat source, Pushover client with retries, `log` delivery, `alerter-alive` ping and `/fail`, `alerter test` CLI; Compose service with healthcheck (heartbeat file, as the node anchor). Satisfies **AC-1**, **AC-2**, **AC-13**, **AC-14**, **AC-17**.
-   5. Laptop end to end in dry run, then deploy and run verify steps 1 to 4. Satisfies **AC-1**, **AC-2**, **AC-17**.
+   1. Core `trading_core/alerts/` pure model and engine with the `trader_down`, `test`, and internal rules; unit tests for open, resolve, re-notify, restart load. Satisfies **AC-1**, **AC-9**. (built)
+   2. Migration: `alerts` table and indexes, `alerter_app` role and grants (`db_roles.py`), `dashboard_app` SELECT; `AlertRepository` with integration tests. Satisfies **AC-9**, **AC-15**. (built)
+   3. Secrets and settings via the recipes: the six secret files, the `ALERTS_*` settings class, `dev-secrets.sh`, `.env.example`, `deploy/kfs.env.example`; the `alerter` Redis ACL user in `docker/redis/start.sh`. Satisfies **AC-20**. (built; `hc_backup_url` is declared in Compose with its first user, task 3.3)
+   4. `apps/alerter`: boot, Redis heartbeat source, Pushover client with retries, `log` delivery, `alerter-alive` ping and `/fail`, `alerter test` CLI; Compose service with healthcheck (heartbeat file, as the node anchor). Satisfies **AC-1**, **AC-2**, **AC-13**, **AC-14**, **AC-17**. (built)
+   5. Laptop end to end in dry run, then deploy and run verify steps 1 to 4. Satisfies **AC-1**, **AC-2**, **AC-17**. (laptop half done 2026-10-16: Part A steps 1 to 3 passed; the deploy and Part B steps 1 to 4 wait for the accounts)
 2. **Container logs**
    1. Docker socket proxy service and `dockerproxy` network. `docker_logs.py` polls each service's logs every 5 s with `since=<cursor>&timestamps=1`. It finds containers by the Compose project label, so other containers on the host are ignored, and one shot services (`migrate`, `tools`, `lab`, `dashboard-credentials`) are skipped. It also keeps the Redis cursors and the replay set. `containers.py` polls states every 15 s. Satisfies **AC-3**, **AC-4**.
    2. The full rule table for log codes, `engine_error`, `service_down`, `container_unhealthy`, `login_failed_burst`; `promises.py` and the coverage test. Satisfies **AC-3**, **AC-4**, **AC-7**, **AC-19**.

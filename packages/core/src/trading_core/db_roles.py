@@ -3,7 +3,7 @@
 Runs as the owner role ``trading`` in the migrate service: ``python -m trading_core.db_roles``.
 Roles are cluster wide and live outside Alembic, so a downgrade leaves them in place. Running
 it again only resets the passwords and grants, so it is safe to repeat. The owner password and
-the three role passwords are secret files (spec 0003); an unusable one stops it with exit 1
+each required role password are secret files (spec 0003); an unusable one stops it with exit 1
 and one JSON error line. The lab role's password (spec 0008) is optional: the laptop has it,
 the VPS does not, and without it the role exists but cannot log in (``NOLOGIN``).
 """
@@ -30,17 +30,20 @@ TRADER_ROLE: Final = "trader_app"
 DASHBOARD_ROLE: Final = "dashboard_app"
 BACKUP_ROLE: Final = "backup_app"
 LAB_ROLE: Final = "lab_app"
-APP_ROLES: Final = (TRADER_ROLE, DASHBOARD_ROLE, BACKUP_ROLE, LAB_ROLE)
+# The alerter (spec 0013): writes only the ``alerts`` table, reads fills and positions.
+ALERTER_ROLE: Final = "alerter_app"
+APP_ROLES: Final = (TRADER_ROLE, DASHBOARD_ROLE, BACKUP_ROLE, LAB_ROLE, ALERTER_ROLE)
 
 # Each app role's password file as the migrate service mounts it.
 ROLE_SECRETS: Final = {
     TRADER_ROLE: "postgres_trader_password",
     DASHBOARD_ROLE: "postgres_dashboard_password",
     BACKUP_ROLE: "postgres_backup_password",
+    ALERTER_ROLE: "postgres_alerter_password",
 }
 # Roles whose password file may be absent; such a role is created or reset NOLOGIN.
 OPTIONAL_ROLE_SECRETS: Final = {LAB_ROLE: POSTGRES_LAB_PASSWORD}
-# Everything role setup and Alembic need: the owner password, then the three role passwords.
+# Everything role setup and Alembic need: the owner password, then the role passwords.
 MIGRATE_SECRETS: Final = (POSTGRES_PASSWORD, *ROLE_SECRETS.values())
 
 _ATTRIBUTES: Final = sql.SQL("LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD {}")

@@ -59,7 +59,7 @@ def test_upgrade_downgrade_upgrade_gives_the_same_schema_and_keeps_the_roles():
         engine.dispose()
         drop_database(name)
 
-    assert len([item for kind, item in first if kind == "constraint" and " pk_" in item]) == 19
+    assert len([item for kind, item in first if kind == "constraint" and " pk_" in item]) == 20
     assert tables == ["alembic_version"]
     assert [kind for kind, _ in after_down if kind in {"grant", "function", "default acl"}] == []
     assert sorted(roles) == sorted(APP_ROLES)

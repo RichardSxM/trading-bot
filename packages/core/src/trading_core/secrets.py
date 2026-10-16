@@ -39,6 +39,14 @@ KRAKEN_API_SECRET: Final = "kraken_api_secret"
 DASHBOARD_PASSWORD_HASH: Final = "dashboard_password_hash"
 DASHBOARD_TOTP_SEED: Final = "dashboard_totp_seed"
 DASHBOARD_SESSION_KEY: Final = "dashboard_session_key"
+# Phone alerts (spec 0013): Pushover's app token and user key, and the healthchecks.io ping URLs.
+# The alerter loads the Pushover pair and its own ping URL only when it really pushes.
+PUSHOVER_APP_TOKEN: Final = "pushover_app_token"
+PUSHOVER_USER_KEY: Final = "pushover_user_key"
+HC_ALERTER_URL: Final = "hc_alerter_url"
+HC_BACKUP_URL: Final = "hc_backup_url"
+# The migrate service's name for the alerter role's password; the alerter mounts it as POSTGRES_PASSWORD.
+POSTGRES_ALERTER_PASSWORD: Final = "postgres_alerter_password"
 
 Reason = Literal["missing", "empty", "not_a_file", "unreadable", "too_short", "whitespace"]
 
