@@ -104,6 +104,11 @@ Two choices give up a little exactness for safety. Delivery never waits on Postg
 - **Restore drill ping URL** lives in `./secrets/hc_restore_drill_url` on the laptop, beside the other untracked laptop secrets, and is optional (the drill prints a reminder without it).
 - **`context_hour_missing`** is a new compactor log line; nothing logs it today.
 - **Entry block alerting set**: excludes `halted`, `paused`, `daily_loss_limit`, `trade_cap`, and `loss_cooldown`, because you set them, they already raised their own event, or they clear on a known clock.
+- **Settled after the build** (2026-10-16, on your pick; the Milestone 2 build had chosen these for now):
+  - **`context_feed_lagging` is dropped.** Spec 0009 never defined it and nothing logs it. The feed already reconnects after `idle_s` of silence and logs `context_feed_down`, which the 5 min pair rule turns into an alert. Runner up: a new trader line for a context value that stays stale N min while the feed is up; deferred because no earlier spec asked for it, and `funding_stale` already refuses entries on stale funding.
+  - **`book_sequence_hole` uses the plain code as its fingerprint.** The recorder keeps one sequence watch per feed, so its line names no instrument. A burst of holes makes one push, and a new push comes after 15 quiet minutes. Runner up: `book_sequence_hole:<run>`, rejected because a recorder restart would push again for the same fault.
+  - **`record_conflict` is critical, in `trader_critical_codes`, keyed by the code.** It is logged at ERROR with no `event_key`, so `risk_critical` misses it. Critical matches spec 0002's `risk_events` severity and the scope's list of critical risk events. Runner up: one key per table, rejected because the action (look into it, then restart) is the same whichever table conflicts. The push body names the table, so you still see which one. Two follow on effects are intended. A conflict that comes more than 15 min after the last one opens a new critical episode, because each one is a fresh sign of the bug. And `record_conflict` stays in AC-6's entry block set, so a block still there after an hour sends one `entry_block:record_conflict` warning as a reminder, because the block holds until restart. `record_conflict_unreported` needs no rule of its own: it is always logged just before the `record_conflict` line, which pages.
+  - **`recording_failed` keeps only the 1 h `entry_block` warning.** No earlier spec promised a direct alert. The accepted cost: after an item is dead lettered, up to 1 h passes with no push, while entries are already refused and nothing else is lost. Runner up: the same critical row as `record_conflict`.
 - **Uptime in the daily note** became "minutes the trader was down in the last 24 h", taken from `trader_down` episodes, because no snapshot carries a start time.
 
 ## Promise inventory
@@ -120,12 +125,12 @@ Every alert promised before this spec, with the rule that keeps it. `promises.py
 | 0004 | the Activity feed names alert sources | AC-16 |
 | 0005 | `autoheal_gave_up`, `backup_failed`, an unhealthy backup, `rollback_failed`, disk under 5 GB | `autoheal_gave_up`, `backup_failed`, `container_unhealthy:backup`, `rollback_failed`, `disk_low` |
 | 0005 | restore drill older than 35 days; newest `kfs-vps` B2 snapshot older than 26 h, seen from outside | healthchecks.io `restore-drill`, `backup-verified` |
-| 0006 | `stop_not_accepted`, `exit_failed`, abandoned position, `record_conflict` | `risk_critical`, `positions_abandoned` |
+| 0006 | `stop_not_accepted`, `exit_failed`, abandoned position, `record_conflict` | `risk_critical`, `trader_critical_codes` (`positions_abandoned`, `record_conflict`) |
 | 0006 | an entry block lasting over an hour | `entry_block` |
 | 0007 | ERROR and CRITICAL codes; `book_gap` over 60 s | the recorder rows of the rule table, `book_gap_long` |
 | 0007 | `catalog_disk_full`, `catalog_retention_blocked`, `catalog_late_rows`, `recorder_queue_full`, `recorder_stop_queue_full`, `compactor_pass_failed`, `backup_failed step=catalog` | same names, `backup_failed:catalog` |
 | 0007 | `book_sequence_hole` | `book_sequence_hole` |
-| 0009 | `context_feed_down` over 5 min, `context_feed_lagging`, an hour missing a context file | `context_feed_down`, `context_feed_lagging`, `context_hour_missing` |
+| 0009 | `context_feed_down` over 5 min, an hour missing a context file (0009 never defined a lagging code; `context_feed_down` covers a silent feed) | `context_feed_down`, `context_hour_missing` |
 | 0010 | every critical `halt`, `flatten_timeout`, `halt_key_write_failed` | `risk_critical` |
 | 0010 | the "Stop failed" bar is the only warning until now | `risk_critical` (the failure events behind the bar) |
 | 0012 | `recorder_write_failed`, `recorder_writer_busy`, `recorder_flush_slow` | same names |
