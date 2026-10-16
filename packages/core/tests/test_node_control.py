@@ -432,6 +432,7 @@ def test_trader_state_reports_the_pause_and_the_counts():
         "protective_stops": 2,
         "git_commit": "a" * 40,
         "entries_blocked": ["paused"],
+        "entries_blocked_since": {},
         "recording_backlog": 0,
         "exiting": False,
         "position_opened_ns": None,
@@ -513,11 +514,16 @@ def test_trader_state_reads_flattening_while_a_stop_waits_for_flat():
 
 
 def test_trader_state_carries_the_paper_status_when_the_paper_loop_runs():
-    """covers: spec 0006 AC-16 (entries_blocked, recording_backlog, exiting, position_opened_ns)"""
+    """covers: spec 0006 AC-16 (entries_blocked, recording_backlog, exiting, position_opened_ns) and
+    spec 0013 AC-6 (entries_blocked_since)"""
     gate = PauseGate()
     gate.unpause()
     status = PaperStatus(
-        entries_blocked=["stale_feed"], recording_backlog=3, exiting=True, position_opened_ns=1_700_000_000
+        entries_blocked=["stale_feed"],
+        recording_backlog=3,
+        exiting=True,
+        position_opened_ns=1_700_000_000,
+        entries_blocked_since={"stale_feed": 1_690_000_000},
     )
 
     state = trader_state(gate, FakeRiskEngine(), FakeCache(), "x", lambda: status)
@@ -529,6 +535,7 @@ def test_trader_state_carries_the_paper_status_when_the_paper_loop_runs():
         True,
         1_700_000_000,
     )
+    assert state["entries_blocked_since"] == {"stale_feed": 1_690_000_000}
 
 
 def test_trader_state_without_the_paper_loop_reports_nothing_blocked_while_running():

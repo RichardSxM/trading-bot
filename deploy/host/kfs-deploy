@@ -268,7 +268,9 @@ run() {
     STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     PREVIOUS_SHA=$(kfs_current_sha)
     KFS_CONTROL_RELEASE=$SHA
-    kfs_log INFO "deploy started" sha "$SHA" previous_sha "$PREVIOUS_SHA" wait "$WAIT" now "$NOW"
+    # started_at is the alerter's deploy window start; deploys.jsonl repeats it (spec 0013 AC-11).
+    kfs_log INFO "deploy started" sha "$SHA" previous_sha "$PREVIOUS_SHA" started_at "$STARTED_AT" \
+        wait "$WAIT" now "$NOW"
 
     preflight
     if ! compose_new pull --quiet; then

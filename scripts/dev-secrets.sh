@@ -2,7 +2,8 @@
 # Creates the laptop's development secret files (spec 0003), one random value each.
 # Never overwrites a file, and never creates a Kraken file: Kraken keys exist only on the VPS.
 # The Pushover and healthchecks.io files are placeholders: the laptop alerter runs in dry run
-# (ALERTS_DELIVERY=log) and never loads them (spec 0013 AC-13).
+# (ALERTS_DELIVERY=log) and never loads them (spec 0013 AC-13), and the backup skips its ping
+# when hc_backup_url holds no https:// URL.
 #
 # The folder is 0700 (only you), the files 0444: a Compose file secret without swarm is a
 # plain bind mount that keeps the host owner and mode, so the container's app user (uid 10001)
@@ -30,6 +31,7 @@ dashboard_session_key
 pushover_app_token
 pushover_user_key
 hc_alerter_url
+hc_backup_url
 "
 
 mkdir -p "$dir"

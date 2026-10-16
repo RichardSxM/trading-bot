@@ -4,12 +4,14 @@ Every text leaving here has passed ``trading_core.secrets.redact``. Pure apart f
 redaction registry.
 """
 
-from collections.abc import Mapping
+import re
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Final
 
-from trading_core.alerts.model import Episode, Tier
+from trading_core.alerts.model import Episode, HoldKind, Tier
 from trading_core.secrets import redact
+from trading_core.strategy.blocks import PLAIN_WORDS, BlockReason
 
 # Pushover's limits are 250 and 1,024 characters.
 TITLE_MAX: Final = 250
@@ -102,7 +104,33 @@ def check(rule_id: str, subject: str | None, fields: Mapping[str, object]) -> tu
         return "Postgres unreachable", "The alerter cannot reach Postgres; alerts queue in memory."
     if rule_id == "redis_unreachable":
         return "Redis unreachable", "The alerter cannot reach Redis; trader health is unknown."
+    if rule_id == "disk_low":
+        return "Disk space low", (
+            f"{fields.get('free_gb', '?')} GB free on the host root filesystem "
+            f"(the floor is {fields.get('floor_gb', '?')} GB)."
+        )
+    if rule_id == "entry_block":
+        reason = str(subject or fields.get("reason") or "")
+        plain = PLAIN_WORDS.get(BlockReason(reason)) if reason in BlockReason else None
+        return "Entries blocked for over an hour", f"{plain or words(reason)} ({reason})."
     return words(rule_id), ""
+
+
+SUMMARY_TITLES: Final = 10
+
+
+def summary(kind: HoldKind, titles: Sequence[str]) -> tuple[str, str]:
+    """Title text and body of the one push that ends a deploy window or a mute (AC-11, AC-12).
+
+    It lists up to ``SUMMARY_TITLES`` titles (without their env tag), then "and N more".
+    """
+    count = len(titles)
+    noun = "warning" if count == 1 else "warnings"
+    head = f"{count} {noun} during deploy" if kind is HoldKind.DEPLOY else f"{count} {noun} while muted"
+    lines = [re.sub(r"^\[[a-z]+\] ", "", t) for t in titles[:SUMMARY_TITLES]]
+    if count > SUMMARY_TITLES:
+        lines.append(f"and {count - SUMMARY_TITLES} more")
+    return head, "\n".join(lines)
 
 
 def storm(held: int, until: datetime) -> tuple[str, str]:

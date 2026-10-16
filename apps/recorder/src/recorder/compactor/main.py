@@ -25,6 +25,7 @@ from recorder.compactor.days import close_days, write_gaps
 from recorder.compactor.instruments import InstrumentDefinitions
 from recorder.compactor.store import (
     DELTAS_TABLE,
+    HOURLY_CONTEXT_TABLES,
     INSTRUMENTS_TABLE,
     LIQUIDATION_TABLE,
     RAW_FEED_TABLES,
@@ -38,9 +39,10 @@ from recorder.live_files import Found, current_run, discover, is_closed
 from recorder.volume import CatalogVolumeMissing, check_catalog_volume
 from trading_core.boot import boot
 from trading_core.marketdata.context_feed import parse_outages
+from trading_core.marketdata.context_hours import missing_context_hours
 from trading_core.marketdata.errors import BackupStateInvalid
 from trading_core.marketdata.gaps import Gap, GapDetector, GapState, SilenceDetector, SilenceState
-from trading_core.marketdata.hours import GB, SECOND_NS, backlog_bytes_needed
+from trading_core.marketdata.hours import GB, SECOND_NS, backlog_bytes_needed, hours_inside
 from trading_core.marketdata.retention import parse_backup_state, plan_retention
 from trading_core.marketdata.sequence import RunHoles, parse_holes
 from trading_core.settings import CatalogDiskSettings, ContextSettings
@@ -159,6 +161,7 @@ class Compactor:
         for stream in self.streams.values():
             changed = stream.end_pass(self.done) or changed
         changed = self.definitions.write_hours(instruments, self.done, STREAM_TABLES) or changed
+        changed = self._check_context_hours(instruments) or changed
         if close_days(self._store, self.done, self._recorded) or changed:
             self._store.save_done(self.done)
         self._delete_converted(found, current, instruments)
@@ -224,7 +227,53 @@ class Compactor:
                 ],
             )
             self.done.outages[run] = len(lines)
+            # The hours the raw feed could not fill, for the missing context hour check.
+            self.done.feed_down.update(h for o in outages for h in hours_inside(o.start_ns, o.end_ns))
             changed = True
+        return changed
+
+    def _check_context_hours(self, instruments: set[str]) -> bool:
+        """Log WARNING ``context_hour_missing`` once per closed hour and table with no context file
+        (spec 0013 AC-7), skipping hours the feed could not fill. True if ``done.json`` changed."""
+        changed = False
+        for instrument in sorted(instruments):
+            down = self.done.empty.get(instrument, set())
+            skip = {
+                table: down | self.done.feed_down if table in RAW_FEED_TABLES else down
+                for table in HOURLY_CONTEXT_TABLES
+            }
+            checked_to = self.done.context_checked.get(instrument)
+            missing, checked = missing_context_hours(
+                book_hours=self.done.hours.get(stream_key(DELTAS_TABLE, instrument), {}).keys(),
+                context_hours={
+                    table: self.done.hours.get(stream_key(table, instrument), {}).keys()
+                    for table in HOURLY_CONTEXT_TABLES
+                },
+                skip=skip,
+                checked_to=checked_to,
+            )
+            for gap in missing:
+                log.warning(
+                    "context hour missing",
+                    extra={
+                        "fields": {
+                            "code": "context_hour_missing",
+                            "hour": gap.label,
+                            "hour_ns": gap.hour_ns,
+                            "table": gap.table,
+                            "instrument_id": instrument,
+                        }
+                    },
+                )
+            if checked is not None and checked != checked_to:
+                self.done.context_checked[instrument] = checked
+                changed = True
+        if self.done.context_checked and self.done.feed_down:
+            oldest = min(self.done.context_checked.values())
+            kept = {h for h in self.done.feed_down if h > oldest}
+            if kept != self.done.feed_down:
+                self.done.feed_down = kept
+                changed = True
         return changed
 
     def _read_holes(self, found: Found, current: str | None) -> dict[str, RunHoles | None]:

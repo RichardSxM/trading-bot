@@ -33,7 +33,7 @@ def up(at):
 
 def send_all(engine, decision, at, delivery=Delivery.SENT):
     """Report every push in ``decision`` as delivered; returns the stored episodes."""
-    return [engine.record(push, delivery, at) for push in decision.pushes]
+    return [stored for push in decision.pushes for stored in engine.record(push, delivery, at)]
 
 
 # AC-1 -----------------------------------------------------------------------------------------
@@ -133,8 +133,7 @@ def test_a_critical_condition_repushes_after_four_hours():
     assert push.reason is PushReason.RENOTIFY
     assert push.tier is Tier.CRITICAL
     assert engine.tick(NOW + timedelta(hours=4)).pushes == ()  # still in flight
-    stored = engine.record(push, Delivery.SENT, NOW + timedelta(hours=4))
-    assert stored is not None
+    [stored] = engine.record(push, Delivery.SENT, NOW + timedelta(hours=4))
     assert (stored.sends, stored.last_sent_at) == (2, NOW + timedelta(hours=4))
 
 

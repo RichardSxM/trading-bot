@@ -497,6 +497,8 @@ services:
       - restic_password
       - b2_key_id
       - b2_application_key
+      # The healthchecks.io `backup-verified` ping URL (spec 0013 AC-5); a placeholder on the laptop.
+      - hc_backup_url
     # The catalog is added on the VPS only (compose.vps.yaml): the laptop's copy is not the record.
     volumes:
       - backup-staging:/staging
@@ -625,6 +627,8 @@ secrets:
     file: ${SECRETS_DIR:-./secrets}/pushover_user_key
   hc_alerter_url:
     file: ${SECRETS_DIR:-./secrets}/hc_alerter_url
+  hc_backup_url:
+    file: ${SECRETS_DIR:-./secrets}/hc_backup_url
   dashboard_password_hash:
     file: ${SECRETS_DIR:-./secrets}/dashboard_password_hash
   dashboard_totp_seed:

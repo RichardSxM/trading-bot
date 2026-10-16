@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # kfs-backup (spec 0005 AC-19): the backup service's nightly job, health check, and drill helper.
+# A run that fully succeeds is checked in the repository and pinged to healthchecks.io (spec 0013 AC-5).
 #   loop              the container command: secret checks, then one run every night at BACKUP_AT_UTC
 #   once              one run now, inside the running container (`kfs-compose exec backup kfs-backup once`)
 #   health            the health check: healthy for BACKUP_STALE_H hours after any container start,
@@ -112,8 +113,45 @@ check_repo() {
         return 0
     fi
     : >"$RUN_DIR/repo_missing"
-    log ERROR restic_repo_missing "$(fields --arg error "$(last_error)")"
+    log ERROR restic_repo_missing "$(fields --arg code restic_repo_missing --arg error "$(last_error)")"
     return 1
+}
+
+# The newest database snapshot (not the catalog's) must be younger than BACKUP_STALE_H, checked
+# in the repository itself rather than trusted from the upload (spec 0013 AC-5).
+step_verify() {
+    local newest now
+    STEP=verify
+    restic_b2 snapshots --host "$RESTIC_HOST" --latest 1 --json >"$RUN_DIR/snapshots.json" 2>"$RUN_DIR/err" ||
+        return 1
+    # restic prints its local time with nanoseconds; the container runs in UTC.
+    newest=$(jq -r '[.[] | select((.tags // []) | index("catalog") | not)
+        | .time | sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601] | max // empty' \
+        "$RUN_DIR/snapshots.json" 2>"$RUN_DIR/err") || return 1
+    [[ -n $newest ]] || { echo "no database snapshot for host $RESTIC_HOST" >"$RUN_DIR/err"; return 1; }
+    now=$(date -u +%s)
+    if ((now - newest >= BACKUP_STALE_H * 3600)); then
+        echo "newest database snapshot is $(((now - newest) / 3600)) h old" >"$RUN_DIR/err"
+        return 1
+    fi
+    VERIFIED_AGE_S=$((now - newest))
+}
+
+# The healthchecks.io `backup-verified` ping (spec 0013 AC-5); its silence is the alert. The URL is
+# a secret, so curl reads it from stdin, never from its arguments, and no error text is logged.
+# Without a real URL (the laptop's placeholder) it is skipped.
+ping_verified() {
+    local url=
+    if [[ -r $SECRETS/hc_backup_url ]]; then url=$(<"$SECRETS/hc_backup_url"); fi
+    if [[ $url != https://* ]]; then
+        log INFO "backup-verified ping skipped" "$(fields --arg reason "no ping URL in $SECRETS/hc_backup_url")"
+        return 0
+    fi
+    if printf 'url = "%s"\n' "$url" | curl -fsS -m 10 --retry 3 -o /dev/null -K - 2>/dev/null; then
+        log INFO "backup-verified ping sent"
+    else
+        log WARNING "backup-verified ping failed" "$(fields --arg code backup_ping_failed)"
+    fi
 }
 
 step_downsample() {
@@ -233,12 +271,22 @@ run_backup() {
             --argjson downsampled "${DOWNSAMPLED:-0}" --argjson duration_s "$((SECONDS - start))" \
             '$summary + {downsampled: $downsampled, duration_s: $duration_s, manifest: $manifest}')"
     else
-        log ERROR backup_failed "$(fields --arg step "$STEP" --arg error "$(last_error)")"
+        log ERROR backup_failed "$(fields --arg code backup_failed --arg step "$STEP" --arg error "$(last_error)")"
         ok=1
     fi
     if ! step_catalog; then
-        log ERROR backup_failed "$(fields --arg step "$STEP" --arg error "$(last_error)")"
+        log ERROR backup_failed "$(fields --arg code backup_failed --arg step "$STEP" --arg error "$(last_error)")"
         ok=1
+    fi
+    # Only a whole successful run is verified and pinged, so any failure goes quiet outside.
+    if [[ $ok == 0 ]]; then
+        if step_verify; then
+            log INFO "backup verified" "$(fields --argjson newest_age_s "$VERIFIED_AGE_S")"
+            ping_verified
+        else
+            log ERROR backup_failed "$(fields --arg code backup_failed --arg step "$STEP" --arg error "$(last_error)")"
+            ok=1
+        fi
     fi
     rm -f "$RUNNING"
     return "$ok"

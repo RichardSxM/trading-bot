@@ -18,7 +18,12 @@ from trading_core.recording.enums import RiskEventKind
 
 NOW = datetime(2026, 10, 16, 3, 0, tzinfo=UTC)
 # Codes only a shell script logs, and the script that logs them.
-SHELL_CODES = {"backup_failed": "docker/backup/run.sh", "restic_repo_missing": "docker/backup/run.sh"}
+SHELL_CODES = {
+    "backup_failed": "docker/backup/run.sh",
+    "restic_repo_missing": "docker/backup/run.sh",
+    "autoheal_gave_up": "deploy/host/kfs-autoheal",
+    "rollback_failed": "deploy/host/kfs-deploy",
+}
 SOURCE_DIRS = ("packages", "apps", "docker", "deploy", "scripts")
 # The alert code itself would satisfy the scan trivially.
 EXCLUDED = ("/tests/", "/trading_core/alerts/", "/apps/alerter/", "/migrations/")
@@ -39,7 +44,10 @@ def _sources() -> str:
         base = root / name
         if not base.is_dir():
             continue
-        for path in [*base.rglob("*.py"), *base.rglob("*.sh")]:
+        # The host scripts (``deploy/host/kfs-*``) have no extension.
+        for path in [*base.rglob("*.py"), *base.rglob("*.sh"), *base.rglob("kfs-*")]:
+            if not path.is_file():
+                continue
             if not any(part in path.as_posix() for part in EXCLUDED):
                 texts.append(path.read_text(errors="replace"))
     return "\n".join(texts)
@@ -47,7 +55,8 @@ def _sources() -> str:
 
 def _logged(code: str, sources: str) -> bool:
     quoted = re.search(rf"[\"']{re.escape(code)}[\"']", sources) is not None
-    shell = re.search(rf"\blog [A-Z]+ {re.escape(code)}\b", sources) is not None
+    # ``log LEVEL code`` (backup), ``kfs_log LEVEL code`` (host), ``record outcome`` (deploys.jsonl).
+    shell = re.search(rf"\b(?:kfs_)?log [A-Z]+ {re.escape(code)}\b|\brecord {re.escape(code)}\b", sources) is not None
     # Risk events are logged as ``"code": kind.value``.
     return quoted or shell or code in {k.value for k in RiskEventKind}
 

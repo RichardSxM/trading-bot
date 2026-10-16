@@ -13,6 +13,7 @@ from types import MappingProxyType
 from typing import Final
 
 from trading_core.alerts.model import Observation
+from trading_core.alerts.rules import DEPLOY, HOST
 
 
 @dataclass(frozen=True)
@@ -37,7 +38,7 @@ class Promise:
         if self.service is None:
             return None
         return Observation(
-            source=f"log:{self.service}",
+            source=self.service if self.service in (HOST, DEPLOY) else f"log:{self.service}",
             service=self.service,
             at=at,
             code=self.code,
@@ -67,10 +68,17 @@ PROMISES: Final[tuple[Promise, ...]] = (
     _line("0003", "secret_unavailable", "key_and_secret_codes", "dashboard", "CRITICAL", secret="x"),
     Promise("0004", "login_failed burst", "login_failed_burst"),
     _line("0004", "snapshot_write_failed", "snapshot_write_failed", "trader", "WARNING"),
-    Promise("0005", "autoheal_gave_up", "autoheal_gave_up"),
+    Promise(
+        "0005",
+        "autoheal_gave_up",
+        "autoheal_gave_up",
+        HOST,
+        "CRITICAL",
+        fields={"msg": "autoheal_gave_up", "container": "kfs-trader-1"},
+    ),
     _line("0005", "backup_failed", "backup_failed", "backup", step="restic_backup"),
     Promise("0005", "backup unhealthy", "container_unhealthy"),
-    Promise("0005", "rollback_failed", "rollback_failed"),
+    Promise("0005", "rollback_failed", "rollback_failed", DEPLOY, fields={"sha": "abc", "outcome": "rollback_failed"}),
     Promise("0005", "disk under 5 GB", "disk_low"),
     _risk("0006", "stop_not_accepted:O-2"),
     _risk("0006", "exit_failed:P-1"),
@@ -90,7 +98,15 @@ PROMISES: Final[tuple[Promise, ...]] = (
     ),
     _line("0007", "book_sequence_hole", "book_sequence_hole", "recorder"),
     _line("0009", "context_feed_down", "context_feed_down", "recorder", "WARNING"),
-    Promise("0009", "context hour missing", "context_hour_missing"),
+    _line(
+        "0009",
+        "context_hour_missing",
+        "context_hour_missing",
+        "compactor",
+        "WARNING",
+        hour="2026-10-16T03:00Z",
+        table="mark_price_update",
+    ),
     _risk("0010", "halt:H-1", "halt"),
     _risk("0010", "flatten_timeout:F-1", "halt"),
     _risk("0010", "halt_key_write_failed:H-1", "halt"),
@@ -103,11 +119,6 @@ PROMISES: Final[tuple[Promise, ...]] = (
 
 PENDING: Final[Mapping[str, str]] = MappingProxyType(
     {
-        "autoheal_gave_up": "host lines, Build plan 3.1",
-        "rollback_failed": "deploys.jsonl, Build plan 3.1",
-        "disk_low": "disk check, Build plan 3.2",
-        "entry_block": "entries_blocked_since, Build plan 3.4",
-        "context_hour_missing": "compactor line, Build plan 3.5",
         "fill": "live fill pushes, Build plan 4.1",
     }
 )

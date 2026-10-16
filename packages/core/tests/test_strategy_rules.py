@@ -110,3 +110,19 @@ def test_entries_blocked_adds_paused():
 
 def test_every_reason_has_plain_words():
     assert set(PLAIN_WORDS) == set(BlockReason)
+
+
+def test_each_reason_keeps_when_it_became_active():
+    """covers: spec 0013 AC-6 (entries_blocked_since)"""
+    clock = iter([100, 200, 300])
+    blocks = EntryBlocks(now_ns=lambda: next(clock))
+
+    blocks.add(BlockReason.STALE_FEED)
+    blocks.add(BlockReason.STALE_FEED)  # already active: keeps its first time
+    blocks.add(BlockReason.EXIT_FAILED)
+    assert blocks.since() == {"exit_failed": 200, "stale_feed": 100}
+
+    blocks.clear(BlockReason.STALE_FEED)
+    assert blocks.since() == {"exit_failed": 200}
+    blocks.add(BlockReason.STALE_FEED)
+    assert blocks.since() == {"exit_failed": 200, "stale_feed": 300}

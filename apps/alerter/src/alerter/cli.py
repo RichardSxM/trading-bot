@@ -43,7 +43,7 @@ async def send_tests(engine: AlertEngine, send: Deliverer, store: EpisodeStore |
     status = 0
     for push in decision.pushes:
         outcome = await send.send(push)
-        episode = engine.record(push, outcome.delivery, utc_now()) or push.episode
+        episode = next(iter(engine.record(push, outcome.delivery, utc_now())), push.episode)
         stored = True
         if store is not None:
             try:

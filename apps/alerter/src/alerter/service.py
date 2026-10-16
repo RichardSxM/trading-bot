@@ -1,5 +1,5 @@
-"""The alerter's loops (spec 0013): heartbeat, logs, containers, Postgres, tick, retry, store, ping,
-and the liveness file.
+"""The alerter's loops (spec 0013): heartbeat, entry blocks, logs, host lines, containers, disk,
+Postgres, tick, retry, store, ping, and the liveness file.
 
 Every loop runs supervised: a crash logs ``alerter_task_crashed`` and restarts it. Pushes run as
 their own tasks, so a push retrying for two minutes never stalls a check.
@@ -9,6 +9,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Final
 
@@ -16,12 +17,14 @@ from redis.exceptions import RedisError
 
 from alerter.delivery import Deliverer
 from alerter.sources.containers import container_checks
+from alerter.sources.disk import free_bytes
 from alerter.sources.docker_api import DockerApiError
 from alerter.sources.docker_watch import DockerWatch
-from alerter.sources.redis_state import SnapshotReader, heartbeat_ts
+from alerter.sources.host_files import HostFiles
+from alerter.sources.redis_state import SnapshotReader, heartbeat_ts, trader_blocks
 from alerter.store import StoreWriter
 from alerter.watchdog import Watchdog
-from trading_core.alerts.checks import heartbeat_check, reachable
+from trading_core.alerts.checks import disk_check, entry_block_checks, heartbeat_check, reachable
 from trading_core.alerts.engine import AlertEngine
 from trading_core.alerts.model import Decision, Delivery, Push
 from trading_core.alerts.rules import POSTGRES_UNREACHABLE, REDIS_UNREACHABLE
@@ -31,8 +34,11 @@ from trading_core.snapshot.envelope import snapshot_key
 log = logging.getLogger(__name__)
 
 CHECK_S: Final = 5.0
+BLOCKS_S: Final = 15.0
 LOGS_S: Final = 5.0
+HOST_S: Final = 5.0
 CONTAINERS_S: Final = 15.0
+DISK_S: Final = 60.0
 POSTGRES_S: Final = 15.0
 TICK_S: Final = 5.0
 RETRY_CYCLE_S: Final = 60.0
@@ -65,6 +71,9 @@ class Alerter:
         trader_down_s: int,
         watchdog: Watchdog | None = None,
         docker: DockerWatch | None = None,
+        host: HostFiles | None = None,
+        disk_path: Path | None = None,
+        disk_free_gb: Decimal = Decimal(5),
         clock: Clock = utc_now,
         liveness_file: Path = DEFAULT_LIVENESS_FILE,
     ) -> None:
@@ -73,9 +82,13 @@ class Alerter:
         self._store = store
         self._redis = redis
         self._heartbeat_key = snapshot_key(env, "heartbeat")
+        self._state_key = snapshot_key(env, "trader_state")
         self._trader_down_s = trader_down_s
         self._watchdog = watchdog
         self._docker = docker
+        self._host = host
+        self._disk_path = disk_path
+        self._disk_free_gb = disk_free_gb
         self._known_services: set[str] = set()
         self._clock = clock
         self._liveness_file = liveness_file
@@ -103,6 +116,47 @@ class Alerter:
         if ts_ns is None and (now - self._started_at).total_seconds() < self._trader_down_s:
             return
         self.apply(self._engine.check(heartbeat_check(ts_ns, now, self._trader_down_s)))
+
+    async def check_entry_blocks(self) -> None:
+        """``entry_block`` from ``trader_state`` (AC-6).
+
+        Skipped while the snapshot is missing or older than the trader down threshold: a trader
+        that is down or restarting has not cleared its reasons, and ``trader_down`` covers it. A
+        Redis error is the heartbeat loop's to report.
+        """
+        try:
+            blocks = await trader_blocks(self._redis, self._state_key)
+        except RedisError:
+            return
+        now = self._clock()
+        now_ns = int(now.timestamp()) * 1_000_000_000 + now.microsecond * 1_000
+        if blocks is None or (now_ns - blocks.ts_ns) // 1_000_000_000 > self._trader_down_s:
+            return
+        for result in entry_block_checks(blocks.blocked, blocks.since_ns, now):
+            self.apply(self._engine.check(result))
+
+    async def read_host(self) -> None:
+        """Feed every new ``host.jsonl`` and ``deploys.jsonl`` line to the engine (AC-4, AC-11)."""
+        if self._host is None:
+            return
+        try:
+            observations = await asyncio.to_thread(self._host.poll)
+        except OSError as exc:
+            log.warning("host read failed", extra={"fields": {"code": "alerter_host_failed", "error": str(exc)}})
+            return
+        for observation in observations:
+            self.apply(self._engine.observe(observation))
+
+    async def check_disk(self) -> None:
+        """``disk_low`` from the host root filesystem's free space (AC-4)."""
+        if self._disk_path is None:
+            return
+        try:
+            free = await asyncio.to_thread(free_bytes, self._disk_path)
+        except OSError as exc:
+            log.warning("disk check failed", extra={"fields": {"code": "alerter_disk_failed", "error": str(exc)}})
+            return
+        self.apply(self._engine.check(disk_check(free, self._disk_free_gb, self._clock())))
 
     async def read_logs(self) -> None:
         """Feed every new container line to the engine (AC-3, AC-7); nothing on a failed pass."""
@@ -152,7 +206,11 @@ class Alerter:
         if self._watchdog is None:
             return
         now = self._clock()
-        fresh = [self._redis_ok_at] if self._docker is None else [self._redis_ok_at, self._docker.ok_at]
+        fresh = [self._redis_ok_at]
+        if self._docker is not None:
+            fresh.append(self._docker.ok_at)
+        if self._host is not None:
+            fresh.append(self._host.ok_at)
         if any(at is None or (now - at).total_seconds() > SOURCE_FRESH_S for at in fresh):
             log.warning("sources stale, not pinging", extra={"fields": {"code": "watchdog_skipped"}})
             return
@@ -186,8 +244,7 @@ class Alerter:
         """Send one push and record its outcome on the episode."""
         outcome = await self._deliverer.send(push)
         self._note_failed = outcome.delivery is Delivery.FAILED
-        updated = self._engine.record(push, outcome.delivery, self._clock())
-        if updated is not None:
+        for updated in self._engine.record(push, outcome.delivery, self._clock()):
             self._store.put(updated)
 
     # The process -----------------------------------------------------------------------------
@@ -196,8 +253,11 @@ class Alerter:
         """Run every loop until cancelled."""
         loops: list[tuple[str, Callable[[], Awaitable[None]], float]] = [
             ("heartbeat", self.check_heartbeat, CHECK_S),
+            ("entry_blocks", self.check_entry_blocks, BLOCKS_S),
             ("logs", self.read_logs, LOGS_S),
+            ("host", self.read_host, HOST_S),
             ("containers", self.check_containers, CONTAINERS_S),
+            ("disk", self.check_disk, DISK_S),
             ("postgres", self.check_postgres, POSTGRES_S),
             ("tick", _sync(self.tick), TICK_S),
             ("retry", _sync(self.retry), RETRY_CYCLE_S),

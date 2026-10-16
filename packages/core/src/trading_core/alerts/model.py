@@ -45,6 +45,7 @@ class PushReason(StrEnum):
     RENOTIFY = "renotify"
     RESOLVED = "resolved"
     TEST = "test"
+    SUMMARY = "summary"
 
 
 @dataclass(frozen=True)
@@ -69,7 +70,8 @@ class CheckResult:
     """The outcome of one condition check (heartbeat age, disk free, ...) at ``at``.
 
     ``subject`` names what was checked when a rule covers several things (a service); ``None``
-    for a rule with a single subject.
+    for a rule with a single subject. ``since`` is when the failure began, when the source knows
+    it (an entry block reason's start); a new episode opens then instead of at ``at``.
     """
 
     rule: str
@@ -77,6 +79,34 @@ class CheckResult:
     at: datetime
     subject: str | None = None
     fields: Mapping[str, object] = field(default_factory=dict)
+    since: datetime | None = None
+
+
+class HoldKind(StrEnum):
+    """What holds warning and info pushes: a deploy window (AC-11) or a mute (AC-12)."""
+
+    DEPLOY = "deploy"
+    MUTE = "mute"
+
+
+@dataclass(frozen=True)
+class Hold:
+    """A window that holds warning and info pushes until ``until`` or until it is closed.
+
+    ``id`` names the window (the summary's fingerprint subject). ``sha`` is the deploy's commit,
+    which its ``deploys.jsonl`` line must repeat to close the window.
+    """
+
+    kind: HoldKind
+    id: str
+    started_at: datetime
+    until: datetime
+    sha: str | None = None
+
+    @property
+    def delivery(self) -> Delivery:
+        """The delivery state a held push leaves on its episode."""
+        return Delivery.HELD if self.kind is HoldKind.DEPLOY else Delivery.MUTED
 
 
 @dataclass(frozen=True)

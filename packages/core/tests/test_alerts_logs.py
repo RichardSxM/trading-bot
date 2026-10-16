@@ -18,7 +18,7 @@ def line(service, code, level="ERROR", at=NOW, **fields):
 
 
 def sent(engine, decision, at, delivery=Delivery.SENT):
-    return [engine.record(push, delivery, at) for push in decision.pushes]
+    return [stored for push in decision.pushes for stored in engine.record(push, delivery, at)]
 
 
 def test_a_critical_risk_line_pushes_once_with_its_event_key():

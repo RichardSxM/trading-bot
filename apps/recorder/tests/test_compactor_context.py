@@ -256,3 +256,56 @@ def test_a_funding_row_later_than_the_window_goes_to_quarantine(tmp_path):
     manifest = days._manifest(store, done, day_of(H0))
     (stream,) = [s for s in manifest["streams"] if s["type"] == FUNDING_TABLE]
     assert (stream["late_rows"], stream["incomplete_hours"]) == (1, [H0])
+
+
+def _missing(caplog):
+    lines = [getattr(r, "fields", {}) for r in caplog.records]
+    return [(f["hour_ns"], f["table"]) for f in lines if f.get("code") == "context_hour_missing"]
+
+
+def test_a_closed_hour_without_its_context_files_logs_once_per_table(tmp_path, caplog):
+    """covers: spec 0013 AC-7 (context_hour_missing), spec 0009 AC-17 (the four hourly tables)."""
+    from recorder.compactor.store import INDEX_TABLE, MARK_TABLE, OPEN_INTEREST_TABLE
+
+    store = _runs(tmp_path, make_funding(H0 + 3 * SECOND_NS, H0 + 2 * HOUR_NS - SECOND_NS))
+    done = store.load_done()
+    done.context_checked[INSTRUMENT] = H0 - HOUR_NS  # checked up to the hour before
+    store.save_done(done)
+
+    caplog.set_level("WARNING")
+    _compactor(store).run_pass(_later())
+
+    # H0 is followed by a finished book hour; H0 + 1 h is the newest, so it waits.
+    assert sorted(_missing(caplog)) == sorted([(H0, MARK_TABLE), (H0, INDEX_TABLE), (H0, OPEN_INTEREST_TABLE)])
+    assert store.load_done().context_checked[INSTRUMENT] == H0
+
+    caplog.clear()
+    _compactor(store).run_pass(_later())
+    assert _missing(caplog) == []
+
+
+def test_the_first_check_logs_nothing(tmp_path, caplog):
+    store = _runs(tmp_path, make_funding(H0 + 3 * SECOND_NS, H0 + 2 * HOUR_NS - SECOND_NS))
+
+    caplog.set_level("WARNING")
+    _compactor(store).run_pass(_later())
+
+    assert _missing(caplog) == []
+    assert store.load_done().context_checked[INSTRUMENT] == H0
+
+
+def test_an_hour_inside_a_feed_outage_excuses_only_open_interest(tmp_path, caplog):
+    from recorder.compactor.store import INDEX_TABLE, MARK_TABLE
+
+    store = _runs(tmp_path, make_funding(H0 + 3 * SECOND_NS, H0 + 2 * HOUR_NS - SECOND_NS))
+    done = store.load_done()
+    done.context_checked[INSTRUMENT] = H0 - HOUR_NS
+    done.feed_down = {H0}
+    store.save_done(done)
+
+    caplog.set_level("WARNING")
+    _compactor(store).run_pass(_later())
+
+    assert sorted(_missing(caplog)) == sorted([(H0, MARK_TABLE), (H0, INDEX_TABLE)])
+    # Once every instrument checked past it, the outage hour is dropped.
+    assert store.load_done().feed_down == set()

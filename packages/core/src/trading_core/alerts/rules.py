@@ -2,8 +2,9 @@
 
 A log rule carries a matcher and a fingerprint function over one ``Observation``; the first rule
 whose matcher accepts a line wins and the rest are ignored. Condition rules are fed
-``CheckResult``s by the alerter's checks instead. The host, deploy, disk, entry block, context
-hour, and fill rows join with their sources (Build plan 3 and 4). Pure: no I/O.
+``CheckResult``s by the alerter's checks instead. Host and ``deploys.jsonl`` lines carry no
+``code``, so their rules match a field. The fill row joins with its source (Build plan 4.1).
+Pure: no I/O.
 """
 
 from collections.abc import Callable, Iterable, Mapping
@@ -87,6 +88,19 @@ def _code_rule(
     )
 
 
+def _field_rule(rule_id: str, tier: Tier, source: str, name: str, value: str, *, subject: str | None = None) -> Rule:
+    """A rule for a host or ``deploys.jsonl`` line, which has no ``code``: it matches ``name == value``.
+
+    The fingerprint is ``<rule>:<subject field>`` (just the rule when the line lacks the field).
+    """
+
+    def matches(obs: Observation) -> bool:
+        return obs.source == source and text_field(obs, name) == value
+
+    key = _subject(rule_id, subject) if subject is not None else (lambda obs: rule_id)
+    return Rule(rule_id, tier, RuleKind.EVENT, source=source, matches=matches, key=key, codes=frozenset({value}))
+
+
 def _by_code(obs: Observation) -> str:
     return obs.code or ""
 
@@ -136,6 +150,9 @@ def _trade_cap(obs: Observation) -> bool:
 TRADER: Final = "trader"
 RECORDER: Final = "recorder"
 DASHBOARD: Final = "dashboard"
+# The ``source`` (and ``service``) of a ``host.jsonl`` line and of a ``deploys.jsonl`` line.
+HOST: Final = "host"
+DEPLOY: Final = "deploy"
 _TRADER_ONLY: Final = frozenset({TRADER})
 BOOK_GAP_LONG_S: Final = 60
 # login_failed_burst: this many dashboard login failures within the window, all clients together.
@@ -162,6 +179,15 @@ TRADER_CRITICAL_CODES: Final = _code_rule(
     ["positions_abandoned", "kill_switch_task_crashed", "halt_key_invalid", "record_conflict"],
     services=_TRADER_ONLY,
 )
+# ``kfs-autoheal`` logs its giving up as the message itself (spec 0005).
+AUTOHEAL_GAVE_UP: Final = _field_rule(
+    "autoheal_gave_up", Tier.CRITICAL, HOST, "msg", "autoheal_gave_up", subject="container"
+)
+# The host's "rollback failed" line is not matched, so a rollback makes one push.
+ROLLBACK_FAILED: Final = _field_rule(
+    "rollback_failed", Tier.CRITICAL, DEPLOY, "outcome", "rollback_failed", subject="sha"
+)
+DISK_LOW: Final = Rule("disk_low", Tier.CRITICAL, RuleKind.CONDITION, source="disk")
 CATALOG_DISK_FULL: Final = _code_rule(
     "catalog_disk_full", Tier.CRITICAL, ["catalog_disk_full"], kind=RuleKind.PAIR, partner="catalog_disk_ok"
 )
@@ -183,6 +209,8 @@ CONTAINER_UNHEALTHY: Final = Rule(
 BACKUP_FAILED: Final = _code_rule(
     "backup_failed", Tier.WARNING, ["backup_failed", "restic_repo_missing"], key=_backup_key
 )
+# ``min_open_s`` is the default; the engine takes ``ALERTS_ENTRY_BLOCK_S`` from its config.
+ENTRY_BLOCK: Final = Rule("entry_block", Tier.WARNING, RuleKind.CONDITION, source="redis", min_open_s=3600)
 CONTEXT_FEED_DOWN: Final = _code_rule(
     "context_feed_down",
     Tier.WARNING,
@@ -191,6 +219,14 @@ CONTEXT_FEED_DOWN: Final = _code_rule(
     partner="context_feed_up",
     min_open_s=300,
     key=_code_and_service,
+)
+# One push per hour, however many of its context tables miss a file.
+CONTEXT_HOUR_MISSING: Final = _code_rule(
+    "context_hour_missing",
+    Tier.WARNING,
+    ["context_hour_missing"],
+    services=frozenset({"compactor"}),
+    key=_subject("context_hour_missing", "hour"),
 )
 BOOK_GAP_LONG: Final = _code_rule(
     "book_gap_long", Tier.WARNING, ["book_gap"], key=_subject("book_gap_long", "kind"), extra=_long_gap
@@ -238,6 +274,9 @@ RULES: Final[tuple[Rule, ...]] = (
     RISK_CRITICAL,
     RISK_HALT_MANUAL,
     TRADER_CRITICAL_CODES,
+    AUTOHEAL_GAVE_UP,
+    ROLLBACK_FAILED,
+    DISK_LOW,
     CATALOG_DISK_FULL,
     RECORDER_WRITE_FAILED,
     POSTGRES_UNREACHABLE,
@@ -246,7 +285,9 @@ RULES: Final[tuple[Rule, ...]] = (
     KEY_AND_SECRET_CODES,
     CONTAINER_UNHEALTHY,
     BACKUP_FAILED,
+    ENTRY_BLOCK,
     CONTEXT_FEED_DOWN,
+    CONTEXT_HOUR_MISSING,
     BOOK_GAP_LONG,
     BOOK_SEQUENCE_HOLE,
     RECORDER_CODES,

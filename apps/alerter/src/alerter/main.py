@@ -18,6 +18,7 @@ from alerter.settings import AlerterSettings, engine_config
 from alerter.sources.docker_api import DockerApi
 from alerter.sources.docker_logs import LogReader
 from alerter.sources.docker_watch import DockerWatch
+from alerter.sources.host_files import HostFiles
 from alerter.store import StoreWriter
 from alerter.watchdog import Watchdog
 from trading_core.alerts.engine import AlertEngine
@@ -83,6 +84,18 @@ def docker_watch(settings: AlerterSettings, http: httpx.AsyncClient, redis: Redi
     return DockerWatch(api, reader, socket.gethostname())
 
 
+def host_files(settings: AlerterSettings) -> HostFiles | None:
+    """The host lines and disk check source, or None where ``/var/log/kfs`` is not mounted (the laptop)."""
+    directory = settings.alerts_host_log_dir
+    if directory.is_dir():
+        return HostFiles(directory, utc_now)
+    log.info(
+        "no host log directory, host lines and disk check off",
+        extra={"fields": {"code": "alerter_host_off", "path": str(directory)}},
+    )
+    return None
+
+
 async def serve(started: Boot[AlerterSettings]) -> None:
     """Run the alerter until the process is stopped."""
     settings, secrets = started.settings, started.secrets
@@ -91,6 +104,7 @@ async def serve(started: Boot[AlerterSettings]) -> None:
     engine = AlertEngine(engine_config(settings))
     store = StoreWriter(repository(settings, secrets), engine, utc_now)
     redis = redis_client(settings, secrets[REDIS_PASSWORD])
+    host = host_files(settings)
     async with httpx.AsyncClient() as http:
         ping = watchdog(settings, secrets, http)
         alerter = Alerter(
@@ -102,6 +116,9 @@ async def serve(started: Boot[AlerterSettings]) -> None:
             trader_down_s=settings.alerts_trader_down_s,
             watchdog=ping,
             docker=docker_watch(settings, http, redis),
+            host=host,
+            disk_path=settings.alerts_host_log_dir if host is not None else None,
+            disk_free_gb=settings.alerts_disk_free_gb,
         )
         log.info(
             "alerter running",
@@ -110,6 +127,7 @@ async def serve(started: Boot[AlerterSettings]) -> None:
                     "code": "alerter_started",
                     "delivery": settings.alerts_delivery,
                     "watchdog": ping is not None,
+                    "host_lines": host is not None,
                     "trader_down_s": settings.alerts_trader_down_s,
                 }
             },

@@ -1,0 +1,13 @@
+# Installed as /etc/logrotate.d/kfs by kfs_link_host (deploy/host/lib.sh, spec 0013).
+# host.jsonl is appended by every host script's kfs_log and followed by the alerter, which
+# reads a truncated file again from its start, so copytruncate keeps one path and one inode.
+# deploys.jsonl is not rotated: the backup snapshots it and it grows by one line per deploy.
+/var/log/kfs/host.jsonl {
+    size 10M
+    rotate 5
+    copytruncate
+    compress
+    delaycompress
+    missingok
+    notifempty
+}

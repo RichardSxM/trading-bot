@@ -11,8 +11,10 @@ KFS_STATE_DIR=${KFS_STATE_DIR:-/var/lib/kfs}
 KFS_APP_UID=10001
 
 # One JSON log line on stdout: kfs_log <level> <msg> [jq --arg pairs as key value ...]
+# The same line is appended to $KFS_LOG_DIR/host.jsonl, which the alerter follows (spec 0013);
+# a failed append never fails the script, since the journal still has the stdout line.
 kfs_log() {
-    local level=$1 msg=$2
+    local level=$1 msg=$2 line
     shift 2
     # shellcheck disable=SC2016 # a jq filter: the $names are jq variables
     local args=() filter='{ts: $ts, level: $level, process: $process, msg: $msg}'
@@ -21,8 +23,12 @@ kfs_log() {
         filter="$filter + {\"$1\": \$$1}"
         shift 2
     done
-    jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg level "$level" \
-        --arg process "${KFS_PROCESS:-kfs}" --arg msg "$msg" "${args[@]}" "$filter"
+    line=$(jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg level "$level" \
+        --arg process "${KFS_PROCESS:-kfs}" --arg msg "$msg" "${args[@]}" "$filter") || return
+    printf '%s\n' "$line"
+    if [ -d "$KFS_LOG_DIR" ] && [ -w "$KFS_LOG_DIR" ]; then
+        (umask 022 && printf '%s\n' "$line" >>"$KFS_LOG_DIR/host.jsonl") 2>/dev/null || true
+    fi
 }
 
 # The TRADING_ENV in the env file (demo when unset). The last line wins; never sourced.
@@ -83,6 +89,11 @@ kfs_link_host() {
             reload=1
         fi
     done
+    # host.jsonl rotation (spec 0013 Build plan 3.1); logrotate reads the folder on its own timer.
+    if [ -f "$src/logrotate-kfs" ] && ! cmp -s "$src/logrotate-kfs" /etc/logrotate.d/kfs; then
+        install -m 0644 "$src/logrotate-kfs" /etc/logrotate.d/kfs
+        echo "installed /etc/logrotate.d/kfs"
+    fi
     if [ "$reload" = 1 ]; then
         systemctl daemon-reload
         for file in "$src"/*.service "$src"/*.timer; do

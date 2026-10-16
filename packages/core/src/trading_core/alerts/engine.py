@@ -1,5 +1,5 @@
-"""The alert episode state machine (spec 0013 AC-1, AC-3, AC-9, AC-10, AC-14): open, repeat, re-notify,
-resolve, retry, and the hourly storm cap.
+"""The alert episode state machine (spec 0013 AC-1, AC-3, AC-6, AC-9 to AC-11, AC-14): open, repeat,
+re-notify, resolve, retry, the hourly storm cap, and the hold windows with their summary push.
 
 The engine holds the open episodes and the failed ones awaiting a retry. Each call takes the
 time from its input and returns a ``Decision``: the episodes to store (their latest state) and
@@ -19,6 +19,8 @@ from trading_core.alerts.model import (
     Decision,
     Delivery,
     Episode,
+    Hold,
+    HoldKind,
     Observation,
     Push,
     PushReason,
@@ -29,17 +31,26 @@ from trading_core.alerts.rules import (
     ALERT_STORM,
     BY_ID,
     DASHBOARD,
+    DEPLOY,
+    ENTRY_BLOCK,
+    HOST,
     LOGIN_BURST_COUNT,
     LOGIN_BURST_WINDOW_S,
     LOGIN_FAILED_BURST,
+    SUMMARY,
     TEST,
+    TRADER_DOWN,
     Rule,
     first_match,
     partner_of,
+    text_field,
 )
 
 # Episodes recently resolved stay findable so a push still in flight can record its outcome.
 _RECENT_MAX: Final = 1000
+# The ``host.jsonl`` message that opens a deploy window (AC-11).
+DEPLOY_STARTED: Final = "deploy started"
+_HELD: Final = frozenset({Delivery.HELD, Delivery.MUTED})
 
 EpisodeKey = tuple[str, datetime]
 
@@ -60,6 +71,10 @@ class EngineConfig:
     retry_limit: int = 20
     retry_max_age_s: int = 86_400
     hourly_cap: int = 30
+    entry_block_s: int = 3600
+    # An entry block reason back within this long of its last episode keeps that episode's start.
+    entry_block_rejoin_s: int = 300
+    deploy_window_s: int = 900
 
 
 def key_of(episode: Episode) -> EpisodeKey:
@@ -84,6 +99,9 @@ class AlertEngine:
         self._hour_sent = 0
         self._counted: set[int] = set()
         self._storm: Episode | None = None
+        # The hold windows (AC-11, AC-12), and each summary push's covered episodes until it is sent.
+        self._holds: dict[HoldKind, Hold] = {}
+        self._summaries: dict[EpisodeKey, tuple[EpisodeKey, ...]] = {}
 
     # State ----------------------------------------------------------------------------------
 
@@ -111,10 +129,21 @@ class AlertEngine:
         """True while any episode's push has failed and is still waiting for a retry (AC-14)."""
         return bool(self._failed)
 
+    @property
+    def holds(self) -> tuple[Hold, ...]:
+        """The hold windows now open."""
+        return tuple(self._holds.values())
+
     # Inputs ---------------------------------------------------------------------------------
 
     def check(self, result: CheckResult) -> Decision:
-        """Apply one condition check: a failure opens (or keeps) the episode, a pass resolves it."""
+        """Apply one condition check: a failure opens (or keeps) the episode, a pass resolves it.
+
+        A new episode opens at the result's ``since`` when it has one (never later than ``at``).
+        An ``entry_block`` episode also records in ``details["since"]`` when its reason first
+        blocked: the start of an unpushed episode for the same reason that resolved less than
+        ``entry_block_rejoin_s`` ago, so a trader restart does not restart the hour (AC-6).
+        """
         rule = self._rule(result.rule, RuleKind.CONDITION)
         now = _utc(result.at)
         fingerprint = rule.fingerprint(result.subject)
@@ -125,6 +154,10 @@ class AlertEngine:
             # A condition still failing is the same episode; only the time moves.
             self._open[fingerprint] = replace(current, last_seen_at=now)
             return Decision()
+        opened_at = now if result.since is None else min(_utc(result.since), now)
+        details = dict(result.fields)
+        if rule.id == ENTRY_BLOCK.id:
+            details["since"] = min([opened_at, *self._rejoin(fingerprint, now)]).isoformat()
         text_title, text_body = messages.check(rule.id, result.subject, result.fields)
         episode = Episode(
             env=self._config.env,
@@ -134,8 +167,8 @@ class AlertEngine:
             source=rule.source,
             title=messages.title(self._config.env, text_title),
             message=messages.message(text_body),
-            details=messages.redact_details(result.fields),
-            opened_at=now,
+            details=messages.redact_details(details),
+            opened_at=opened_at,
             last_seen_at=now,
         )
         self._open[fingerprint] = episode
@@ -146,9 +179,16 @@ class AlertEngine:
 
         A pair rule's partner code resolves that rule's open episode from the same source. A
         repeat of an open fingerprint, whatever rule matched it, bumps ``occurrences`` and
-        ``last_seen_at`` and pushes nothing (AC-9).
+        ``last_seen_at`` and pushes nothing (AC-9). A deploy's ``host.jsonl`` start line and its
+        ``deploys.jsonl`` outcome line also open and close the deploy window (AC-11).
         """
         now = _utc(obs.at)
+        window = self._deploy_window(obs, now)
+        if obs.source == HOST and text_field(obs, "msg") == DEPLOY_STARTED:
+            return window
+        return window + self._line(obs, now)
+
+    def _line(self, obs: Observation, now: datetime) -> Decision:
         pair = partner_of(obs, self._rules.values())
         if pair is not None:
             return self._gate(self._resolve_where(now, lambda e: e.rule == pair.id and e.source == obs.source), now)
@@ -193,10 +233,24 @@ class AlertEngine:
 
         return self._gate(self._resolve_where(started_at, stale), started_at)
 
+    def open_hold(self, hold: Hold) -> Decision:
+        """Open a hold window; one of the same kind is replaced, and what it held stays held."""
+        self._holds[hold.kind] = replace(hold, started_at=_utc(hold.started_at), until=_utc(hold.until))
+        return Decision()
+
+    def close_hold(self, kind: HoldKind, now: datetime) -> Decision:
+        """End a hold window (AC-11, AC-12): see ``_close``."""
+        now = _utc(now)
+        return self._gate(self._close(kind, now), now)
+
     def tick(self, now: datetime) -> Decision:
-        """Time based steps: the ``min_open_s`` release, re-notify, and the quiet close of event episodes."""
+        """Time based steps: hold windows that ran out, the ``min_open_s`` release, re-notify, and
+        the quiet close of event episodes."""
         now = _utc(now)
         decision = Decision()
+        for hold in list(self._holds.values()):
+            if now >= hold.until:
+                decision += self._close(hold.kind, now)
         for episode in list(self._open.values()):
             if key_of(episode) in self._inflight:
                 continue
@@ -258,10 +312,11 @@ class AlertEngine:
             pushes.append(Push(episode, PushReason.OPEN, episode.severity, episode.title, episode.message))
         return self._gate(Decision(pushes=tuple(pushes)), now)
 
-    def record(self, push: Push, delivery: Delivery, at: datetime) -> Episode | None:
-        """Record a push's outcome on its episode; returns the episode to store, or None for a note.
+    def record(self, push: Push, delivery: Delivery, at: datetime) -> tuple[Episode, ...]:
+        """Record a push's outcome on its episode; returns the episodes to store (none for a note).
 
-        ``sent`` and ``dry_run`` count as a send. A resolved note's outcome changes no row.
+        ``sent`` and ``dry_run`` count as a send. A resolved note's outcome changes no row. A sent
+        summary also counts as a send on every episode it covers.
         """
         at = _utc(at)
         key = key_of(push.episode)
@@ -272,8 +327,15 @@ class AlertEngine:
                 self._roll(at)
                 self._hour_sent += 1
         if push.reason is PushReason.RESOLVED:
-            return None
-        current = self._find(key) or push.episode
+            return ()
+        updated = self._outcome(key, push.episode, delivery, at)
+        if delivery not in (Delivery.SENT, Delivery.DRY_RUN) or key not in self._summaries:
+            return (updated,)
+        covered = [self._find(k) for k in self._summaries.pop(key)]
+        return (updated, *(self._outcome(key_of(e), e, delivery, at) for e in covered if e is not None))
+
+    def _outcome(self, key: EpisodeKey, episode: Episode, delivery: Delivery, at: datetime) -> Episode:
+        current = self._find(key) or episode
         if delivery in (Delivery.SENT, Delivery.DRY_RUN):
             updated = replace(current, delivery=delivery, sends=current.sends + 1, last_sent_at=at)
             self._failed.pop(key, None)
@@ -287,16 +349,21 @@ class AlertEngine:
     # Steps ----------------------------------------------------------------------------------
 
     def _release(self, episode: Episode, now: datetime) -> Decision:
-        """The first push once the episode has been open ``min_open_s``."""
+        """The first push once the episode has been open ``min_open_s`` (counted from its ``since``)."""
         rule = self._rules.get(episode.rule)
-        min_open = timedelta(seconds=rule.min_open_s if rule else 0)
-        if episode.delivery is not Delivery.PENDING or episode.sends or now - episode.opened_at < min_open:
+        min_open = timedelta(seconds=self._min_open(rule))
+        if episode.delivery is not Delivery.PENDING or episode.sends or now - _since(episode) < min_open:
             return Decision()
         self._inflight.add(key_of(episode))
         return Decision(pushes=(Push(episode, PushReason.OPEN, episode.severity, episode.title, episode.message),))
 
+    def _min_open(self, rule: Rule | None) -> int:
+        if rule is None:
+            return 0
+        return self._config.entry_block_s if rule.id == ENTRY_BLOCK.id else rule.min_open_s
+
     def _renotify(self, episode: Episode, now: datetime, rule: Rule | None) -> Decision:
-        if episode.last_sent_at is None or episode.delivery is Delivery.FAILED:
+        if episode.last_sent_at is None or episode.delivery is Delivery.FAILED or episode.delivery in _HELD:
             return Decision()
         if episode.severity is Tier.WARNING:
             interval = self._config.renotify_s
@@ -328,6 +395,125 @@ class AlertEngine:
             decision += self._resolve(episode, max(now, episode.opened_at), note=True)
         return decision
 
+    def _rejoin(self, fingerprint: str, now: datetime) -> list[datetime]:
+        """The starts of unpushed episodes of ``fingerprint`` that resolved within the rejoin time."""
+        cutoff = now - timedelta(seconds=self._config.entry_block_rejoin_s)
+        return [
+            _since(e)
+            for e in self._recent.values()
+            if e.fingerprint == fingerprint and e.resolved_at is not None and e.resolved_at >= cutoff and not e.sends
+        ]
+
+    # The hold windows (AC-11, AC-12) -------------------------------------------------------
+
+    def _deploy_window(self, obs: Observation, now: datetime) -> Decision:
+        """Open the deploy window on its start line; close it on the matching ``deploys.jsonl`` line.
+
+        The match is the same ``sha`` with a ``started_at`` at or after the window's start. The
+        start line's own ``started_at`` (the deploy's start, stamped just before the line) is the
+        window's start when present.
+        """
+        if obs.source == HOST and text_field(obs, "msg") == DEPLOY_STARTED:
+            sha = text_field(obs, "sha")
+            start = min(_parse_utc(text_field(obs, "started_at")) or now, now)
+            window_id = f"deploy:{sha[:12] or 'unknown'}:{start.strftime('%Y-%m-%dT%H:%M:%SZ')}"
+            until = now + timedelta(seconds=self._config.deploy_window_s)
+            return self.open_hold(Hold(HoldKind.DEPLOY, window_id, start, until, sha=sha))
+        hold = self._holds.get(HoldKind.DEPLOY)
+        if obs.source != DEPLOY or hold is None or text_field(obs, "sha") != hold.sha:
+            return Decision()
+        started_at = _parse_utc(text_field(obs, "started_at"))
+        if started_at is None or started_at < hold.started_at:
+            return Decision()
+        return self.close_hold(HoldKind.DEPLOY, now)
+
+    def _close(self, kind: HoldKind, now: datetime) -> Decision:
+        """End the ``kind`` window, ungated.
+
+        A held critical (only ``trader_down``) still open is pushed now. Held warnings still open
+        go out as one summary push, once no other window holds them; while one does, they move to
+        it. Held info and held episodes that already resolved are dropped.
+        """
+        hold = self._holds.pop(kind, None)
+        if hold is None:
+            return Decision()
+        decision = Decision()
+        for episode in list(self._open.values()):
+            if episode.delivery is not hold.delivery or key_of(episode) in self._inflight:
+                continue
+            if episode.severity is Tier.CRITICAL:
+                back = replace(episode, delivery=Delivery.SENT if episode.sends else Delivery.PENDING)
+                self._open[back.fingerprint] = back
+                decision += Decision(store=(back,)) + self._release(back, now)
+            elif self._holds and episode.severity is Tier.WARNING:
+                other = next(iter(self._holds.values()))
+                moved = replace(episode, delivery=other.delivery)
+                self._open[moved.fingerprint] = moved
+                decision += Decision(store=(moved,))
+        if self._holds:
+            return decision
+        held = [
+            e
+            for e in self.open_episodes
+            if e.severity is Tier.WARNING and e.delivery in _HELD and key_of(e) not in self._inflight
+        ]
+        return decision + self._summary(hold, held, now) if held else decision
+
+    def _summary(self, hold: Hold, held: list[Episode], now: datetime) -> Decision:
+        text_title, text_body = messages.summary(hold.kind, [e.title for e in held])
+        episode = Episode(
+            env=self._config.env,
+            rule=SUMMARY.id,
+            fingerprint=f"{SUMMARY.id}:{hold.id}",
+            severity=SUMMARY.tier,
+            source=SUMMARY.source,
+            title=messages.title(self._config.env, text_title),
+            message=messages.message(text_body),
+            details={"window": hold.kind.value, "id": hold.id, "covers": [e.fingerprint for e in held]},
+            opened_at=now,
+            last_seen_at=now,
+            resolved_at=now,
+        )
+        key = key_of(episode)
+        self._remember(episode)
+        self._inflight.add(key)
+        self._summaries[key] = tuple(key_of(e) for e in held)
+        push = Push(episode, PushReason.SUMMARY, episode.severity, episode.title, episode.message)
+        return Decision(store=(episode,), pushes=(push,))
+
+    def _hold(self, decision: Decision) -> Decision:
+        """Hold each push an open window covers: its episode takes the window's delivery state.
+
+        A held note is dropped. A failed episode held here leaves the retries; the summary sends it.
+        """
+        if not self._holds:
+            return decision
+        store = list(decision.store)
+        pushes: list[Push] = []
+        for push in decision.pushes:
+            hold = self._holding(push)
+            if hold is None:
+                pushes.append(push)
+                continue
+            key = key_of(push.episode)
+            self._inflight.discard(key)
+            if push.reason is PushReason.RESOLVED:
+                continue
+            self._failed.pop(key, None)
+            held = replace(self._find(key) or push.episode, delivery=hold.delivery)
+            self._put(held)
+            store.append(held)
+        return Decision(store=tuple(store), pushes=tuple(pushes))
+
+    def _holding(self, push: Push) -> Hold | None:
+        """The window that holds ``push``: test and summary pushes never; a critical only when it
+        is ``trader_down`` in a deploy window; a deploy window before a mute."""
+        if push.reason in (PushReason.TEST, PushReason.SUMMARY):
+            return None
+        if push.tier is Tier.CRITICAL:
+            return self._holds.get(HoldKind.DEPLOY) if push.episode.rule == TRADER_DOWN.id else None
+        return self._holds.get(HoldKind.DEPLOY) or self._holds.get(HoldKind.MUTE)
+
     def _login_burst(self, obs: Observation, now: datetime) -> bool:
         """Counts dashboard ``login_failed`` lines; True once a window holds ``LOGIN_BURST_COUNT``."""
         if obs.service != DASHBOARD or obs.code not in LOGIN_FAILED_BURST.codes:
@@ -345,8 +531,10 @@ class AlertEngine:
 
         The push that would reach the cap is replaced by one storm push; later warning and info
         pushes that hour are capped. A capped open or re-notify push marks its episode ``capped``;
-        a capped note is dropped. Critical and test pushes always pass and never count.
+        a capped note is dropped. Critical and test pushes always pass and never count. Pushes an
+        open hold window covers are held first and never reach the cap.
         """
+        decision = self._hold(decision)
         if not decision.pushes:
             return decision
         self._roll(now)
@@ -377,10 +565,15 @@ class AlertEngine:
         self._inflight.discard(key)
         if push.reason is PushReason.RESOLVED:
             return []
-        current = self._find(key) or push.episode
-        capped = replace(current, delivery=Delivery.CAPPED)
-        self._put(capped)
-        return [capped]
+        # A capped summary leaves what it covered capped too: none of it is pushed later.
+        keys = [key, *self._summaries.pop(key, ())]
+        capped = []
+        for k in keys:
+            current = self._find(k) or (push.episode if k == key else None)
+            if current is not None:
+                capped.append(replace(current, delivery=Delivery.CAPPED))
+                self._put(capped[-1])
+        return capped
 
     def _open_storm(self, now: datetime) -> Push:
         hour = now.replace(minute=0, second=0, microsecond=0)
@@ -442,3 +635,21 @@ def _utc(at: datetime) -> datetime:
     if at.tzinfo is None or at.utcoffset() != timedelta(0):
         raise AlertEngineError(f"alert times must be UTC aware, got {at!r}")
     return at
+
+
+def _parse_utc(text: str) -> datetime | None:
+    """An ISO UTC time from a host line (``2026-10-16T03:00:00Z``); None when absent, bad, or not UTC."""
+    try:
+        at = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if at.tzinfo is None or at.utcoffset() != timedelta(0):
+        return None
+    return at
+
+
+def _since(episode: Episode) -> datetime:
+    """When the episode's condition began: ``details["since"]`` when recorded, else ``opened_at``."""
+    since = episode.details.get("since")
+    parsed = _parse_utc(since) if isinstance(since, str) else None
+    return parsed if parsed is not None and parsed <= episode.opened_at else episode.opened_at
