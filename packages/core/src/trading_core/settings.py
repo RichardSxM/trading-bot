@@ -102,6 +102,8 @@ class ContextSettings(Settings):
     context_reconnect_max_s: int = Field(default=60, ge=1)
     # No message at all for this long forces a reconnect (AC-6).
     context_idle_s: int = Field(default=30, ge=5)
+    # Open interest handled this much later than Kraken sent it logs ``context_feed_lagging`` (AC-18).
+    context_lag_warn_s: int = Field(default=10, ge=1)
     # Two rows of mark, index, or open interest this far apart give a ``silence`` gap (AC-7).
     context_silence_s: int = Field(default=60, ge=1)
     # A value older than its max age is stale (AC-9).

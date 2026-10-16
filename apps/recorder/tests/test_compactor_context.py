@@ -208,6 +208,7 @@ def test_an_outage_line_is_a_reconnect_gap_of_both_raw_streams_and_beats_a_silen
     )
     assert not [g for g in gaps if g.kind == "silence"]  # the same span's silence lost to the reconnect
     assert store.load_done().outages == {"a-dead": 1}
+    assert store.load_done().open_outages == {}  # a closed line from before open lines stands alone
     rows = pq.read_table(store.data_file(OPEN_INTEREST_TABLE, INSTRUMENT, H0)).column("value").to_pylist()
     assert rows == [str(r.value) for r in oi]
 
@@ -309,3 +310,40 @@ def test_an_hour_inside_a_feed_outage_excuses_only_open_interest(tmp_path, caplo
     assert sorted(_missing(caplog)) == sorted([(H0, MARK_TABLE), (H0, INDEX_TABLE)])
     # Once every instrument checked past it, the outage hour is dropped.
     assert store.load_done().feed_down == set()
+
+
+def test_a_feed_still_down_excuses_open_interest_from_its_first_whole_hour(tmp_path, caplog):
+    """covers: spec 0013 AC-7 with spec 0009's open outage line (amended AC-7)."""
+    from recorder.compactor.store import INDEX_TABLE, MARK_TABLE, OPEN_INTEREST_TABLE
+
+    # One run still recording: its book hours H0 to H0 + 2 h are closed, H0 + 3 h is open.
+    store = CatalogStore(tmp_path)
+    rotate = [H0 + HOUR_NS, H0 + 2 * HOUR_NS, H0 + 3 * HOUR_NS]
+    write_run(
+        store.live,
+        "a-live",
+        make_feed(H0 + 7 * SECOND_NS, H0 + 3 * HOUR_NS + 60 * SECOND_NS).messages,
+        rotate_at=rotate,
+    )
+    write_context(
+        store.live,
+        "a-live",
+        FUNDING_TABLE,
+        make_funding(H0 + 3 * SECOND_NS, H0 + 2 * HOUR_NS - SECOND_NS),
+        rotate_at=rotate,
+    )
+    done = store.load_done()
+    done.context_checked[INSTRUMENT] = H0 - HOUR_NS
+    # Down since just before H0 and not back yet: no closed line, so feed_down is empty.
+    done.open_outages["a-live"] = [{"start_ns": H0 - SECOND_NS, "reason": "idle"}]
+    store.save_done(done)
+
+    caplog.set_level("WARNING")
+    _compactor(store).run_pass(_later())
+
+    # Only the raw feed's open interest is excused; mark and index come from other channels.
+    tables = {table for hour, table in _missing(caplog) if hour == H0}
+    assert {MARK_TABLE, INDEX_TABLE} <= tables
+    assert OPEN_INTEREST_TABLE not in tables
+    done = store.load_done()
+    assert (done.open_outages["a-live"], done.feed_down) == ([{"start_ns": H0 - SECOND_NS, "reason": "idle"}], set())

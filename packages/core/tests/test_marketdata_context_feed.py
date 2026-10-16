@@ -16,10 +16,13 @@ from trading_core.marketdata.context_feed import (
     BadCounter,
     BadRow,
     ForcedTrade,
+    LagWatch,
     OpenInterest,
     Outage,
     RecentIds,
     backoff_s,
+    close_at_run_end,
+    pair_outages,
     parse_message,
     parse_outages,
     product_id,
@@ -177,3 +180,57 @@ def test_outage_lines_round_trip_and_bad_lines_are_counted():
 
     assert good.line() == '{"end_ns":20,"reason":"idle","start_ns":10}\n'
     assert (outages, bad) == ([good], 3)
+
+
+def test_an_open_line_has_a_null_end_and_reads_back():
+    """covers: spec 0009 AC-6 (amended: the open line on entering down)."""
+    opened = Outage(10, None, "idle")
+    lines = [
+        opened.line(),
+        '{"start_ns": 10, "end_ns": "x", "reason": "idle"}\n',
+        '{"start_ns": true, "end_ns": null, "reason": "x"}\n',
+    ]
+
+    outages, bad = parse_outages(lines)
+
+    assert opened.line() == '{"end_ns":null,"reason":"idle","start_ns":10}\n'
+    assert (outages, bad) == ([opened], 2)
+    assert opened.is_open
+    assert not Outage(10, 20, "idle").is_open
+
+
+def test_a_closed_line_removes_its_open_partner():
+    """covers: spec 0009 AC-6, AC-7 (open and closed lines paired by start_ns)."""
+    first, second = Outage(10, None, "idle"), Outage(50, None, "closed")
+
+    closed, waiting = pair_outages([], [first, second, Outage(10, 30, "idle")])
+
+    assert closed == [Outage(10, 30, "idle")]
+    assert waiting == [second]
+
+
+def test_a_closed_line_a_pass_later_still_pairs_and_an_old_closed_line_stands_alone():
+    """covers: spec 0009 AC-7 (a closed line read in a later pass; files from before open lines)."""
+    closed, waiting = pair_outages([Outage(50, None, "closed")], [Outage(50, 90, "closed"), Outage(5, 8, "idle")])
+
+    assert closed == [Outage(50, 90, "closed"), Outage(5, 8, "idle")]
+    assert waiting == []
+
+
+def test_open_lines_close_at_the_run_end_unless_they_start_at_or_after_it():
+    """covers: spec 0009 AC-7 (tail reconnect)."""
+    still_open = [Outage(10, None, "idle"), Outage(100, None, "closed"), Outage(120, None, "idle")]
+
+    assert close_at_run_end(still_open, 100) == [Outage(10, 100, "idle")]
+
+
+def test_lag_over_the_limit_is_logged_once_a_minute_with_the_largest_lag_and_count():
+    """covers: spec 0009 AC-18."""
+    watch = LagWatch(warn_ns=10 * S, every_ns=60 * S)
+
+    assert watch.add(10 * S, 0) is None  # exactly the limit is not late
+    assert watch.add(-5 * S, 0) is None  # a negative lag counts as zero
+    assert watch.add(20 * S, 1 * S) == (20.0, 1)
+    assert [watch.add(lag, t * S) for lag, t in ((30_123_456_789, 10), (15 * S, 20))] == [None, None]
+    assert watch.add(11 * S, 61 * S) == (30.123, 3)
+    assert watch.add(12 * S, 62 * S) is None

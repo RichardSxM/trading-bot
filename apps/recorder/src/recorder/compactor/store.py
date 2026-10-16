@@ -111,6 +111,10 @@ class DoneRecord:
     - ``context_streams``: per context stream key, the silence detector's state
       (``SilenceState.to_dict``, spec 0009 AC-7).
     - ``outages``: per run, how many lines of its ``context_outages.jsonl`` became gaps (AC-7).
+    - ``run_ends``: per instrument, per run, the run's end (its last book row, the ``recorder_down``
+      start), kept until the run's tail gaps are resolved (spec 0009 AC-7, amended 2026-10-16).
+    - ``open_outages``: per run, its open outage lines (``start_ns``, ``reason``) with no closed line yet.
+    - ``pending_tails``: per steady context stream key, per run, the stream's last row ``ts_init`` in it.
     - ``liquidation_uids``: per liquidation stream key, the last finished hour and its trade ids, so a
       duplicate in the next hour is dropped the same way on a rerun (AC-5).
     - ``empty``: per instrument, hours without rows that lie wholly inside a ``recorder_down`` gap;
@@ -134,6 +138,9 @@ class DoneRecord:
     streams: dict[str, dict[str, object]] = field(default_factory=dict)
     context_streams: dict[str, dict[str, object]] = field(default_factory=dict)
     outages: dict[str, int] = field(default_factory=dict)
+    run_ends: dict[str, dict[str, int]] = field(default_factory=dict)
+    open_outages: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    pending_tails: dict[str, dict[str, int]] = field(default_factory=dict)
     liquidation_uids: dict[str, dict[str, Any]] = field(default_factory=dict)
     empty: dict[str, set[int]] = field(default_factory=dict)
     days: set[str] = field(default_factory=set)
@@ -161,6 +168,11 @@ class DoneRecord:
                 "streams": dict(sorted(self.streams.items())),
                 "context_streams": dict(sorted(self.context_streams.items())),
                 "outages": dict(sorted(self.outages.items())),
+                "run_ends": {k: dict(sorted(v.items())) for k, v in sorted(self.run_ends.items())},
+                "open_outages": {
+                    k: sorted(v, key=lambda o: o["start_ns"]) for k, v in sorted(self.open_outages.items())
+                },
+                "pending_tails": {k: dict(sorted(v.items())) for k, v in sorted(self.pending_tails.items())},
                 "liquidation_uids": dict(sorted(self.liquidation_uids.items())),
                 "empty": {k: sorted(v) for k, v in sorted(self.empty.items())},
                 "days": sorted(self.days),
@@ -187,6 +199,9 @@ class DoneRecord:
             streams=dict(raw.get("streams", {})),
             context_streams=dict(raw.get("context_streams", {})),
             outages=dict(raw.get("outages", {})),
+            run_ends={k: dict(v) for k, v in raw.get("run_ends", {}).items()},
+            open_outages={k: list(v) for k, v in raw.get("open_outages", {}).items()},
+            pending_tails={k: dict(v) for k, v in raw.get("pending_tails", {}).items()},
             liquidation_uids=dict(raw.get("liquidation_uids", {})),
             empty={k: set(v) for k, v in raw.get("empty", {}).items()},
             days=set(raw.get("days", [])),
