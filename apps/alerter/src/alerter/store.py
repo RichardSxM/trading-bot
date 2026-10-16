@@ -30,11 +30,13 @@ FAILED_MAX_AGE: Final = timedelta(hours=24)
 
 
 class EpisodeStore(Protocol):
-    """``AlertRepository``'s two calls (blocking; run in a thread)."""
+    """``AlertRepository``'s calls (blocking; run in a thread)."""
 
     def save(self, episode: Episode) -> int: ...
 
     def load_active(self, failed_since: datetime) -> list[Episode]: ...
+
+    def ping(self) -> None: ...
 
 
 class StoreWriter:
@@ -103,6 +105,17 @@ class StoreWriter:
             "alerts loaded",
             extra={"fields": {"code": "alerts_loaded", "episodes": len(stored), "closed_stale": len(stale)}},
         )
+        return True
+
+    async def ping(self) -> bool:
+        """True when Postgres answers ``SELECT 1`` (feeds ``postgres_unreachable``, AC-4)."""
+        try:
+            await asyncio.to_thread(self._store.ping)
+        except SQLAlchemyError as exc:
+            log.warning(
+                "postgres ping failed", extra={"fields": {"code": "alerter_postgres_failed", "error": str(exc)}}
+            )
+            return False
         return True
 
     async def flush_one(self) -> bool:

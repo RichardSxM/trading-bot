@@ -12,6 +12,7 @@ import pytest
 from redis import Redis
 from redis.exceptions import NoPermissionError
 
+from alerter.sources.docker_logs import CURSOR_TTL_S
 from trading_core.secrets import REDIS_PASSWORD, read_secret
 
 pytestmark = pytest.mark.redis
@@ -39,6 +40,15 @@ def test_the_alerter_writes_its_own_keys_and_the_alert_stream(client):
     client.delete("demo:alerts:acl-probe")
     client.xadd("demo:control:alerts:results", {"probe": "1"}, maxlen=1000, approximate=True)
     client.xlen("demo:control:alerts")
+
+
+def test_the_alerter_keeps_its_log_cursors(client):
+    key = "demo:alerts:cursor:acl-probe"
+    client.set(key, "2026-10-16T03:00:00.000000000Z", ex=CURSOR_TTL_S)
+
+    assert client.get(key) == "2026-10-16T03:00:00.000000000Z"
+    assert 0 < client.ttl(key) <= CURSOR_TTL_S
+    client.delete(key)
 
 
 @pytest.mark.parametrize(

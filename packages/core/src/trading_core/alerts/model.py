@@ -49,7 +49,11 @@ class PushReason(StrEnum):
 
 @dataclass(frozen=True)
 class Observation:
-    """One log line or host line, already parsed: who wrote it, when, its ``code`` and fields."""
+    """One log line or host line, already parsed: who wrote it, when, its ``code`` and fields.
+
+    ``source`` is the ``alerts.source`` value (``log:<service>`` for a container line). ``text``
+    holds a line that is not JSON (a NautilusTrader engine line), with ``code`` and ``level`` None.
+    """
 
     source: str
     service: str
@@ -57,6 +61,7 @@ class Observation:
     code: str | None
     level: str | None
     fields: Mapping[str, object] = field(default_factory=dict)
+    text: str | None = None
 
 
 @dataclass(frozen=True)

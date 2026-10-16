@@ -6,6 +6,11 @@ from trading_core.alerts.model import CheckResult
 from trading_core.alerts.rules import TRADER_DOWN
 
 
+def reachable(rule_id: str, ok: bool, now: datetime) -> CheckResult:
+    """``postgres_unreachable`` or ``redis_unreachable`` from the alerter's own check (AC-4)."""
+    return CheckResult(rule_id, ok=ok, at=now)
+
+
 def heartbeat_check(ts_ns: int | None, now: datetime, threshold_s: int) -> CheckResult:
     """``trader_down`` from the heartbeat's ``ts_ns`` (AC-1).
 

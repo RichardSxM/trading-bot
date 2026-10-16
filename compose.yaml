@@ -413,6 +413,11 @@ services:
       ALERTS_DISK_FREE_GB: ${ALERTS_DISK_FREE_GB:-5}
       ALERTS_DAILY_AT: ${ALERTS_DAILY_AT:-08:00}
       ALERTS_DAILY_TZ: ${ALERTS_DAILY_TZ:-Europe/Amsterdam}
+      ALERTS_DOCKER_URL: http://docker-proxy:2375
+    # The default network for Postgres and Redis; dockerproxy only to reach the socket proxy.
+    networks:
+      - default
+      - dockerproxy
     secrets:
       - source: postgres_alerter_password
         target: postgres_password
@@ -432,10 +437,37 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      docker-proxy:
+        condition: service_started
     healthcheck:
       <<: *node-healthcheck
       start_period: 30s
     mem_limit: 128m
+
+  docker-proxy:
+    # The alerter's only door to Docker (spec 0013, *Security model*): GET on /containers
+    # (listing, inspect, logs) and nothing else, POST included. The socket is mounted read only
+    # and the proxy sits alone with the alerter on the internal dockerproxy network.
+    image: tecnativa/docker-socket-proxy:v0.5.0
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      CONTAINERS: 1
+      POST: 0
+      # On by default in the image; off here.
+      EVENTS: 0
+      PING: 0
+      VERSION: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - dockerproxy
+    read_only: true
+    # haproxy renders its config into /tmp at start.
+    tmpfs:
+      - /tmp
+      - /run
+    mem_limit: 64m
 
   backup:
     # Nightly at BACKUP_AT_UTC: downsample_snapshots(), pg_dump, manifest, restic (spec 0005 AC-19).
@@ -560,6 +592,11 @@ services:
         condition: service_completed_successfully
     # Two workers at under 1 GB each plus the parent, inside the laptop's 4 GB Docker VM (AC-16).
     mem_limit: 3g
+
+networks:
+  # Internal: no route out, shared only by the alerter and the socket proxy.
+  dockerproxy:
+    internal: true
 
 secrets:
   postgres_owner_password:

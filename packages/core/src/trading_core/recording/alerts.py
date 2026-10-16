@@ -83,6 +83,11 @@ class AlertRepository:
         with self._sessions() as session:
             return [_episode(row) for row in session.execute(query).mappings()]
 
+    def ping(self) -> None:
+        """``SELECT 1``; raises a SQLAlchemy error when Postgres is unreachable (spec 0013 AC-4)."""
+        with self._sessions() as session:
+            session.execute(text("SELECT 1"))
+
 
 def _values(episode: Episode) -> dict[str, object]:
     return {

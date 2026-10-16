@@ -12,7 +12,12 @@ from trading_core.settings import AlertSettings
 
 
 class AlerterSettings(AlertSettings):
-    """``AlertSettings`` plus nothing yet; the alerter's own knobs join here."""
+    """``AlertSettings`` plus the alerter's own plumbing.
+
+    ``alerts_docker_url`` is the read only Docker socket proxy (spec 0013, *Security model*).
+    """
+
+    alerts_docker_url: str = "http://docker-proxy:2375"
 
 
 def alerter_secrets(settings: AlerterSettings) -> tuple[str, ...]:
@@ -32,4 +37,5 @@ def engine_config(settings: AlerterSettings) -> EngineConfig:
         env=settings.trading_env,
         renotify_s=settings.alerts_renotify_s,
         critical_renotify_s=settings.alerts_critical_renotify_s,
+        hourly_cap=settings.alerts_hourly_cap,
     )

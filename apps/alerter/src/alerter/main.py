@@ -1,6 +1,7 @@
 """Builds the alerter from its boot result and runs it (spec 0013)."""
 
 import logging
+import socket
 from collections.abc import Mapping
 from typing import Final
 
@@ -14,6 +15,9 @@ from alerter.delivery import Deliverer, LogDelivery, PushoverDelivery
 from alerter.pushover import PushoverClient
 from alerter.service import Alerter, utc_now
 from alerter.settings import AlerterSettings, engine_config
+from alerter.sources.docker_api import DockerApi
+from alerter.sources.docker_logs import LogReader
+from alerter.sources.docker_watch import DockerWatch
 from alerter.store import StoreWriter
 from alerter.watchdog import Watchdog
 from trading_core.alerts.engine import AlertEngine
@@ -71,11 +75,22 @@ def redis_client(settings: AlerterSettings, password: SecretStr) -> Redis:
     )
 
 
+def docker_watch(settings: AlerterSettings, http: httpx.AsyncClient, redis: Redis) -> DockerWatch:
+    """Container logs and states through the socket proxy, cursors in Redis (spec 0013 Build plan 2.1)."""
+    api = DockerApi(http, settings.alerts_docker_url)
+    reader = LogReader(api, redis, settings.trading_env, utc_now)
+    # Docker sets a container's hostname to its short id, unless Compose is told otherwise.
+    return DockerWatch(api, reader, socket.gethostname())
+
+
 async def serve(started: Boot[AlerterSettings]) -> None:
     """Run the alerter until the process is stopped."""
     settings, secrets = started.settings, started.secrets
+    # httpx logs every request URL at INFO: the Docker poll is noisy and the ping URL holds a secret.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     engine = AlertEngine(engine_config(settings))
     store = StoreWriter(repository(settings, secrets), engine, utc_now)
+    redis = redis_client(settings, secrets[REDIS_PASSWORD])
     async with httpx.AsyncClient() as http:
         ping = watchdog(settings, secrets, http)
         alerter = Alerter(
@@ -83,9 +98,10 @@ async def serve(started: Boot[AlerterSettings]) -> None:
             engine=engine,
             deliverer=deliverer(settings, secrets, http),
             store=store,
-            redis=redis_client(settings, secrets[REDIS_PASSWORD]),
+            redis=redis,
             trader_down_s=settings.alerts_trader_down_s,
             watchdog=ping,
+            docker=docker_watch(settings, http, redis),
         )
         log.info(
             "alerter running",

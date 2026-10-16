@@ -58,6 +58,61 @@ def trader_down(fields: Mapping[str, object]) -> tuple[str, str]:
     return "Trader down", "No trader heartbeat in Redis."
 
 
+def words(code: str) -> str:
+    """A code in plain words: ``stop_not_accepted`` becomes "Stop not accepted"."""
+    return code.replace("_", " ").capitalize()
+
+
+# The fields worth naming in a push body, in order; the rest stay in ``details``.
+_BODY_FIELDS: Final = ("event_key", "reason", "step", "kind", "duration_s", "missing", "error", "secret")
+_RISK_RULES: Final = frozenset({"loss_limit_halt", "risk_critical", "risk_halt_manual", "trade_cap"})
+
+
+def log_line(
+    rule_id: str, service: str, code: str | None, fields: Mapping[str, object], text: str | None
+) -> tuple[str, str]:
+    """Title text and body for an episode opened by a log line.
+
+    A risk event is titled by its ``event_key`` kind ("Stop not accepted"); any other line by its
+    code and service. The body is the line's ``msg`` plus the fields that say what happened.
+    """
+    if rule_id == "engine_error":
+        return f"Engine error on {service}", text or ""
+    if rule_id == "login_failed_burst":
+        return "Dashboard login failures", f"{fields.get('count', '?')} failed logins within 10 min, all clients."
+    event_key = str(fields.get("event_key") or "")
+    if rule_id in _RISK_RULES:
+        head = words(event_key.split(":", 1)[0] if event_key else (code or rule_id))
+    else:
+        head = f"{words(code or rule_id)} on {service}"
+    parts = [str(fields.get("msg") or "")]
+    parts += [f"{name}={fields[name]}" for name in _BODY_FIELDS if fields.get(name) not in (None, "")]
+    return head, " ".join(p for p in parts if p)
+
+
+def check(rule_id: str, subject: str | None, fields: Mapping[str, object]) -> tuple[str, str]:
+    """Title text and body for an episode opened by a condition check."""
+    if rule_id == "trader_down":
+        return trader_down(fields)
+    if rule_id == "service_down":
+        return f"Service down: {subject}", f"No running {subject} container. State: {fields.get('state', 'none')}."
+    if rule_id == "container_unhealthy":
+        return f"Container unhealthy: {subject}", f"Docker reports {subject} unhealthy: {fields.get('status', '')}."
+    if rule_id == "postgres_unreachable":
+        return "Postgres unreachable", "The alerter cannot reach Postgres; alerts queue in memory."
+    if rule_id == "redis_unreachable":
+        return "Redis unreachable", "The alerter cannot reach Redis; trader health is unknown."
+    return words(rule_id), ""
+
+
+def storm(held: int, until: datetime) -> tuple[str, str]:
+    """Title text and body of the storm push that replaces the hour's last allowed push (AC-10)."""
+    return (
+        "Alert storm",
+        f"alert storm: {held} alerts held, see the dashboard. Warnings and info stay held until {_hhmm(until)} UTC.",
+    )
+
+
 def duration(start: datetime, end: datetime) -> str:
     """How long ``start`` to ``end`` took in plain words: seconds under a minute, else whole minutes."""
     seconds = max(0, int((end - start).total_seconds()))

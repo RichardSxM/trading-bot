@@ -1,4 +1,5 @@
-"""The alert episode state machine (spec 0013 AC-1, AC-9, AC-14): open, repeat, re-notify, resolve, retry.
+"""The alert episode state machine (spec 0013 AC-1, AC-3, AC-9, AC-10, AC-14): open, repeat, re-notify,
+resolve, retry, and the hourly storm cap.
 
 The engine holds the open episodes and the failed ones awaiting a retry. Each call takes the
 time from its input and returns a ``Decision``: the episodes to store (their latest state) and
@@ -6,15 +7,36 @@ the pushes to send. The app sends them and reports each outcome back with ``reco
 I/O, no clock.
 """
 
-from collections import OrderedDict
-from collections.abc import Iterable, Mapping
+from collections import OrderedDict, deque
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Final
 
 from trading_core.alerts import messages
-from trading_core.alerts.model import CheckResult, Decision, Delivery, Episode, Push, PushReason, RuleKind, Tier
-from trading_core.alerts.rules import BY_ID, TEST, TRADER_DOWN, Rule
+from trading_core.alerts.model import (
+    CheckResult,
+    Decision,
+    Delivery,
+    Episode,
+    Observation,
+    Push,
+    PushReason,
+    RuleKind,
+    Tier,
+)
+from trading_core.alerts.rules import (
+    ALERT_STORM,
+    BY_ID,
+    DASHBOARD,
+    LOGIN_BURST_COUNT,
+    LOGIN_BURST_WINDOW_S,
+    LOGIN_FAILED_BURST,
+    TEST,
+    Rule,
+    first_match,
+    partner_of,
+)
 
 # Episodes recently resolved stay findable so a push still in flight can record its outcome.
 _RECENT_MAX: Final = 1000
@@ -34,8 +56,10 @@ class EngineConfig:
     renotify_s: int = 3600
     critical_renotify_s: int = 14_400
     quiet_close_s: int = 900
+    pair_quiet_s: int = 86_400
     retry_limit: int = 20
     retry_max_age_s: int = 86_400
+    hourly_cap: int = 30
 
 
 def key_of(episode: Episode) -> EpisodeKey:
@@ -53,6 +77,13 @@ class AlertEngine:
         self._failed: dict[EpisodeKey, Episode] = {}
         self._recent: OrderedDict[EpisodeKey, Episode] = OrderedDict()
         self._inflight: set[EpisodeKey] = set()
+        self._logins: deque[datetime] = deque()
+        # The storm cap (AC-10): the UTC hour counted, warning and info pushes sent in it, the
+        # ones admitted and not yet reported (by ``id`` of the push), and the hour's storm episode.
+        self._hour: datetime | None = None
+        self._hour_sent = 0
+        self._counted: set[int] = set()
+        self._storm: Episode | None = None
 
     # State ----------------------------------------------------------------------------------
 
@@ -89,12 +120,12 @@ class AlertEngine:
         fingerprint = rule.fingerprint(result.subject)
         current = self._open.get(fingerprint)
         if result.ok:
-            return Decision() if current is None else self._resolve(current, now, note=True)
+            return Decision() if current is None else self._gate(self._resolve(current, now, note=True), now)
         if current is not None:
             # A condition still failing is the same episode; only the time moves.
             self._open[fingerprint] = replace(current, last_seen_at=now)
             return Decision()
-        text_title, text_body = _texts(rule, result.fields)
+        text_title, text_body = messages.check(rule.id, result.subject, result.fields)
         episode = Episode(
             env=self._config.env,
             rule=rule.id,
@@ -108,7 +139,59 @@ class AlertEngine:
             last_seen_at=now,
         )
         self._open[fingerprint] = episode
-        return Decision(store=(episode,)) + self._release(episode, now)
+        return Decision(store=(episode,)) + self._gate(self._release(episode, now), now)
+
+    def observe(self, obs: Observation) -> Decision:
+        """Apply one log line (AC-3, AC-7): the first matching rule opens or bumps its episode.
+
+        A pair rule's partner code resolves that rule's open episode from the same source. A
+        repeat of an open fingerprint, whatever rule matched it, bumps ``occurrences`` and
+        ``last_seen_at`` and pushes nothing (AC-9).
+        """
+        now = _utc(obs.at)
+        pair = partner_of(obs, self._rules.values())
+        if pair is not None:
+            return self._gate(self._resolve_where(now, lambda e: e.rule == pair.id and e.source == obs.source), now)
+        rule = first_match(obs, self._rules.values())
+        if rule is None and self._login_burst(obs, now):
+            rule = self._rules.get(LOGIN_FAILED_BURST.id)
+            obs = replace(obs, fields={**obs.fields, "count": len(self._logins)})
+        if rule is None:
+            return Decision()
+        fingerprint = rule.key(obs) if rule.key is not None else rule.fingerprint()
+        current = self._open.get(fingerprint)
+        if current is not None:
+            bumped = replace(current, occurrences=current.occurrences + 1, last_seen_at=max(current.last_seen_at, now))
+            self._open[fingerprint] = bumped
+            return Decision(store=(bumped,))
+        text_title, text_body = messages.log_line(rule.id, obs.service, obs.code, obs.fields, obs.text)
+        details = dict(obs.fields) if obs.text is None else {**obs.fields, "text": obs.text}
+        episode = Episode(
+            env=self._config.env,
+            rule=rule.id,
+            fingerprint=fingerprint,
+            severity=rule.tier,
+            source=obs.source,
+            title=messages.title(self._config.env, text_title),
+            message=messages.message(text_body),
+            details=messages.redact_details(details),
+            opened_at=now,
+            last_seen_at=now,
+        )
+        self._open[fingerprint] = episode
+        return Decision(store=(episode,)) + self._gate(self._release(episode, now), now)
+
+    def service_started(self, service: str, started_at: datetime) -> Decision:
+        """A service's container (re)started at ``started_at``: its older pair episodes resolve."""
+        started_at = _utc(started_at)
+        source = f"log:{service}"
+
+        def stale(episode: Episode) -> bool:
+            rule = self._rules.get(episode.rule)
+            kind = rule.kind if rule is not None else None
+            return kind is RuleKind.PAIR and episode.source == source and episode.opened_at < started_at
+
+        return self._gate(self._resolve_where(started_at, stale), started_at)
 
     def tick(self, now: datetime) -> Decision:
         """Time based steps: the ``min_open_s`` release, re-notify, and the quiet close of event episodes."""
@@ -118,13 +201,16 @@ class AlertEngine:
             if key_of(episode) in self._inflight:
                 continue
             rule = self._rules.get(episode.rule)
-            quiet = now - episode.last_seen_at >= timedelta(seconds=self._config.quiet_close_s)
-            if rule is not None and rule.kind is RuleKind.EVENT and quiet:
+            quiet_s = (now - episode.last_seen_at).total_seconds()
+            if rule is not None and rule.kind is RuleKind.EVENT and quiet_s >= self._config.quiet_close_s:
                 decision += self._resolve(episode, now, note=False)
+                continue
+            if rule is not None and rule.kind is RuleKind.PAIR and quiet_s >= self._config.pair_quiet_s:
+                decision += self._resolve(episode, now, note=True)
                 continue
             decision += self._release(episode, now)
             decision += self._renotify(episode, now, rule)
-        return decision
+        return self._gate(decision, now)
 
     def test_episodes(self, command_id: str, tiers: Iterable[Tier], now: datetime) -> Decision:
         """One marked test episode and push per tier (AC-16, AC-17). Stored resolved, so never "still open"."""
@@ -170,7 +256,7 @@ class AlertEngine:
         for episode in due:
             self._inflight.add(key_of(episode))
             pushes.append(Push(episode, PushReason.OPEN, episode.severity, episode.title, episode.message))
-        return Decision(pushes=tuple(pushes))
+        return self._gate(Decision(pushes=tuple(pushes)), now)
 
     def record(self, push: Push, delivery: Delivery, at: datetime) -> Episode | None:
         """Record a push's outcome on its episode; returns the episode to store, or None for a note.
@@ -180,6 +266,11 @@ class AlertEngine:
         at = _utc(at)
         key = key_of(push.episode)
         self._inflight.discard(key)
+        if id(push) in self._counted:
+            self._counted.discard(id(push))
+            if delivery is Delivery.SENT:
+                self._roll(at)
+                self._hour_sent += 1
         if push.reason is PushReason.RESOLVED:
             return None
         current = self._find(key) or push.episode
@@ -231,6 +322,92 @@ class AlertEngine:
         push = Push(resolved, PushReason.RESOLVED, Tier.INFO, note_title, note_body)
         return Decision(store=(resolved,), pushes=(push,))
 
+    def _resolve_where(self, now: datetime, which: Callable[[Episode], bool]) -> Decision:
+        decision = Decision()
+        for episode in [e for e in self._open.values() if which(e)]:
+            decision += self._resolve(episode, max(now, episode.opened_at), note=True)
+        return decision
+
+    def _login_burst(self, obs: Observation, now: datetime) -> bool:
+        """Counts dashboard ``login_failed`` lines; True once a window holds ``LOGIN_BURST_COUNT``."""
+        if obs.service != DASHBOARD or obs.code not in LOGIN_FAILED_BURST.codes:
+            return False
+        self._logins.append(now)
+        window = timedelta(seconds=LOGIN_BURST_WINDOW_S)
+        while self._logins and now - self._logins[0] > window:
+            self._logins.popleft()
+        return len(self._logins) >= LOGIN_BURST_COUNT
+
+    # The storm cap (AC-10) -------------------------------------------------------------------
+
+    def _gate(self, decision: Decision, now: datetime) -> Decision:
+        """Admit each warning and info push while the hour has room; past it, cap.
+
+        The push that would reach the cap is replaced by one storm push; later warning and info
+        pushes that hour are capped. A capped open or re-notify push marks its episode ``capped``;
+        a capped note is dropped. Critical and test pushes always pass and never count.
+        """
+        if not decision.pushes:
+            return decision
+        self._roll(now)
+        store = list(decision.store)
+        pushes: list[Push] = []
+        for push in decision.pushes:
+            if push.tier is Tier.CRITICAL or push.reason is PushReason.TEST:
+                pushes.append(push)
+                continue
+            if self._storm is None and self._hour_sent + len(self._counted) < self._config.hourly_cap - 1:
+                self._counted.add(id(push))
+                pushes.append(push)
+                continue
+            store += self._cap(push)
+            if self._storm is None:
+                storm_push = self._open_storm(now)
+                store.append(storm_push.episode)
+                self._counted.add(id(storm_push))
+                pushes.append(storm_push)
+            else:
+                self._storm = replace(self._storm, occurrences=self._storm.occurrences + 1, last_seen_at=now)
+                self._put(self._storm)
+                store.append(self._storm)
+        return Decision(store=tuple(store), pushes=tuple(pushes))
+
+    def _cap(self, push: Push) -> list[Episode]:
+        key = key_of(push.episode)
+        self._inflight.discard(key)
+        if push.reason is PushReason.RESOLVED:
+            return []
+        current = self._find(key) or push.episode
+        capped = replace(current, delivery=Delivery.CAPPED)
+        self._put(capped)
+        return [capped]
+
+    def _open_storm(self, now: datetime) -> Push:
+        hour = now.replace(minute=0, second=0, microsecond=0)
+        text_title, text_body = messages.storm(1, hour + timedelta(hours=1))
+        episode = Episode(
+            env=self._config.env,
+            rule=ALERT_STORM.id,
+            fingerprint=f"{ALERT_STORM.id}:{hour.strftime('%Y-%m-%dT%H')}",
+            severity=ALERT_STORM.tier,
+            source=ALERT_STORM.source,
+            title=messages.title(self._config.env, text_title),
+            message=messages.message(text_body),
+            details={"hour": hour.isoformat()},
+            opened_at=now,
+            last_seen_at=now,
+            resolved_at=now,
+        )
+        self._storm = episode
+        self._remember(episode)
+        self._inflight.add(key_of(episode))
+        return Push(episode, PushReason.OPEN, episode.severity, episode.title, episode.message)
+
+    def _roll(self, now: datetime) -> None:
+        hour = now.replace(minute=0, second=0, microsecond=0)
+        if hour != self._hour:
+            self._hour, self._hour_sent, self._storm = hour, 0, None
+
     # Helpers --------------------------------------------------------------------------------
 
     def _rule(self, rule_id: str, kind: RuleKind) -> Rule:
@@ -259,12 +436,6 @@ class AlertEngine:
         self._recent.move_to_end(key_of(episode))
         while len(self._recent) > _RECENT_MAX:
             self._recent.popitem(last=False)
-
-
-def _texts(rule: Rule, fields: Mapping[str, object]) -> tuple[str, str]:
-    if rule.id == TRADER_DOWN.id:
-        return messages.trader_down(fields)
-    return rule.id.replace("_", " ").capitalize(), ""
 
 
 def _utc(at: datetime) -> datetime:

@@ -73,6 +73,9 @@ class FakeStore:
         self.rows[(episode.fingerprint, episode.opened_at)] = episode
         return len(self.rows)
 
+    def ping(self) -> None:
+        self._check()
+
     def load_active(self, failed_since: datetime) -> list[Episode]:
         self._check()
         return [
@@ -83,15 +86,25 @@ class FakeStore:
 
 
 class FakeRedis:
-    """Holds string keys; ``fail`` makes every call raise like a dead Redis."""
+    """Holds string keys (and the TTL each was set with); ``fail`` makes every call raise like a dead Redis."""
 
     def __init__(self) -> None:
         self.values: dict[str, str] = {}
+        self.ttls: dict[str, int | None] = {}
         self.fail = False
 
-    async def get(self, name: str) -> str | None:
+    def _check(self) -> None:
         if self.fail:
             from redis.exceptions import ConnectionError
 
             raise ConnectionError("redis is down")
+
+    async def get(self, name: str) -> str | None:
+        self._check()
         return self.values.get(name)
+
+    async def set(self, name: str, value: str, ex: int | None = None) -> bool:
+        self._check()
+        self.values[name] = value
+        self.ttls[name] = ex
+        return True
