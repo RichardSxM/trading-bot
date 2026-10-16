@@ -91,3 +91,33 @@ _The laptop half runs in dry run with `alerter dashboard` up (no trader or recor
 ### Acceptance criteria coverage (Part D)
 
 - AC-8 by the live fill step, the grant, the fill tests, and the precision check · AC-12 by the mute, unmute, expiry, restart steps and the command tests · AC-16 by the badge, test button, feed steps, and the dashboard tests · AC-20 by the ACL suites
+
+## Part E: Milestone 4 task 4.4 (the daily note) · added 2026-10-16
+
+These add to step 9 in Part B. You may run the laptop steps after `docker compose build alerter`, with `ALERTS_DAILY_AT` set a minute or two ahead of the current Amsterdam time. Bring the stack down afterwards.
+
+### UI / manual
+
+- [ ] Set `ALERTS_DAILY_AT` two minutes ahead and recreate the alerter. → at that minute one `daily_note` log line, one `daily` row with fingerprint `daily:<today>`, `resolved_at = opened_at`, `delivery=dry_run`. → AC-18
+- [ ] Restart the alerter the same day. → no second `daily` row and no second log line. → AC-18
+- [ ] Set `ALERTS_DAILY_AT` a few hours in the past and start the alerter on a day with no `daily` row. → the note goes out once within a minute (the catch up). → AC-18
+- [ ] Send a 1 h mute, then trigger the note. → the note still goes out; its row is never `muted` or `held`. → AC-18, AC-12
+- [ ] Stop Postgres, let the note come due, wait two minutes, start Postgres. → `daily_note_waiting` warnings while it is down, then one note once it answers. → AC-18
+
+### Commands
+
+- [ ] `docker compose run --rm --no-deps -T -w /app/packages/core trader pytest -q tests/test_alerts_daily.py` → green → AC-18
+- [ ] `docker compose run --rm --no-deps -T alerter pytest -q tests/test_daily.py` → green → AC-18
+- [ ] `docker compose run --rm -T migrate pytest -q -m integration tests/integration/test_alerts_repository.py` → green, the figures read as `alerter_app` → AC-18
+
+### Value sourcing checks
+
+- [ ] When to send: the note goes out at 06:00 UTC in summer time (October before the last Sunday) and at 07:00 UTC in winter time. → 08:00 Amsterdam both times. → AC-18
+- [ ] Trades and realized P&L yesterday: a position closed at 23:59 UTC counts toward that UTC day; one closed at 00:30 UTC the next day does not. → the count and P&L match `positions` for yesterday's UTC day only. → AC-18
+- [ ] Trader down minutes: a `trader_down` episode that opened more than 24 h ago and is still open (or resolved inside the window) counts only the part inside the last 24 h. → AC-18
+- [ ] Counts by tier: `daily` rows are left out; `test` rows still count. → the opened counts match `alerts` rows of the last 24 h minus the `daily` ones. → AC-18
+- [ ] Sent today: the marker is the `daily:<local date>` row in this `env`, whatever its delivery; a `failed` note row still blocks a second note and is retried by the 60 s cycle. → AC-18, AC-14
+
+### Acceptance criteria coverage (Part E)
+
+- AC-18 by every step above and Part B step 9 · AC-12 and AC-14 by the mute and failed marker checks
