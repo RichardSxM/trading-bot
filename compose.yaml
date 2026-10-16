@@ -121,6 +121,7 @@ services:
     secrets:
       - redis_trader_password
       - redis_dashboard_password
+      - redis_alerter_password
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -152,6 +153,7 @@ services:
       - postgres_trader_password
       - postgres_dashboard_password
       - postgres_backup_password
+      - postgres_alerter_password
       # Optional: without it the lab role is created NOLOGIN. compose.vps.yaml leaves it out.
       - postgres_lab_password
     depends_on:
@@ -382,6 +384,59 @@ services:
       start_period: 20s
     mem_limit: 256m
 
+  alerter:
+    # Phone alerts (spec 0013): turns the trader's heartbeat (and, in later milestones, the logs)
+    # into Pushover pushes, and pings healthchecks.io while it is healthy. ALERTS_DELIVERY=log
+    # (the laptop default) is a dry run: every push is logged, nothing is sent, no ping.
+    <<: *app
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: ${IMAGE_TARGET:-runtime}
+      args:
+        PACKAGE: alerter
+        APP_DIR: apps/alerter
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
+    image: ${KFS_IMAGE_PREFIX:-kfs/}alerter:${KFS_TAG:-${IMAGE_TARGET:-runtime}}
+    command: ["alerter"]
+    environment:
+      <<: [*base-env, *redis-env, *app-db-env]
+      PROCESS_NAME: alerter
+      POSTGRES_USER: alerter_app
+      REDIS_USERNAME: alerter
+      ALERTS_DELIVERY: ${ALERTS_DELIVERY:-log}
+      ALERTS_TRADER_DOWN_S: ${ALERTS_TRADER_DOWN_S:-45}
+      ALERTS_HOURLY_CAP: ${ALERTS_HOURLY_CAP:-30}
+      ALERTS_RENOTIFY_S: ${ALERTS_RENOTIFY_S:-3600}
+      ALERTS_CRITICAL_RENOTIFY_S: ${ALERTS_CRITICAL_RENOTIFY_S:-14400}
+      ALERTS_ENTRY_BLOCK_S: ${ALERTS_ENTRY_BLOCK_S:-3600}
+      ALERTS_DISK_FREE_GB: ${ALERTS_DISK_FREE_GB:-5}
+      ALERTS_DAILY_AT: ${ALERTS_DAILY_AT:-08:00}
+      ALERTS_DAILY_TZ: ${ALERTS_DAILY_TZ:-Europe/Amsterdam}
+    secrets:
+      - source: postgres_alerter_password
+        target: postgres_password
+      - source: redis_alerter_password
+        target: redis_password
+      # Loaded only with ALERTS_DELIVERY=pushover; placeholders on the laptop.
+      - pushover_app_token
+      - pushover_user_key
+      - hc_alerter_url
+    depends_on:
+      clock:
+        condition: service_healthy
+        required: false
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      <<: *node-healthcheck
+      start_period: 30s
+    mem_limit: 128m
+
   backup:
     # Nightly at BACKUP_AT_UTC: downsample_snapshots(), pg_dump, manifest, restic (spec 0005 AC-19).
     # The laptop keeps a local restic repository in the staging volume; the VPS sets a B2 one.
@@ -523,6 +578,16 @@ secrets:
     file: ${SECRETS_DIR:-./secrets}/redis_trader_password
   redis_dashboard_password:
     file: ${SECRETS_DIR:-./secrets}/redis_dashboard_password
+  postgres_alerter_password:
+    file: ${SECRETS_DIR:-./secrets}/postgres_alerter_password
+  redis_alerter_password:
+    file: ${SECRETS_DIR:-./secrets}/redis_alerter_password
+  pushover_app_token:
+    file: ${SECRETS_DIR:-./secrets}/pushover_app_token
+  pushover_user_key:
+    file: ${SECRETS_DIR:-./secrets}/pushover_user_key
+  hc_alerter_url:
+    file: ${SECRETS_DIR:-./secrets}/hc_alerter_url
   dashboard_password_hash:
     file: ${SECRETS_DIR:-./secrets}/dashboard_password_hash
   dashboard_totp_seed:
