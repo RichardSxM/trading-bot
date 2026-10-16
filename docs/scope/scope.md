@@ -172,6 +172,7 @@ code in [packages/core/src/trading_core/marketdata/context.py](../../packages/co
   - [x] Mark, index, basis: recording with silence gaps, basis on read, lab hour stream with warmup and the look ahead test (AC-1, AC-2, AC-7, AC-8, AC-11, AC-13)
   - [x] Raw client: `websockets` actor for open interest and liquidations, parsers, dedupe, reconnect and idle watchdog, outages file and `reconnect` gaps, liquidation window (AC-3 to AC-8, AC-10, AC-11, AC-13)
   - [ ] Live read, Tardis history, deploy: trader actor, Tardis mark, index, open interest and the `--context` backfill, retention and boundary checks, the VPS 24 h check (AC-12, AC-15, AC-16, AC-17)
+  - [ ] Holes at a run's tail and a starved loop (amended 2026-10-16 from verify.md step 5): the open outage line, tail silence and tail `reconnect` through `done.json`, the `context_feed_lagging` warning, deploy after spec 0012's AC-8 check, verify.md step 12 (AC-6, AC-7, AC-17, AC-18)
 - [ ] Verify it: `/check verify market context feed`
 - [x] Test it: `/test market context feed`
 - [x] Review it (fresh model): `/check review market context feed`

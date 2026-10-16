@@ -72,3 +72,30 @@ The feature's value is in the inputs that cannot be bought back later, and open 
 The `websockets` library was chosen over Nautilus's internal Rust websocket client because that client is an undocumented pyo3 internal with no stubs: it would need type ignores and could change at any Nautilus bump, against the project's pin discipline. `aiohttp` would pull a whole HTTP framework in for one socket.
 
 Two custom Nautilus data classes, rather than a side file, keep one write path, one rotation, and one compactor model, and let the backtest engine replay them to strategies through the same handlers as live. The gate proves this before anything is built on it, with the side file as a named fallback. One pure `ContextBook` keyed on `ts_init` is the core of the look ahead guarantee: replay and live run the very same fold, and a test compares a replay's view at time `t` with a fold of only the rows known by `t`. Basis is derived on read because mark and index arrive at different moments, and storing one pairing would bake in a rule that the reader can apply more honestly. Own funding is all or nothing per run so a result never mixes two cost bases.
+
+## Amendment 2026-10-16: holes at a run's tail and a starved event loop
+
+### Context
+
+On the first VPS day (verify.md step 5), the raw context socket went silent from 2026-10-15 13:58:56 UTC until the recorder restarted at 15:05:36, and the gap file had no row for it. `/debug` found two causes.
+
+First, the event loop was starved. Nautilus 1.231.0's `LiveDataEngine._run_data_queue` reads its queue with `await queue.get()`, which returns at once, without letting any other task run, while the queue holds items. Kraken's adapter fills that queue from its own thread, and the old per message writer (spec 0012's cause) kept it full at busy hours. So the feed's 30 s idle timer and its reconnect timeouts could not fire. The evidence: the open interest lag (`ts_init − ts_event`) grew from 0.2 s to 105 s before each outage that day, and a small asyncio repro with a full queue fired a 1 s timer zero times in 6 s. Since spec 0012 deployed (4d55abd), the longest open interest gap has been 3.8 s, but the way the loop is shared has not changed.
+
+Second, the gap rules as written could not see it. The feed wrote an outage line only on recovery, and `silence` was found only between two rows of one run. An outage still open when the run ended left no trace. Worse, with the loop starved, even `context_feed_down` may never have fired.
+
+### Options considered
+
+**For the tail hole:**
+- **An open outage line only.** Write the line at `down`, close it at the run's end. Pro: gives the raw streams their `reconnect` gap. Con: a starved feed may never reach `down`, which is the 2026-10-15 case.
+- **A tail silence only.** The compactor alone, from a stream's last row to the run's end. Pro: needs nothing from the feed, so it catches a starved feed. Con: liquidations get no `silence` gaps (quiet spells are normal), so a dead liquidation feed at the tail goes unrecorded.
+- **Both (chosen).** Each covers the other's blind spot, and both end at the run's end, so they never fight with `recorder_down`. A cross check asked whether the tail silence alone would do, since a starved feed never writes the open line anyway. It would not: a normal drop still open at a restart (Kraken maintenance followed by an autoheal restart, as on 2026-10-15 at 07:00) leaves liquidations with no other record.
+
+**For the starvation:**
+- **A lag warning (chosen).** Cheap, pure, in both nodes, and the lag grew for about 10 minutes before each outage, so it is an early sign. Con: it only tells you, and it stops nothing. It is measured as each message is handled, so a loop that stalls completely logs nothing at all. That hole is what the compactor's tail silence records, from outside the node.
+- **Write it down only.** Rely on spec 0012's per minute queue stats. Con: nothing in the context feed itself would show it, and the trader has no such stats.
+- **Run the feed on its own thread and loop.** The idle timer would fire, but publishing has to go back to the starved main loop (the message bus is not thread safe), so rows would pile up anyway. Con: more moving parts, no real gain.
+- **Patch Nautilus's queue reader to yield.** Fixes the root cause. Con: against the exact pin discipline, and every Nautilus bump would carry the patch. Reported upstream instead (Follow-up).
+
+### Rationale
+
+The rule that matters is that every hole is on record (spec 0007's whole gap model rests on it), so both tail rules go in: the one that cannot be starved (the compactor's tail silence) and the one that covers liquidations (the open line). The run's end is taken from the book's `recorder_down` start because that is the one timestamp both the book and the context agree marks the end, and touching (not overlapping) it keeps both gaps under the existing overlap rule. The root cause of the starvation is in Nautilus and is already relieved by spec 0012, so this spec only makes it visible: a 10 s lag limit is far above today's worst spike (3.7 s) and far below the 105 s seen before the hole.
