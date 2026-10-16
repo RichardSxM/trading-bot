@@ -33,6 +33,7 @@ from trading_core.alerts.rules import (
     DASHBOARD,
     DEPLOY,
     ENTRY_BLOCK,
+    FILL,
     HOST,
     LOGIN_BURST_COUNT,
     LOGIN_BURST_WINDOW_S,
@@ -50,6 +51,8 @@ from trading_core.alerts.rules import (
 _RECENT_MAX: Final = 1000
 # The ``host.jsonl`` message that opens a deploy window (AC-11).
 DEPLOY_STARTED: Final = "deploy started"
+# Fills push only from this env (AC-8).
+LIVE: Final = "live"
 _HELD: Final = frozenset({Delivery.HELD, Delivery.MUTED})
 
 EpisodeKey = tuple[str, datetime]
@@ -179,7 +182,8 @@ class AlertEngine:
 
         A pair rule's partner code resolves that rule's open episode from the same source. A
         repeat of an open fingerprint, whatever rule matched it, bumps ``occurrences`` and
-        ``last_seen_at`` and pushes nothing (AC-9). A deploy's ``host.jsonl`` start line and its
+        ``last_seen_at`` and pushes nothing (AC-9). A fill line counts only in ``live``
+        (AC-8). A deploy's ``host.jsonl`` start line and its
         ``deploys.jsonl`` outcome line also open and close the deploy window (AC-11).
         """
         now = _utc(obs.at)
@@ -196,7 +200,7 @@ class AlertEngine:
         if rule is None and self._login_burst(obs, now):
             rule = self._rules.get(LOGIN_FAILED_BURST.id)
             obs = replace(obs, fields={**obs.fields, "count": len(self._logins)})
-        if rule is None:
+        if rule is None or (rule.id == FILL.id and self._config.env != LIVE):
             return Decision()
         fingerprint = rule.key(obs) if rule.key is not None else rule.fingerprint()
         current = self._open.get(fingerprint)

@@ -253,6 +253,14 @@ class ControlCmd(StrEnum):
     UNPAUSE = "unpause"
 
 
+class AlertCmd(StrEnum):
+    """Command the dashboard sends the alerter over the ``control:alerts`` stream (spec 0013)."""
+
+    MUTE = "alerts_mute"
+    UNMUTE = "alerts_unmute"
+    TEST = "alerts_test"
+
+
 class ControlSource(StrEnum):
     """Who sent a control command: you from the dashboard or the command line, or a deploy (spec 0005, 0010)."""
 

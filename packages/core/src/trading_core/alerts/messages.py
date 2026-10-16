@@ -7,6 +7,7 @@ redaction registry.
 import re
 from collections.abc import Mapping, Sequence
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from typing import Final
 
 from trading_core.alerts.model import Episode, HoldKind, Tier
@@ -82,6 +83,8 @@ def log_line(
         return f"Engine error on {service}", text or ""
     if rule_id == "login_failed_burst":
         return "Dashboard login failures", f"{fields.get('count', '?')} failed logins within 10 min, all clients."
+    if rule_id == "fill":
+        return fill(fields)
     event_key = str(fields.get("event_key") or "")
     if rule_id in _RISK_RULES:
         head = words(event_key.split(":", 1)[0] if event_key else (code or rule_id))
@@ -90,6 +93,64 @@ def log_line(
     parts = [str(fields.get("msg") or "")]
     parts += [f"{name}={fields[name]}" for name in _BODY_FIELDS if fields.get(name) not in (None, "")]
     return head, " ".join(p for p in parts if p)
+
+
+# The ``fills`` and ``instruments`` columns the alerter adds to a ``fill_seen`` line (AC-8).
+FILL_FIELDS: Final = (
+    "instrument_id",
+    "side",
+    "quantity",
+    "price",
+    "fee",
+    "fee_currency",
+    "base_currency",
+    "lot_size",
+    "tick_size",
+)
+_SIDE_WORDS: Final = {"buy": "Bought", "sell": "Sold"}
+
+
+def fill(fields: Mapping[str, object]) -> tuple[str, str]:
+    """Title text and body of a live fill: "Bought 0.0010 BTC at 67,412.5, fee 0.02 USD" (AC-8).
+
+    Quantity and price take the instrument's lot and tick precision. Without the fills row (the
+    lookup found none in time), the body is "fill <trade_id>".
+    """
+    trade_id = str(fields.get("trade_id") or "?")
+    instrument = str(fields.get("instrument_id") or "")
+    head = f"Fill {instrument}" if instrument else "Fill"
+    try:
+        side = _SIDE_WORDS[str(fields["side"])]
+        quantity = _step(_decimal(fields["quantity"]), _decimal(fields["lot_size"]))
+        price = _step(_decimal(fields["price"]), _decimal(fields["tick_size"]))
+        fee = _decimal(fields["fee"])
+        base, fee_currency = str(fields["base_currency"]), str(fields["fee_currency"])
+    except KeyError, InvalidOperation:
+        return head, f"fill {trade_id}"
+    return head, f"{side} {quantity:f} {base} at {price:,f}, fee {_places(fee, _decimals(fee), 2):f} {fee_currency}"
+
+
+def _decimal(value: object) -> Decimal:
+    if isinstance(value, bool) or not isinstance(value, str | int | Decimal):
+        raise InvalidOperation(f"not a decimal: {value!r}")
+    parsed = Decimal(value)
+    if not parsed.is_finite():
+        raise InvalidOperation(f"not a finite decimal: {value!r}")
+    return parsed
+
+
+def _decimals(value: Decimal) -> int:
+    """How many decimals ``value`` needs (none for a whole number)."""
+    return max(0, -int(value.normalize().as_tuple().exponent))
+
+
+def _places(value: Decimal, places: int, at_least: int = 0) -> Decimal:
+    return value.quantize(Decimal(1).scaleb(-max(places, at_least)))
+
+
+def _step(value: Decimal, step: Decimal) -> Decimal:
+    """``value`` with as many decimals as ``step`` has."""
+    return _places(value, _decimals(step))
 
 
 def check(rule_id: str, subject: str | None, fields: Mapping[str, object]) -> tuple[str, str]:

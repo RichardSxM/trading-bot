@@ -1,5 +1,6 @@
-"""covers: spec 0013 AC-9 (one open episode per fingerprint, restart load), AC-14 (failed rows for the
-retry cycle), and the ``alerts`` write rules: saves only move forward, a resolved row never reopens.
+"""covers: spec 0013 AC-8 (the fill lookup and its grants), AC-9 (one open episode per fingerprint, restart
+load), AC-14 (failed rows for the retry cycle), and the ``alerts`` write rules: saves only move forward, a
+resolved row never reopens.
 
 Runs as ``alerter_app``, the role the alerter starts with, so its grants are checked too.
 """
@@ -7,6 +8,7 @@ Runs as ``alerter_app``, the role the alerter starts with, so its grants are che
 from collections.abc import Iterator
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 import pytest
 from sqlalchemy import Engine, create_engine, pool, text
@@ -14,7 +16,9 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from trading_core.alerts.model import Delivery, Episode, Tier
 from trading_core.db_roles import ALERTER_ROLE
+from trading_core.recording import repository
 from trading_core.recording.alerts import AlertRepository
+from trading_core.recording.enums import OrderOrigin
 from trading_core.recording.errors import AlertConflictError, EnvMismatchError
 
 from .conftest import role_url
@@ -122,3 +126,25 @@ def test_the_alerter_cannot_delete_alerts(database, trading_env):
             session.execute(text("DELETE FROM alerts"))
     finally:
         engine.dispose()
+
+
+def test_fill_fields_reads_the_fill_and_its_instrument_as_alerter_app(repo, session, world):
+    order = world.order(decision_id=None, origin=OrderOrigin.RECONCILIATION)
+    repository.upsert_order(session, order)
+    fill = world.fill(order.client_order_id, quantity=Decimal("0.001"), price=Decimal("67412.5"))
+    repository.record_fill(session, fill)
+    session.commit()
+
+    fields = repo.fill_fields(fill.trade_id)
+
+    assert fields is not None
+    assert {k: fields[k] for k in ("side", "base_currency", "fee_currency", "lot_size", "tick_size")} == {
+        "side": "buy",
+        "base_currency": "BTC",
+        "fee_currency": "USD",
+        "lot_size": "0.0001",
+        "tick_size": "0.5",
+    }
+    assert Decimal(fields["quantity"]) == Decimal("0.001")
+    assert Decimal(fields["price"]) == Decimal("67412.5")
+    assert repo.fill_fields("T-not-stored") is None

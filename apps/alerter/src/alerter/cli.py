@@ -17,16 +17,13 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from alerter.delivery import Deliverer
 from alerter.main import deliverer, repository, serve
-from alerter.service import utc_now
+from alerter.service import ALL_TIERS, utc_now
 from alerter.settings import AlerterSettings, alerter_secrets, engine_config
 from alerter.store import EpisodeStore
 from trading_core.alerts.engine import AlertEngine
 from trading_core.alerts.model import Delivery, Tier
 from trading_core.boot import boot
 from trading_core.recording.errors import RecordingError
-
-# Loudest first, so the critical one is on the lock screen by the time you look.
-ALL_TIERS = (Tier.CRITICAL, Tier.WARNING, Tier.INFO)
 
 
 def _parser() -> argparse.ArgumentParser:

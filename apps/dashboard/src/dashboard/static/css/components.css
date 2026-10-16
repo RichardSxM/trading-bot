@@ -217,8 +217,8 @@ time[title] { text-decoration: underline dotted var(--edge); text-underline-offs
 .button--stop:active { background: var(--live); }
 .button:disabled, .button[aria-disabled="true"] { opacity: 0.45; cursor: not-allowed; }
 .button:disabled:hover { border-color: var(--edge); }
-.button--busy, .htmx-request .button--stop { cursor: progress; pointer-events: none; }
-.button--busy::after, .htmx-request .button--stop::after {
+.button--busy, .htmx-request .button--stop, .alerts-area__test.htmx-request .button { cursor: progress; pointer-events: none; }
+.button--busy::after, .htmx-request .button--stop::after, .alerts-area__test.htmx-request .button::after {
   content: ""; position: absolute; left: 8px; right: 8px; bottom: 6px; height: 2px; border-radius: var(--radius-2);
   background: currentColor; opacity: 0.8; transform-origin: left center;
   animation: busy-rule 900ms ease-in-out infinite alternate;
@@ -282,6 +282,9 @@ time[title] { text-decoration: underline dotted var(--edge); text-underline-offs
 .activity__count { margin-left: var(--space-4); color: var(--muted); font-weight: 400; }
 .activity__span { display: block; color: var(--faint); font-size: var(--type-caption-size); }
 .activity__outcome { grid-area: outcome; justify-self: end; text-align: right; }
+/* An alert episode (spec 0013 AC-16): its tier badge in the command column, title over its state. */
+.activity__title { display: block; color: var(--text); }
+.activity__state { display: block; color: var(--muted); font-size: var(--type-caption-size); }
 @media (min-width: 600px) {
   /* The command column fits its longest word ("unknown entry") and a count ("stop ×20") on one line. */
   .activity__row { grid-template-columns: 11.5rem 7.5rem 1fr; grid-template-areas: "time cmd outcome"; }
@@ -393,6 +396,20 @@ time[title] { text-decoration: underline dotted var(--edge); text-underline-offs
 .pause-area__error { flex-basis: 100%; color: var(--loss); font-weight: 600; font-size: var(--type-caption-size); }
 .pause-area__note { flex-basis: 100%; color: var(--muted); font-size: var(--type-caption-size); }
 .pause-area__confirm { flex-basis: 100%; margin: 0; font-weight: 600; }
+
+/* ---------- Phone alert controls on Overview (spec 0013 AC-12, AC-16) ---------- */
+.activity-mute { margin-left: auto; }
+.alerts-area {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-8) var(--space-12);
+  margin: 0 0 var(--space-16); padding: 0 0 var(--space-16); border-bottom: 1px solid var(--rule);
+}
+.alerts-area__mute { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-4) var(--space-8); margin: 0; }
+.alerts-area__label { color: var(--muted); font-size: var(--type-label-size); font-weight: var(--type-label-weight); }
+.alerts-area__choices { display: flex; flex-wrap: wrap; gap: var(--space-4); }
+.alerts-area__test { margin: 0 0 0 auto; }
+.alerts-area__error { flex-basis: 100%; color: var(--loss); font-weight: 600; font-size: var(--type-caption-size); }
+.alerts-area__note { flex-basis: 100%; color: var(--text); font-size: var(--type-caption-size); }
+.alerts-area__hint { flex-basis: 100%; margin: 0; color: var(--muted); font-size: var(--type-caption-size); }
 
 /* The alert bar (AC-21): one full width line under the top bar, only while something is wrong. */
 .alert-bar { grid-column: 1 / -1; margin: 0 calc(-1 * var(--space-16)) calc(-1 * var(--space-8)); }

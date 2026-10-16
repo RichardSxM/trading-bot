@@ -76,7 +76,8 @@ async def render_page(
 
     ``path`` marks the current nav item (the request path when None). ``errors`` renders a
     control area in its ``NOT sent`` state after a plain form post failed: ``stop_error`` for the
-    stop, ``pause_error`` for Pause, Resume, and Flatten. ``confirm`` (``resume`` or ``flatten``)
+    stop, ``pause_error`` for Pause, Resume, and Flatten, ``alerts_error`` for the alert controls
+    (whose ``alerts_note`` says what a plain form post did). ``confirm`` (``resume`` or ``flatten``)
     renders the Trading area in that command's confirm step. ``live`` replaces the Redis read with these
     partials (a failed send already proved Redis down). ``data`` is the page's own context; when
     None, Trades reads its first pages and other pages take ``PAGE_DATA``.
@@ -100,6 +101,8 @@ async def render_page(
             "session_end": session_end_cue(context, session),
             "stop_error": (errors or {}).get("stop_error"),
             "pause_error": (errors or {}).get("pause_error"),
+            "alerts_error": (errors or {}).get("alerts_error"),
+            "alerts_note": (errors or {}).get("alerts_note"),
             "confirm": confirm,
             # Rendered by our own autoescaping templates.
             "live": {name: Markup(html) for name, html in partials.items()},

@@ -61,12 +61,13 @@ LAB_TABLES = {
 }
 
 
-# The alerter (spec 0013): reads and writes alerts (no DELETE), reads fills and positions.
+# The alerter (spec 0013): reads and writes alerts (no DELETE), reads fills, their instruments, and positions.
 ALERTER_GRANTS = {
     ("alerts", "SELECT"),
     ("alerts", "INSERT"),
     ("alerts", "UPDATE"),
     ("fills", "SELECT"),
+    ("instruments", "SELECT"),
     ("positions", "SELECT"),
 }
 

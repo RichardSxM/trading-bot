@@ -17,6 +17,8 @@ STOP_PATH: Final = "/control/stop"
 PAUSE_PATH: Final = "/control/pause"
 RESUME_PATH: Final = "/control/resume"
 FLATTEN_PATH: Final = "/control/flatten"
+ALERTS_MUTE_PATH: Final = "/alerts/mute"
+ALERTS_TEST_PATH: Final = "/alerts/test"
 # Which command a POST without a session lost, for the login page's notice (spec 0005 AC-13, spec 0010 AC-18).
 LOST_COMMANDS: Final = {PAUSE_PATH: "pause", RESUME_PATH: "resume", FLATTEN_PATH: "flatten"}
 CSRF_HEADER: Final = "x-csrf-token"

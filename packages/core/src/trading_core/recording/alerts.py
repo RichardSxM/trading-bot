@@ -12,9 +12,10 @@ from sqlalchemy import RowMapping, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session, sessionmaker
 
+from trading_core.alerts.messages import FILL_FIELDS
 from trading_core.alerts.model import Delivery, Episode, Tier
 from trading_core.recording.errors import AlertConflictError
-from trading_core.recording.models import Alert
+from trading_core.recording.models import Alert, Fill, Instrument
 from trading_core.recording.repository import _check_env, _table
 from trading_core.settings import get_settings
 
@@ -82,6 +83,37 @@ class AlertRepository:
         )
         with self._sessions() as session:
             return [_episode(row) for row in session.execute(query).mappings()]
+
+    def fill_fields(self, trade_id: str) -> dict[str, str] | None:
+        """The ``fills`` row of ``trade_id`` and its instrument, as the fields a fill push names (AC-8).
+
+        Keys are ``messages.FILL_FIELDS``, values text. The newest row wins should two runs share
+        the trade id. None until the trader's writer has stored the fill.
+        """
+        env = get_settings().trading_env
+        fill, instrument = Fill, Instrument
+        query = (
+            select(
+                fill.instrument_id,
+                fill.side,
+                fill.quantity,
+                fill.price,
+                fill.fee,
+                fill.fee_currency,
+                instrument.base_currency,
+                instrument.lot_size,
+                instrument.tick_size,
+            )
+            .join(instrument, instrument.instrument_id == fill.instrument_id)
+            .where(fill.env == env, fill.trade_id == trade_id)
+            .order_by(fill.filled_at.desc())
+            .limit(1)
+        )
+        with self._sessions() as session:
+            row = session.execute(query).first()
+        if row is None:
+            return None
+        return {name: str(value) for name, value in zip(FILL_FIELDS, row, strict=True)}
 
     def ping(self) -> None:
         """``SELECT 1``; raises a SQLAlchemy error when Postgres is unreachable (spec 0013 AC-4)."""

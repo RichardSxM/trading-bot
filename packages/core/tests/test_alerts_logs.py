@@ -255,3 +255,60 @@ def test_test_pushes_ignore_the_cap():
     decision = engine.test_episodes("cmd", [Tier.WARNING, Tier.INFO], NOW)
 
     assert len(decision.pushes) == 2
+
+
+FILL_ROW = {
+    "instrument_id": "PF_XBTUSD.KRAKEN",
+    "side": "buy",
+    "quantity": "0.001",
+    "price": "67412.5",
+    "fee": "0.02",
+    "fee_currency": "USD",
+    "base_currency": "BTC",
+    "lot_size": "0.0001",
+    "tick_size": "0.5",
+}
+
+
+def test_a_live_fill_is_one_silent_push_with_the_fills_row():
+    engine = AlertEngine(EngineConfig(env="live"))
+
+    decision = engine.observe(line("trader", "fill_seen", "INFO", trade_id="T-1", **FILL_ROW))
+
+    (episode,) = decision.store
+    (push,) = decision.pushes
+    assert (episode.fingerprint, episode.severity, push.tier) == ("fill:T-1", Tier.INFO, Tier.INFO)
+    assert episode.title == "[live] Fill PF_XBTUSD.KRAKEN"
+    assert episode.message == "Bought 0.0010 BTC at 67,412.5, fee 0.02 USD"
+
+
+def test_a_demo_fill_pushes_and_stores_nothing():
+    engine = AlertEngine(CONFIG)
+
+    decision = engine.observe(line("trader", "fill_seen", "INFO", trade_id="T-1", **FILL_ROW))
+
+    assert decision == Decision()
+
+
+def test_a_fill_seen_twice_is_one_episode():
+    engine = AlertEngine(EngineConfig(env="live"))
+    sent(engine, engine.observe(line("trader", "fill_seen", "INFO", trade_id="T-1")), NOW)
+
+    again = engine.observe(line("trader", "fill_seen", "INFO", at=NOW + timedelta(seconds=5), trade_id="T-1"))
+
+    assert again.pushes == ()
+    assert again.store[0].occurrences == 2
+
+
+def test_a_fill_without_its_row_names_the_trade_id():
+    engine = AlertEngine(EngineConfig(env="live"))
+
+    (push,) = engine.observe(line("trader", "fill_seen", "INFO", trade_id="T-9")).pushes
+
+    assert (push.title, push.message) == ("[live] Fill", "fill T-9")
+
+
+def test_a_fill_from_another_service_is_ignored():
+    engine = AlertEngine(EngineConfig(env="live"))
+
+    assert engine.observe(line("recorder", "fill_seen", "INFO", trade_id="T-1")) == Decision()

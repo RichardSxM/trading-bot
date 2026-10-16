@@ -9,7 +9,8 @@ import sys
 import pytest
 from pydantic import ValidationError
 
-from alerter.cli import ALL_TIERS, send_tests
+from alerter.cli import send_tests
+from alerter.service import ALL_TIERS
 from alerter.settings import AlerterSettings, alerter_secrets
 from trading_core.alerts.engine import AlertEngine, EngineConfig
 from trading_core.alerts.model import Delivery, Tier

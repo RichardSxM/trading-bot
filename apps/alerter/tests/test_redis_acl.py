@@ -42,6 +42,18 @@ def test_the_alerter_writes_its_own_keys_and_the_alert_stream(client):
     client.xlen("demo:control:alerts")
 
 
+def test_the_alerter_reads_the_alert_commands_in_its_group(client):
+    stream = "acltest:control:alerts"
+    client.delete(stream)
+    client.xgroup_create(stream, "alerter", id="0", mkstream=True)
+    client.xadd(stream, {"probe": "1"}, maxlen=1000, approximate=True)
+    reply = client.xreadgroup("alerter", "alerter", {stream: ">"}, count=10)
+    for _, entries in reply or []:
+        for entry_id, _ in entries:
+            client.xack(stream, "alerter", entry_id)
+    client.delete(stream)
+
+
 def test_the_alerter_keeps_its_log_cursors(client):
     key = "demo:alerts:cursor:acl-probe"
     client.set(key, "2026-10-16T03:00:00.000000000Z", ex=CURSOR_TTL_S)

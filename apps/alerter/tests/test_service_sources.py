@@ -24,15 +24,15 @@ class FakeWatchdog:
         return True
 
 
-def make(tmp_path, docker: FakeDocker, *, watchdog=None):
+def make(tmp_path, docker: FakeDocker, *, watchdog=None, env="demo", sleep=None):
     clock = Clock()
-    engine = AlertEngine(EngineConfig(env="demo"))
+    engine = AlertEngine(EngineConfig(env=env))
     store = FakeStore()
     redis = FakeRedis()
     watch, _, _, _ = make_watch(docker, redis, clock)
     deliverer = FakeDeliverer()
     alerter = Alerter(
-        env="demo",
+        env=env,
         engine=engine,
         deliverer=deliverer,
         store=StoreWriter(store, engine, clock, retry_s=0),
@@ -42,6 +42,7 @@ def make(tmp_path, docker: FakeDocker, *, watchdog=None):
         docker=watch,
         clock=clock,
         liveness_file=tmp_path / "alive",
+        **({} if sleep is None else {"sleep": sleep}),
     )
     return alerter, clock, deliverer, store, redis
 

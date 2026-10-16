@@ -72,3 +72,20 @@ def ts(value: object) -> Markup:
     return Markup('<time datetime="{}" title="{}, Amsterdam">{}</time>').format(
         moment.strftime("%Y-%m-%dT%H:%M:%SZ"), local, moment.strftime("%Y-%m-%d %H:%M:%SZ")
     )
+
+
+def local_hm(value: object) -> Markup:
+    """An aware ``datetime`` as Amsterdam ``HH:MM`` in a ``<time>``, with the UTC time in its ``title``.
+
+    Only the mute badge shows local time, as spec 0013 AC-16 asks; everything else uses ``ts``.
+    """
+    if not isinstance(value, datetime):
+        raise TypeError(f"expected a datetime, got {type(value).__name__}")
+    if value.utcoffset() is None:
+        raise ValueError("naive datetime: every time must be timezone aware UTC")
+    moment = value.astimezone(UTC).replace(microsecond=0)
+    return Markup('<time datetime="{}" title="{} UTC">{}</time>').format(
+        moment.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        moment.strftime("%H:%M:%SZ"),
+        moment.astimezone(AMSTERDAM).strftime("%H:%M"),
+    )

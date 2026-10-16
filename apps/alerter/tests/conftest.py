@@ -60,6 +60,8 @@ class FakeStore:
         self.rows: dict[tuple[str, datetime], Episode] = {(e.fingerprint, e.opened_at): e for e in stored or []}
         self.saves: list[Episode] = []
         self.down = False
+        self.fills: dict[str, dict[str, str]] = {}
+        self.fill_reads: list[str] = []
 
     def _check(self) -> None:
         if self.down:
@@ -75,6 +77,11 @@ class FakeStore:
 
     def ping(self) -> None:
         self._check()
+
+    def fill_fields(self, trade_id: str) -> dict[str, str] | None:
+        self.fill_reads.append(trade_id)
+        self._check()
+        return self.fills.get(trade_id)
 
     def load_active(self, failed_since: datetime) -> list[Episode]:
         self._check()
@@ -108,3 +115,54 @@ class FakeRedis:
         self.values[name] = value
         self.ttls[name] = ex
         return True
+
+    async def delete(self, *names: str) -> int:
+        self._check()
+        gone = [n for n in names if n in self.values]
+        for name in gone:
+            del self.values[name]
+            self.ttls.pop(name, None)
+        return len(gone)
+
+
+class FakeStreams(FakeRedis):
+    """``FakeRedis`` plus the stream calls of one consumer group per stream (RESP2 shaped replies)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.streams: dict[str, list[tuple[str, dict[str, str]]]] = {}
+        self.delivered: dict[str, set[str]] = {}
+        self.acked: dict[str, set[str]] = {}
+
+    def append(self, name: str, fields: dict[str, str]) -> str:
+        entries = self.streams.setdefault(name, [])
+        entry_id = f"{len(entries) + 1}-0"
+        entries.append((entry_id, dict(fields)))
+        return entry_id
+
+    async def xgroup_create(self, name: str, groupname: str, id: str, mkstream: bool) -> bool:
+        self._check()
+        self.streams.setdefault(name, [])
+        return True
+
+    async def xreadgroup(self, groupname, consumername, streams, count=None, block=None):
+        self._check()
+        ((name, start),) = streams.items()
+        delivered = self.delivered.setdefault(name, set())
+        acked = self.acked.setdefault(name, set())
+        if start == "0":
+            entries = [(i, f) for i, f in self.streams.get(name, []) if i in delivered and i not in acked]
+        else:
+            entries = [(i, f) for i, f in self.streams.get(name, []) if i not in delivered]
+            delivered.update(i for i, _ in entries)
+        entries = entries[:count] if count else entries
+        return [[name, entries]] if entries else []
+
+    async def xadd(self, name, fields, id="*", maxlen=None, approximate=True) -> str:
+        self._check()
+        return self.append(name, {str(k): str(v) for k, v in fields.items()})
+
+    async def xack(self, name: str, groupname: str, *ids: str) -> int:
+        self._check()
+        self.acked.setdefault(name, set()).update(ids)
+        return len(ids)

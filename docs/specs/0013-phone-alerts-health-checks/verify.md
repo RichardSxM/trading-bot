@@ -59,3 +59,35 @@ These steps fake the VPS's `/var/log/kfs` so you can check the host side without
 ### Acceptance criteria coverage (Part C)
 
 - AC-2 by the host ping gating test · AC-4 by host criticals, disk low, and Commands 3 and 5 · AC-5 by the backup run and the sequence grant test · AC-6 by the deploy window step, silent resolves, and the since checks · AC-7 by the compactor test · AC-11 by the deploy window, no replay, and the start time check
+
+## Part D: Milestone 4 tasks 4.1 to 4.3 (fills, alert commands, dashboard) · added 2026-10-16
+
+_The laptop half runs in dry run with `alerter dashboard` up (no trader or recorder needed). To send a command without the dashboard login, XADD it as the `dashboard` Redis user from inside the dashboard container (a short script using `trading_core.control.alerts.alert_command` and `command_to_fields`)._
+
+### UI / manual
+
+- [ ] **Mute holds warnings, never criticals.** On Overview, tap Mute warnings · 1 h. → the alert area says "Mute for 1 h sent", then the Activity head shows "Warnings muted until HH:MM" in Amsterdam time (UTC in the tooltip). A warning while muted gets `delivery=muted` and no `alert_dry_run` line; a critical still logs `alert_dry_run`. → AC-12, AC-16
+- [ ] **Unmute sends one summary.** With a warning still open under the mute, tap Unmute. → the badge goes away and one warning "N warnings while muted" listing its title is pushed (or logged). → AC-12
+- [ ] **A mute that runs out.** Mute 1 h, then wait it out (or set the key's TTL short with redis-cli as the `alerter` user and restart the alerter). → the summary comes on its own and the badge hides once `until` is past. → AC-12, AC-16
+- [ ] **A mute survives an alerter restart.** Mute 4 h, then `docker compose restart alerter`. → the log has `alert_mute_restored` with the same `until`; warnings stay muted. → AC-12
+- [ ] **Test button.** Tap Send test alert. → within a few seconds "Test sent: one push per tier", three `test:<id>:<tier>` rows (critical, warning, info), even while muted. With the alerter stopped, the button says "no answer from the alerter" after 10 s. → AC-16
+- [ ] **Activity feed.** → the last 24 h of episodes sit between the commands by time, each with its tier badge, title (no `[demo]` tag), open or resolved, and the delivery word (`dry run` on the laptop). Stop Postgres: the commands stay and a row says "unavailable: Postgres did not answer". → AC-16
+- [ ] **VPS: a live fill.** In `live`, after a fill. → one silent push "Bought|Sold <qty> <base> at <price>, fee <fee> <currency>", quantity and price at the instrument's lot and tick precision. → AC-8
+
+### Commands
+
+- [ ] `docker compose run --rm migrate` then, as `trading`, `\dp instruments` → `alerter_app=r`. → AC-8
+- [ ] `docker compose run --rm -T migrate pytest -q -m integration tests/integration -k "fill_fields or privileges"` → the fill lookup as `alerter_app` reads the fill and its instrument, and the grant table matches. → AC-8
+- [ ] `docker compose run --rm --no-deps -T alerter pytest -q tests/test_fills.py tests/test_commands.py` → a live fill already stored pushes at once, one stored late is found on a later read, one never stored pushes its trade id after six reads over 10 s, a demo fill is never read or pushed; mute, unmute, replace, expiry summary, expired, `failed invalid`, test per tier, `push_failed`, restart restore. → AC-8, AC-12, AC-16
+- [ ] `docker compose run --rm -T dashboard pytest -q -m redis` and `docker compose run --rm -T alerter pytest -q -m redis` (after `docker compose up -d redis` picks up the ACL) → the dashboard appends to `*:control:alerts` and reads `*:control:alerts:results`, and is refused SET, DEL, and GET on `*:alerts:mute` and XADD on the results; the alerter reads the command stream in group `alerter`. → AC-12, AC-20
+- [ ] `docker compose run --rm --no-deps -T dashboard pytest -q tests/test_alerts_ui.py` → mute lengths 1, 4, 12, unmute 0, other lengths 422, CSRF refused 403, Redis down 503, the badge from the newest executed mute or unmute, the test answer, timeout, and failure, and the feed merge. → AC-12, AC-16
+
+### Value sourcing checks
+
+- [ ] Fill push values: vary `lot_size` (0.0001, 1) and `tick_size` (0.5, 1, 0.01). → quantity and price show exactly that many decimals; a fee of 0.0214 shows all four, a fee of 0.1 shows 0.10. → AC-8
+- [ ] Mute badge until: mute at 22:30 UTC in October (summer time) and in January. → the badge shows UTC+2 and UTC+1 Amsterdam times; the tooltip shows the UTC time. → AC-16
+- [ ] Mute end in the engine: the mute ends at the command's `issued_at` plus its length, also when the alerter reads it late. → AC-12
+
+### Acceptance criteria coverage (Part D)
+
+- AC-8 by the live fill step, the grant, the fill tests, and the precision check · AC-12 by the mute, unmute, expiry, restart steps and the command tests · AC-16 by the badge, test button, feed steps, and the dashboard tests · AC-20 by the ACL suites

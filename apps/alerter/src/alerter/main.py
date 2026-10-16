@@ -11,6 +11,7 @@ from redis.asyncio import Redis
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from alerter.commands import MuteKey
 from alerter.delivery import Deliverer, LogDelivery, PushoverDelivery
 from alerter.pushover import PushoverClient
 from alerter.service import Alerter, utc_now
@@ -119,6 +120,8 @@ async def serve(started: Boot[AlerterSettings]) -> None:
             host=host,
             disk_path=settings.alerts_host_log_dir if host is not None else None,
             disk_free_gb=settings.alerts_disk_free_gb,
+            control=redis,
+            mute=MuteKey(redis, settings.trading_env),
         )
         log.info(
             "alerter running",

@@ -147,7 +147,7 @@ class ControlConsumer:
         reply = await self._client.xreadgroup(
             GROUP, CONSUMER, streams, count=READ_COUNT, block=None if self._pending else BLOCK_MS
         )
-        entries = _entries(reply)
+        entries = stream_entries(reply)
         if self._pending and not entries:
             self._pending = False
         for entry_id, fields in entries:
@@ -271,7 +271,7 @@ def _text(value: object) -> str:
     raise RedisError(f"unexpected stream reply value {type(value).__name__}")
 
 
-def _entries(reply: object) -> list[tuple[str, Fields]]:
+def stream_entries(reply: object) -> list[tuple[str, Fields]]:
     """The ``(entry id, fields)`` pairs of an XREADGROUP reply (RESP2 list or RESP3 dict, one stream)."""
     if reply is None:
         return []

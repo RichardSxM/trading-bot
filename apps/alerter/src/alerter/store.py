@@ -38,6 +38,8 @@ class EpisodeStore(Protocol):
 
     def ping(self) -> None: ...
 
+    def fill_fields(self, trade_id: str) -> dict[str, str] | None: ...
+
 
 class StoreWriter:
     """Loads the stored episodes into the engine once, then writes every queued episode."""
@@ -117,6 +119,14 @@ class StoreWriter:
             )
             return False
         return True
+
+    async def fill_fields(self, trade_id: str) -> dict[str, str] | None:
+        """The fills row a fill push names (AC-8); None while it is not stored or Postgres is unavailable."""
+        try:
+            return await asyncio.to_thread(self._store.fill_fields, trade_id)
+        except SQLAlchemyError as exc:
+            log.warning("fill lookup failed", extra={"fields": {"code": "alert_fill_lookup_failed", "error": str(exc)}})
+            return None
 
     async def flush_one(self) -> bool:
         """Write the oldest queued episode; False (kept queued) when Postgres is unavailable."""

@@ -35,15 +35,15 @@ alerter=$(hash_of redis_alerter_password)
 
 # default: no login, PING only (the healthcheck and the apps' startup reachability probe).
 # trader: everything except admin commands and flushes (spec 0001: a FLUSHDB wipes both envs).
-# dashboard: read snapshot keys, read and append to the control stream, read control results,
-# nothing else (spec 0004 AC-14).
+# dashboard: read snapshot keys, read and append to the control stream and the alert command
+# stream, read their results, nothing else (spec 0004 AC-14, spec 0013 Security model).
 # alerter: read snapshot keys; read and write its own alert keys and the alert command stream
 # and its results (spec 0013 Security model); string, stream, and key commands, no admin.
 umask 077
 cat >"$acl" <<ACL
 user default on nopass resetkeys resetchannels -@all +ping
 user trader on #$trader ~* &* +@all -@admin -flushall -flushdb
-user dashboard on #$dashboard resetkeys resetchannels %R~*:snapshot:* %RW~*:control %R~*:control:results -@all +@read +xadd +ping +hello +auth +client|setname +client|setinfo
+user dashboard on #$dashboard resetkeys resetchannels %R~*:snapshot:* %RW~*:control %R~*:control:results %RW~*:control:alerts %R~*:control:alerts:results -@all +@read +xadd +ping +hello +auth +client|setname +client|setinfo
 user alerter on #$alerter resetkeys resetchannels %R~*:snapshot:* ~*:alerts:* ~*:control:alerts ~*:control:alerts:results -@all +@read +@string +@stream +del +expire +ping +hello +auth +client|setname +client|setinfo -@admin -@dangerous
 ACL
 chown redis:redis "$acl"

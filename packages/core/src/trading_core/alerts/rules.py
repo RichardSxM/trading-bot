@@ -3,8 +3,7 @@
 A log rule carries a matcher and a fingerprint function over one ``Observation``; the first rule
 whose matcher accepts a line wins and the rest are ignored. Condition rules are fed
 ``CheckResult``s by the alerter's checks instead. Host and ``deploys.jsonl`` lines carry no
-``code``, so their rules match a field. The fill row joins with its source (Build plan 4.1).
-Pure: no I/O.
+``code``, so their rules match a field. Pure: no I/O.
 """
 
 from collections.abc import Callable, Iterable, Mapping
@@ -263,6 +262,8 @@ ENGINE_ERROR: Final = Rule(
 )
 STALE_FEED: Final = _code_rule("stale_feed", Tier.WARNING, ["stale_feed"], services=_TRADER_ONLY)
 TRADE_CAP: Final = Rule("trade_cap", Tier.INFO, RuleKind.EVENT, source="log", matches=_trade_cap, key=_event_key)
+# Live only: the engine drops it in demo (AC-8). The alerter adds the fills row's fields first.
+FILL: Final = _code_rule("fill", Tier.INFO, ["fill_seen"], services=_TRADER_ONLY, key=_subject("fill", "trade_id"))
 ALERT_STORM: Final = Rule("alert_storm", Tier.WARNING, RuleKind.INTERNAL, source="self")
 SUMMARY: Final = Rule("summary", Tier.WARNING, RuleKind.INTERNAL, source="self")
 # A test push takes the tier it tests; ``tier`` here is only the default.
@@ -297,6 +298,7 @@ RULES: Final[tuple[Rule, ...]] = (
     ENGINE_ERROR,
     STALE_FEED,
     TRADE_CAP,
+    FILL,
     ALERT_STORM,
     SUMMARY,
     TEST,

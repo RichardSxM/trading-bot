@@ -114,12 +114,8 @@ PROMISES: Final[tuple[Promise, ...]] = (
     _line("0012", "recorder_writer_busy", "recorder_codes", "recorder", "WARNING"),
     _line("0012", "recorder_flush_slow", "recorder_codes", "recorder", "WARNING"),
     Promise("review 2026-10-11", "recorder engine ERROR line", "engine_error", "recorder", text="[ERROR] RECORDER: x"),
-    Promise("scope", "fills", "fill"),
+    _line("scope", "fill_seen", "fill", "trader", "INFO", trade_id="T-1"),
 )
 
-PENDING: Final[Mapping[str, str]] = MappingProxyType(
-    {
-        "fill": "live fill pushes, Build plan 4.1",
-    }
-)
+PENDING: Final[Mapping[str, str]] = MappingProxyType({})
 """Promised rules not in the table yet, with what adds them; each entry leaves when its rule lands."""

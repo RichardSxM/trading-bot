@@ -1,5 +1,5 @@
 """The alerter's loops (spec 0013): heartbeat, entry blocks, logs, host lines, containers, disk,
-Postgres, tick, retry, store, ping, and the liveness file.
+Postgres, tick, retry, store, ping, the liveness file, and the alert commands.
 
 Every loop runs supervised: a crash logs ``alerter_task_crashed`` and restarts it. Pushes run as
 their own tasks, so a push retrying for two minutes never stalls a check.
@@ -7,15 +7,17 @@ their own tasks, so a push retrying for two minutes never stalls a check.
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from collections.abc import Awaitable, Callable, Coroutine
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Final
 
 from redis.exceptions import RedisError
 
-from alerter.delivery import Deliverer
+from alerter.commands import AlertCommands, MuteKey
+from alerter.delivery import Deliverer, Outcome
 from alerter.sources.containers import container_checks
 from alerter.sources.disk import free_bytes
 from alerter.sources.docker_api import DockerApiError
@@ -25,9 +27,12 @@ from alerter.sources.redis_state import SnapshotReader, heartbeat_ts, trader_blo
 from alerter.store import StoreWriter
 from alerter.watchdog import Watchdog
 from trading_core.alerts.checks import disk_check, entry_block_checks, heartbeat_check, reachable
-from trading_core.alerts.engine import AlertEngine
-from trading_core.alerts.model import Decision, Delivery, Push
-from trading_core.alerts.rules import POSTGRES_UNREACHABLE, REDIS_UNREACHABLE
+from trading_core.alerts.engine import LIVE, AlertEngine
+from trading_core.alerts.model import Decision, Delivery, Hold, HoldKind, Observation, Push, Tier
+from trading_core.alerts.rules import FILL, POSTGRES_UNREACHABLE, REDIS_UNREACHABLE, text_field
+from trading_core.control.alerts import AlertCommand, AlertResult
+from trading_core.control.consumer import ControlRedis
+from trading_core.recording.enums import AlertCmd, ControlOutcome
 from trading_core.settings import TradingEnv
 from trading_core.snapshot.envelope import snapshot_key
 
@@ -46,6 +51,11 @@ PING_S: Final = 60.0
 # The watchdog pings only while the Redis read and the log pass succeeded this recently (AC-2).
 SOURCE_FRESH_S: Final = 60.0
 LIVENESS_S: Final = 10.0
+# A live fill's row is looked up every 2 s for up to 10 s (AC-8): six reads.
+FILL_LOOKUP_S: Final = 2.0
+FILL_LOOKUPS: Final = 6
+# Test pushes, loudest first, so the critical one is on the lock screen by the time you look.
+ALL_TIERS: Final = (Tier.CRITICAL, Tier.WARNING, Tier.INFO)
 RESTART_AFTER_S: Final = 5.0
 DEFAULT_LIVENESS_FILE: Final = Path("/run/heartbeat/alive")
 
@@ -76,7 +86,12 @@ class Alerter:
         disk_free_gb: Decimal = Decimal(5),
         clock: Clock = utc_now,
         liveness_file: Path = DEFAULT_LIVENESS_FILE,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        control: ControlRedis | None = None,
+        mute: MuteKey | None = None,
     ) -> None:
+        self._env = env
+        self._sleep = sleep
         self._engine = engine
         self._deliverer = deliverer
         self._store = store
@@ -95,7 +110,9 @@ class Alerter:
         self._redis_ok_at: datetime | None = None
         self._started_at = clock()
         self._note_failed = False
-        self._pushes: set[asyncio.Task[None]] = set()
+        self._pushes: set[asyncio.Task[object]] = set()
+        self._mute = mute
+        self._commands = None if control is None else AlertCommands(control, env, self.execute, clock)
 
     # One step of each loop (the tests drive these) --------------------------------------------
 
@@ -168,7 +185,29 @@ class Alerter:
             log.warning("log pass failed", extra={"fields": {"code": "alerter_logs_failed", "error": str(exc)}})
             return
         for observation in observations:
-            self.apply(self._engine.observe(observation))
+            if self._env == LIVE and FILL.matches is not None and FILL.matches(observation):
+                self._spawn(self.observe_fill(observation))
+            else:
+                self.apply(self._engine.observe(observation))
+
+    async def observe_fill(self, obs: Observation) -> None:
+        """A live ``fill_seen`` line with its ``fills`` row (AC-8): looked up every 2 s for up to 10 s.
+
+        The trader logs the line before its writer stores the row. Without the row in time, the
+        push names only the trade id.
+        """
+        trade_id = text_field(obs, "trade_id")
+        row = None
+        for attempt in range(FILL_LOOKUPS):
+            if attempt:
+                await self._sleep(FILL_LOOKUP_S)
+            row = await self._store.fill_fields(trade_id)
+            if row is not None:
+                break
+        if row is None:
+            log.warning("fill row not found", extra={"fields": {"code": "alert_fill_missing", "trade_id": trade_id}})
+        fields = obs.fields if row is None else {**obs.fields, **row}
+        self.apply(self._engine.observe(replace(obs, fields=fields)))
 
     async def check_containers(self) -> None:
         """``service_down`` and ``container_unhealthy`` from the listing; restarts resolve pair episodes (AC-4)."""
@@ -228,24 +267,78 @@ class Alerter:
 
     # Decisions -------------------------------------------------------------------------------
 
-    def apply(self, decision: Decision) -> list[asyncio.Task[None]]:
+    def apply(self, decision: Decision) -> list[asyncio.Task[object]]:
         """Queue the decision's episodes for storage and start one task per push."""
         for episode in decision.store:
             self._store.put(episode)
-        tasks = []
-        for push in decision.pushes:
-            task = asyncio.create_task(self.deliver(push))
-            self._pushes.add(task)
-            task.add_done_callback(self._pushes.discard)
-            tasks.append(task)
-        return tasks
+        return [self._spawn(self.deliver(push)) for push in decision.pushes]
 
-    async def deliver(self, push: Push) -> None:
+    def _spawn(self, work: Coroutine[object, object, object]) -> asyncio.Task[object]:
+        """Run ``work`` as its own task, kept until it finishes."""
+        task = asyncio.create_task(work)
+        self._pushes.add(task)
+        task.add_done_callback(self._pushes.discard)
+        return task
+
+    async def deliver(self, push: Push) -> Outcome:
         """Send one push and record its outcome on the episode."""
         outcome = await self._deliverer.send(push)
         self._note_failed = outcome.delivery is Delivery.FAILED
         for updated in self._engine.record(push, outcome.delivery, self._clock()):
             self._store.put(updated)
+        return outcome
+
+    # Alert commands (AC-12, AC-16) -----------------------------------------------------------
+
+    async def execute(self, msg: AlertCommand) -> AlertResult:
+        """Run one alert command.
+
+        A mute holds warning and info pushes until ``issued_at`` plus its length, replacing any
+        mute before it; an unmute ends it, and the warnings it held that are still open go out as
+        one summary. A test sends one marked push per tier through the delivery path and fails
+        with ``push_failed`` when any of them failed.
+        """
+        now = self._clock()
+        if msg.cmd is AlertCmd.MUTE and msg.mute_s is not None:
+            until = msg.issued_at + timedelta(seconds=msg.mute_s)
+            if self._mute is not None:
+                await self._mute.set(until, msg.id, now)
+            self.apply(self._engine.open_hold(Hold(HoldKind.MUTE, f"mute:{msg.id}", now, until)))
+            return AlertResult(msg.id, ControlOutcome.EXECUTED, self._clock(), msg.cmd, until=until)
+        if msg.cmd is AlertCmd.UNMUTE:
+            if self._mute is not None:
+                await self._mute.clear()
+            self.apply(self._engine.close_hold(HoldKind.MUTE, now))
+            return AlertResult(msg.id, ControlOutcome.EXECUTED, self._clock(), msg.cmd)
+        decision = self._engine.test_episodes(str(msg.id), ALL_TIERS, now)
+        for episode in decision.store:
+            self._store.put(episode)
+        outcomes = [await self.deliver(push) for push in decision.pushes]
+        if any(o.delivery is Delivery.FAILED for o in outcomes):
+            return AlertResult(msg.id, ControlOutcome.FAILED, self._clock(), msg.cmd, "push_failed")
+        return AlertResult(msg.id, ControlOutcome.EXECUTED, self._clock(), msg.cmd)
+
+    async def restore_mute(self) -> None:
+        """Hold again under a mute stored before a restart, while it lasts and no mute is open."""
+        if self._mute is None:
+            return
+        stored = await self._mute.load()
+        now = self._clock()
+        if stored is None or stored[0] <= now or any(h.kind is HoldKind.MUTE for h in self._engine.holds):
+            return
+        until, command_id = stored
+        self.apply(self._engine.open_hold(Hold(HoldKind.MUTE, f"mute:{command_id}", now, until)))
+        log.info(
+            "mute restored",
+            extra={"fields": {"code": "alert_mute_restored", "until": until.isoformat(), "id": str(command_id)}},
+        )
+
+    async def serve_commands(self) -> None:
+        """Restore a stored mute, then read the alert commands until cancelled."""
+        if self._commands is None:
+            return
+        await self.restore_mute()
+        await self._commands.run()
 
     # The process -----------------------------------------------------------------------------
 
@@ -266,6 +359,8 @@ class Alerter:
         ]
         async with asyncio.TaskGroup() as group:
             group.create_task(_supervise("store", self._store.run))
+            if self._commands is not None:
+                group.create_task(_supervise("commands", self.serve_commands))
             for name, step, every in loops:
                 group.create_task(_supervise(name, _every(step, every)))
 
