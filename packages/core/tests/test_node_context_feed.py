@@ -1,6 +1,7 @@
 """covers: spec 0009 AC-3 (subscribe, no credentials), AC-4 (nothing raised leaves the task), AC-5 (a
 resubscribe snapshot is not published twice), AC-6 (backoff, idle watchdog, down and up logs, one
-outage line from the last message before to the first after, a failed append only logged).
+outage line from the last message before to the first after, a failed append only logged), AC-18
+(the lag warning).
 
 Drives ``ContextFeed`` against a local fake websocket server; no Nautilus node needed.
 """
@@ -18,7 +19,7 @@ pytest.importorskip("websockets")
 
 from websockets.asyncio.server import serve
 
-from trading_core.marketdata.context_feed import ForcedTrade, parse_outages
+from trading_core.marketdata.context_feed import ForcedTrade, Outage, parse_outages
 from trading_core.node.context_feed import ContextFeed
 
 INFO = json.dumps({"event": "info", "version": 1})
@@ -130,7 +131,9 @@ def test_a_drop_reconnects_resubscribes_and_writes_one_outage(tmp_path, caplog):
     assert outage.reason == "closed"
     assert outage.start_ns == emitted[1][1]  # the last message before the drop
     assert outage.start_ns < outage.end_ns <= emitted[2][1]  # the first after it (the info event)
-    assert parse_outages(path.read_text().splitlines()) == ([outage], 0)
+    # The open line at down, then the closed line at up, paired by start_ns (amended AC-6).
+    opened = Outage(outage.start_ns, None, "closed")
+    assert parse_outages(path.read_text().splitlines()) == ([opened, outage], 0)
     assert [f["reason"] for f in _codes(caplog, "context_feed_down")] == ["closed"]
     (up,) = _codes(caplog, "context_feed_up")
     assert up["outage_s"] >= 0
@@ -211,8 +214,45 @@ def test_a_failed_outage_append_is_only_logged(tmp_path, caplog):
     )
 
     assert len(feed.outages) == 1
-    assert len(_codes(caplog, "context_outage_write_failed")) == 1
+    assert len(_codes(caplog, "context_outage_write_failed")) == 2  # the open line and the closed line
     assert feed.state == "subscribed"
+
+
+def test_an_outage_still_open_leaves_its_open_line(tmp_path):
+    """covers: spec 0009 AC-6 (amended: the open line is written on entering down)."""
+    server = Server([[INFO, ticker(), "close"], ["hang"]])
+    path = tmp_path / "context_outages.jsonl"
+
+    feed, emitted, _ = asyncio.run(
+        _run(server, lambda f, e, w: f.state == "down" and path.exists(), outages_path=lambda: path)
+    )
+
+    assert parse_outages(path.read_text().splitlines()) == ([Outage(emitted[0][1], None, "closed")], 0)
+    assert feed.outages == []
+
+
+def test_a_drop_before_the_first_message_writes_no_line(tmp_path):
+    """covers: spec 0009 AC-6 (no start_ns, no line)."""
+    path = tmp_path / "context_outages.jsonl"
+
+    asyncio.run(_run(Server([]), lambda f, e, w: False, url="ws://127.0.0.1:9", max_waits=2, outages_path=lambda: path))
+
+    assert not path.exists()
+
+
+def test_late_open_interest_logs_lagging_once_a_minute_and_never_reconnects(caplog):
+    """covers: spec 0009 AC-18."""
+    caplog.set_level(logging.INFO)
+    late_ms = time.time_ns() // 1_000_000 - 20_000  # sent 20 s before the feed handles it
+    server = Server([[INFO, ticker(ms=late_ms), ticker(ms=late_ms), ticker(ms=late_ms)]])
+
+    _, emitted, waits = asyncio.run(_run(server, lambda f, e, w: len(e) == 3))
+
+    (lagging,) = _codes(caplog, "context_feed_lagging")
+    assert lagging["count"] == 1
+    assert 20 <= lagging["lag_s"] < 30
+    assert waits == []  # the warning changes nothing else
+    assert len(emitted) == 3
 
 
 def test_a_liquidation_skipped_before_its_instrument_loads_is_published_when_resent():

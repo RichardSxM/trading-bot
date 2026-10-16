@@ -21,12 +21,13 @@ from typing import Final
 from pydantic import Field
 
 from recorder.compactor.convert import Beat, BookCarry, HourStream
-from recorder.compactor.days import close_days, write_gaps
+from recorder.compactor.days import close_days, rewrite_days, write_gaps
 from recorder.compactor.instruments import InstrumentDefinitions
 from recorder.compactor.store import (
     DELTAS_TABLE,
     INSTRUMENTS_TABLE,
     LIQUIDATION_TABLE,
+    OPEN_INTEREST_TABLE,
     RAW_FEED_TABLES,
     SILENCE_TABLES,
     STREAM_TABLES,
@@ -37,12 +38,13 @@ from recorder.compactor.store import (
 from recorder.live_files import Found, current_run, discover, is_closed
 from recorder.volume import CatalogVolumeMissing, check_catalog_volume
 from trading_core.boot import boot
-from trading_core.marketdata.context_feed import parse_outages
+from trading_core.marketdata.context_feed import Outage, pair_outages, parse_outages
 from trading_core.marketdata.errors import BackupStateInvalid
 from trading_core.marketdata.gaps import Gap, GapDetector, GapState, SilenceDetector, SilenceState
-from trading_core.marketdata.hours import GB, SECOND_NS, backlog_bytes_needed
+from trading_core.marketdata.hours import DAY_NS, GB, SECOND_NS, backlog_bytes_needed, day_of
 from trading_core.marketdata.retention import parse_backup_state, plan_retention
 from trading_core.marketdata.sequence import RunHoles, parse_holes
+from trading_core.marketdata.tails import StreamMark, TailState, resolve_tails
 from trading_core.settings import CatalogDiskSettings, ContextSettings
 
 log = logging.getLogger(__name__)
@@ -159,6 +161,8 @@ class Compactor:
         for stream in self.streams.values():
             changed = stream.end_pass(self.done) or changed
         changed = self.definitions.write_hours(instruments, self.done, STREAM_TABLES) or changed
+        # After every stream, so the tails come out the same whichever stream converted first.
+        changed = self._resolve_tails() or changed
         if close_days(self._store, self.done, self._recorded) or changed:
             self._store.save_done(self.done)
         self._delete_converted(found, current, instruments)
@@ -214,11 +218,19 @@ class Compactor:
                     "context outages file has unreadable lines",
                     extra={"fields": {"code": "context_outages_bad_lines", "run": run, "bad_lines": bad}},
                 )
+            # An open line waits in done.json for its closed line, or for the run's end (amended AC-7).
+            stored = [Outage(o["start_ns"], None, o["reason"]) for o in self.done.open_outages.get(run, [])]
+            closed, still_open = pair_outages(stored, outages)
+            if still_open:
+                self.done.open_outages[run] = [{"start_ns": o.start_ns, "reason": o.reason} for o in still_open]
+            else:
+                self.done.open_outages.pop(run, None)
             write_gaps(
                 self._store,
                 [
                     Gap(o.start_ns, instrument, "reconnect", o.end_ns, stream=table)
-                    for o in outages
+                    for o in closed
+                    if o.end_ns is not None
                     for instrument in sorted(instruments)
                     for table in RAW_FEED_TABLES
                 ],
@@ -226,6 +238,71 @@ class Compactor:
             self.done.outages[run] = len(lines)
             changed = True
         return changed
+
+    def _resolve_tails(self) -> bool:
+        """Write the tail ``reconnect`` and tail ``silence`` gaps of every run whose end is now known,
+        and drop what is resolved from ``done.json`` (spec 0009 AC-7, amended 2026-10-16). A tail gap in
+        a day whose manifest is already written rewrites it. True if ``done`` changed."""
+        done = self.done
+        state = TailState(
+            run_ends={k: dict(v) for k, v in done.run_ends.items()},
+            open_outages={
+                run: [Outage(o["start_ns"], None, o["reason"]) for o in lines]
+                for run, lines in done.open_outages.items()
+            },
+            pending_tails={k: dict(v) for k, v in done.pending_tails.items()},
+        )
+        books = {}
+        for instrument, raw in done.streams.items():
+            book = GapState.from_dict(raw)
+            books[instrument] = StreamMark(book.run, book.last_ts)
+        silences = {}
+        for key, raw in done.context_streams.items():
+            quiet = SilenceState.from_dict(raw)
+            silences[key] = StreamMark(quiet.run, quiet.last_ts)
+        gaps = resolve_tails(
+            state,
+            books=books,
+            silences=silences,
+            silence_tables=SILENCE_TABLES,
+            raw_tables=RAW_FEED_TABLES,
+            stop_table=OPEN_INTEREST_TABLE,
+            silence_ns=self._context_silence_ns,
+        )
+        if gaps:
+            write_gaps(self._store, gaps)
+            for gap in gaps:
+                log.info(
+                    "context tail gap",
+                    extra={
+                        "fields": {
+                            "code": "context_gap",
+                            "tail": True,
+                            "stream": gap.stream,
+                            "instrument_id": gap.instrument_id,
+                            "kind": gap.kind,
+                            "start_ns": gap.start_ns,
+                            "end_ns": gap.end_ns,
+                            "duration_s": round(gap.duration_s, 3),
+                        }
+                    },
+                )
+            rewrite_days(
+                self._store,
+                done,
+                {day for g in gaps for day in range(day_of(g.start_ns), day_of(g.end_ns) + 1, DAY_NS)},
+            )
+        open_outages = {
+            run: [{"start_ns": o.start_ns, "reason": o.reason} for o in lines]
+            for run, lines in state.open_outages.items()
+        }
+        changed = (state.run_ends, open_outages, state.pending_tails) != (
+            done.run_ends,
+            done.open_outages,
+            done.pending_tails,
+        )
+        done.run_ends, done.open_outages, done.pending_tails = state.run_ends, open_outages, state.pending_tails
+        return changed or bool(gaps)
 
     def _read_holes(self, found: Found, current: str | None) -> dict[str, RunHoles | None]:
         """Each run's holes file as written so far (AC-16); ``None`` for a run without one.

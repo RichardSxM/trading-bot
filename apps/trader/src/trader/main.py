@@ -511,6 +511,7 @@ def run_node(
                 instrument_ids=[BTC_PERP],
                 reconnect_max_s=settings.context_reconnect_max_s,
                 idle_s=settings.context_idle_s,
+                lag_warn_s=settings.context_lag_warn_s,
             )
         )
     )

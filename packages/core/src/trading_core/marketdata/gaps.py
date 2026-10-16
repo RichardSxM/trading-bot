@@ -187,6 +187,28 @@ class SilenceDetector:
         return gaps
 
 
+def tail_silence(
+    instrument_id: str,
+    stream: str,
+    last_ts: int,
+    run_end_ns: int,
+    *,
+    silence_ns: int,
+    stop_ns: int | None = None,
+) -> Gap | None:
+    """The tail ``silence`` of a context stream: from its last row of a run to the run's end (spec
+    0009 AC-7, amended 2026-10-16).
+
+    ``stop_ns`` is the start of the run's tail ``reconnect`` (open interest), which ends the silence
+    when it comes first, so the overlap rule does not drop it whole. None when the span is under
+    ``silence_ns`` or the last row is at or after the end.
+    """
+    end = run_end_ns if stop_ns is None else min(run_end_ns, stop_ns)
+    if end - last_ts < silence_ns or last_ts >= run_end_ns:
+        return None
+    return Gap(last_ts, instrument_id, "silence", end, stream=stream)
+
+
 @dataclass(frozen=True)
 class BookScan:
     """The gaps a chunk of rows closed, and where the carried book must stop and start again.
@@ -194,13 +216,16 @@ class BookScan:
     ``blocked`` says the book was already untrusted at the chunk's first row (a ``sequence`` gap
     open). ``cuts`` are the row indexes where a ``sequence`` gap starts, so the book stops being
     applied there; ``resumes`` are the indexes of the ``CLEAR`` rows that end one, where the book
-    starts again. A cut and a resume can share an index; the cut comes first.
+    starts again. A cut and a resume can share an index; the cut comes first. ``ended`` is the run
+    this chunk's new run follows and that run's end (its last row, the ``recorder_down`` start), so
+    the run's context tail gaps can be closed there (spec 0009 AC-7).
     """
 
     gaps: list[Gap]
     blocked: bool = False
     cuts: list[int] = field(default_factory=list)
     resumes: list[int] = field(default_factory=list)
+    ended: tuple[str, int] | None = None
 
 
 class GapDetector:
@@ -242,13 +267,16 @@ class GapDetector:
         if not ts_init:
             return BookScan([], blocked=self._pending is not None)
         gaps: list[Gap] = []
+        ended: tuple[str, int] | None = None
         if run != self._run:
             gaps.extend(self.end_run())
             if self._last_ts is not None:
                 gaps.append(Gap(self._last_ts, self.instrument_id, "recorder_down", ts_init[0]))
+                if self._run is not None:
+                    ended = (self._run, self._last_ts)
             self._last_ts, self._cleared = None, False  # the new run's first row starts fresh
         last, cleared, pending = self._last_ts, self._cleared, self._pending
-        result = BookScan(gaps, blocked=pending is not None)
+        result = BookScan(gaps, blocked=pending is not None, ended=ended)
         found = holes.holes if holes is not None else ()
         befores = [h.before_ns for h in found]
         h = 0 if last is None else bisect.bisect_left(befores, last)

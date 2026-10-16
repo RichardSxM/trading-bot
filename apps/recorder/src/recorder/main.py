@@ -165,6 +165,7 @@ def main() -> None:
                 instrument_ids=settings.instrument_list,
                 reconnect_max_s=settings.context_reconnect_max_s,
                 idle_s=settings.context_idle_s,
+                lag_warn_s=settings.context_lag_warn_s,
             ),
             outages_path=lambda: outages_path(settings.catalog_path, str(node.kernel.instance_id)),
         )

@@ -241,11 +241,20 @@ def backoff_s(attempt: int, max_s: int) -> int:
 
 @dataclass(frozen=True)
 class Outage:
-    """One context feed outage: from the last message before it to the first after it (AC-6)."""
+    """One context feed outage: from the last message before it to the first after it (AC-6).
+
+    ``end_ns`` is None on the open line, written the moment the feed goes down; the closed line,
+    written when it comes back, has the same ``start_ns`` and reason.
+    """
 
     start_ns: int
-    end_ns: int
+    end_ns: int | None
     reason: str
+
+    @property
+    def is_open(self) -> bool:
+        """Whether this is an open line (no end yet)."""
+        return self.end_ns is None
 
     def line(self) -> str:
         """The ``context_outages.jsonl`` line, with its newline."""
@@ -254,9 +263,10 @@ class Outage:
 
 
 def parse_outages(lines: Iterable[str]) -> tuple[list[Outage], int]:
-    """The outages in a ``context_outages.jsonl``, and how many lines could not be read.
+    """The outage lines in a ``context_outages.jsonl``, open and closed, and how many could not be read.
 
-    A torn last line (a crash mid write) counts as bad, as does any line without the three fields.
+    A torn last line (a crash mid write) counts as bad, as does any line without the three fields or
+    with an end before its start.
     """
     outages: list[Outage] = []
     bad = 0
@@ -269,8 +279,65 @@ def parse_outages(lines: Iterable[str]) -> tuple[list[Outage], int]:
         except ValueError, KeyError, TypeError:
             bad += 1
             continue
-        if not (isinstance(start, int) and isinstance(end, int) and isinstance(reason, str)) or end < start:
+        if isinstance(start, bool) or not isinstance(start, int) or not isinstance(reason, str):
+            bad += 1
+            continue
+        if end is not None and (isinstance(end, bool) or not isinstance(end, int) or end < start):
             bad += 1
             continue
         outages.append(Outage(start, end, reason))
     return outages, bad
+
+
+def pair_outages(still_open: Iterable[Outage], lines: Iterable[Outage]) -> tuple[list[Outage], list[Outage]]:
+    """Fold newly read outage lines into the open lines kept so far (AC-6, AC-7).
+
+    Returns the closed outages (each becomes ``reconnect`` gaps) and the open lines still waiting,
+    sorted by ``start_ns``. A closed line removes the open line with its ``start_ns``; a closed line
+    without an open partner (files from before open lines existed) is valid on its own.
+    """
+    waiting = {o.start_ns: o for o in still_open}
+    closed: list[Outage] = []
+    for outage in lines:
+        if outage.is_open:
+            waiting.setdefault(outage.start_ns, outage)
+        else:
+            waiting.pop(outage.start_ns, None)
+            closed.append(outage)
+    return closed, sorted(waiting.values(), key=lambda o: o.start_ns)
+
+
+def close_at_run_end(still_open: Iterable[Outage], run_end_ns: int) -> list[Outage]:
+    """Open lines that never got a closed line, closed at their run's end (AC-7 tail ``reconnect``).
+
+    One starting at or after the run's end gives nothing.
+    """
+    return [Outage(o.start_ns, run_end_ns, o.reason) for o in still_open if o.start_ns < run_end_ns]
+
+
+class LagWatch:
+    """Counts records handled later than ``warn_ns`` after Kraken sent them, and says when to log
+    ``context_feed_lagging``, at most once per ``every_ns`` (AC-18).
+
+    A negative lag (two clocks a hair apart) counts as zero; a lag of exactly ``warn_ns`` is not late.
+    """
+
+    def __init__(self, warn_ns: int, every_ns: int = BAD_LOG_EVERY_NS) -> None:
+        self._warn_ns = warn_ns
+        self._every_ns = every_ns
+        self._count = 0
+        self._max_ns = 0
+        self._logged: int | None = None
+
+    def add(self, lag_ns: int, now_ns: int) -> tuple[float, int] | None:
+        """Count one record; returns ``(lag_s, count)`` since the last log when one is due, else None."""
+        lag_ns = max(lag_ns, 0)
+        if lag_ns <= self._warn_ns:
+            return None
+        self._count += 1
+        self._max_ns = max(self._max_ns, lag_ns)
+        if self._logged is not None and now_ns - self._logged < self._every_ns:
+            return None
+        result = (round(self._max_ns / SECOND_NS, 3), self._count)
+        self._logged, self._count, self._max_ns = now_ns, 0, 0
+        return result

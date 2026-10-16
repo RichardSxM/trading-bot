@@ -24,7 +24,7 @@ from trading_core.catalog.days import write_text as _write_text
 from trading_core.marketdata.gaps import BOOK_STREAM
 from trading_core.marketdata.hours import DAY_NS, day_closed, day_name, day_of
 
-__all__ = ["GAP_SCHEMA", "close_days", "gap_days", "read_gaps", "write_gaps"]
+__all__ = ["GAP_SCHEMA", "close_days", "gap_days", "read_gaps", "rewrite_days", "write_gaps"]
 
 log = logging.getLogger(__name__)
 
@@ -75,7 +75,12 @@ def close_days(store: CatalogStore, done: DoneRecord, recorded: Collection[str] 
 
 def _rewrite_incomplete_days(store: CatalogStore, done: DoneRecord) -> None:
     """Write a closed day's manifest again when its late counts changed (rare, so cheap)."""
-    days = {day_of(hour) for hours in done.incomplete.values() for hour in hours}
+    rewrite_days(store, done, {day_of(hour) for hours in done.incomplete.values() for hour in hours})
+
+
+def rewrite_days(store: CatalogStore, done: DoneRecord, days: Collection[int]) -> None:
+    """Write each closed day's manifest again when it changed, such as after a late tail gap (spec
+    0009 AC-7); a day not closed yet is left for ``close_days``."""
     for day in sorted(days):
         name = day_name(day)
         if name not in done.days:

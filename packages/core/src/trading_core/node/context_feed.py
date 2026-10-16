@@ -32,6 +32,7 @@ from trading_core.marketdata.context_feed import (
     BadCounter,
     BadRow,
     ForcedTrade,
+    LagWatch,
     OpenInterest,
     Outage,
     RecentIds,
@@ -72,6 +73,7 @@ class ContextFeed:
         clock_ns: Callable[[], int],
         emit: Emit,
         outages_path: Callable[[], Path] | None = None,
+        lag_warn_s: int = 10,
         connect: Connect = connect,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
@@ -86,6 +88,7 @@ class ContextFeed:
         self._sleep = sleep
         self._recent = RecentIds()
         self._bad = BadCounter()
+        self._lag = LagWatch(lag_warn_s * SECOND_NS)
         self._attempt = 0
         self._last_ns: int | None = None
         self._down_reason: str | None = None
@@ -139,6 +142,9 @@ class ContextFeed:
             "context feed down",
             extra={"fields": {"code": "context_feed_down", "reason": reason, "last_message_ns": self._last_ns}},
         )
+        if self._last_ns is not None:
+            # The open line, so an outage still open when the recorder stops is recorded (AC-6, AC-7).
+            self._append(Outage(self._last_ns, None, reason))
 
     def _came_up(self, now_ns: int) -> None:
         reason, self._down_reason = self._down_reason, None
@@ -166,6 +172,8 @@ class ContextFeed:
             for bad in parsed.bad:
                 self._count(bad, now_ns)
             for record in parsed.records:
+                if isinstance(record, OpenInterest):
+                    self._watch_lag(now_ns - record.ts_event, now_ns)
                 if isinstance(record, ForcedTrade) and record.trade_id in self._recent:
                     continue  # a resubscribe snapshot resends recent trades (AC-5)
                 skipped = self._emit(record, now_ns)
@@ -181,6 +189,16 @@ class ContextFeed:
                     "context message failed",
                     extra={"fields": {"code": "context_message_bad", "reason": "handler_error"}},
                 )
+
+    def _watch_lag(self, lag_ns: int, now_ns: int) -> None:
+        """Warn when records arrive late, the early sign of a starved event loop (AC-18); nothing else."""
+        due = self._lag.add(lag_ns, now_ns)
+        if due is not None:
+            lag_s, count = due
+            log.warning(
+                "context feed lagging",
+                extra={"fields": {"code": "context_feed_lagging", "lag_s": lag_s, "count": count}},
+            )
 
     def _count(self, bad: BadRow, now_ns: int) -> None:
         count = self._bad.add(bad, now_ns)
@@ -221,6 +239,7 @@ class ContextFeedConfig(ActorConfig, frozen=True):
     instrument_ids: list[str]
     reconnect_max_s: int = 60
     idle_s: int = 30
+    lag_warn_s: int = 10
 
 
 class ContextFeedActor(Actor):  # type: ignore[misc]  # Actor is Cython with no stubs
@@ -248,6 +267,7 @@ class ContextFeedActor(Actor):  # type: ignore[misc]  # Actor is Cython with no 
             clock_ns=self.clock.timestamp_ns,
             emit=self._publish,
             outages_path=self._outages_path,
+            lag_warn_s=self._config.lag_warn_s,
         )
         self._task = asyncio.get_running_loop().create_task(self.feed.run(), name="context_feed")
         self._task.add_done_callback(_log_end)
