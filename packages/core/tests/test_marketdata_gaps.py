@@ -229,6 +229,48 @@ def test_context_silence_resumes_from_its_stored_state():
     assert detector.scan("a", [80 * s]) == [Gap(10 * s, "X", "silence", 80 * s, stream="index_price_update")]
 
 
+def test_a_tail_silence_runs_from_the_last_row_to_the_run_end():
+    """covers: spec 0009 AC-7 (amended: tail silence)."""
+    from trading_core.marketdata.gaps import tail_silence
+
+    s = 1_000_000_000
+    oi = "custom_open_interest_update"
+
+    assert tail_silence("X", oi, 0, 600 * s, silence_ns=60 * s) == Gap(0, "X", "silence", 600 * s, stream=oi)
+    assert tail_silence("X", oi, 0, 60 * s, silence_ns=60 * s) == Gap(0, "X", "silence", 60 * s, stream=oi)
+    assert tail_silence("X", oi, 0, 59 * s, silence_ns=60 * s) is None  # under the minimum
+    assert tail_silence("X", oi, 600 * s, 600 * s, silence_ns=60 * s) is None  # last row at the end
+    assert tail_silence("X", oi, 700 * s, 600 * s, silence_ns=60 * s) is None
+
+
+def test_a_tail_silence_ends_at_the_tail_reconnect_when_that_comes_first():
+    """covers: spec 0009 AC-7 (amended: the silence stops where the tail reconnect starts)."""
+    from trading_core.marketdata.gaps import tail_silence
+
+    s = 1_000_000_000
+    oi = "custom_open_interest_update"
+
+    assert tail_silence("X", oi, 0, 600 * s, silence_ns=60 * s, stop_ns=300 * s) == Gap(
+        0, "X", "silence", 300 * s, stream=oi
+    )
+    assert tail_silence("X", oi, 0, 600 * s, silence_ns=60 * s, stop_ns=30 * s) is None
+    assert tail_silence("X", oi, 0, 600 * s, silence_ns=60 * s, stop_ns=900 * s) == Gap(
+        0, "X", "silence", 600 * s, stream=oi
+    )
+
+
+def test_a_new_run_reports_the_run_it_ended_and_its_end():
+    """covers: spec 0009 AC-7 (amended: run_ends saved with the recorder_down)."""
+    detector = GapDetector("X", GapState(), silence_ns=10 * S)
+
+    first = detector.scan_book("a", [T, T + S], [True, False])
+    second = detector.scan_book("b", [T + 100 * S], [True])
+
+    assert first.ended is None
+    assert second.ended == ("a", T + S)
+    assert second.gaps == [Gap(T + S, "X", "recorder_down", T + 100 * S)]
+
+
 def test_a_stronger_overlapping_gap_of_the_same_stream_wins():
     """covers: spec 0009 AC-7 (recorder_down over reconnect over silence, within one stream)."""
     from trading_core.marketdata.gaps import resolve_overlaps
