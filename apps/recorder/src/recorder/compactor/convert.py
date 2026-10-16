@@ -181,6 +181,8 @@ class HourStream:
         self._grace_ns = grace_ns
         self.window = ReorderWindow(self.key, window_ns=window_ns, max_rows=max_rows)
         self._pending: list[Gap] = []
+        self._ended: list[tuple[str, int]] = []  # runs the book ended, committed with their recorder_down
+        self._tails_noted: set[str] = set()  # runs whose last row this stream stored (spec 0009 AC-7)
         self._late: dict[int, list[Any]] = {}  # hour -> late rows not yet merged into quarantine
         self._late_snapshots: set[int] = set()  # hours whose snapshot missed a late delta
         self._late_log: dict[int, _LateLog] = {}  # this pass, per hour
@@ -299,6 +301,7 @@ class HourStream:
     def abort(self) -> None:
         """Drop the open hour after a failed pass; the next pass starts again from ``done.json``."""
         self._pending = []
+        self._ended = []
         self._late = {}
         self._late_snapshots = set()
         if self.open is not None:
@@ -318,7 +321,20 @@ class HourStream:
             self._route(held, done)
         if self.gaps is not None:
             self._pending.extend(self.gaps.end_run())  # a sequence gap ends at the run's last row
+        self._note_tail(done)
         self._finish_if_ready(done, now_ns, run_ended=finish)
+
+    def _note_tail(self, done: DoneRecord) -> None:
+        """A steady context stream ended a run: keep its last row for the run's tail silence, which
+        waits for the run's end (spec 0009 AC-7). Set before the save that marks the run's last file
+        finished, so a killed pass cannot lose it."""
+        if self.silence is None:
+            return
+        state = self.silence.state
+        if state.run is None or state.last_ts is None or state.run in self._tails_noted:
+            return
+        self._tails_noted.add(state.run)
+        done.pending_tails.setdefault(self.key, {})[state.run] = state.last_ts
 
     def _finish_if_ready(self, done: DoneRecord, now_ns: int, *, run_ended: bool) -> None:
         open_hour = self.open
@@ -413,6 +429,8 @@ class HourStream:
             clear = (rows.column("action").to_numpy() == CLEAR).tolist()
             scan = self.gaps.scan_book(self._run, ts.tolist(), clear, self._run_holes())
             self._pending.extend(scan.gaps)
+            if scan.ended is not None:
+                self._ended.append(scan.ended)
         if self.silence is not None and self._run is not None:
             self._pending.extend(self.silence.scan(self._run, ts.tolist()))
         open_hour.sink.write(rows)
@@ -492,6 +510,10 @@ class HourStream:
                 for spoiled_hour in range(hour_of(start), hour_of(end) + 1, HOUR_NS):
                     incomplete.setdefault(spoiled_hour, 0)
         done.streams[self.instrument_id] = self.gaps.state.to_dict()
+        # Each ended run's end, in the same commit as its recorder_down (spec 0009 AC-7).
+        for run, end in self._ended:
+            done.run_ends.setdefault(self.instrument_id, {})[run] = end
+        self._ended = []
 
     def _commit_ids(self, done: DoneRecord, hour: int) -> None:
         """Keep the hour's trade ids for the next hour's dedupe, and log what was dropped (AC-5)."""

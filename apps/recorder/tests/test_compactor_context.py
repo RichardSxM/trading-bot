@@ -208,6 +208,7 @@ def test_an_outage_line_is_a_reconnect_gap_of_both_raw_streams_and_beats_a_silen
     )
     assert not [g for g in gaps if g.kind == "silence"]  # the same span's silence lost to the reconnect
     assert store.load_done().outages == {"a-dead": 1}
+    assert store.load_done().open_outages == {}  # a closed line from before open lines stands alone
     rows = pq.read_table(store.data_file(OPEN_INTEREST_TABLE, INSTRUMENT, H0)).column("value").to_pylist()
     assert rows == [str(r.value) for r in oi]
 
