@@ -219,3 +219,17 @@ def test_a_stored_mute_already_past_is_ignored(tmp_path):
         return engine
 
     assert asyncio.run(run()).holds == ()
+
+
+def test_a_mute_read_late_still_ends_at_its_issued_at_plus_its_length(tmp_path):
+    async def run():
+        alerter, clock, redis, _, _ = make(tmp_path)
+        msg = await send(alerter, redis, clock, AlertCmd.MUTE, 3600, at=clock() - timedelta(seconds=20))
+        return msg, redis
+
+    msg, redis = asyncio.run(run())
+
+    (result,) = results(redis)
+    assert result.until == msg.issued_at + timedelta(hours=1)
+    assert json.loads(redis.values[MUTE_KEY])["command_id"] == str(msg.id)
+    assert redis.ttls[MUTE_KEY] == 3580

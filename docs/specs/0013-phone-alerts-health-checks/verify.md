@@ -84,9 +84,9 @@ _The laptop half runs in dry run with `alerter dashboard` up (no trader or recor
 
 ### Value sourcing checks
 
-- [ ] Fill push values: vary `lot_size` (0.0001, 1) and `tick_size` (0.5, 1, 0.01). → quantity and price show exactly that many decimals; a fee of 0.0214 shows all four, a fee of 0.1 shows 0.10. → AC-8
-- [ ] Mute badge until: mute at 22:30 UTC in October (summer time) and in January. → the badge shows UTC+2 and UTC+1 Amsterdam times; the tooltip shows the UTC time. → AC-16
-- [ ] Mute end in the engine: the mute ends at the command's `issued_at` plus its length, also when the alerter reads it late. → AC-12
+- [x] Fill push values: vary `lot_size` (0.0001, 1) and `tick_size` (0.5, 1, 0.01). → quantity and price show exactly that many decimals; a fee of 0.0214 shows all four, a fee of 0.1 shows 0.10. → AC-8
+- [x] Mute badge until: mute at 22:30 UTC in October (summer time) and in January. → the badge shows UTC+2 and UTC+1 Amsterdam times; the tooltip shows the UTC time. → AC-16
+- [x] Mute end in the engine: the mute ends at the command's `issued_at` plus its length, also when the alerter reads it late. → AC-12
 
 ### Acceptance criteria coverage (Part D)
 
@@ -115,7 +115,7 @@ These add to step 9 in Part B. You may run the laptop steps after `docker compos
 - [x] When to send: the note goes out at 06:00 UTC in summer time (October before the last Sunday) and at 07:00 UTC in winter time. → 08:00 Amsterdam both times. → AC-18
 - [x] Trades and realized P&L yesterday: a position closed at 23:59 UTC counts toward that UTC day; one closed at 00:30 UTC the next day does not. → the count and P&L match `positions` for yesterday's UTC day only. → AC-18
 - [x] Trader down minutes: a `trader_down` episode that opened more than 24 h ago and is still open (or resolved inside the window) counts only the part inside the last 24 h. → AC-18
-- [ ] Counts by tier: `daily` rows are left out; `test` rows still count. → the opened counts match `alerts` rows of the last 24 h minus the `daily` ones. → AC-18
+- [x] Counts by tier: `daily` rows are left out; `test` rows still count. → the opened counts match `alerts` rows of the last 24 h minus the `daily` ones. → AC-18
 - [x] Sent today: the marker is the `daily:<local date>` row in this `env`, whatever its delivery; a `failed` note row still blocks a second note and is retried by the 60 s cycle. → AC-18, AC-14
 
 ### Acceptance criteria coverage (Part E)

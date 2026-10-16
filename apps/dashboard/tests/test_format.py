@@ -5,7 +5,7 @@ from decimal import Decimal
 
 import pytest
 
-from dashboard.ui.format import num, pnl, ts
+from dashboard.ui.format import local_hm, num, pnl, ts
 
 
 @pytest.mark.parametrize(
@@ -133,3 +133,19 @@ def test_ts_names_the_type_it_refused():
         ts(False)
     with pytest.raises(TypeError, match="got float"):
         ts(1.5)
+
+
+# --- the mute badge's local time (spec 0013 AC-16)
+
+
+@pytest.mark.parametrize(
+    ("moment", "local"),
+    [
+        (datetime(2026, 10, 16, 22, 30, tzinfo=UTC), "00:30"),  # summer time, UTC+2
+        (datetime(2027, 1, 15, 22, 30, tzinfo=UTC), "23:30"),  # winter time, UTC+1
+    ],
+)
+def test_local_hm_shows_amsterdam_time_with_utc_in_the_title(moment, local):
+    """covers: spec 0013 AC-16"""
+    stamp = moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert local_hm(moment) == f'<time datetime="{stamp}" title="22:30:00Z UTC">{local}</time>'

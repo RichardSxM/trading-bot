@@ -34,6 +34,11 @@ def test_a_whole_tick_shows_no_decimals():
     assert "at 3,100, fee" in messages.fill({**ROW, "price": "3100.00", "tick_size": "1"})[1]
 
 
+def test_a_whole_lot_and_a_cent_tick():
+    shown = messages.fill({**ROW, "quantity": "3", "lot_size": "1", "price": "2.5", "tick_size": "0.01"})[1]
+    assert shown == "Sold 3 BTC at 2.50, fee 0.0214 USD"
+
+
 @pytest.mark.parametrize("broken", [{"side": "flat"}, {"price": "NaN"}, {"quantity": "x"}, {"lot_size": None}])
 def test_a_missing_or_bad_column_falls_back_to_the_trade_id(broken):
     assert messages.fill({**ROW, **broken})[1] == "fill T-1"

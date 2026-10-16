@@ -245,3 +245,26 @@ def test_daily_figures_count_alerts_down_time_and_yesterdays_trades(repo, sessio
     assert figures.trades - before.trades == 2
     assert figures.pnl["USD"] - before.pnl.get("USD", Decimal(0)) == Decimal("0.25")
     assert figures.trade_day == date(2031, 5, 1)
+
+
+def test_daily_figures_count_test_rows(repo):
+    before = repo.daily_figures(DAILY_NOW)
+    for tier in Tier:
+        repo.save(
+            episode(
+                f"test:fig-count:{tier.value}",
+                rule="test",
+                severity=tier,
+                source="self",
+                details={},
+                opened_at=DAILY_NOW - timedelta(minutes=30),
+                last_seen_at=DAILY_NOW - timedelta(minutes=30),
+                resolved_at=DAILY_NOW - timedelta(minutes=30),
+            )
+        )
+
+    figures = repo.daily_figures(DAILY_NOW)
+
+    for tier in Tier:
+        assert figures.opened.get(tier, 0) - before.opened.get(tier, 0) == 1
+    assert figures.down_s == before.down_s
