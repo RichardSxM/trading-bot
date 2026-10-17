@@ -1,6 +1,6 @@
 """covers: spec 0013 Build plan 2.1 and *Replay safety*: Docker's framed log stream, timestamps, line
 parsing, the Redis cursors (5 min back without one, 7 day TTL), the replay set, the project filter,
-and the container checks behind AC-4.
+the container checks behind AC-4, and a partly failed pass that keeps what it read (AC-3).
 
 The Docker API is an ``httpx.MockTransport`` answering like the socket proxy.
 """
@@ -112,6 +112,8 @@ class FakeDocker:
         self.started = {"t1": "2026-10-16T02:00:00.5Z", "a1": "2026-10-16T02:00:00Z"}
         self.requests: list[httpx.Request] = []
         self.fail = False
+        # Containers removed between the listing and their logs read (a deploy recreates them).
+        self.gone: set[str] = set()
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -121,6 +123,8 @@ class FakeDocker:
         if path == "/containers/json":
             return httpx.Response(200, json=self.containers)
         container = path.split("/")[2]
+        if container in self.gone:
+            return httpx.Response(404)
         if path.endswith("/logs"):
             since = float(request.url.params["since"])
             kept = [line for line in self.lines.get(container, []) if rfc3339_ns(line.split(" ")[0]) / 1e9 >= since - 1]
@@ -240,7 +244,7 @@ def test_a_lost_cursor_with_a_fresh_replay_set_drops_the_overlap():
     assert second == []
 
 
-def test_a_failed_pass_raises_and_is_not_fresh():
+def test_a_failed_listing_raises_and_is_not_fresh():
     async def run():
         docker = FakeDocker()
         watch, reader, _, _ = make(docker)
@@ -252,19 +256,80 @@ def test_a_failed_pass_raises_and_is_not_fresh():
     assert asyncio.run(run()).ok_at is None
 
 
-def test_a_redis_failure_on_the_cursor_fails_the_pass():
-    from redis.exceptions import RedisError
-
+def test_redis_down_at_the_first_cursor_read_reads_nothing_and_is_not_fresh():
     async def run():
         docker = FakeDocker()
+        docker.lines["t1"] = [code_line(1, "stop_not_accepted")]
         redis = FakeRedis()
         redis.fail = True
-        watch, reader, _, _ = make(docker, redis)
-        with pytest.raises(RedisError):
-            await watch.lines()
-        return reader
+        watch, reader, _, clock = make(docker, redis)
+        first = await watch.lines()
+        redis.fail = False
+        clock.advance(5)
+        return first, await watch.lines(), reader
 
-    assert asyncio.run(run()).ok_at is None
+    first, second, reader = asyncio.run(run())
+
+    assert first == []
+    assert [o.code for o in second] == ["stop_not_accepted"]  # read on the next pass, not lost
+    assert reader.ok_at == NOW + timedelta(seconds=5)
+
+
+class CursorWriteFails(FakeRedis):
+    """Reads work; cursor writes raise while ``fail_set`` is on."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_set = True
+
+    async def set(self, name: str, value: str, ex: int | None = None) -> bool:
+        if self.fail_set:
+            from redis.exceptions import ConnectionError
+
+            raise ConnectionError("redis is down")
+        return await super().set(name, value, ex)
+
+
+def test_a_failed_cursor_write_keeps_the_lines_and_writes_the_cursor_on_the_next_pass():
+    async def run():
+        docker = FakeDocker()
+        docker.lines["t1"] = [code_line(1, "stop_not_accepted")]
+        redis = CursorWriteFails()
+        watch, reader, _, clock = make(docker, redis)
+        first = await watch.lines()
+        fresh_after_first = reader.ok_at
+        redis.fail_set = False
+        clock.advance(5)
+        second = await watch.lines()
+        return first, fresh_after_first, second, redis, reader
+
+    first, fresh_after_first, second, redis, reader = asyncio.run(run())
+
+    assert [o.code for o in first] == ["stop_not_accepted"]
+    assert fresh_after_first is None  # the pass failed, so the watchdog is not fed
+    assert second == []  # never returned twice
+    assert redis.values["demo:alerts:cursor:trader"] == stamp(1)
+    assert reader.ok_at == NOW + timedelta(seconds=5)
+
+
+def test_one_container_gone_mid_pass_keeps_the_other_containers_lines():
+    async def run():
+        docker = FakeDocker()
+        docker.containers.append({"Id": "c1", "State": "running", "Status": "Up 1 hour", "Labels": _labels("recorder")})
+        docker.lines["t1"] = [code_line(1, "stop_not_accepted")]
+        docker.gone.add("c1")
+        watch, reader, redis, clock = make(docker)
+        first = await watch.lines()
+        clock.advance(5)
+        second = await watch.lines()
+        return first, second, redis, reader
+
+    first, second, redis, reader = asyncio.run(run())
+
+    assert [o.code for o in first] == ["stop_not_accepted"]
+    assert second == []
+    assert redis.values["demo:alerts:cursor:trader"] == stamp(1)
+    assert reader.ok_at is None  # the recorder could not be read
 
 
 def test_states_report_the_start_time_of_running_services():
