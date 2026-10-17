@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from trading_core.control.messages import ControlMessage, ControlResult
 from trading_core.recording import queries, repository
-from trading_core.recording.enums import Env
+from trading_core.recording.enums import ControlOutcome, Env
 from trading_core.recording.rows import ControlCommandRow
 
 _EPOCH: Final = datetime(1970, 1, 1, tzinfo=UTC)
@@ -27,9 +27,9 @@ class PostgresCommandRecorder:
         self._engine = engine
         self._env = env
 
-    async def known(self, command_id: uuid.UUID) -> bool:
-        """True when ``command_id`` is already in ``control_commands``."""
-        return await asyncio.to_thread(self._known, command_id)
+    async def outcome(self, command_id: uuid.UUID) -> ControlOutcome | None:
+        """The outcome ``command_id`` has in ``control_commands``, or None when it is not there."""
+        return await asyncio.to_thread(self._outcome, command_id)
 
     async def received(self, msg: ControlMessage, at: datetime) -> None:
         """Insert ``msg`` as ``received`` (a no-op when it is already there)."""
@@ -39,9 +39,9 @@ class PostgresCommandRecorder:
         """Set the final outcome, with the reason in ``details``."""
         await asyncio.to_thread(self._finished, result)
 
-    def _known(self, command_id: uuid.UUID) -> bool:
+    def _outcome(self, command_id: uuid.UUID) -> ControlOutcome | None:
         with Session(self._engine) as session:
-            return queries.control_command_known(session, command_id)
+            return queries.control_command_outcome(session, command_id)
 
     def _received(self, msg: ControlMessage, at: datetime) -> None:
         row = ControlCommandRow(

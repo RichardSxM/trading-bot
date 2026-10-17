@@ -83,15 +83,16 @@ class FakeRecorder:
         self.rows = {}
         self.fail = False
 
-    async def known(self, command_id):
+    async def outcome(self, command_id):
         if self.fail:
             raise OSError("postgres down")
-        return command_id in self.rows
+        rows = self.rows.get(command_id)
+        return None if rows is None else ControlOutcome(rows[-1])
 
     async def received(self, msg, at):
         if self.fail:
             raise OSError("postgres down")
-        self.rows[msg.id] = ["received"]
+        self.rows.setdefault(msg.id, ["received"])  # a no-op when recorded, as in Postgres
 
     async def finished(self, result):
         if self.fail:
@@ -163,6 +164,37 @@ def test_a_repeated_id_is_answered_duplicate_and_not_executed_again():
 
     assert executed == []
     assert _outcomes(redis, msg.id) == ["duplicate"]
+
+
+@pytest.mark.parametrize("make", [stop_command, lambda now, ttl: pause_command(now, ttl, ControlSource.DASHBOARD)])
+def test_a_command_left_at_received_by_a_stopped_process_runs_after_the_restart(make):
+    # covers: spec 0005 AC-6, review 2026-10-17 major 1: the trader recorded `received`, then was
+    # stopped before it ran the command; the entry is still pending, so the new process reads it again.
+    redis, recorder = FakeRedis(), FakeRecorder()
+    executed: list[ControlMessage] = []
+    msg = make(NOW, 60)
+    recorder.rows[msg.id] = ["received"]
+    entry_id = redis.add(to_fields(msg))
+
+    _drain(_consumer(redis, recorder, executed))
+
+    assert [m.id for m in executed] == [msg.id]
+    assert _outcomes(redis, msg.id) == ["received", "executed"]
+    assert recorder.rows[msg.id] == ["received", "executed"]
+    assert redis.acked == [entry_id]
+
+
+def test_a_command_left_at_received_that_expired_meanwhile_is_answered_expired():
+    redis, recorder = FakeRedis(), FakeRecorder()
+    executed: list[ControlMessage] = []
+    msg = stop_command(NOW - timedelta(seconds=61), 60)
+    recorder.rows[msg.id] = ["received"]
+    redis.add(to_fields(msg))
+
+    _drain(_consumer(redis, recorder, executed))
+
+    assert executed == []
+    assert _outcomes(redis, msg.id) == ["expired"]
 
 
 def test_an_expired_command_is_acknowledged_as_expired_and_not_executed():

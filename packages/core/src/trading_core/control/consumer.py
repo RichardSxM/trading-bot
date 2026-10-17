@@ -90,8 +90,8 @@ class ControlRedis(Protocol):
 class CommandRecorder(Protocol):
     """Where the trader records control commands (Postgres ``control_commands`` in the node)."""
 
-    async def known(self, command_id: uuid.UUID) -> bool:
-        """True when ``command_id`` was recorded before."""
+    async def outcome(self, command_id: uuid.UUID) -> ControlOutcome | None:
+        """The outcome recorded for ``command_id``, or None when it was never recorded."""
         ...
 
     async def received(self, msg: ControlMessage, at: datetime) -> None:
@@ -172,9 +172,11 @@ class ControlConsumer:
         if done is not None:
             # Handled by this process but not acknowledged (Redis failed): answer the same again.
             await self._append(done)
-        elif await self._known(msg.id):
+        elif await self._recorded_final(msg.id):
             await self._append(ControlResult(msg.id, ControlOutcome.DUPLICATE, self._now()))
         else:
+            # Never seen, or recorded as received by a process that stopped before finishing it
+            # (a restart between the two writes): run it, so a stop is never lost as a duplicate.
             await self._new(msg)
         await self._client.xack(self._stream, GROUP, entry_id)
 
@@ -213,12 +215,13 @@ class ControlConsumer:
             await self._append(ControlResult(command_id, ControlOutcome.FAILED, self._now(), "invalid"))
         await self._client.xack(self._stream, GROUP, entry_id)
 
-    async def _known(self, command_id: uuid.UUID) -> bool:
+    async def _recorded_final(self, command_id: uuid.UUID) -> bool:
         try:
-            return await self._recorder.known(command_id)
+            outcome = await self._recorder.outcome(command_id)
         except Exception as exc:
             _record_failed(exc, command_id)
             return False
+        return outcome is not None and outcome != ControlOutcome.RECEIVED
 
     async def _record(self, write: Awaitable[None], command_id: uuid.UUID) -> None:
         try:

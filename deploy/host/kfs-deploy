@@ -74,6 +74,7 @@ compose_current() {
 
 record() {
     local outcome=$1
+    KFS_RECORDED=true
     mkdir -p "$KFS_LOG_DIR"
     jq -nc --arg sha "$SHA" --arg previous_sha "$PREVIOUS_SHA" --arg started_at "$STARTED_AT" \
         --arg finished_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg outcome "$outcome" \
@@ -81,7 +82,16 @@ record() {
         '{sha: $sha, previous_sha: (if $previous_sha == "" then null else $previous_sha end),
           started_at: $started_at, finished_at: $finished_at, outcome: $outcome,
           paused_by_deploy: ($paused == "true"), waited_for_flat_s: $waited}' >>"$DEPLOY_LOG"
-    printf 'deploy %s: %s (previous %s) in %ss\n' "$outcome" "${SHA:0:12}" "${PREVIOUS_SHA:0:12}" "$((SECONDS - START_S))"
+    printf 'deploy %s: %s (previous %s) in %ss\n' "$outcome" "${SHA:0:12}" "${PREVIOUS_SHA:0:12}" "$((SECONDS - START_S))" 2>/dev/null || true
+}
+
+# The EXIT trap of `run`: a deploy that ends without recording an outcome records `interrupted`.
+# It does not guess a repair: `current`, the containers, and the trader's pause stay as they are.
+interrupted() {
+    [ "$KFS_RECORDED" = true ] && return
+    kfs_log CRITICAL "deploy ended without an outcome; check current, the services, and the pause" \
+        sha "$SHA" previous_sha "$PREVIOUS_SHA" current "$(kfs_current_sha)" exit_code "$1"
+    record interrupted
 }
 
 refuse() {
@@ -264,9 +274,25 @@ run() {
     exec 9>"$LOCK"
     flock -n 9 || die 3 "deploy in progress"
 
+    # A dropped SSH session must not cut a deploy short halfway (review 2026-10-17): from here
+    # on HUP and PIPE are ignored (the commands below inherit that), and all output goes through
+    # `tee -p`, which keeps writing deploy-run.log once the laptop end is gone.
+    trap '' HUP PIPE
+    mkdir -p "$KFS_LOG_DIR"
+    local tee_opts=(-a)
+    # uutils and GNU tee know -p; a tee without it (BusyBox in the tests) still writes the file.
+    if tee -p -a /dev/null </dev/null >/dev/null 2>&1; then
+        tee_opts=(-p -a)
+    fi
+    exec > >(tee "${tee_opts[@]}" "$KFS_LOG_DIR/deploy-run.log") 2>&1
+
     START_S=$SECONDS
     STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     PREVIOUS_SHA=$(kfs_current_sha)
+    KFS_RECORDED=false
+    # Any other way out (a TERM, a failing command under set -e) still leaves an outcome line,
+    # which the alerter turns into a critical push (spec 0013 `deploy_interrupted`).
+    trap 'interrupted $?' EXIT
     KFS_CONTROL_RELEASE=$SHA
     # started_at is the alerter's deploy window start; deploys.jsonl repeats it (spec 0013 AC-11).
     kfs_log INFO "deploy started" sha "$SHA" previous_sha "$PREVIOUS_SHA" started_at "$STARTED_AT" \

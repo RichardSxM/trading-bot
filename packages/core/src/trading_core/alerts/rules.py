@@ -186,6 +186,11 @@ AUTOHEAL_GAVE_UP: Final = _field_rule(
 ROLLBACK_FAILED: Final = _field_rule(
     "rollback_failed", Tier.CRITICAL, DEPLOY, "outcome", "rollback_failed", subject="sha"
 )
+# A deploy that ended without an outcome (a TERM, or a failing command) records `interrupted`
+# from its EXIT trap (spec 0005, review 2026-10-17); `current` and the pause may be half done.
+DEPLOY_INTERRUPTED: Final = _field_rule(
+    "deploy_interrupted", Tier.CRITICAL, DEPLOY, "outcome", "interrupted", subject="sha"
+)
 DISK_LOW: Final = Rule("disk_low", Tier.CRITICAL, RuleKind.CONDITION, source="disk")
 CATALOG_DISK_FULL: Final = _code_rule(
     "catalog_disk_full", Tier.CRITICAL, ["catalog_disk_full"], kind=RuleKind.PAIR, partner="catalog_disk_ok"
@@ -279,6 +284,7 @@ RULES: Final[tuple[Rule, ...]] = (
     TRADER_CRITICAL_CODES,
     AUTOHEAL_GAVE_UP,
     ROLLBACK_FAILED,
+    DEPLOY_INTERRUPTED,
     DISK_LOW,
     CATALOG_DISK_FULL,
     RECORDER_WRITE_FAILED,

@@ -124,6 +124,7 @@ Rule kinds:
 | `trader_critical_codes` | critical | event | 0 | trader `code` in `positions_abandoned`, `kill_switch_task_crashed`, `halt_key_invalid`, `record_conflict` (logged at ERROR with no `event_key`) | code |
 | `autoheal_gave_up` | critical | event | 0 | host `msg` names autoheal giving up (the exact text `kfs-autoheal` logs at CRITICAL) | `autoheal_gave_up:<container>` |
 | `rollback_failed` | critical | event | 0 | `deploys.jsonl` `outcome=rollback_failed` (the host "rollback failed" line is ignored, so one push per rollback) | `rollback_failed:<sha>` |
+| `deploy_interrupted` | critical | event | 0 | `deploys.jsonl` `outcome=interrupted`, written by the deploy's EXIT trap when it ended without an outcome (added 2026-10-17 from the spec 0005 review) | `deploy_interrupted:<sha>` |
 | `disk_low` | critical | condition | 0 | statvfs free under 5 GB | `disk_low` |
 | `catalog_disk_full` | critical | pair (`catalog_disk_ok`) | 0 | recorder `code` | code |
 | `recorder_write_failed` | critical | event | 0 | recorder `code` | code |
@@ -242,6 +243,7 @@ The alerter consumes `{env}:control:alerts` in its own consumer group `alerter` 
 | `container_unhealthy`, `service_down` | state and how long | Docker `GET /containers/json` through the proxy: `State`, `Status`, the `com.docker.compose.service` label |
 | deploy window | start and end | `host.jsonl` line `msg="deploy started"` (`sha`), ended by the next line in `deploys.jsonl` with that `sha` or 15 min |
 | `rollback_failed` | sha | `deploys.jsonl` outcome line |
+| `deploy_interrupted` | sha | `deploys.jsonl` outcome line |
 | mute badge | until | `until` of the newest executed mute or unmute result on `{env}:control:alerts:results` (the dashboard has no read on `*:alerts:*`), shown in `Europe/Amsterdam`; hidden once past |
 | mute in the engine | until | `{env}:alerts:mute` `until`, set by the alerter with that TTL, deleted on unmute |
 | daily note | counts by tier, still open, still failed | `alerts` rows with `opened_at` in the last 24 h, leaving out `rule='daily'` (test rows still count); rows with `resolved_at IS NULL`; rows with `delivery='failed'` |

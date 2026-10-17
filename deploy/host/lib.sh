@@ -25,7 +25,8 @@ kfs_log() {
     done
     line=$(jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg level "$level" \
         --arg process "${KFS_PROCESS:-kfs}" --arg msg "$msg" "${args[@]}" "$filter") || return
-    printf '%s\n' "$line"
+    # Never fatal: a deploy whose terminal side is gone keeps going (kfs-deploy ignores PIPE).
+    printf '%s\n' "$line" 2>/dev/null || true
     if [ -d "$KFS_LOG_DIR" ] && [ -w "$KFS_LOG_DIR" ]; then
         (umask 022 && printf '%s\n' "$line" >>"$KFS_LOG_DIR/host.jsonl") 2>/dev/null || true
     fi
@@ -147,10 +148,25 @@ KFS_PAUSED_BY_US=false
 KFS_WAITED_S=0
 KFS_PAUSE_RESULT_S=30
 
-# Unpause only a pause we sent (AC-11). Best effort: a failure is logged, and the trader stays
-# paused, which is safe and shows on the dashboard as `paused · by deploy`.
+# Unpause only a pause we sent (AC-11), and only while it is still ours: a Pause pressed on the
+# dashboard during the drain takes the pause over (`pause_source` becomes `dashboard`), and that
+# one stays. Best effort: a failure is logged, and the trader stays paused, which is safe and
+# shows on the dashboard.
 kfs_unpause_if_ours() {
     [ "$KFS_PAUSED_BY_US" = true ] || return 0
+    local state source
+    if ! state=$(kfs_control state); then
+        kfs_log ERROR "trader_state unreadable, the trader stays paused; press Resume on the dashboard"
+        return 0
+    fi
+    # Not paused (yet) still gets the unpause: a pause that was not confirmed may still be queued,
+    # and the stream keeps order, so the unpause lands after it. Unpausing an active trader is a
+    # no-op.
+    source=$(jq -r '.data.pause_source // ""' <<<"$state")
+    if [ "$(jq -r '.data.paused // false' <<<"$state")" = true ] && [ "$source" != deploy ]; then
+        kfs_log INFO "pause taken over, leaving it in place" source "$source"
+        return 0
+    fi
     if kfs_control unpause --source deploy --wait-result "$KFS_PAUSE_RESULT_S" >/dev/null; then
         kfs_log INFO "trader unpaused"
     else

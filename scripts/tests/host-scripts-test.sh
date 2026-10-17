@@ -115,27 +115,42 @@ check "healthy gate reads the one array form too" "0 " "$rc $out"
 # --- lib.sh: kfs_pause_and_wait, the deploy's drain (AC-8, AC-11) -----------------------------
 # kfs_control is replaced by a stub that answers from variables and records what was sent.
 calls="$work/calls"
+# A confirmed pause makes the trader paused by `deploy`; TAKEOVER=1 has you press Pause on the
+# dashboard during the wait; STATE_AFTER_RC is how the state read after the wait goes.
 kfs_control() {
     echo "$*" >>"$calls"
     case $1 in
-        state) [ "$STATE_RC" = 0 ] && echo "{\"data\":{\"paused\":$PAUSED}}"; return "$STATE_RC" ;;
-        pause) return "$PAUSE_RC" ;;
+        state)
+            local rc=$STATE_RC
+            [ "$WAITED" = 1 ] && rc=$STATE_AFTER_RC
+            [ "$rc" = 0 ] && echo "{\"data\":{\"paused\":$PAUSED,\"pause_source\":\"$SOURCE\"}}"
+            return "$rc"
+            ;;
+        pause)
+            [ "$PAUSE_RC" = 0 ] && PAUSED=true SOURCE=deploy
+            return "$PAUSE_RC"
+            ;;
         unpause) return 0 ;;
-        wait-flat) return "$FLAT_RC" ;;
+        wait-flat)
+            WAITED=1
+            [ "$TAKEOVER" = 1 ] && PAUSED=true SOURCE=dashboard
+            return "$FLAT_RC"
+            ;;
     esac
 }
 drain() { # drain <now> -> "<rc> <paused_by_us> <commands sent>"
     : >"$calls"
+    WAITED=0 SOURCE=${SOURCE:-} TAKEOVER=${TAKEOVER:-0} STATE_AFTER_RC=${STATE_AFTER_RC:-0}
     kfs_pause_and_wait "$1" 15m >/dev/null
     local rc=$?
     echo "$rc $KFS_PAUSED_BY_US $(cut -d' ' -f1 "$calls" | paste -sd, -)"
 }
-STATE_RC=0 PAUSED=false PAUSE_RC=0 FLAT_RC=0
+STATE_RC=0 PAUSED=false PAUSE_RC=0 FLAT_RC=0 SOURCE= TAKEOVER=0 STATE_AFTER_RC=0
 check "drain: pause, wait, flat" "0 true state,pause,wait-flat" "$(drain false)"
 STATE_RC=0 PAUSED=true PAUSE_RC=0 FLAT_RC=0
 check "drain: a pause already there is left alone and never lifted" "0 false state,wait-flat" "$(drain false)"
 STATE_RC=0 PAUSED=false PAUSE_RC=0 FLAT_RC=2
-check "drain: not flat in time lifts our pause" "$KFS_DRAIN_NOT_FLAT true state,pause,wait-flat,unpause" "$(drain false)"
+check "drain: not flat in time lifts our pause" "$KFS_DRAIN_NOT_FLAT true state,pause,wait-flat,state,unpause" "$(drain false)"
 STATE_RC=0 PAUSED=true PAUSE_RC=0 FLAT_RC=2
 check "drain: not flat with your pause sends no unpause" "$KFS_DRAIN_NOT_FLAT false state,wait-flat" "$(drain false)"
 STATE_RC=0 PAUSED=false PAUSE_RC=0 FLAT_RC=3
@@ -143,11 +158,16 @@ check "drain: Resume pressed during the wait aborts, nothing more sent" "$KFS_DR
 STATE_RC=1 PAUSED=false PAUSE_RC=0 FLAT_RC=0
 check "drain: no trader_state fails closed, no pause sent" "$KFS_DRAIN_NO_STATE false state" "$(drain false)"
 STATE_RC=0 PAUSED=false PAUSE_RC=1 FLAT_RC=0
-check "drain: an unconfirmed pause aborts and is lifted" "$KFS_DRAIN_PAUSE_FAILED true state,pause,unpause" "$(drain false)"
+check "drain: an unconfirmed pause aborts and is lifted (it may still be queued)" "$KFS_DRAIN_PAUSE_FAILED true state,pause,state,unpause" "$(drain false)"
 STATE_RC=1 PAUSED=false PAUSE_RC=0 FLAT_RC=0
 check "drain --now: no trader_state still pauses, no wait" "0 true state,pause" "$(drain true)"
 STATE_RC=0 PAUSED=false PAUSE_RC=1 FLAT_RC=0
 check "drain --now: an unconfirmed pause goes on and still counts as ours" "0 true state,pause" "$(drain true)"
+STATE_RC=0 PAUSED=false PAUSE_RC=0 FLAT_RC=2 TAKEOVER=1
+check "drain: a Pause you press during the wait is never lifted (review 2026-10-17)" "$KFS_DRAIN_NOT_FLAT true state,pause,wait-flat,state" "$(drain false)"
+STATE_RC=0 PAUSED=false PAUSE_RC=0 FLAT_RC=2 TAKEOVER=0 STATE_AFTER_RC=1
+check "drain: unreadable state after the wait leaves the pause in place" "$KFS_DRAIN_NOT_FLAT true state,pause,wait-flat,state" "$(drain false)"
+STATE_AFTER_RC=0
 : >"$calls"; KFS_PAUSED_BY_US=false; kfs_unpause_if_ours >/dev/null
 check "unpause only a pause we sent" "" "$(cat "$calls")"
 
@@ -189,6 +209,49 @@ mkdir -p /run/lock
 )
 check "autoheal: does nothing while a deploy holds the lock" "|0" "$(cat "$work/held.out")|$(wc -l <"$work/restarted" | tr -d ' ')"
 rm -f /run/lock/kfs-deploy.lock
+
+# --- kfs-deploy run: an outcome line on every way out, output kept in deploy-run.log ----------
+# (review 2026-10-17: a deploy cut off from the laptop must still leave a trace and an alert.)
+sha=1111111111111111111111111111111111111111
+droot="$work/deploy-root"
+mkdir -p "$droot/releases/$sha/deploy" "$work/dlog" "$work/dsecrets"
+cp -R /host "$droot/releases/$sha/deploy/host"
+touch "$droot/releases/$sha/compose.yaml" "$droot/releases/$sha/compose.vps.yaml"
+printf 'x' >"$work/dsecrets/ghcr_token"
+printf 'TRADING_ENV=demo\n' >"$work/denv"
+cat >"$work/bin/df" <<'STUB'
+#!/bin/sh
+printf 'Avail\n999999999999\n'
+STUB
+cat >"$work/bin/docker" <<STUB
+#!/bin/sh
+case "\$*" in
+    *"config --images"*) echo "ghcr.io/x/kfs-trader:$sha" ;;
+    "manifest inspect"*) [ -e "$work/hang" ] && exec sleep 60; exit 1 ;;
+esac
+STUB
+chmod +x "$work/bin/df" "$work/bin/docker"
+deploy() {
+    KFS_ROOT=$droot KFS_LOG_DIR=$work/dlog KFS_SECRETS_DIR=$work/dsecrets KFS_ENV_FILE=$work/denv \
+        "$droot/releases/$sha/deploy/host/kfs-deploy" run "$sha" >/dev/null 2>&1
+}
+deploy; rc=$?
+check "kfs-deploy: a refused preflight exits 4 with one outcome line" "4 preflight_refused" \
+    "$rc $(jq -r .outcome "$work/dlog/deploys.jsonl" | paste -sd, -)"
+check "kfs-deploy: its output is kept in deploy-run.log" "1" "$(grep -c 'preflight refused' "$work/dlog/deploy-run.log")"
+touch "$work/hang"
+# Started directly (not through the function), so $! is the deploy's own bash.
+KFS_ROOT=$droot KFS_LOG_DIR=$work/dlog KFS_SECRETS_DIR=$work/dsecrets KFS_ENV_FILE=$work/denv \
+    "$droot/releases/$sha/deploy/host/kfs-deploy" run "$sha" >/dev/null 2>&1 &
+pid=$!
+for _ in $(seq 1 50); do pgrep -f "sleep 60" >/dev/null && break; sleep 0.1; done
+# bash acts on the TERM once its foreground command returns, so end the hung one too.
+kill -TERM "$pid"; kill $(pgrep -f "sleep 60") 2>/dev/null || true
+wait "$pid"; rc=$?
+check "kfs-deploy: a deploy killed halfway records interrupted" "143 preflight_refused,interrupted" \
+    "$rc $(jq -r .outcome "$work/dlog/deploys.jsonl" | paste -sd, -)"
+check "kfs-deploy: and logs a CRITICAL line saying so" "CRITICAL" \
+    "$(grep 'deploy ended without an outcome' "$work/dlog/host.jsonl" | jq -r .level)"
 
 rm -rf "$work"
 if [ "$fails" -eq 0 ]; then echo PASS; else echo "FAIL: $fails checks"; exit 1; fi
