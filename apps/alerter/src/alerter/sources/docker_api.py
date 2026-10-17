@@ -69,7 +69,10 @@ class DockerApi:
         raw = state.get("StartedAt") if isinstance(state, dict) else None
         if not isinstance(raw, str) or raw.startswith("0001-"):
             return None
-        return _rfc3339(raw)
+        try:
+            return _rfc3339(raw)
+        except ValueError:
+            return None
 
     async def containers(self, project: str) -> list[Container]:
         """Every container of ``project``, running or not, without one shot ``compose run`` containers."""
