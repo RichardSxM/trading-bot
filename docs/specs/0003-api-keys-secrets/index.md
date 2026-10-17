@@ -1,7 +1,7 @@
 # 0003. Keep secrets in files that only their services can read, and prove they never leak
 
 **Date**: 2026-10-01
-**Status**: In Progress
+**Status**: Accepted
 
 ## Summary
 

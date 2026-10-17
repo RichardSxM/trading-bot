@@ -8,7 +8,7 @@ Steps you may run to prove the build against [index.md](index.md), then the runb
 - [x] **2. Cut over the existing database.** `docker compose up -d postgres`, then `scripts/set-pg-owner-password.sh`, then `docker compose run --rm migrate`: role setup and Alembic succeed. (AC-11)
 - [x] **3. Stack boots on files.** `docker compose up -d`: every service healthy; `docker compose logs | grep 'secret loaded'` shows one line per secret for migrate (4), trader (2), dashboard (2), and backup (4), each with an `fp`; postgres logs none. (AC-1, AC-3)
 - [x] **4. Nothing in the environment.** `docker compose config | grep -iE 'password|_key|secret' ` shows only file paths and `*_FILE` names, no values; `for s in postgres migrate trader dashboard backup; do docker inspect $(docker compose ps -aq $s) --format '{{json .Config.Env}}'; done` shows no password or key. (AC-1)
-- [ ] **5. Only the listed services get each file, and each can read it.** `docker compose exec dashboard ls /run/secrets` lists `postgres_password redis_password`; `recorder` has no `/run/secrets`; `trader` has no Kraken file in demo. For every Python service and backup, `docker compose exec <service> sh -c 'for f in /run/secrets/*; do test -r "$f" || echo "unreadable $f"; done; id -u'` prints only `10001` (or the backup's uid). Run this on the laptop and again on the VPS. (AC-1, AC-14)
+- [x] **5. Only the listed services get each file, and each can read it.** `docker compose exec dashboard ls /run/secrets` lists `postgres_password redis_password`; `recorder` has no `/run/secrets`; `trader` has no Kraken file in demo. For every Python service and backup, `docker compose exec <service> sh -c 'for f in /run/secrets/*; do test -r "$f" || echo "unreadable $f"; done; id -u'` prints only `10001` (or the backup's uid). Run this on the laptop and again on the VPS. (AC-1, AC-14) _Done 2026-10-17, VPS (release 120a08b, about 15:55 UTC) and laptop (about 16:00 UTC), same result on both: trader `postgres_password redis_password`, no Kraken file; dashboard those two plus its three login files from spec 0004 (`dashboard_password_hash`, `dashboard_session_key`, `dashboard_totp_seed`); alerter and backup their spec 0013 and 0005 files; recorder and compactor no `/run/secrets`. Every file readable, `id -u` 10001 in every service, backup included._
 - [x] **6. Missing secret fails closed.** Move `secrets/postgres_dashboard_password` away and `docker compose up dashboard`: exit 1, one line with `code: secret_unavailable`, `reason: missing`. Repeat with an empty file (`empty`), a directory (`not_a_file`), `abc` (`too_short`), and `aaaaaaaa bbbbbbbb` (`whitespace`). Then empty `secrets/redis_dashboard_password` and recreate `redis`: it exits 1 with `secret_unavailable` instead of starting with an empty password. Restore it. (AC-2)
 - [x] **7. Redaction.** The unit tests in `packages/core/tests/test_secrets.py` log a loaded value in a message, a field, an exception, and URL quoted: every line shows `[REDACTED:<name>]`. (AC-5)
 - [x] **8. Env guard everywhere.** `docker compose run --rm --no-deps -e TRADING_ENV=live -e KRAKEN_FUTURES_API_KEY=x trader python -m trader.main`: `env_guard_refused`, exit 1. (AC-4)
@@ -19,6 +19,20 @@ Steps you may run to prove the build against [index.md](index.md), then the runb
 - [x] **13. Backup gets its keys.** `docker compose logs backup`: four `secret loaded` lines, then `backup not configured`. (AC-12)
 - [x] **14. gitleaks.** Put a fake key in a scratch file, `git add` it, `git commit`: the hook blocks it. Push a branch with one to see CI fail, then delete the branch. (AC-13) _Done 2026-10-01: the hook blocked a random fake key (`kraken-api-secret`); pushed with `--no-verify` on `scratch/gitleaks-canary`, CI run 36931484359 failed at gitleaks (`leaks found: 1`, checksum `OK`), branch deleted. CI run 36931387463 on `feat/api-keys-secrets` 5ee2fc3 passed every step, canary included._
 - [x] **15. History scan recorded.** [rationale.md](rationale.md#history-scan) has the scan result. (AC-13)
+
+### `/check verify`, 2026-10-17: PASS, live key checks carried to feature 19
+
+Rechecked live where it was cheap, the rest from the recorded steps above:
+
+- **AC-1 on the VPS.** No container's environment holds a password, key, secret, or token value (`docker inspect` over all nine; the only name match is docker-proxy's `SECRETS=0`, haproxy's API switch). `kfs-compose config` shows only secret names and file paths.
+- **AC-3, AC-12 on the VPS.** One `secret loaded` line with an `fp` per secret: trader 2, dashboard 5, backup 4, alerter 5. The backup is configured on the VPS now (spec 0005), so it no longer logs `backup not configured`.
+- **AC-4.** Demo with `KRAKEN_FUTURES_API_KEY=x`: `env_guard_refused`, exit 1. In live, step 8's command now stops one check earlier, at `invalid configuration, refusing to start` (`KRAKEN_KEY_ROTATED_ON is required in live`), also exit 1; still fail closed.
+- **AC-2, AC-5, AC-6, AC-9.** `test_secrets.py` and `test_env_guard.py` 49 passed; trader key and rotation tests 15 passed; `pytest -m canary` 4 passed (78 s).
+- **AC-10 on the VPS.** No login: `GET` gets `NOPERM`, `PING` gets `PONG`. Dashboard user: `SET`, `FLUSHDB`, and `XADD` outside `*:control` get `NOPERM` (the `*:control` write was not repeated on the VPS, since the trader consumes that stream). Trader user: `FLUSHALL`, `CONFIG GET`, `ACL LIST` get `NOPERM`. The trader logs show no `NOPERM` or auth error since its last start.
+- **AC-7.** `ALLOWED_EXEC_CLIENTS[("trader", "live")]` is still empty, and `futures_exec_client` is the one factory.
+- **AC-13.** `pre-commit run gitleaks --all-files` passes.
+
+**Carried to feature 19 (no live keys exist yet):** the Kraken key creation checklist below, and the `kraken account confirmed` path of AC-8 (the timeout path is proven by the canary test). Run them when the live key is created.
 
 ## Runbook (AC-15)
 
