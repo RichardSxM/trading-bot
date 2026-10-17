@@ -126,6 +126,8 @@ class LogReader:
         self._env = env
         self._clock = clock
         self._positions: dict[str, int] = {}
+        # Services whose position moved on but whose Redis cursor write failed; retried next pass.
+        self._unsaved: set[str] = set()
         self._seen: dict[tuple[str, int, str], int] = {}
         self.ok_at: datetime | None = None
 
@@ -134,37 +136,47 @@ class LogReader:
         return f"{self._env}:alerts:cursor:{service}"
 
     async def poll(self, containers: Iterable[Container]) -> list[Observation]:
-        """New lines of every readable container, oldest first per service.
+        """New lines of every readable container, oldest first per service (AC-3).
 
-        Raises the first Docker or Redis error after reading what it could, so the pass does not
-        count as fresh and the watchdog stops pinging (AC-2).
+        Every line read is returned, even when another container's read or a cursor write failed
+        in the same pass, so a critical line is never lost to someone else's error. A failed pass
+        leaves ``ok_at`` as it was, so the watchdog stops pinging once it goes stale (AC-2).
         """
         now_ns = _ns(self._clock())
         found: list[Observation] = []
-        failure: DockerApiError | RedisError | None = None
+        failed = False
         for container in containers:
             if container.service in SKIPPED:
                 continue
+            error: DockerApiError | RedisError | None
             try:
-                found += await self._read(container, now_ns)
+                lines, error = await self._read(container, now_ns)
+                found += lines
             except (DockerApiError, RedisError) as exc:
+                error = exc
+            if error is not None:
                 log.warning(
                     "log read failed",
                     extra={
-                        "fields": {"code": "alerter_log_read_failed", "service": container.service, "error": str(exc)}
+                        "fields": {"code": "alerter_log_read_failed", "service": container.service, "error": str(error)}
                     },
                 )
-                failure = failure or exc
+                failed = True
         self._forget(now_ns)
-        if failure is not None:
-            raise failure
-        self.ok_at = self._clock()
+        if not failed:
+            self.ok_at = self._clock()
         return found
 
-    async def _read(self, container: Container, now_ns: int) -> list[Observation]:
+    async def _read(self, container: Container, now_ns: int) -> tuple[list[Observation], RedisError | None]:
+        """A container's new lines, and the cursor write's error when it failed.
+
+        Raises a Docker or Redis error only before anything is marked seen, so the next pass
+        reads the same lines again.
+        """
         service = container.service
         cursor = await self._position(service, now_ns)
         raw = await self._api.logs(container.id, ns_to_since(cursor))
+        first = service not in self._positions
         found = []
         latest = cursor
         for text in demux(raw):
@@ -177,10 +189,18 @@ class LogReader:
             self._seen[key] = now_ns
             latest = max(latest, line.ts_ns)
             found.append(observe(service, line))
-        if latest != cursor or service not in self._positions:
-            await self._cursors.set(self.cursor_key(service), ns_to_rfc3339(latest), ex=CURSOR_TTL_S)
         self._positions[service] = latest
-        return found
+        if latest == cursor and not first and service not in self._unsaved:
+            return found, None
+        # The position in memory has moved on; the Redis copy only matters after a restart, so a
+        # failed write keeps the lines and is tried again on the next pass.
+        try:
+            await self._cursors.set(self.cursor_key(service), ns_to_rfc3339(latest), ex=CURSOR_TTL_S)
+        except RedisError as exc:
+            self._unsaved.add(service)
+            return found, exc
+        self._unsaved.discard(service)
+        return found, None
 
     async def _position(self, service: str, now_ns: int) -> int:
         known = self._positions.get(service)

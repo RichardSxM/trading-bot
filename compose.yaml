@@ -445,24 +445,23 @@ services:
     mem_limit: 128m
 
   docker-proxy:
-    # The alerter's only door to Docker (spec 0013, *Security model*): GET on /containers
-    # (listing, inspect, logs) and nothing else, POST included. The socket is mounted read only
-    # and the proxy sits alone with the alerter on the internal dockerproxy network.
+    # The alerter's only door to Docker (spec 0013, *Security model*): GET on the container
+    # listing, inspect, and logs and nothing else. Our own haproxy template replaces the image's
+    # allow list, whose CONTAINERS=1 would also allow archive and export (other containers'
+    # files, secrets included); see docker/docker-proxy/haproxy.cfg.template. The socket is
+    # mounted read only and the proxy sits alone with the alerter on the internal dockerproxy network.
     image: tecnativa/docker-socket-proxy:v0.5.0
     restart: unless-stopped
     logging: *logging
-    environment:
-      CONTAINERS: 1
-      POST: 0
-      # On by default in the image; off here.
-      EVENTS: 0
-      PING: 0
-      VERSION: 0
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./docker/docker-proxy/haproxy.cfg.template:/usr/local/etc/haproxy/haproxy.cfg.template:ro
     networks:
       - dockerproxy
     read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     # haproxy renders its config into /tmp at start.
     tmpfs:
       - /tmp

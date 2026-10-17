@@ -59,6 +59,8 @@ FILL_LOOKUPS: Final = 6
 # Test pushes, loudest first, so the critical one is on the lock screen by the time you look.
 ALL_TIERS: Final = (Tier.CRITICAL, Tier.WARNING, Tier.INFO)
 RESTART_AFTER_S: Final = 5.0
+# How long the checks wait for the stored episodes before starting from memory alone (AC-9, AC-15).
+LOAD_WAIT_S: Final = 15.0
 DEFAULT_LIVENESS_FILE: Final = Path("/run/heartbeat/alive")
 
 Clock = Callable[[], datetime]
@@ -93,6 +95,7 @@ class Alerter:
         mute: MuteKey | None = None,
         daily_at: str = "08:00",
         daily_tz: str = "Europe/Amsterdam",
+        load_wait_s: float = LOAD_WAIT_S,
     ) -> None:
         self._env = env
         self._sleep = sleep
@@ -103,6 +106,7 @@ class Alerter:
         self._heartbeat_key = snapshot_key(env, "heartbeat")
         self._state_key = snapshot_key(env, "trader_state")
         self._trader_down_s = trader_down_s
+        self._load_wait_s = load_wait_s
         self._watchdog = watchdog
         self._docker = docker
         self._host = host
@@ -189,12 +193,12 @@ class Alerter:
         self.apply(self._engine.check(disk_check(free, self._disk_free_gb, self._clock())))
 
     async def read_logs(self) -> None:
-        """Feed every new container line to the engine (AC-3, AC-7); nothing on a failed pass."""
+        """Feed every new container line to the engine (AC-3, AC-7); nothing when the listing fails."""
         if self._docker is None:
             return
         try:
             observations = await self._docker.lines()
-        except (DockerApiError, RedisError) as exc:
+        except DockerApiError as exc:
             log.warning("log pass failed", extra={"fields": {"code": "alerter_logs_failed", "error": str(exc)}})
             return
         for observation in observations:
@@ -368,10 +372,29 @@ class Alerter:
     # The process -----------------------------------------------------------------------------
 
     async def run(self) -> None:
-        """Run every loop until cancelled; the host files are read first, so a deploy still under way
-        holds from the first pass of the other loops (AC-11)."""
-        await self.read_host()
-        loops: list[tuple[str, Callable[[], Awaitable[None]], float]] = [
+        """Run every loop until cancelled.
+
+        The checks wait up to ``load_wait_s`` for the stored episodes, so a condition still open
+        across a restart joins its stored episode instead of pushing again (AC-9); with Postgres
+        still away after that, they start from memory and alerts keep flowing (AC-15). The host
+        files are read next, so a deploy still under way holds from the first pass of the other
+        loops (AC-11).
+        """
+        async with asyncio.TaskGroup() as group:
+            group.create_task(_supervise("store", self._store.run))
+            if not await self._store.wait_loaded(self._load_wait_s):
+                log.warning(
+                    "alerts not loaded, checking from memory",
+                    extra={"fields": {"code": "alerts_load_waited", "waited_s": self._load_wait_s}},
+                )
+            await self.read_host()
+            if self._commands is not None:
+                group.create_task(_supervise("commands", self.serve_commands))
+            for name, step, every in self._loops():
+                group.create_task(_supervise(name, _every(step, every)))
+
+    def _loops(self) -> list[tuple[str, Callable[[], Awaitable[None]], float]]:
+        return [
             ("heartbeat", self.check_heartbeat, CHECK_S),
             ("entry_blocks", self.check_entry_blocks, BLOCKS_S),
             ("logs", self.read_logs, LOGS_S),
@@ -385,12 +408,6 @@ class Alerter:
             ("daily", self.daily.step, DAILY_S),
             ("liveness", _sync(self.touch_liveness), LIVENESS_S),
         ]
-        async with asyncio.TaskGroup() as group:
-            group.create_task(_supervise("store", self._store.run))
-            if self._commands is not None:
-                group.create_task(_supervise("commands", self.serve_commands))
-            for name, step, every in loops:
-                group.create_task(_supervise(name, _every(step, every)))
 
 
 def _sync(step: Callable[[], None]) -> Callable[[], Awaitable[None]]:

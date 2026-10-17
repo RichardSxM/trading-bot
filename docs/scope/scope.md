@@ -265,7 +265,7 @@ spec [0013](../specs/0013-phone-alerts-health-checks/index.md) · code in `apps/
   - [x] Phone polish and dashboard: live fills, mute and test commands, Activity feed, daily note (AC-8, AC-12, AC-16, AC-18)
 - [ ] Verify it: `/check verify phone alerts & health checks`
 - [ ] Test it: `/test phone alerts & health checks`
-- [ ] Review it (fresh model): `/check review phone alerts & health checks`
+- [x] Review it (fresh model): `/check review phone alerts & health checks`
 - [ ] Document it: `/document phone alerts & health checks`
 
 ## Slice 6: The strategy lab

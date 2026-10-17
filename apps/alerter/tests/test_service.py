@@ -1,8 +1,9 @@
 """covers: spec 0013 AC-1 (trader down from the heartbeat, its note, nothing while Redis is down), AC-2 (no
-ping while the Redis read is stale), AC-9 (a restart pushes nothing twice), AC-13 (dry run), AC-14 (/fail
-while a push fails), AC-15 (a push never waits for Postgres)."""
+ping while the Redis read is stale), AC-9 (a restart pushes nothing twice, even with a slow load), AC-13
+(dry run), AC-14 (/fail while a push fails), AC-15 (a push never waits for Postgres)."""
 
 import asyncio
+import contextlib
 
 from alerter.service import Alerter
 from alerter.store import StoreWriter
@@ -195,6 +196,80 @@ def test_a_restart_with_the_episode_stored_pushes_nothing_twice(tmp_path):
 
     assert len(sent_first.sent) == 1
     assert sent_second.sent == []
+
+
+class SlowLoad(FakeStore):
+    """Postgres answers the load only from its ``answer_from``th call on."""
+
+    def __init__(self, stored, answer_from: int) -> None:
+        super().__init__()
+        self.rows = stored
+        self.loads = 0
+        self.answer_from = answer_from
+
+    def load_active(self, failed_since):
+        self.loads += 1
+        self.down = self.loads < self.answer_from
+        try:
+            return super().load_active(failed_since)
+        finally:
+            self.down = False
+
+
+def stored_trader_down(tmp_path):
+    """The rows of a first alerter that pushed ``trader_down`` and stored it, and its clock."""
+
+    async def run():
+        first, clock, _, _, writer, store, _ = make(tmp_path)
+        await writer.load_once()
+        clock.advance(45)
+        await first.check_heartbeat()
+        await settle(first)
+        while writer.pending:
+            await writer.flush_one()
+        return store.rows, clock
+
+    return asyncio.run(run())
+
+
+async def run_briefly(alerter, seconds=0.3):
+    task = asyncio.create_task(alerter.run())
+    await asyncio.sleep(seconds)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    await settle(alerter)
+
+
+def test_a_restart_waits_for_a_slow_load_and_pushes_nothing_twice(tmp_path):
+    rows, clock = stored_trader_down(tmp_path)
+
+    async def run():
+        store = SlowLoad(rows, answer_from=3)  # two failed loads first
+        second, clock2, redis, sent, *_ = make(tmp_path, store=store, clock=Clock(clock()))
+        redis.values[KEY] = encode(int(clock2().timestamp() - 600) * 1_000_000_000, {"state": "running"})
+        await run_briefly(second)
+        return sent, store
+
+    sent, store = asyncio.run(run())
+
+    assert store.loads == 3
+    assert sent.sent == []
+
+
+def test_with_postgres_still_down_the_checks_start_after_the_wait_and_push(tmp_path):
+    async def run():
+        store = FakeStore()
+        store.down = True
+        alerter, clock, redis, sent, *_ = make(tmp_path, store=store)
+        alerter._load_wait_s = 0.05
+        redis.values[KEY] = encode(int(clock().timestamp() - 600) * 1_000_000_000, {"state": "running"})
+        await run_briefly(alerter)
+        return sent
+
+    sent = asyncio.run(run())
+
+    assert [p.episode.rule for p in sent.sent] == ["trader_down"]
 
 
 def test_the_liveness_file_is_touched(tmp_path):

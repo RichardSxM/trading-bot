@@ -21,7 +21,7 @@
 set -euo pipefail
 
 # The files a release needs on the VPS. No app code: that lives in the images.
-BUNDLE=(compose.yaml compose.vps.yaml compose.live.yaml docker/redis docker/backup deploy)
+BUNDLE=(compose.yaml compose.vps.yaml compose.live.yaml docker/redis docker/backup docker/docker-proxy deploy)
 KFS_HOST=${KFS_HOST:-kfs-vps}
 
 die() {

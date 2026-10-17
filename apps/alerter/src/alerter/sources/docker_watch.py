@@ -38,7 +38,7 @@ class DockerWatch:
         return await self._api.containers(self._project)
 
     async def lines(self) -> list[Observation]:
-        """Every new line of the project's containers. Raises ``DockerApiError`` or ``RedisError``."""
+        """Every new line of the project's containers. Raises ``DockerApiError`` when the listing fails."""
         return await self._reader.poll(await self.containers())
 
     async def states(self) -> tuple[list[Container], dict[str, datetime]]:

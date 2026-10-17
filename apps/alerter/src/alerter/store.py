@@ -63,6 +63,7 @@ class StoreWriter:
         self._retry_s = retry_s
         self._queue: OrderedDict[EpisodeKey, Episode] = OrderedDict()
         self._wake = asyncio.Event()
+        self._loaded = asyncio.Event()
         self.loaded = False
 
     def put(self, episode: Episode) -> None:
@@ -91,6 +92,14 @@ class StoreWriter:
                 if not await self.flush_one():
                     await asyncio.sleep(self._retry_s)
 
+    async def wait_loaded(self, timeout_s: float) -> bool:
+        """Wait up to ``timeout_s`` for the first load; False when it has not happened yet."""
+        try:
+            await asyncio.wait_for(self._loaded.wait(), timeout_s)
+        except TimeoutError:
+            return False
+        return True
+
     async def load_once(self) -> bool:
         """Load open and recent failed episodes into the engine; False when Postgres is unavailable."""
         now = self._clock()
@@ -108,6 +117,7 @@ class StoreWriter:
         for episode in stale:
             self.put(replace(episode, resolved_at=now))
         self.loaded = True
+        self._loaded.set()
         log.info(
             "alerts loaded",
             extra={"fields": {"code": "alerts_loaded", "episodes": len(stored), "closed_stale": len(stale)}},
