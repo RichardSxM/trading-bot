@@ -4,10 +4,22 @@ storage conditions), AC-9 (repeats bump, pairs resolve), and AC-10 (the hourly s
 Pure: no clock, no I/O.
 """
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 from trading_core.alerts.engine import AlertEngine, EngineConfig
-from trading_core.alerts.model import CheckResult, Decision, Delivery, Episode, Observation, Push, PushReason, Tier
+from trading_core.alerts.model import (
+    CheckResult,
+    Decision,
+    Delivery,
+    Episode,
+    Hold,
+    HoldKind,
+    Observation,
+    Push,
+    PushReason,
+    Tier,
+)
 
 NOW = datetime(2026, 10, 16, 3, 0, tzinfo=UTC)
 CONFIG = EngineConfig(env="demo")
@@ -151,6 +163,28 @@ def test_login_failures_spread_over_more_than_ten_minutes_open_nothing():
     assert all(d.pushes == () for d in decisions)
 
 
+def test_login_failures_from_another_service_never_burst():
+    # covers: AC-7, the burst counts the dashboard's login lines only
+    engine = AlertEngine(CONFIG)
+    decisions = [
+        engine.observe(line("trader", "login_failed", "WARNING", at=NOW + timedelta(seconds=10 * i))) for i in range(6)
+    ]
+
+    assert all(d.pushes == () for d in decisions)
+    assert all(e.rule != "login_failed_burst" for d in decisions for e in d.store)
+
+
+def test_five_login_failures_exactly_ten_minutes_apart_still_burst():
+    # covers: AC-7, the window is "within any 10 min", so a line exactly 600 s old still counts
+    engine = AlertEngine(CONFIG)
+    decisions = [
+        engine.observe(line("dashboard", "login_failed", "WARNING", at=NOW + timedelta(seconds=150 * i)))
+        for i in range(5)
+    ]
+
+    assert [len(d.pushes) for d in decisions] == [0, 0, 0, 0, 1]
+
+
 def test_service_down_waits_two_minutes():
     engine = AlertEngine(CONFIG)
     down = CheckResult("service_down", ok=False, at=NOW, subject="clock", fields={"state": "exited"})
@@ -255,6 +289,97 @@ def test_test_pushes_ignore_the_cap():
     decision = engine.test_episodes("cmd", [Tier.WARNING, Tier.INFO], NOW)
 
     assert len(decision.pushes) == 2
+
+
+def gap(i, at=NOW):
+    return line("recorder", "book_gap", "WARNING", at=at, kind=f"k{i}", duration_s=90)
+
+
+def sent_warning(at):
+    """An open warning condition last pushed at ``at``, as a restart would load it."""
+    opened = AlertEngine(CONFIG).check(CheckResult("container_unhealthy", ok=False, at=at, subject=f"c{at.minute}"))
+    return replace(opened.store[0], delivery=Delivery.SENT, sends=1, last_sent_at=at)
+
+
+def storms(decision):
+    return [p for p in decision.pushes if p.episode.rule == "alert_storm"]
+
+
+def test_renotifies_count_toward_the_cap():
+    # covers: AC-10, re-notifications count
+    engine = AlertEngine(EngineConfig(env="demo", hourly_cap=3))
+    hour_ago = NOW - timedelta(hours=1)
+    engine.load([sent_warning(hour_ago), sent_warning(hour_ago + timedelta(minutes=1))])
+    renotified = engine.tick(NOW + timedelta(minutes=2))
+    assert [p.reason for p in renotified.pushes] == [PushReason.RENOTIFY, PushReason.RENOTIFY]
+    sent(engine, renotified, NOW + timedelta(minutes=2))
+
+    decision = engine.observe(gap(0, NOW + timedelta(minutes=3)))
+
+    assert len(storms(decision)) == 1
+
+
+def test_critical_pushes_never_count_toward_the_cap():
+    # covers: AC-10, criticals are never capped and don't count
+    engine = AlertEngine(EngineConfig(env="demo", hourly_cap=3))
+    for i in range(5):
+        decision = engine.observe(line("trader", "order_rejected", "CRITICAL", event_key=f"stop_not_accepted:S{i}"))
+        assert len(decision.pushes) == 1
+        sent(engine, decision, NOW)
+
+    warnings = [engine.observe(gap(i)) for i in range(2)]
+
+    assert [[p.episode.rule for p in d.pushes] for d in warnings] == [["book_gap_long"], ["book_gap_long"]]
+
+
+def test_muted_pushes_never_count_toward_the_cap():
+    # covers: AC-10, held and muted rows don't count; AC-12, the unmute sends one summary
+    engine = AlertEngine(EngineConfig(env="demo", hourly_cap=3))
+    engine.open_hold(Hold(HoldKind.MUTE, "m1", NOW, NOW + timedelta(hours=1)))
+
+    muted = [engine.observe(gap(i)) for i in range(10)]
+    closed = engine.close_hold(HoldKind.MUTE, NOW + timedelta(minutes=1))
+
+    assert all(d.pushes == () for d in muted)
+    assert [p.reason for p in closed.pushes] == [PushReason.SUMMARY]
+
+
+def test_pushes_admitted_but_not_yet_reported_hold_their_place():
+    # covers: AC-10, a push still in flight counts, so a burst can't slip past the cap
+    engine = AlertEngine(EngineConfig(env="demo", hourly_cap=3))
+
+    decisions = [engine.observe(gap(i)) for i in range(3)]
+
+    assert [p.episode.rule for d in decisions for p in d.pushes] == ["book_gap_long", "book_gap_long", "alert_storm"]
+
+
+def test_a_capped_summary_leaves_what_it_covered_capped():
+    # covers: AC-10, summaries count, and a capped summary's episodes are never pushed later
+    engine = AlertEngine(EngineConfig(env="demo", hourly_cap=2))
+    sent(engine, engine.observe(gap(0)), NOW)
+    engine.open_hold(Hold(HoldKind.MUTE, "m1", NOW, NOW + timedelta(hours=1)))
+    engine.observe(gap(1, NOW + timedelta(minutes=1)))
+
+    closed = engine.close_hold(HoldKind.MUTE, NOW + timedelta(minutes=2))
+
+    assert [p.episode.rule for p in closed.pushes] == ["alert_storm"]
+    covered = [e for e in closed.store if e.fingerprint == "book_gap_long:k1"]
+    assert [e.delivery for e in covered] == [Delivery.CAPPED]
+
+
+def test_a_capped_renotify_is_capped_once_not_on_every_tick():
+    # covers: AC-10, a capped push is never offered again, so the storm counts it once
+    engine = AlertEngine(EngineConfig(env="demo", hourly_cap=2))
+    engine.load([sent_warning(NOW - timedelta(hours=1))])
+    sent(engine, engine.observe(gap(0)), NOW)
+    sent(engine, engine.observe(gap(1)), NOW)  # the storm push
+
+    first = engine.tick(NOW + timedelta(seconds=5))
+    second = engine.tick(NOW + timedelta(seconds=10))
+
+    assert [e.delivery for e in first.store if e.rule == "container_unhealthy"] == [Delivery.CAPPED]
+    assert second.store == ()
+    assert second.pushes == ()
 
 
 FILL_ROW = {

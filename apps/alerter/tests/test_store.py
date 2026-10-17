@@ -134,3 +134,21 @@ def test_a_new_episode_waits_behind_its_older_resolved_one():
 
     assert store.rows[("fp", old.opened_at)].resolved_at == NOW
     assert store.rows[("fp", NOW)] == new
+
+
+def test_the_queue_holds_a_thousand_episodes():
+    # covers: AC-15, "bounded at 1,000"
+    assert store_module.QUEUE_MAX == 1000
+
+
+def test_a_full_queue_with_no_info_drops_the_oldest(monkeypatch):
+    # covers: AC-15, with no info row left the oldest row goes
+    monkeypatch.setattr(store_module, "QUEUE_MAX", 2)
+    store = FakeStore()
+    writer = StoreWriter(store, AlertEngine(EngineConfig(env="demo")), Clock())
+
+    for episode in (_episode("w1"), _episode("c1", Tier.CRITICAL), _episode("w2")):
+        writer.put(episode)
+
+    asyncio.run(_drain(writer))
+    assert sorted(e.fingerprint for e in store.saves) == ["c1", "w2"]

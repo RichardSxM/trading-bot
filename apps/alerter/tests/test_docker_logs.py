@@ -12,7 +12,7 @@ from datetime import timedelta
 import httpx
 import pytest
 
-from alerter.sources.containers import container_checks
+from alerter.sources.containers import backup_health, container_checks
 from alerter.sources.docker_api import (
     Container,
     DockerApi,
@@ -379,3 +379,85 @@ def test_unhealthy_containers_fail_and_removed_ones_pass():
     assert not results[("container_unhealthy", "backup")].ok
     assert results[("container_unhealthy", "dashboard")].ok  # gone from the listing
     assert ("container_unhealthy", "migrate") not in results
+
+
+def test_a_running_and_a_stopped_container_of_one_service_count_as_running():
+    results = by(container_checks([c("recorder", "exited"), c("recorder")], NOW))
+
+    assert results[("service_down", "recorder")].ok
+    assert results[("service_down", "recorder")].fields == {"state": "exited, running"}
+
+
+def test_a_container_still_starting_is_not_unhealthy():
+    results = by(container_checks([c("backup", status="Up 5 seconds (health: starting)")], NOW))
+
+    assert results[("container_unhealthy", "backup")].ok
+    assert backup_health([c("backup", status="Up 5 seconds (health: starting)")]) == "starting"
+
+
+# The Docker API's answers ---------------------------------------------------------------------
+
+
+def api(answer):
+    return DockerApi(httpx.AsyncClient(transport=httpx.MockTransport(answer)), "http://docker-proxy:2375")
+
+
+def test_a_proxy_that_cannot_be_reached_raises_a_docker_api_error():
+    def refuse(request):
+        raise httpx.ConnectError("refused")
+
+    with pytest.raises(DockerApiError, match="ConnectError"):
+        asyncio.run(api(refuse).containers("kfs"))
+
+
+@pytest.mark.parametrize(
+    ("call", "body", "match"),
+    [
+        (lambda a: a.inspect("x"), [], "not an object"),
+        (lambda a: a.containers("kfs"), {"oops": 1}, "not a list"),
+        (lambda a: a.project_of("x"), {"Config": {"Labels": {}}}, "no com.docker.compose.project label"),
+    ],
+)
+def test_answers_of_the_wrong_shape_raise_a_docker_api_error(call, body, match):
+    with pytest.raises(DockerApiError, match=match):
+        asyncio.run(call(api(lambda request: httpx.Response(200, json=body))))
+
+
+def test_listing_items_that_are_not_containers_are_skipped():
+    body = ["junk", {"Id": "t1", "State": "running", "Status": "Up", "Labels": _labels("trader")}, {"Id": "x"}]
+
+    found = asyncio.run(api(lambda request: httpx.Response(200, json=body)).containers("kfs"))
+
+    assert [(f.id, f.service) for f in found] == [("t1", "trader")]
+
+
+@pytest.mark.parametrize("state", [{"StartedAt": "0001-01-01T00:00:00Z"}, {}, "running"])
+def test_no_usable_start_time_reads_as_none(state):
+    answer = api(lambda request: httpx.Response(200, json={"State": state}))
+
+    assert asyncio.run(answer.started_at("x")) is None
+
+
+def test_states_take_the_latest_start_of_a_service_with_two_running_containers():
+    async def run():
+        docker = FakeDocker()
+        docker.containers.append({"Id": "t2", "State": "running", "Status": "Up", "Labels": _labels("trader")})
+        docker.started["t2"] = "2026-10-16T02:30:00Z"
+        watch, _, _, _ = make(docker)
+        return await watch.states()
+
+    _, starts = asyncio.run(run())
+
+    assert starts["trader"] == NOW - timedelta(minutes=30)
+
+
+def test_a_running_container_without_a_start_time_reports_none():
+    async def run():
+        docker = FakeDocker()
+        del docker.started["t1"]
+        watch, _, _, _ = make(docker)
+        return await watch.states()
+
+    _, starts = asyncio.run(run())
+
+    assert "trader" not in starts

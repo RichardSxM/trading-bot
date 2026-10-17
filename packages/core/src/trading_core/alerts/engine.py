@@ -404,7 +404,8 @@ class AlertEngine:
         return self._config.entry_block_s if rule.id == ENTRY_BLOCK.id else rule.min_open_s
 
     def _renotify(self, episode: Episode, now: datetime, rule: Rule | None) -> Decision:
-        if episode.last_sent_at is None or episode.delivery is Delivery.FAILED or episode.delivery in _HELD:
+        # A capped episode is never pushed later (AC-10), so it never re-notifies either.
+        if episode.last_sent_at is None or episode.delivery in (Delivery.FAILED, Delivery.CAPPED, *_HELD):
             return Decision()
         if episode.severity is Tier.WARNING:
             interval = self._config.renotify_s
