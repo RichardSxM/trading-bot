@@ -79,6 +79,9 @@ PROMISES: Final[tuple[Promise, ...]] = (
     _line("0005", "backup_failed", "backup_failed", "backup", step="restic_backup"),
     Promise("0005", "backup unhealthy", "container_unhealthy"),
     Promise("0005", "rollback_failed", "rollback_failed", DEPLOY, fields={"sha": "abc", "outcome": "rollback_failed"}),
+    Promise(
+        "0005", "deploy interrupted", "deploy_interrupted", DEPLOY, fields={"sha": "abc", "outcome": "interrupted"}
+    ),
     Promise("0005", "disk under 5 GB", "disk_low"),
     _risk("0006", "stop_not_accepted:O-2"),
     _risk("0006", "exit_failed:P-1"),

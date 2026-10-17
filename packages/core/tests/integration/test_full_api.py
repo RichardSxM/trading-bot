@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from trading_core.recording import models, repository
+from trading_core.recording import models, queries, repository
 from trading_core.recording.enums import (
     ControlCmd,
     ControlOutcome,
@@ -261,6 +261,18 @@ def test_a_control_outcome_must_be_final_and_name_a_known_command(session: Sessi
     stored = session.get(models.ControlCommand, command.id)
     assert stored is not None
     assert stored.outcome == "received"
+
+
+def test_the_control_outcome_query_tells_unfinished_from_finished(session: Session, world: World):
+    # covers: spec 0005 AC-6, review 2026-10-17 major 1: the consumer reruns a command left at received.
+    command = _command(world)
+    assert queries.control_command_outcome(session, command.id) is None
+
+    repository.record_control_command(session, command)
+    assert queries.control_command_outcome(session, command.id) == ControlOutcome.RECEIVED
+
+    repository.set_control_outcome(session, command.id, ControlOutcome.EXECUTED, world.tick())
+    assert queries.control_command_outcome(session, command.id) == ControlOutcome.EXECUTED
 
 
 def _sim_run(world: World, mode: RunMode = RunMode.BACKTEST) -> RunRow:

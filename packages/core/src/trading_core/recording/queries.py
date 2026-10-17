@@ -19,6 +19,7 @@ from sqlalchemy.orm import InstrumentedAttribute, Session, aliased
 
 from trading_core.recording import models
 from trading_core.recording.enums import (
+    ControlOutcome,
     Env,
     Intent,
     OrderOrigin,
@@ -352,9 +353,11 @@ def fills_page(session: Session, env: Env, page: int, size: int = PAGE_SIZE) -> 
     ]
 
 
-def control_command_known(session: Session, command_id: UUID) -> bool:
-    """True when the trader already recorded the control command ``command_id`` (spec 0005 AC-6)."""
-    return session.get(models.ControlCommand, command_id) is not None
+def control_command_outcome(session: Session, command_id: UUID) -> ControlOutcome | None:
+    """The recorded outcome of the control command ``command_id``, or None when it was never
+    recorded (spec 0005 AC-6). ``received`` means it was never finished."""
+    command = session.get(models.ControlCommand, command_id)
+    return None if command is None else ControlOutcome(command.outcome)
 
 
 @dataclass(frozen=True, kw_only=True)

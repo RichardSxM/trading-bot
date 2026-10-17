@@ -5,9 +5,10 @@
 #
 # Restores the newest snapshot of host kfs-vps into a throwaway postgres:16 container,
 # runs pg_restore, and compares the row counts and the newest fill time with that snapshot's
-# manifest. Prints PASS or FAIL with the differences, removes the container, and only after a
-# PASS runs the retention: restic forget --keep-daily 14 --keep-weekly 8 --keep-monthly 24
-# --keep-tag catalog --keep-tag backlog --prune (spec 0007: catalog snapshots are the only copy
+# manifest. Prints PASS or FAIL with the differences, removes the container. After a PASS it runs
+# `restic check` on a small random sample of pack data and restores one manifest and one book hour
+# from the newest catalog snapshot (whole Parquet, JSON), and only then runs the retention:
+# restic forget --keep-daily 14 --keep-weekly 8 --keep-monthly 24 --keep-tag catalog --keep-tag backlog --prune (spec 0007: catalog snapshots are the only copy
 # of old catalog hours; backlog ones hold raw feather not yet converted).
 # The VPS key cannot delete, so this is the only place retention runs.
 #
@@ -79,6 +80,9 @@ RETENTION=(--host "$RESTIC_HOST" --group-by host,paths --keep-daily 14 --keep-we
 STALE_H=36
 MAX_FORGET=40
 RECENT_DAYS=15
+# The repository check reads this much pack data at random (the B2 download cap is shared with
+# the nightly backup, so keep it small); the catalog sample is one manifest and one hour file.
+CHECK_DATA=${DRILL_CHECK_DATA:-200M}
 # Optional: the healthchecks.io `restore-drill` check's ping URL (spec 0013 AC-5).
 HC_DRILL_FILE=${SECRETS_DIR:-./secrets}/hc_restore_drill_url
 SUFFIX=$$
@@ -197,6 +201,42 @@ if [ "$age_h" -lt -1 ] || { [ "$age_h" -ge "$STALE_H" ] && [ "$ALLOW_STALE" = 0 
     echo "  The restore matches its manifest, but newer snapshots may be hidden. See the B2 recovery"
     echo "  steps in spec 0005. Prune skipped. --allow-stale accepts it when you know why."
     exit 1
+fi
+
+# Retention keeps every catalog snapshot forever, and they are the only copy of old catalog hours
+# (spec 0007), so prove the repository and one catalog snapshot read before any prune
+# (review 2026-10-17). A --local repository has no catalog snapshots.
+say "restic check, reading $CHECK_DATA of pack data"
+restic_run check --read-data-subset="$CHECK_DATA" >&2 || {
+    echo "FAIL"
+    echo "  restic check found a problem in the repository. Prune skipped."
+    exit 1
+}
+catalog=$(printf '%s' "$snapshots" | jq_run -r "$JQ_EPOCH"'
+    map(select((.tags // []) | index("catalog"))) | map(. + {epoch: (.time | epoch)}) | max_by(.epoch) // empty
+    | "\(.short_id) \(.time)"')
+if [ -z "$catalog" ]; then
+    [ "$LOCAL" = 1 ] || die "no catalog snapshot for host $RESTIC_HOST"
+    say "local drill: no catalog snapshot to sample"
+else
+    read -r cat_snapshot cat_time <<<"$catalog"
+    files=$(restic_run ls "$cat_snapshot" --json | jq_run -r 'select(.struct_type == "node" and .type == "file") | .path')
+    manifest=$(printf '%s\n' "$files" | grep -E '/manifests/[0-9]{4}-[0-9]{2}-[0-9]{2}\.json$' | sort | tail -n 1 || true)
+    hour=$(printf '%s\n' "$files" | grep -E '/data/order_book_deltas/.*\.parquet$' | sort | tail -n 1 || true)
+    [ -n "$manifest" ] && [ -n "$hour" ] || die "catalog snapshot $cat_snapshot holds no manifest or no book hour"
+    say "catalog snapshot $cat_snapshot from $cat_time: restoring $manifest and $hour"
+    restic_run restore "$cat_snapshot" --include "$manifest" --include "$hour" --target /restore/catalog >&2
+    # The Parquet magic `PAR1` opens and closes a whole file; the manifest must be a JSON object.
+    sample=$(docker run --rm -v "$VOL:/restore:ro" --entrypoint sh "$IMAGE" -c '
+        h=/restore/catalog$2
+        [ "$(head -c 4 "$h")" = PAR1 ] && [ "$(tail -c 4 "$h")" = PAR1 ] && [ "$(wc -c <"$h")" -gt 8 ] || { echo "hour file is not whole Parquet"; exit 1; }
+        jq -e "type == \"object\"" "/restore/catalog$1" >/dev/null || { echo "manifest is not a JSON object"; exit 1; }
+        echo ok' sh "$manifest" "$hour") || {
+        echo "FAIL"
+        echo "  catalog snapshot $cat_snapshot: ${sample:-could not read the sample}. Prune skipped."
+        exit 1
+    }
+    say "catalog sample reads"
 fi
 
 say "retention dry run: 14 daily, 8 weekly, 24 monthly"

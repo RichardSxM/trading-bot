@@ -23,6 +23,7 @@ SHELL_CODES = {
     "restic_repo_missing": "docker/backup/run.sh",
     "autoheal_gave_up": "deploy/host/kfs-autoheal",
     "rollback_failed": "deploy/host/kfs-deploy",
+    "interrupted": "deploy/host/kfs-deploy",
 }
 SOURCE_DIRS = ("packages", "apps", "docker", "deploy", "scripts")
 # The alert code itself would satisfy the scan trivially.
