@@ -1,7 +1,7 @@
 # 0013. Push alerts to the iPhone through Pushover from one alerter that reads the logs, with healthchecks.io watching from outside
 
 **Date**: 2026-10-16
-**Status**: In Progress
+**Status**: Accepted
 
 ## Summary
 
