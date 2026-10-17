@@ -4,6 +4,7 @@ ping while the Redis read is stale), AC-9 (a restart pushes nothing twice, even 
 
 import asyncio
 import contextlib
+from dataclasses import replace
 
 from alerter.service import Alerter
 from alerter.store import StoreWriter
@@ -307,3 +308,65 @@ def test_a_push_that_crashes_is_recorded_failed_and_retried(tmp_path):
     [push] = deliverer.sent
     assert push.episode.rule == "trader_down"
     assert engine.open_episodes[0].delivery is Delivery.DRY_RUN
+
+
+def test_postgres_down_does_not_stop_the_ping(tmp_path):
+    # covers: AC-2, "Postgres being down does not stop the ping"
+    async def run():
+        watchdog = FakeWatchdog()
+        alerter, clock, redis, _, _, store, _ = make(tmp_path, watchdog=watchdog)
+        store.down = True
+        beat(redis, clock)
+        await alerter.check_heartbeat()
+        await alerter.check_postgres()
+        clock.advance(61)
+        await alerter.check_heartbeat()
+        await alerter.check_postgres()
+        await alerter.ping()
+        return watchdog
+
+    assert asyncio.run(run()).pings == [False]
+
+
+def test_a_malformed_heartbeat_counts_as_missing(tmp_path):
+    # covers: AC-1, a heartbeat that is not a valid snapshot is no proof of life
+    async def run():
+        alerter, clock, redis, deliverer, *_ = make(tmp_path)
+        redis.values[KEY] = "x"
+        await alerter.check_heartbeat()
+        clock.advance(45)
+        await alerter.check_heartbeat()
+        await settle(alerter)
+        return deliverer
+
+    [push] = asyncio.run(run()).sent
+    assert (push.episode.rule, push.tier) == ("trader_down", Tier.CRITICAL)
+
+
+class NotesFail(FakeDeliverer):
+    """Delivers every push but the resolved notes."""
+
+    async def send(self, push):
+        outcome = await super().send(push)
+        return replace(outcome, delivery=Delivery.FAILED) if push.reason is PushReason.RESOLVED else outcome
+
+
+def test_a_failed_resolved_note_turns_the_ping_into_fail(tmp_path):
+    # covers: AC-14, "while any push is failing" includes a silent note
+    async def run():
+        watchdog = FakeWatchdog()
+        alerter, clock, redis, *_ = make(tmp_path, watchdog=watchdog)
+        alerter._deliverer = NotesFail(Delivery.SENT)
+        clock.advance(45)
+        await alerter.check_heartbeat()
+        await settle(alerter)
+        beat(redis, clock)
+        await alerter.check_heartbeat()
+        await settle(alerter)
+        await alerter.ping()
+        return alerter, watchdog
+
+    alerter, watchdog = asyncio.run(run())
+
+    assert alerter.push_failing
+    assert watchdog.pings == [True]

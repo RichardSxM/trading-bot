@@ -176,3 +176,52 @@ def _labels(service: str) -> dict[str, str]:
         "com.docker.compose.service": service,
         "com.docker.compose.oneoff": "False",
     }
+
+
+def test_a_log_pass_fresh_once_but_now_61_s_old_stops_the_ping(tmp_path):
+    # covers: AC-2, every Docker log reader must have succeeded within the last 60 s
+    async def run():
+        docker = FakeDocker()
+        watchdog = FakeWatchdog()
+        alerter, clock, _, _, _ = make(tmp_path, docker, watchdog=watchdog)
+        await alerter.check_heartbeat()
+        await alerter.read_logs()
+        await alerter.ping()
+        docker.fail = True
+        clock.advance(61)
+        await alerter.read_logs()
+        await alerter.check_heartbeat()
+        await alerter.ping()
+        return watchdog
+
+    assert asyncio.run(run()).pings == [False]
+
+
+def test_a_docker_outage_skips_each_docker_step_and_keeps_going(tmp_path):
+    async def run():
+        docker = FakeDocker()
+        docker.fail = True
+        alerter, _, deliverer, _, _ = make(tmp_path, docker)
+        await alerter.read_logs()
+        await alerter.check_containers()
+        health = await alerter.backup_health()
+        await settle(alerter)
+        return health, deliverer
+
+    health, deliverer = asyncio.run(run())
+
+    assert health == "unknown"
+    assert deliverer.sent == []
+
+
+def test_a_malformed_start_time_does_not_stop_the_container_check(tmp_path):
+    async def run():
+        docker = FakeDocker()
+        docker.started["t1"] = "yesterday"
+        alerter, _, _, _, _ = make(tmp_path, docker)
+        await alerter.check_containers()
+        return alerter
+
+    alerter = asyncio.run(run())
+
+    assert any(e.fingerprint == "service_down:recorder" for e in alerter._engine.open_episodes)

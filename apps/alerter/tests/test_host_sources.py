@@ -7,8 +7,10 @@ import os
 from datetime import timedelta
 from decimal import Decimal
 
+from alerter import service as service_module
 from alerter.service import Alerter
 from alerter.sources.host_files import DEPLOYS_FILE, HOST_FILE, FileFollower, HostFiles, parse
+from alerter.sources.redis_state import trader_blocks
 from alerter.store import StoreWriter
 from trading_core.alerts.engine import AlertEngine, EngineConfig
 from trading_core.alerts.model import Delivery, Observation, PushReason, Tier
@@ -429,3 +431,57 @@ def test_delivery_states_after_a_summary_are_stored(tmp_path):
     alerter = asyncio.run(run())
     [episode] = [e for e in alerter._engine.open_episodes if e.rule == "kraken_key_rotation_due"]
     assert (episode.delivery, episode.sends) == (Delivery.DRY_RUN, 1)
+
+
+def test_a_disk_read_error_logs_and_raises_nothing(tmp_path, monkeypatch, caplog):
+    def broken(path):
+        raise OSError("stale file handle")
+
+    monkeypatch.setattr(service_module, "free_bytes", broken)
+
+    async def run():
+        alerter, _, deliverer, _, _ = make(tmp_path)
+        await alerter.check_disk()
+        await settle(alerter)
+        return deliverer
+
+    assert asyncio.run(run()).sent == []
+    assert [r.fields["code"] for r in caplog.records if hasattr(r, "fields")] == ["alerter_disk_failed"]
+
+
+def test_a_malformed_trader_state_reads_as_none():
+    redis = FakeRedis()
+    redis.values[STATE] = "not json"
+
+    assert asyncio.run(trader_blocks(redis, STATE)) is None
+
+
+def test_bad_entry_block_entries_are_skipped():
+    # covers: AC-6, only string reasons and integer since values are read
+    redis = FakeRedis()
+    redis.values[STATE] = encode(
+        ns(NOW),
+        {
+            "entries_blocked": ["stale_feed", 7, None, "loss_unknown"],
+            "entries_blocked_since": {"stale_feed": ns(NOW), "loss_unknown": "soon", "x": 1.5},
+        },
+    )
+
+    blocks = asyncio.run(trader_blocks(redis, STATE))
+
+    assert blocks is not None
+    assert (blocks.ts_ns, blocks.blocked, dict(blocks.since_ns)) == (
+        ns(NOW),
+        ("stale_feed", "loss_unknown"),
+        {"stale_feed": ns(NOW)},
+    )
+
+
+def test_entry_block_fields_of_the_wrong_shape_read_as_empty():
+    redis = FakeRedis()
+    redis.values[STATE] = encode(ns(NOW), {"entries_blocked": "stale_feed", "entries_blocked_since": []})
+
+    blocks = asyncio.run(trader_blocks(redis, STATE))
+
+    assert blocks is not None
+    assert (blocks.blocked, dict(blocks.since_ns)) == ((), {})

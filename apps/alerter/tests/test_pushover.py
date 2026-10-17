@@ -135,3 +135,12 @@ def test_log_delivery_logs_the_push_and_sends_nothing(caplog):
     assert outcome.delivery is Delivery.DRY_RUN
     [record] = [r for r in caplog.records if getattr(r, "fields", {}).get("code") == "alert_dry_run"]
     assert record.fields["tier"] == "critical"
+
+
+def test_each_pushover_call_times_out_after_10_s():
+    # covers: AC-14, "timeout of 10 s"
+    recorder = Recorder(200)
+
+    _send(recorder, _push(Tier.INFO))
+
+    assert recorder.requests[0].extensions["timeout"] == {"connect": 10.0, "read": 10.0, "write": 10.0, "pool": 10.0}

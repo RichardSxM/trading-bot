@@ -6,12 +6,16 @@ import asyncio
 import json
 import sys
 
+import httpx
 import pytest
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
+from alerter import main
 from alerter.cli import send_tests
+from alerter.delivery import LogDelivery, PushoverDelivery
 from alerter.service import ALL_TIERS
-from alerter.settings import AlerterSettings, alerter_secrets
+from alerter.settings import AlerterSettings, alerter_secrets, engine_config
+from alerter.watchdog import Watchdog
 from trading_core.alerts.engine import AlertEngine, EngineConfig
 from trading_core.alerts.model import Delivery, Tier
 
@@ -101,3 +105,67 @@ def test_the_alerter_does_not_import_nautilus():
     import alerter.main  # noqa: F401
 
     assert "nautilus_trader" not in sys.modules
+
+
+def test_the_engine_takes_the_spec_defaults(monkeypatch):
+    # covers: AC-1, AC-9, AC-10, AC-6 defaults (45 s, 1 h, 4 h, 30 per hour, 1 h block)
+    monkeypatch.setenv("TRADING_ENV", "demo")
+
+    settings = AlerterSettings()
+    config = engine_config(settings)
+
+    assert settings.alerts_trader_down_s == 45
+    assert settings.alerts_disk_free_gb == 5
+    assert (config.env, config.renotify_s, config.critical_renotify_s, config.hourly_cap, config.entry_block_s) == (
+        "demo",
+        3600,
+        14_400,
+        30,
+        3600,
+    )
+
+
+def test_the_engine_takes_each_alerts_setting(monkeypatch):
+    monkeypatch.setenv("TRADING_ENV", "live")
+    monkeypatch.setenv("ALERTS_RENOTIFY_S", "120")
+    monkeypatch.setenv("ALERTS_CRITICAL_RENOTIFY_S", "7200")
+    monkeypatch.setenv("ALERTS_HOURLY_CAP", "5")
+    monkeypatch.setenv("ALERTS_ENTRY_BLOCK_S", "60")
+
+    config = engine_config(AlerterSettings())
+
+    assert (config.env, config.renotify_s, config.critical_renotify_s, config.hourly_cap, config.entry_block_s) == (
+        "live",
+        120,
+        7200,
+        5,
+        60,
+    )
+
+
+SECRETS = {
+    "pushover_app_token": SecretStr("azGDORePK8gMaC0QOYAMyEEuzJnyUi"),
+    "pushover_user_key": SecretStr("uQiRzpo4DXghDmr9QzzfQu27cmVRsG"),
+    "hc_alerter_url": SecretStr("https://hc-ping.com/0f3c3a0e"),
+}
+
+
+def test_dry_run_builds_the_log_deliverer_and_no_watchdog(monkeypatch):
+    # covers: AC-13, nothing reaches Pushover and no healthchecks.io ping is sent
+    monkeypatch.setenv("TRADING_ENV", "demo")
+    settings = AlerterSettings()
+    http = httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(500)))
+
+    assert isinstance(main.deliverer(settings, {}, http), LogDelivery)
+    assert main.watchdog(settings, {}, http) is None
+
+
+def test_pushover_mode_builds_pushover_and_the_watchdog(monkeypatch):
+    # covers: AC-2, AC-17
+    monkeypatch.setenv("TRADING_ENV", "demo")
+    monkeypatch.setenv("ALERTS_DELIVERY", "pushover")
+    settings = AlerterSettings()
+    http = httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(500)))
+
+    assert isinstance(main.deliverer(settings, SECRETS, http), PushoverDelivery)
+    assert isinstance(main.watchdog(settings, SECRETS, http), Watchdog)

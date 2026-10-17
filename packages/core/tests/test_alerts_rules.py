@@ -58,6 +58,11 @@ ROWS = [
         "book_gap_long:recorder_down",
     ),
     (line("recorder", "book_sequence_hole"), "book_sequence_hole", "book_sequence_hole"),
+    (
+        line("compactor", "context_hour_missing", "WARNING", hour="2026-10-16T02", table="funding_rate"),
+        "context_hour_missing",
+        "context_hour_missing:2026-10-16T02",
+    ),
     (line("compactor", "catalog_retention_blocked"), "recorder_codes", "catalog_retention_blocked"),
     (line("recorder", "recorder_flush_slow", "WARNING"), "recorder_codes", "recorder_flush_slow"),
     (line("trader", "kraken_key_rotation_due", "WARNING"), "kraken_key_rotation_due", "kraken_key_rotation_due"),
@@ -87,6 +92,8 @@ def test_each_row_matches_and_fingerprints(obs, rule_id, fingerprint):
     "obs",
     [
         line("compactor", "book_gap", "WARNING", kind="recorder_down", duration_s=60),  # not over 60 s
+        line("compactor", "book_gap", "WARNING", kind="recorder_down", duration_s="abc"),  # covers: AC-7, not a number
+        line("recorder", "context_hour_missing", "WARNING", hour="2026-10-16T02"),  # covers: AC-7, compactor only
         line("trader", "halt", "INFO", event_key="halt:h3"),  # a halt at neither level
         line("trader", "order_rejected", "ERROR", event_key="stop_not_accepted:S2"),  # not CRITICAL
         line("dashboard", "positions_abandoned", "CRITICAL"),  # a trader code from another service
@@ -131,9 +138,11 @@ def test_partner_codes_name_their_pair_rule():
 
 def test_tiers_follow_the_table():
     critical = {"loss_limit_halt", "risk_critical", "trader_critical_codes", "catalog_disk_full", "service_down"}
+    warning = {"container_unhealthy", "context_hour_missing", "book_gap_long", "backup_failed"}  # covers: AC-4, AC-7
     info = {"risk_halt_manual", "trade_cap"}
 
     assert {r for r in critical if BY_ID[r].tier is Tier.CRITICAL} == critical
+    assert {r for r in warning if BY_ID[r].tier is Tier.WARNING} == warning
     assert {r for r in info if BY_ID[r].tier is Tier.INFO} == info
     assert BY_ID["context_feed_down"].min_open_s == 300
     assert BY_ID["postgres_unreachable"].min_open_s == BY_ID["redis_unreachable"].min_open_s == 60

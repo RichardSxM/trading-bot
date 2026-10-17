@@ -1,5 +1,5 @@
-"""covers: spec 0013 AC-1 (trader down and its note), AC-9 (one push per episode, re-notify, restart
-load), AC-14 (failed pushes and their retry), AC-17 (test episodes), and the texts' cut and redaction.
+"""covers: spec 0013 AC-1 (trader down and its note), AC-9 (one push per episode, re-notify, the quiet
+close, restart load), AC-14 (failed pushes and their retry), AC-17 (test episodes), and the texts' cut and redaction.
 
 Pure: no clock, no I/O.
 """
@@ -12,7 +12,7 @@ import pytest
 from trading_core.alerts import messages
 from trading_core.alerts.checks import heartbeat_check
 from trading_core.alerts.engine import AlertEngine, AlertEngineError, EngineConfig
-from trading_core.alerts.model import CheckResult, Delivery, PushReason, Tier
+from trading_core.alerts.model import CheckResult, Delivery, Observation, Push, PushReason, Tier
 from trading_core.secrets import read_secret
 
 NOW = datetime(2026, 10, 16, 3, 0, tzinfo=UTC)
@@ -185,6 +185,63 @@ def test_a_dry_run_counts_as_a_send():
     assert (stored.delivery, stored.sends) == (Delivery.DRY_RUN, 1)
 
 
+def auth_failed(at):
+    return Observation("log:trader", "trader", at, "kraken_auth_failed", "CRITICAL", {"code": "kraken_auth_failed"})
+
+
+def unhealthy(at):
+    return CheckResult("container_unhealthy", ok=False, at=at, subject="dashboard")
+
+
+def test_a_critical_event_is_never_renotified():
+    # covers: AC-9, only a critical *condition* pushes again after 4 h
+    engine = AlertEngine(CONFIG)
+    send_all(engine, engine.observe(auth_failed(NOW)), NOW)
+
+    pushes: list[Push] = []
+    for minutes in range(10, 5 * 60, 10):
+        at = NOW + timedelta(minutes=minutes)
+        pushes += engine.observe(auth_failed(at)).pushes
+        pushes += engine.tick(at).pushes
+
+    assert pushes == []
+    assert len(engine.open_episodes) == 1
+
+
+def test_a_repeat_restarts_the_quiet_close():
+    # covers: AC-9, an event closes after 15 min *with no repeat*
+    engine = AlertEngine(CONFIG)
+    send_all(engine, engine.observe(auth_failed(NOW)), NOW)
+    engine.observe(auth_failed(NOW + timedelta(minutes=10)))
+
+    assert engine.tick(NOW + timedelta(minutes=15)).store == ()
+    assert engine.tick(NOW + timedelta(minutes=25) - timedelta(seconds=1)).store == ()
+    [closed] = engine.tick(NOW + timedelta(minutes=25)).store
+    assert closed.resolved_at == NOW + timedelta(minutes=25)
+
+
+def test_an_event_is_still_open_a_second_before_fifteen_minutes():
+    # covers: AC-9, the quiet close boundary
+    engine = AlertEngine(CONFIG)
+    send_all(engine, engine.observe(auth_failed(NOW)), NOW)
+
+    assert engine.tick(NOW + timedelta(minutes=15) - timedelta(seconds=1)).store == ()
+    assert len(engine.open_episodes) == 1
+
+
+def test_a_warning_condition_renotifies_after_one_hour_not_before():
+    # covers: AC-9, ALERTS_RENOTIFY_S (1 h) for a real warning rule
+    engine = AlertEngine(CONFIG)
+    engine.check(unhealthy(NOW))
+    released = NOW + timedelta(minutes=2)
+    [opened] = engine.tick(released).pushes
+    engine.record(opened, Delivery.SENT, released)
+
+    assert engine.tick(released + timedelta(hours=1) - timedelta(seconds=1)).pushes == ()
+    [push] = engine.tick(released + timedelta(hours=1)).pushes
+    assert (push.reason, push.tier) == (PushReason.RENOTIFY, Tier.WARNING)
+
+
 # AC-14 ----------------------------------------------------------------------------------------
 
 
@@ -247,6 +304,21 @@ def test_a_loaded_failed_row_ages_from_its_last_good_send():
     engine.load([row])
 
     assert [p.episode.fingerprint for p in engine.retry(NOW).pushes] == ["trader_down"]
+
+
+def test_a_retry_cycle_sends_at_most_twenty_rows_by_default():
+    # covers: AC-14, "retries up to 20 failed rows"
+    base = AlertEngine(CONFIG).check(down(NOW)).store[0]
+    rows = [
+        replace(base, fingerprint=f"c{i}", opened_at=NOW + timedelta(seconds=i), delivery=Delivery.FAILED)
+        for i in range(25)
+    ]
+    engine = AlertEngine(CONFIG)
+    engine.load(rows)
+
+    retry = engine.retry(NOW + timedelta(minutes=1))
+
+    assert [p.episode.fingerprint for p in retry.pushes] == [f"c{i}" for i in range(20)]
 
 
 # AC-17 ----------------------------------------------------------------------------------------
