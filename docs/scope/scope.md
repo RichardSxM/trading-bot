@@ -25,7 +25,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 10 | Leverage & liquidation guard | Slice 4 | done |
 | 11 | Restart & outage safety | Slice 4 | planned |
 | 12 | Phone alerts & health checks | Slice 5 | done |
-| 13 | Candle backtest lab | Slice 6 | planned |
+| 13 | Candle backtest lab | Slice 6 | in-progress |
 | 14 | Scalping simulator | Slice 6 | done |
 | 15 | Strategy scoring & promotion gate | Slice 6 | planned |
 | 16 | Scalping strategy candidates | Slice 7 | planned |
@@ -242,6 +242,13 @@ After a crash, restart, or dropped connection, the bot rebuilds its view from th
 - **Demo restart:** spec 0006 settled it. The sandbox cannot restore a position, so a demo restart closes it as abandoned with a critical event.
 - **Stale feed:** a stale feed already blocks entries.
 - **What this feature still owes:** reconciliation with Kraken's real positions and orders for live, and how to test it before go live.
+**Carried over from a scope rewrite (2026-10-17, revision 2.0, another tool's draft, ideas only), for the design to weigh:**
+- **Drills, each with expected outcome, evidence, and pass or fail:** a crash during entry, partial fill, cancel, stop placement, and exit; an acknowledgement lost while Kraken accepted the order; duplicate, delayed, or out of order messages; a stop that is rejected, stale, or does not match the filled size; a deploy or restart while a position is open.
+- **Reconciliation report:** persist one per startup or reconnect, and alert on any mismatch (unknown exchange orders or positions, local only orders, missing stops, duplicate intents).
+- **Latched halt:** a halt survives a restart, and a restart never re-enables entries by itself.
+- **Dashboard:** show desired, internal, and exchange confirmed state apart, so a submitted flatten never looks like a confirmed flat.
+- **Runbook:** recovering from a crash or network loss with a position open.
+- **Order (decided 2026-10-17):** this feature must be done before feature 19, not before the research features 13, 15, 16, and 17.
 - [ ] Design it (spec): `/architect restart & outage safety`
 
 ## Slice 5: Stay informed
@@ -270,11 +277,23 @@ spec [0013](../specs/0013-phone-alerts-health-checks/index.md) · code in `apps/
 
 ## Slice 6: The strategy lab
 
-### 13. Candle backtest lab · needs a decision
+### 13. Candle backtest lab · in-progress
 Test hour level strategies on Kraken candle history with realistic fees, funding, and slippage.
 **Done when:** a strategy can be backtested over any date range, results include fees and funding, and the same strategy code runs unchanged in the backtest and the paper loop.
 **Carried over from research (2026-10-04):** guard against look ahead. A swing high or low is only known some bars after it happens (it needs the bars that follow it), so a signal must fire on the bar where the swing is confirmed, never on the swing bar itself. Public price action scripts often get this wrong, and it makes a backtest look far better than live.
-- [ ] Design it (spec): `/architect candle backtest lab`
+spec [0014](../specs/0014-candle-backtest-lab/index.md)
+code in `apps/lab`, `packages/core/src/trading_core/lab`, `packages/core/src/trading_core/strategy`, `packages/core/src/trading_core/catalog`
+- [x] Design it (spec): `/architect candle backtest lab`
+- [ ] Build it: `/develop candle backtest lab`
+  - [ ] Gate: Kraken candle paging and history precision, funding rate meaning and timestamps, engine fills with the trade then quote path, internal hour bars, the position flag lag (AC-1, AC-2, AC-3, AC-4, AC-8, AC-9, AC-10, AC-11, AC-15)
+  - [ ] Thin thread: one month fetched, candle stream, candle unit and venue, `buy_and_hold`, `lab backtest` with funding, bundle, and report (AC-1, AC-2, AC-6, AC-8, AC-9, AC-10, AC-11, AC-12, AC-14, AC-15, AC-16, AC-17, AC-22)
+  - [ ] Data you can trust: row checks, gaps, retries, catalog cap, refetch, the full history fetched and timed (AC-1, AC-3, AC-4, AC-5, AC-23)
+  - [ ] A real strategy: indicators, `SwingTracker`, `macd_baseline`, liquidation guard and ruin, grid and slippage sweep (AC-7, AC-13, AC-14, AC-20)
+  - [ ] Proof: look ahead check, candle versus order book parity, determinism, failure isolation, full history timing (AC-17, AC-18, AC-19, AC-21, AC-22, AC-23)
+- [ ] Verify it: `/check verify candle backtest lab`
+- [ ] Test it: `/test candle backtest lab`
+- [ ] Review it (fresh model): `/check review candle backtest lab`
+- [ ] Document it: `/document candle backtest lab`
 
 ### 14. Scalping simulator · done
 Replay recorded order book data to test scalping honestly: maker and taker fees, queue position, latency, and partial fills.
@@ -304,6 +323,15 @@ Score every strategy on return after costs, max drawdown, and a risk adjusted ra
 - **Overfitting test:** a backtest can look good only because it fits noise. Consider the probability of backtest overfitting test (Gort et al. 2022, arXiv 2209.05559) alongside the out of sample windows.
 - **Maker or taker entries** (from an article, 2026-10-08, `strategy.md`): score each scalping candidate twice, once entering with taker orders and once with post only maker orders. The maker fee lowers the fee hurdle, but only the simulator's fill model (feature 14) says whether the missed fills and adverse selection eat that saving.
 - **Carried over from spec 0008:** decide how the laptop's replay results reach the VPS dashboard (load the `.bundle.json` files, or another path). About 55 free Tardis days exist, enough to reject strategies but thin for tuning, so guard against overfitting. A five variant day takes about 2 h 20 min on the laptop. If the day counts need more speed, a depth band filter is an option, but it needs its own fidelity proof.
+- **Carried over from spec 0014 (2026-10-17):** decide how walk forward windows call `lab backtest` (in sample and out of sample ranges as separate runs), whether the buy and hold benchmark becomes a `run_results` row, and whether the candle report's own figures (marked drawdown and its duration, exposure, long and short split, profit factor, expectancy) move into Postgres.
+**Carried over from a scope rewrite (2026-10-17, revision 2.0, another tool's draft, ideas only), for the design to weigh:**
+- **Three verdicts:** pass, fail, or insufficient evidence, each with machine readable reasons. A missing metric, a missing cost (fees, funding, slippage), or incomplete run metadata fails closed.
+- **Thresholds before results:** write the thresholds, windows, and drawdown budget into the spec before any candidate's final result is seen, and freeze a final holdout before any tuning.
+- **Every attempt counts:** keep every parameter set tried and every failed run, so multiple testing is visible. The lab already writes each variant and grid point as its own run.
+- **Sample floor:** a proposed floor of 200 out of sample trades; below it the verdict is insufficient evidence, not a pass. Trades cluster in time, so use a dependence aware uncertainty estimate (a block bootstrap) rather than treating trades as independent.
+- **Breakdowns:** long and short, market regime, time of day, and walk forward fold, where the sample allows. Fail a candidate when one period, one direction, or a few outsized trades explain most of the profit.
+- **Baselines:** compare with doing nothing and with a simple strategy over the same dates (buy and hold and the MACD baseline from spec 0014), and make extra layers earn their added parameters.
+- **Frozen versions:** once paper starts, a strategy version is frozen by its hash; a material change makes a new version that goes back to research.
 - [ ] Design it (spec): `/architect strategy scoring & promotion gate`
 
 ## Slice 7: First strategies
@@ -326,6 +354,11 @@ A small set of well known scalping ideas (for example order book imbalance, shor
 - **Bollinger and RSI mean reversion:** Bollinger Bands (20, 2) and RSI(14). Buy when price closes back inside the lower band with RSI under 30 (short in the mirror case), take profit at the middle band, and trade only while the bands are flat. Flat bands are a second range test to compare with the ADX regime gate above. Also worth a try on 15 minute candles in feature 17.
 - **Scaled exit:** close half at 1R, move the stop to breakeven, let the rest run to the opposite 5 minute high or low. Score it against a single exit; breakeven stops often lower the average trade once fees count.
 - **VWAP break and retest:** the short side mirror of the VWAP bounce: price breaks below VWAP, bounces weakly back to it, and is rejected. MACD histogram fading is offered as a confirmation; it adds free parameters, so test it for overfitting.
+**Carried over from a scope rewrite (2026-10-17, revision 2.0, another tool's draft, ideas only), for the design to weigh:**
+- **Data audit first:** before choosing the first candidate, summarize our recorded data: spreads, depth, volatility, order flow, funding, time of day, and gaps. Pick the first candidate from what it shows and record the reason.
+- **Written hypothesis per candidate:** why the behavior might persist, when it should work and when it should fail, its inputs, entries, exits, stops, timeouts, cooldown, and no trade conditions.
+- **One candidate at a time,** changing one design dimension at a time, with a recorded verdict (pass, fail, or insufficient evidence) kept even when it fails.
+- **Order (decided 2026-10-17):** hour level candidates (feature 17) run alongside these, not after a scalping verdict, because the fee hurdle favors longer holds.
 - [ ] Design it (spec): `/architect scalping strategy candidates`
 
 ### 17. Hour level strategy candidates · needs a decision
@@ -384,6 +417,12 @@ Switch one promoted strategy from paper trading in demo to your live Kraken futu
 - **Fees and funding:** check the current fee tier, and record funding from Kraken's account log.
 - **Latency (from spec 0008):** the canary should measure real insert and cancel latency and replace the 25 ms default in the lab's run files.
 - **Live key checks (from spec 0003):** create the key with spec 0003's [key creation checklist](../specs/0003-api-keys-secrets/verify.md#kraken-key-creation-checklist) (no withdrawal, IP restricted), place it, and see `kraken account confirmed` (AC-8). Feature 4 closed without these, since no live key existed.
+**Carried over from a scope rewrite (2026-10-17, revision 2.0, another tool's draft, ideas only), for the design to weigh:**
+- **A proposed live risk profile to ratify in the spec:** risk per trade at most 0.25 % of equity including fees and slippage (today's `RISK_PER_TRADE` default is 0.5 %), combined open risk at most 0.5 %, daily loss stop 1 % of day start equity, a 3 % drawdown stop from the high water mark that needs your review to clear, and a stop for the day after 3 losses in a row. These are proposals, not decisions.
+- **Small account rule:** when the exchange minimum or round trip cost would push a trade past the risk budget, refuse it, never raise the size. `check_entry` already refuses with `zero_quantity`; the live spec should confirm it against the real account's minimums.
+- **After launch:** reconcile the ledger with Kraken daily during the canary, halt on any unexplained order, position, or P&L mismatch or when live fills drift from the paper and lab assumptions, and never scale capital or leverage without a new risk decision.
+- **Sign off:** your approval of the capital amount and risk settings is recorded; configuration alone never counts as approval.
+- **Prerequisites:** features 11, 15, and 18 also belong in the "live only starts if" list next to 9 to 12.
 - [ ] Design it (spec): `/architect go live with small capital`
 
 ## Deferred
@@ -394,6 +433,8 @@ Out of scope for the current build pass, kept so the plan stays honest.
 - **Spot or other exchanges**: diversify venues · needs a decision
 - **Market context extras** (from spec 0009): a Fear & Greed regime tag, a news or event blackout filter, Deribit options implied volatility and put/call · needs a decision
 - **Automatic maintenance mute** (from spec 0013): open a warning mute by itself from Kraken's scheduled maintenance windows (status.kraken.com) instead of muting by hand · needs a decision
+- **ETH candles** (from spec 0014): a pinned `PF_ETHUSD` instrument and a candle fetch, if feature 17 wants a second market · needs a decision
+- **More than one strategy in the paper trader** (from spec 0014): the trader runs one hard wired strategy, so running `macd_baseline` or any candidate in paper needs multi strategy support (before or within feature 19) · needs a decision
 
 ## Legend
 
