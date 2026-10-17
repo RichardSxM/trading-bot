@@ -14,7 +14,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 1 | Stack & architecture | Foundation | done |
 | 2 | Coding standards & tooling | Foundation | done |
 | 3 | Data model | Foundation | done |
-| 4 | API keys & secrets | Foundation | in-progress |
+| 4 | API keys & secrets | Foundation | done |
 | 5 | Design system & dashboard shell | Foundation | done |
 | 6 | Core paper trading loop | Slice 1 | done |
 | 7 | Always on cloud deployment | Slice 2 | in-progress |
@@ -67,7 +67,7 @@ spec [0002](../specs/0002-data-model/index.md) · code in [packages/core/src/tra
 - [x] Review it (fresh model): `/check review data model`
 - [x] Document it: `/document data model`
 
-### 4. API keys & secrets · in-progress
+### 4. API keys & secrets · done
 Keep Kraken API keys safe: least privilege keys (trade only, never withdraw), live keys only on the VPS (demo needs no keys since Kraken closed its futures demo), never in the repo or logs.
 **Done when:** the bot loads keys from a secret store, live keys cannot withdraw funds, and a leaked log or repo contains no secret.
 spec [0003](../specs/0003-api-keys-secrets/index.md) · code in [packages/core/src/trading_core/secrets.py](../../packages/core/src/trading_core/secrets.py), [compose.yaml](../../compose.yaml), [compose.live.yaml](../../compose.live.yaml), [scripts/](../../scripts/), [docker/](../../docker/)
@@ -79,7 +79,7 @@ spec [0003](../specs/0003-api-keys-secrets/index.md) · code in [packages/core/s
   - [x] Kraken live path: exec client factory, live override, key age, key check, canary leak test (AC-4, AC-6 to AC-9)
   - [x] Backup secrets, gitleaks, runbook (AC-12, AC-13, AC-15)
   - [x] Key check module: move the watcher to `trading_core/node/key_check.py` (AC-8, review follow up)
-- [ ] Verify it: `/check verify API keys & secrets`
+- [x] Verify it: `/check verify API keys & secrets` (passed 2026-10-17; the live key checks wait for feature 19)
 - [x] Test it: `/test API keys & secrets`
 - [x] Review it (fresh model): `/check review API keys & secrets`
 - [x] Document it: `/document API keys & secrets`
@@ -383,6 +383,7 @@ Switch one promoted strategy from paper trading in demo to your live Kraken futu
 - **Stops:** choose the live stop trigger type (mark or last price), and decide whether a partial entry needs a resized stop.
 - **Fees and funding:** check the current fee tier, and record funding from Kraken's account log.
 - **Latency (from spec 0008):** the canary should measure real insert and cancel latency and replace the 25 ms default in the lab's run files.
+- **Live key checks (from spec 0003):** create the key with spec 0003's [key creation checklist](../specs/0003-api-keys-secrets/verify.md#kraken-key-creation-checklist) (no withdrawal, IP restricted), place it, and see `kraken account confirmed` (AC-8). Feature 4 closed without these, since no live key existed.
 - [ ] Design it (spec): `/architect go live with small capital`
 
 ## Deferred
