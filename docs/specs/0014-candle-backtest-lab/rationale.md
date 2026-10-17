@@ -59,7 +59,7 @@ A pandas or pure Python loop over candles, outside Nautilus.
 
 Option 2 is the only one that keeps both promises the scope makes: the same strategy code (no external versus internal bar split, no rewrite) and honest costs (slippage and stop first are enforced by the data itself, not patched afterwards). Its main risk, reading the position while feeding data, is exactly what gate G-3 measures before anything else is built, and a failed gate brings this back to `/architect`. Option 1 is cheaper, but its fills cannot be made pessimistic in the way you chose, and the external bar subscription would make backtest and paper configs differ. Option 3 fails the core requirement outright. Option 4 fails the data requirement.
 
-Kraken's own charts and funding endpoints are free and cover the exact contract since launch. A different venue's longer history was rejected because its prices and funding differ. Monthly Parquet follows the repo's market data pattern (Parquet plus DuckDB for research, nothing about market data in Postgres) and keeps fetch, commit, and refetch in one unit. The standard library client avoids pinning a dependency for two GET endpoints. One continuous engine run per range matches how hour strategies hold (hours to days). Cutting at midnights or gaps, as the order book lab must, would force fake closes, and positions riding through a data gap is the honest gap risk. The candle versus order book parity proves the shared code numerically without touching the VPS trader, which still runs one hard wired strategy.
+Kraken's own charts endpoint and funding export are free and cover the exact contract since launch (the funding endpoint alone covers only a rolling year, see *Gate findings settled*). A different venue's longer history was rejected because its prices and funding differ. Monthly Parquet follows the repo's market data pattern (Parquet plus DuckDB for research, nothing about market data in Postgres) and keeps fetch, commit, and refetch in one unit. The standard library client avoids pinning a dependency for two GET endpoints. One continuous engine run per range matches how hour strategies hold (hours to days). Cutting at midnights or gaps, as the order book lab must, would force fake closes, and positions riding through a data gap is the honest gap risk. The candle versus order book parity proves the shared code numerically without touching the VPS trader, which still runs one hard wired strategy.
 
 Calls made on your behalf (each with its runner up):
 - Path point times `+1 ms / +20 s / +40 s / +59.999 s`: the bar timer at a minute boundary runs before that minute's open, so a decision on a close fills at that close. Runner up: all four points at the close time, which breaks ordering.
@@ -100,3 +100,39 @@ Milestone 1 ran `scripts/spikes/0014_gate.py` on the laptop: `candles` and `fund
 - Engine (AC-8 to AC-10): a zero size `TradeTick` is refused (`ValueError: 'size' not a positive integer, was 0`). A timer at T runs before the path point at T + 1 ms. With the trade before the quote, a market buy on the first hour bar (close 60,020) fills at the close point's ask 60,033, at the bar's own timestamp. A sell stop with trigger 59,500 fills at 58,988, the bid of the 59,000 low, not at its trigger. A buy limit at 59,500 does not fill on a touch (low 59,500, ask 59,512) and fills at 59,500 as MAKER on a trade through (low 59,480).
 - Hour bars (AC-11): bars build from iterator fed trades. A run starting at 00:30 gets a partial first bar at 01:00 (30 minutes of volume).
 - Side flag (AC-9): with one minute chunks, a fill at minute 3.5 is seen when minute 4 is generated, so the flag lags by at most one minute. A plain `Actor` gets no position events by default, so `PositionSideFlag` must subscribe to `events.position.*` on the message bus.
+
+## Gate findings settled (2026-10-17)
+
+A second `/architect` pass the same day settled every finding. Two more problems came up while checking the code, and are settled here too.
+
+### New evidence
+
+- **Kraken's funding export.** Kraken support's "Export historical funding rates" page offers a free ZIP (about 110 MB, no login, last updated 2026-02-16) with one CSV per derivatives market. `exports/PF_XBTUSD.csv` has 30,431 rows, columns `timestamp,tradeable,absolute_rate,relative_rate`, from 2022-03-22 16:00 to 2026-02-01 00:00 UTC. Every stamp is on a whole hour. Of the endpoint's 8,812 rows, 2,604 fall inside the export, and all 2,604 have the same stamp and the same relative rate. So the export uses the same stamp convention (period start) and the same rate as the endpoint the gate already checked against Tardis.
+- **Funding was every 4 h until 2022-09-29 12:00 UTC** (1,145 steps of 4 h), hourly after that. The spec assumed hourly everywhere.
+- **Six funding holes** of 2 to 3 h: after 2025-07-10 21:00, 2025-08-31 03:00, 2025-11-01 15:00 (3 h), 2025-11-02 03:00, 2025-11-19 04:00, 2025-12-04 08:00. AC-6 as written would refuse any range crossing one of them.
+- **Stale quote block clash.** The shared stale check (`trading_core/node/placeholder.py`, every 1 s, stale after `stale_quote_s` 10) would trip between path points about 20 s apart. It would raise a stale feed block and a risk event every minute, and could refuse an entry at an hour close, depending on timer order. The gate did not test this.
+- **Funding staleness.** `check_entry` refuses `funding_stale` when `funding_periods > 0` and the rate is missing, and the strategy's market context drops a rate older than `context_max_age_funding_s` (7200). In the 4 h era that would refuse entries for about half of every period.
+
+### Decisions (your picks, each with its runner up)
+
+- **Funding history: Kraken export plus endpoint, merged** (AC-2, AC-2a). Full history since launch, free, and from Kraken itself, so it matches the contract. Rows are never deleted, because the endpoint's window rolls. Runner up: shorten ranges to the endpoint's year (one market regime only). Rejected: ranges with no funding, which flatter long holds and need `use_market_context` off.
+- **Import by hand: `lab import-funding <file>`.** You download the ZIP; the lab reads only `PF_XBTUSD.csv`. The CMS link is hashed and will change, and this is a one time step. Runner up: a URL setting the lab downloads from.
+- **4 h era: charge each row at stamp + its period** (AC-2, AC-15), with gate G-4 settling whether the rate is per period or per hour. Runner up: start ranges at the hourly switch, losing six months including the 2022 crash.
+- **Funding holes: carry the last rate for up to 3 h** (AC-6, `FUNDING_CARRY_MAX`), and count the carried charges in the report. That covers every known hole and still refuses a real outage. Runner up: carry any hole, which hides an outage.
+- **Funding staleness in candle runs: 18 000 s** (one 4 h period plus 1 h) as the candle run file's `[context]` default. Paper and replay keep 7200. No core change. With the 3 h carry cap it behaves as "fresh until 1 h after the next charge". Runner up: a core rule built on `next_funding_ns`, deferred to Follow-up.
+- **Volume noise: round when within `1e-8` of a step, and count** (AC-1, AC-3). That fixes noise like `0.3565999999999999` and still catches a real precision change. Runner up: round everything, which would hide one.
+- **Volume 0 flat minutes: a quiet minute, one quote and no trade** (AC-1, AC-9). No volume is invented, quotes stay fresh as in the real market, and quiet minutes are counted apart from missing ones. Runner up: drop them as missing, which would make the stale block refuse entries through most of early 2022.
+- **Stale quote block: 300 s in candle runs** (AC-13), the same 5 minute rule as gap rows. Runner up: 90 s, which would raise many risk events on early 2022 data.
+- **Empty hour bar: strategies see it, as in paper** (AC-11). Nautilus' default `time_bars_build_with_no_updates = true` applies to the paper trader too, so backtest and paper agree. Runner up: switch it off in both, which changes spec 0006's trader config.
+- **Speed: AC-23 budget 60 min.** One minute chunks keep the stop first order, which matters more than the time of an occasional run. Runner up: keep 30 min and add a profiling task of unknown size.
+- **Earliest range start: 2022-03-24** (`CANDLE_RANGE_FLOOR`), the first whole day after the first minute (2022-03-23 10:03). AC-6 also refuses a range before the first stored minute's day. Runner up: allow 2022-03-23, a half empty first day.
+
+### Cross check of the revision (2026-10-17)
+
+A read only critique on another model found 11 gaps in the revision, and you chose to apply every recommended fix. The load bearing ones:
+- One pure `expected_charge_times` drives the manifest, the range check, and the funding charges, because `funding_boundaries` and `LabRecorder` assume hourly charges.
+- A per hour finding in G-4 multiplies the rate by 4 at import, not at charge time, so `market_context()` and `check_entry`'s funding cost see the same rate as the payments.
+- Funding rows go into the month of their charge time and carry a `source` column; an import never changes `fetched_at`.
+- The stale check moves into a shared `StaleQuoteBlock` mixin with a configurable interval (60 s in candle runs), because a 1 s timer would add about 140 million events to a full history run.
+- Quiet means flat with volume 0 after rounding; a non flat candle that rounds to 0 stays a trade minute. The stream starts at the range's first trade minute.
+- `LabRecorder` counts `zero_volume_bars` from the strategy's own internal bar type; data quality figures are labelled per month touched.
