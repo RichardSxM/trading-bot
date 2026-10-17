@@ -47,7 +47,11 @@ RESULTS_SEARCHED: Final = 200
 NOT_SENT_REDIS: Final = "NOT sent: Redis did not answer"
 NOT_SENT_CSRF: Final = "NOT sent: reload the page"
 NO_ANSWER: Final = "Test sent, but no answer from the alerter within 10 s"
-_REASONS: Final = {"push_failed": "a push failed, see the Activity feed", "invalid": "the alerter refused it"}
+_REASONS: Final = {
+    "push_failed": "a push failed, see the Activity feed",
+    "invalid": "the alerter refused it",
+    "too_soon": "the last test went out under 30 s ago",
+}
 
 
 def render_area(

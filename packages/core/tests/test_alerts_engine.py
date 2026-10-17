@@ -218,6 +218,37 @@ def test_retries_go_critical_first_then_oldest_and_stop_after_a_day():
     assert [p.episode.fingerprint for p in retry.pushes] == ["c1", "w1"]
 
 
+def test_the_retry_age_counts_from_the_first_failure_not_the_open():
+    engine = AlertEngine(CONFIG)
+    send_all(engine, engine.check(down(NOW)), NOW)
+    days_later = NOW + timedelta(days=3)
+    [renotify] = engine.tick(days_later).pushes
+
+    engine.record(renotify, Delivery.FAILED, days_later)
+
+    assert engine.push_failing
+    [retry] = engine.retry(days_later + timedelta(minutes=1)).pushes
+    assert retry.episode.fingerprint == "trader_down"
+    engine.record(retry, Delivery.FAILED, days_later + timedelta(minutes=1))
+    assert engine.retry(days_later + timedelta(days=1, minutes=1)).pushes == ()
+    assert not engine.push_failing
+
+
+def test_a_loaded_failed_row_ages_from_its_last_good_send():
+    base = AlertEngine(CONFIG).check(down(NOW)).store[0]
+    row = replace(
+        base,
+        opened_at=NOW - timedelta(days=5),
+        last_sent_at=NOW - timedelta(hours=4),
+        sends=3,
+        delivery=Delivery.FAILED,
+    )
+    engine = AlertEngine(CONFIG)
+    engine.load([row])
+
+    assert [p.episode.fingerprint for p in engine.retry(NOW).pushes] == ["trader_down"]
+
+
 # AC-17 ----------------------------------------------------------------------------------------
 
 

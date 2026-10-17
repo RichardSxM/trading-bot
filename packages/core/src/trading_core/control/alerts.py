@@ -15,12 +15,12 @@ from trading_core.control.messages import (
     SCHEMA_VERSION,
     ControlFormatError,
     Fields,
-    _check_version,
-    _strings,
-    _utc,
-    _uuid,
+    check_version,
     field,
     format_utc,
+    parse_utc,
+    parse_uuid,
+    required_strings,
 )
 from trading_core.recording.enums import AlertCmd, ControlOutcome, ControlSource
 from trading_core.settings import TradingEnv
@@ -102,8 +102,8 @@ def command_from_fields(fields: Fields) -> AlertCommand:
     A mute whose ``mute_s`` is not one of ``MUTE_SECONDS`` is a bad entry (answered ``failed
     invalid``), and so is a ``mute_s`` on another command.
     """
-    values = _strings(fields, ("id", "cmd", "issued_at", "expires_at", "schema_version"))
-    _check_version(values)
+    values = required_strings(fields, ("id", "cmd", "issued_at", "expires_at", "schema_version"))
+    check_version(values)
     try:
         cmd = AlertCmd(values["cmd"])
     except ValueError:
@@ -120,10 +120,10 @@ def command_from_fields(fields: Fields) -> AlertCommand:
         raise ControlFormatError(f"mute_s {mute_text!r} is not a number") from None
     _check_mute(cmd, mute_s, ControlFormatError)
     return AlertCommand(
-        _uuid(values["id"]),
+        parse_uuid(values["id"]),
         cmd,
-        _utc(values["issued_at"], "issued_at"),
-        _utc(values["expires_at"], "expires_at"),
+        parse_utc(values["issued_at"], "issued_at"),
+        parse_utc(values["expires_at"], "expires_at"),
         source,
         mute_s,
     )
@@ -148,8 +148,8 @@ def result_to_fields(result: AlertResult) -> dict[str, str]:
 
 def result_from_fields(fields: Fields) -> AlertResult:
     """Parse a ``{env}:control:alerts:results`` entry; raises ``ControlFormatError`` for a bad one."""
-    values = _strings(fields, ("id", "outcome", "outcome_at", "schema_version"))
-    _check_version(values)
+    values = required_strings(fields, ("id", "outcome", "outcome_at", "schema_version"))
+    check_version(values)
     cmd_text = field(fields, "cmd")
     try:
         cmd = None if cmd_text is None else AlertCmd(cmd_text)
@@ -158,12 +158,12 @@ def result_from_fields(fields: Fields) -> AlertResult:
         raise ControlFormatError(f"unknown alert result {cmd_text!r} {values['outcome']!r}") from None
     until_text = field(fields, "until")
     return AlertResult(
-        _uuid(values["id"]),
+        parse_uuid(values["id"]),
         outcome,
-        _utc(values["outcome_at"], "outcome_at"),
+        parse_utc(values["outcome_at"], "outcome_at"),
         cmd,
         field(fields, "reason"),
-        None if until_text is None else _utc(until_text, "until"),
+        None if until_text is None else parse_utc(until_text, "until"),
     )
 
 

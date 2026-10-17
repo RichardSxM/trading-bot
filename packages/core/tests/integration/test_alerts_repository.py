@@ -80,6 +80,18 @@ def test_a_stale_save_never_moves_a_row_back_or_reopens_it(repo, engine):
     assert (row["sends"], row["occurrences"]) == (1, 4)
 
 
+def test_a_stale_save_keeps_the_newer_delivery(repo, engine):
+    first = episode("fp-delivery")
+    sent = replace(first, sends=1, last_sent_at=NOW, delivery=Delivery.SENT)
+    row_id = repo.save(sent)
+
+    repo.save(first)  # the pending state, saved late
+
+    assert _row(engine, row_id)["delivery"] == "sent"
+    repo.save(replace(sent, delivery=Delivery.FAILED))  # a newer outcome at the same counts still lands
+    assert _row(engine, row_id)["delivery"] == "failed"
+
+
 def test_one_open_episode_per_fingerprint_and_a_new_one_after_it_resolves(repo, engine):
     first = episode("fp-open")
     first_id = repo.save(first)

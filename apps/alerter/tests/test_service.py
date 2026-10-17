@@ -278,3 +278,32 @@ def test_the_liveness_file_is_touched(tmp_path):
     alerter.touch_liveness()
 
     assert (tmp_path / "alive").exists()
+
+
+class CrashingDeliverer(FakeDeliverer):
+    """Raises instead of answering, like a bug outside the HTTP errors Pushover catches."""
+
+    async def send(self, push):
+        raise RuntimeError("boom")
+
+
+def test_a_push_that_crashes_is_recorded_failed_and_retried(tmp_path):
+    async def run():
+        alerter, clock, _, _, _, _, engine = make(tmp_path)
+        alerter._deliverer = CrashingDeliverer()
+        await alerter.check_heartbeat()
+        clock.advance(46)
+        await alerter.check_heartbeat()
+        await settle(alerter)
+        failing = alerter.push_failing
+        alerter._deliverer = FakeDeliverer()
+        alerter.retry()
+        await settle(alerter)
+        return failing, alerter._deliverer, engine
+
+    failing, deliverer, engine = asyncio.run(run())
+
+    assert failing
+    [push] = deliverer.sent
+    assert push.episode.rule == "trader_down"
+    assert engine.open_episodes[0].delivery is Delivery.DRY_RUN

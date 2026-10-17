@@ -15,12 +15,13 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import Final, Protocol
 
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError, SQLAlchemyError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from trading_core.alerts.daily import DailyFigures
 from trading_core.alerts.engine import AlertEngine, EpisodeKey, key_of
 from trading_core.alerts.model import Episode, Tier
-from trading_core.recording.errors import RecordingError
+from trading_core.recording.errors import AlertConflictError, RecordingError
 
 log = logging.getLogger(__name__)
 
@@ -172,13 +173,37 @@ class StoreWriter:
         return True
 
     async def flush_one(self) -> bool:
-        """Write the oldest queued episode; False (kept queued) when Postgres is unavailable."""
+        """Write the oldest queued episode; False (kept queued) when Postgres is unavailable.
+
+        Any other database error is the row's own (bad data, say): it is logged and dropped, so one
+        row never blocks the rest. A new open episode refused because an older resolved episode of
+        its fingerprint is still queued goes behind that one and is tried again after it.
+        """
         key, episode = next(iter(self._queue.items()))
         try:
             await asyncio.to_thread(self._store.save, episode)
         except SQLAlchemyError as exc:
-            log.warning("cannot store alert yet", extra={"fields": {"code": "alert_store_failed", "error": str(exc)}})
-            return False
+            if _unavailable(exc):
+                log.warning(
+                    "cannot store alert yet", extra={"fields": {"code": "alert_store_failed", "error": str(exc)}}
+                )
+                return False
+            log.error(
+                "alert refused by the database",
+                extra={
+                    "fields": {"code": "alert_store_refused", "fingerprint": episode.fingerprint, "error": str(exc)}
+                },
+            )
+        except AlertConflictError as exc:
+            if self._queue.get(key) is episode and self._older_resolved_queued(episode):
+                self._queue.move_to_end(key)
+                return True
+            log.error(
+                "alert refused by the store",
+                extra={
+                    "fields": {"code": "alert_store_refused", "fingerprint": episode.fingerprint, "error": str(exc)}
+                },
+            )
         except RecordingError as exc:
             log.error(
                 "alert refused by the store",
@@ -191,6 +216,12 @@ class StoreWriter:
             del self._queue[key]
         return True
 
+    def _older_resolved_queued(self, episode: Episode) -> bool:
+        return any(
+            e.fingerprint == episode.fingerprint and not e.is_open and e.opened_at < episode.opened_at
+            for e in self._queue.values()
+        )
+
     def _drop_one(self) -> None:
         victim = next((k for k, e in self._queue.items() if e.severity is Tier.INFO), next(iter(self._queue)))
         dropped = self._queue.pop(victim)
@@ -198,3 +229,10 @@ class StoreWriter:
             "alert queue full, dropping one",
             extra={"fields": {"code": "alert_queue_full", "fingerprint": dropped.fingerprint}},
         )
+
+
+def _unavailable(exc: SQLAlchemyError) -> bool:
+    """True for an error that says Postgres is away (connection, pool), not that the row is bad."""
+    if isinstance(exc, OperationalError | InterfaceError | PoolTimeoutError):
+        return True
+    return isinstance(exc, DBAPIError) and exc.connection_invalidated

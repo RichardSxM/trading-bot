@@ -4,6 +4,7 @@ tier), and the API surface (expired and invalid commands)."""
 
 import asyncio
 import json
+import uuid
 from datetime import timedelta
 
 from alerter.commands import MuteKey
@@ -11,7 +12,7 @@ from alerter.service import Alerter
 from alerter.store import StoreWriter
 from trading_core.alerts.engine import AlertEngine, EngineConfig
 from trading_core.alerts.model import Delivery, HoldKind, Observation, PushReason, Tier
-from trading_core.control.alerts import alert_command, command_to_fields, result_from_fields
+from trading_core.control.alerts import AlertCommand, alert_command, command_to_fields, result_from_fields
 from trading_core.recording.enums import AlertCmd, ControlOutcome
 
 from .conftest import NOW, Clock, FakeDeliverer, FakeStore, FakeStreams
@@ -51,6 +52,7 @@ async def send(alerter, redis, clock, cmd, mute_s=None, *, at=None, fields=None)
     redis.append(STREAM, fields or command_to_fields(msg))
     await alerter._commands.step()
     await alerter._commands.step()
+    await alerter._commands.drain()
     await settle(alerter)
     return msg
 
@@ -233,3 +235,79 @@ def test_a_mute_read_late_still_ends_at_its_issued_at_plus_its_length(tmp_path):
     assert result.until == msg.issued_at + timedelta(hours=1)
     assert json.loads(redis.values[MUTE_KEY])["command_id"] == str(msg.id)
     assert redis.ttls[MUTE_KEY] == 3580
+
+
+def test_a_second_test_within_30_s_answers_too_soon(tmp_path):
+    async def run():
+        alerter, clock, redis, deliverer, _ = make(tmp_path)
+        await send(alerter, redis, clock, AlertCmd.TEST)
+        clock.advance(29)
+        await send(alerter, redis, clock, AlertCmd.TEST)
+        clock.advance(1)
+        await send(alerter, redis, clock, AlertCmd.TEST)
+        return redis, deliverer
+
+    redis, deliverer = asyncio.run(run())
+
+    assert [(r.outcome, r.reason) for r in results(redis)] == [
+        (ControlOutcome.EXECUTED, None),
+        (ControlOutcome.FAILED, "too_soon"),
+        (ControlOutcome.EXECUTED, None),
+    ]
+    assert len(deliverer.sent) == 6
+
+
+class SlowDeliverer(FakeDeliverer):
+    """Holds every push until ``release`` is set, like Pushover retrying for minutes."""
+
+    def __init__(self):
+        super().__init__()
+        self.release = asyncio.Event()
+
+    async def send(self, push):
+        await self.release.wait()
+        return await super().send(push)
+
+
+def test_a_mute_behind_a_slow_test_is_answered_first(tmp_path):
+    async def run():
+        alerter, clock, redis, _, engine = make(tmp_path)
+        slow = SlowDeliverer()
+        alerter._deliverer = slow
+        test = alert_command(AlertCmd.TEST, clock(), 30)
+        redis.append(STREAM, command_to_fields(test))
+        await alerter._commands.step()
+        await alerter._commands.step()
+        await asyncio.sleep(0)
+        mute = await send_without_drain(alerter, redis, clock, AlertCmd.MUTE, 3600)
+        answered_first = [r.id for r in results(redis)]
+        held = engine.holds
+        slow.release.set()
+        await alerter._commands.drain()
+        return answered_first, mute, test, held, redis
+
+    answered_first, mute, test, held, redis = asyncio.run(run())
+
+    assert answered_first == [mute.id]
+    assert [h.kind for h in held] == [HoldKind.MUTE]
+    assert [r.id for r in results(redis)] == [mute.id, test.id]
+    assert redis.acked[STREAM] == {"1-0", "2-0"}
+
+
+async def send_without_drain(alerter, redis, clock, cmd, mute_s=None):
+    msg = alert_command(cmd, clock(), 30, mute_s=mute_s)
+    redis.append(STREAM, command_to_fields(msg))
+    await alerter._commands.step()
+    return msg
+
+
+def test_a_mute_without_its_length_fails_closed(tmp_path):
+    async def run():
+        alerter, clock, _, _, engine = make(tmp_path)
+        msg = AlertCommand(uuid.uuid4(), AlertCmd.MUTE, clock(), clock() + timedelta(seconds=30))
+        return await alerter.execute(msg), engine
+
+    result, engine = asyncio.run(run())
+
+    assert (result.outcome, result.reason) == (ControlOutcome.FAILED, "invalid")
+    assert engine.holds == ()
