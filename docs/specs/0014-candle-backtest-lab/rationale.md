@@ -136,3 +136,20 @@ A read only critique on another model found 11 gaps in the revision, and you cho
 - The stale check moves into a shared `StaleQuoteBlock` mixin with a configurable interval (60 s in candle runs), because a 1 s timer would add about 140 million events to a full history run.
 - Quiet means flat with volume 0 after rounding; a non flat candle that rounds to 0 stays a trade minute. The stream starts at the range's first trade minute.
 - `LabRecorder` counts `zero_volume_bars` from the strategy's own internal bar type; data quality figures are labelled per month touched.
+
+## Gate deltas (2026-10-17)
+
+The build plan's deltas 3a to 3c, run with the same spike (`scripts/spikes/0014_gate.py`: `candles` with the host Python, `engine-b` in the `kfs/trader:dev` image with the pinned instrument mounted at `/spike/PF_XBTUSD.KRAKEN.json`).
+
+**G-1b (3a): passes.** Over the six sampled months every volume that is off the size step is within `1e-8` of one and rounds (113 in 2022-03, 658 in 2022-04, 3,614 in 2023-06, 6,990 in 2024-06, 8,503 in 2025-06, 21,588 in 2026-09). No volume is further off. Every volume 0 row is flat and equal to the previous close (quiet minutes: 9,543, 29,177, 8,182, 1,686, 758, 337). No candle rounds to volume 0 without being flat, so `zero_volume_trade_rows` is 0 in every sampled month.
+
+**G-3b (3c): passes.**
+- With `stale_quote_s` 300 and a 60 s check, the hour closes at 01:00 to 03:00 are not blocked, and the 04:00 close after a 7 minute gap is blocked. For contrast, the paper rule (10 s, checked every 1 s) blocks every one of those hour closes on the path, which confirms the clash this revision fixed.
+- An hour made only of quiet minutes (one quote each, no trade) adds no trade (480 trades from the 120 traded minutes) and builds a bar with volume `0.0000`, and the strategy receives that bar unblocked.
+- An actor subscribed to `PF_XBTUSD.KRAKEN-1-HOUR-LAST-INTERNAL` next to the strategy gets the very same bar objects (3 of 3, identical), and the data engine holds one aggregator for that bar type.
+- One 30 day month: 46.7 s with the 60 s check (about 7,400 data events a second) against 53.2 s with a 1 s check (2.6 million timer events). 55 months come to about 43 minutes, inside AC-23's 60 minute budget.
+
+**G-4 (3b): passes. A 4 h era rate is charged once per 4 h period, so there is no × 4 at import and `CANDLE_RANGE_FLOOR` stays 2022-03-24.** Run with the `funding4h` check on Kraken's funding export (30,431 rows) and the free Tardis `derivative_ticker` days 2022-05-01 to 2022-09-01 (4 h era) plus 2022-10-01, 2023-06-01 and 2025-06-01 (hourly era). A quick web search found no dated Kraken note on the 2022 switch to hourly funding, so G-4 rests on the data.
+- The export's 4 h era holds 1,145 rows, every step exactly 4 h, the last at 2022-09-29 08:00 and the first hourly row at 2022-09-29 12:00, which matches `FUNDING_HOURLY_FROM`.
+- Stamp: on all five 4 h era days, Tardis's `funding_rate` at each charge time equals the export's `absolute_rate` stamped 4 h earlier (35 of 35), so a stamp is the start of its period and the charge time is stamp + 4 h.
+- Meaning: `relative_rate` ÷ the previous period's mark minus index premium has a median of about 0.125 in the 4 h era (0.103 to 0.132 per day) and about 0.043 in the hourly era (0.042 to 0.044), about 2.9 times as large. The hourly rate is about premium ÷ 24, so a per hour rate in the 4 h era would sit near 0.042 and a per period rate near 0.167. The data sits close to the per period value and far from the per hour one.

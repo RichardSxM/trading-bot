@@ -391,6 +391,176 @@ def check_throughput() -> None:
     )
 
 
+# ---------------------------------------------------------------- G-3b deltas (2026-10-17 revision)
+
+
+def quiet_quote(m: int, price: int) -> list:
+    """A quiet minute (AC-9): one quote at m + 59.999 s around its price, no trade."""
+    ts = m + 60 * SEC - MS
+    b, a = bid_ask(price)
+    return [QuoteTick(INSTRUMENT_ID, Price(b, 0), Price(a, 0), QUOTE_SIZE, QUOTE_SIZE, ts, ts)]
+
+
+def stream_b(candles: dict, quiet: set[int], flag: SideFlag) -> Iterator[list]:
+    for m in sorted(candles):
+        yield quiet_quote(m, candles[m][3]) if m in quiet else path_events(m, candles[m], flag.side)
+
+
+class StaleConfig(StrategyConfig, frozen=True):
+    instrument_id: InstrumentId
+    bar_spec: str
+    stale_quote_s: int
+    stale_check_s: int
+
+
+class StaleProbe(Strategy):
+    """The PlaceholderTimed stale rule with a configurable check interval, logging each bar."""
+
+    def __init__(self, config: StaleConfig) -> None:
+        super().__init__(config)
+        self.blocked = False
+        self.started = 0
+        self.bars: list[Bar] = []
+        self.bar_blocked: list[tuple[int, bool, str]] = []
+        self.trades = 0
+        self.checks = 0
+
+    def on_start(self) -> None:
+        self.started = self.clock.timestamp_ns()
+        self.subscribe_quote_ticks(self.config.instrument_id)
+        self.subscribe_trade_ticks(self.config.instrument_id)
+        self.subscribe_bars(BarType.from_str(f"{self.config.instrument_id}-{self.config.bar_spec}-INTERNAL"))
+        self.clock.set_timer_ns("stale", self.config.stale_check_s * SEC, 0, 0, self.on_check)
+
+    def on_check(self, event) -> None:
+        self.checks += 1
+        q = self.cache.quote_tick(self.config.instrument_id)
+        last = self.started if q is None else q.ts_event
+        self.blocked = self.clock.timestamp_ns() - last > self.config.stale_quote_s * SEC
+
+    def on_trade_tick(self, tick: TradeTick) -> None:
+        self.trades += 1
+
+    def on_bar(self, bar: Bar) -> None:
+        self.bars.append(bar)
+        self.bar_blocked.append(((bar.ts_event - T0) // MIN, self.blocked, str(bar.volume)))
+
+
+class BarCounter(Actor):
+    """A second subscriber to the strategy's internal bar type (LabRecorder's zero_volume_bars)."""
+
+    def __init__(self, bar_type: BarType) -> None:
+        super().__init__(FlagConfig())
+        self.bar_type = bar_type
+        self.bars: list[Bar] = []
+
+    def on_start(self) -> None:
+        self.subscribe_bars(self.bar_type)
+
+    def on_bar(self, bar: Bar) -> None:
+        self.bars.append(bar)
+
+
+def run_b(candles, quiet=frozenset(), *, stale_check_s=60, stale_quote_s=300, counter=False):
+    engine = make_engine()
+    flag = SideFlag()
+    s = StaleProbe(
+        StaleConfig(
+            instrument_id=INSTRUMENT_ID,
+            bar_spec="1-HOUR-LAST",
+            stale_quote_s=stale_quote_s,
+            stale_check_s=stale_check_s,
+        )
+    )
+    engine.add_actor(PositionSideFlag(flag))
+    c = BarCounter(BarType.from_str(f"{INSTRUMENT_ID}-1-HOUR-LAST-INTERNAL")) if counter else None
+    if c is not None:
+        engine.add_actor(c)
+    engine.add_strategy(s)
+    engine.add_data_iterator("candles", stream_b(candles, set(quiet), flag))
+    began = time.monotonic()
+    engine.run(start=min(candles), end=max(candles) + 2 * MIN)
+    took = time.monotonic() - began
+    aggregators = getattr(engine.kernel.data_engine, "_bar_aggregators", None)
+    engine.dispose()
+    return s, c, took, aggregators
+
+
+def check_stale_hour_close() -> None:
+    # Three hours of normal minutes, then a 7 minute gap right before the 04:00 close, then on.
+    candles = flat_minutes(T0, 300)
+    for k in range(4 * 60 - 7, 4 * 60):
+        candles.pop(T0 + k * MIN)
+    s, _, _, _ = run_b(candles)
+    normal = [b for m, b, _ in s.bar_blocked if m in (60, 120, 180)]
+    gap = [b for m, b, _ in s.bar_blocked if m == 240]
+    s1, _, _, _ = run_b(candles, stale_check_s=1, stale_quote_s=10)
+    paper_rule = [b for m, b, _ in s1.bar_blocked if m in (60, 120, 180)]
+    ok = normal == [False, False, False] and gap == [True]
+    result(
+        "stale_300s_60s_check",
+        ok,
+        f"hour closes 01-03 blocked {normal}; 04:00 after a 7 min gap blocked {gap}; "
+        f"for contrast the paper rule (10 s, 1 s check) blocks hour closes 01-03: {paper_rule}",
+    )
+
+
+def check_quiet_hour() -> None:
+    # Hour 01:00-02:00 entirely quiet minutes at 60_000; hours 00 and 02 traded.
+    candles = flat_minutes(T0, 180)
+    quiet = {T0 + k * MIN for k in range(60, 120)}
+    for m in quiet:
+        candles[m] = (60_000, 60_000, 60_000, 60_000)
+    s, c, _, aggregators = run_b(candles, quiet, counter=True)
+    vols = {m: v for m, _, v in s.bar_blocked}
+    blocked_quiet = [b for m, b, _ in s.bar_blocked if m == 120]
+    expected_trades = 120 * 4
+    same = c is not None and len(c.bars) == len(s.bars) and all(a is b for a, b in zip(c.bars, s.bars, strict=True))
+    equal = c is not None and [str(b) for b in c.bars] == [str(b) for b in s.bars]
+    ok = vols.get(120) == "0.0000" and s.trades == expected_trades and not blocked_quiet[0] and equal
+    result(
+        "quiet_hour_zero_volume_bar",
+        ok,
+        f"bars (min, blocked, volume): {s.bar_blocked}; trades {s.trades} (expected {expected_trades}, "
+        f"no trade from 60 quiet minutes); quiet hour bar blocked {blocked_quiet}",
+    )
+    result(
+        "second_subscriber_same_bars",
+        equal,
+        f"strategy bars {len(s.bars)}, actor bars {len(c.bars) if c else None}, same objects {same}, "
+        f"equal {equal}; data engine aggregators: "
+        f"{None if aggregators is None else list(aggregators)}",
+    )
+
+
+def check_stale_throughput() -> None:
+    n = 43_200
+    candles = {}
+    p = 60_000
+    for i in range(n):
+        o = p
+        p += (i * 7919) % 41 - 20
+        candles[T0 + i * MIN] = (o, max(o, p) + 5, min(o, p) - 5, p)
+    _, _, took60, _ = run_b(candles, stale_check_s=60)
+    s1, _, took1, _ = run_b(candles, stale_check_s=1)
+    events = n * 8
+    info(
+        "stale_throughput",
+        f"one 30 day month: 60 s check {took60:.1f} s ({events / took60:,.0f} data events/s), "
+        f"1 s check {took1:.1f} s ({events / took1:,.0f}/s, {s1.checks} timer events); "
+        f"55 months ≈ {55 * took60 / 60:.1f} min with the 60 s check",
+    )
+
+
+def engine_b() -> None:
+    for check in (check_stale_hour_close, check_quiet_hour, check_stale_throughput):
+        try:
+            check()
+        except Exception as exc:
+            result(check.__name__, False, f"raised {type(exc).__name__}: {exc}")
+    print("\n".join(f"{k}: {v}" for k, v in RESULTS.items()))
+
+
 def engine() -> None:
     for check in (
         check_zero_trade,

@@ -23,13 +23,14 @@ import sys
 import time
 import urllib.request
 from collections import Counter
-from datetime import UTC, datetime
-from decimal import Decimal
+from datetime import UTC, datetime, timedelta
+from decimal import ROUND_HALF_EVEN, Decimal
 from itertools import pairwise
 
 BASE = "https://futures.kraken.com"
 TICK = Decimal(1)
 STEP = Decimal("0.0001")
+NOISE = Decimal("1e-8")
 
 
 def _get(url: str) -> dict:
@@ -71,6 +72,27 @@ def candles(months: list[str]) -> None:
         minutes = sorted(rows)
         off_tick = [(t, f) for t in minutes for f in ("open", "high", "low", "close") if Decimal(rows[t][f]) % TICK]
         off_step = [t for t in minutes if Decimal(rows[t]["volume"]) % STEP]
+        # G-1b: the AC-1 rounding rule (within 1e-8 of a step) and the quiet rule (volume 0 after
+        # rounding and flat at the previous close).
+        rounded, too_far, quiet, quiet_not_prev, zero_not_flat = 0, [], 0, [], 0
+        prev_close: str | None = None
+        for t in minutes:
+            c = rows[t]
+            vol = Decimal(c["volume"])
+            snapped = vol.quantize(STEP, rounding=ROUND_HALF_EVEN)
+            if snapped != vol:
+                if abs(snapped - vol) <= NOISE:
+                    rounded += 1
+                else:
+                    too_far.append((t, c["volume"]))
+            flat = len({Decimal(c[f]) for f in ("open", "high", "low", "close")}) == 1
+            if snapped == 0 and flat:
+                quiet += 1
+                if prev_close is not None and Decimal(c["close"]) != Decimal(prev_close):
+                    quiet_not_prev.append((t, c["close"], prev_close))
+            elif snapped == 0:
+                zero_not_flat += 1
+            prev_close = c["close"]
         price_dec = Counter(_decimals(rows[t][f]) for t in minutes for f in ("open", "high", "low", "close"))
         vol_dec = Counter(_decimals(rows[t]["volume"]) for t in minutes)
         zero_vol = sum(Decimal(rows[t]["volume"]) == 0 for t in minutes)
@@ -112,6 +134,13 @@ def candles(months: list[str]) -> None:
                     "volume_decimals": dict(vol_dec),
                     "zero_volume": zero_vol,
                     "zero_volume_flat": flat_zero,
+                    "g1b_volume_rounded": rounded,
+                    "g1b_volume_too_far": len(too_far),
+                    "g1b_too_far_sample": too_far[:5],
+                    "g1b_quiet": quiet,
+                    "g1b_quiet_not_at_prev_close": len(quiet_not_prev),
+                    "g1b_quiet_not_prev_sample": quiet_not_prev[:5],
+                    "g1b_zero_volume_not_flat": zero_not_flat,
                     "gaps_5plus": len(gaps),
                     "gap_minutes": sum(gaps),
                     "seconds": round(time.monotonic() - began, 1),
@@ -162,16 +191,131 @@ def funding(tardis_ticker: str | None) -> None:
             )
 
 
+HOURLY_FROM = datetime(2022, 9, 29, 12, tzinfo=UTC)
+
+
+def _export_rows(path: str) -> dict[datetime, tuple[Decimal, Decimal]]:
+    """Kraken's funding export: stamp -> (absolute_rate, relative_rate) for PF_XBTUSD."""
+    import io
+    import zipfile
+
+    if path.endswith(".zip"):
+        with zipfile.ZipFile(path) as zf:
+            text = zf.read("exports/PF_XBTUSD.csv").decode()
+    else:
+        with open(path) as fh:
+            text = fh.read()
+    out = {}
+    for row in csv.DictReader(io.StringIO(text)):
+        stamp = datetime.fromisoformat(row["timestamp"]).replace(tzinfo=UTC)
+        out[stamp] = (Decimal(row["absolute_rate"]), Decimal(row["relative_rate"]))
+    return out
+
+
+def _tardis_periods(path: str) -> tuple[list[dict], list]:
+    """Per funding_timestamp: the rate Tardis shows for it, and the premium and mark over time windows."""
+    ticks: list[tuple[int, int, Decimal, Decimal, Decimal]] = []
+    with gzip.open(path, "rt") as fh:
+        for row in csv.DictReader(fh):
+            if row["funding_rate"] and row["funding_timestamp"] and row["mark_price"] and row["index_price"]:
+                ticks.append(
+                    (
+                        int(row["timestamp"]),
+                        int(row["funding_timestamp"]),
+                        Decimal(row["funding_rate"]),
+                        Decimal(row["mark_price"]),
+                        Decimal(row["index_price"]),
+                    )
+                )
+    by_fts: dict[int, list] = {}
+    for t in ticks:
+        by_fts.setdefault(t[1], []).append(t)
+    return [{"fts": fts, "ticks": rows} for fts, rows in sorted(by_fts.items())], ticks
+
+
+def _mean(xs: list[Decimal]) -> Decimal | None:
+    return sum(xs) / len(xs) if xs else None
+
+
+def _median(xs: list[Decimal]) -> Decimal | None:
+    s = sorted(xs)
+    return s[len(s) // 2] if s else None
+
+
+def funding4h(export: str, tardis_files: list[str]) -> None:
+    """G-4: is a 4 h era relative_rate charged once per 4 h period, or a per hour rate?"""
+    rows = _export_rows(export)
+    stamps = sorted(rows)
+    four = [s for s in stamps if s < HOURLY_FROM]
+    hourly = [s for s in stamps if s >= HOURLY_FROM]
+    steps_4h = Counter(int((b - a).total_seconds()) for a, b in pairwise(four))
+    print(
+        json.dumps(
+            {
+                "export_rows": len(stamps),
+                "four_h_rows": len(four),
+                "four_h_steps": dict(steps_4h),
+                "first": str(stamps[0]),
+                "last_4h": str(four[-1]),
+                "first_hourly": str(hourly[0]),
+                "median_abs_rel_4h_era": str(_median([abs(rows[s][1]) for s in four])),
+                "median_abs_rel_hourly_era": str(_median([abs(rows[s][1]) for s in hourly])),
+                "median_abs_rel_hourly_2022q4": str(
+                    _median([abs(rows[s][1]) for s in hourly if s < datetime(2023, 1, 1, tzinfo=UTC)])
+                ),
+                "median_abs_over_rel_x_price_hint": "absolute_rate / relative_rate = quote price",
+            }
+        ),
+        flush=True,
+    )
+    for path in tardis_files:
+        periods, ticks = _tardis_periods(path)
+        out = []
+        for p in periods:
+            fts = p["fts"]
+            at = datetime.fromtimestamp(fts / 1_000_000, UTC)
+            period = timedelta(hours=4) if at <= HOURLY_FROM else timedelta(hours=1)
+            stamp = at - period
+            # The rate Tardis shows while counting down to fts: the most common value in the group.
+            rate = Counter(t[2] for t in p["ticks"]).most_common(1)[0][0]
+            p_ns = int(period.total_seconds() * 1_000_000)
+            # Premium over the period before the stamp (the TWAP that sets the rate) and over the
+            # period the rate applies to.
+            prev_prem = _mean([(m - i) / i for ts, _, _, m, i in ticks if fts - 2 * p_ns <= ts < fts - p_ns])
+            same_prem = _mean([(m - i) / i for ts, _, _, m, i in ticks if fts - p_ns <= ts < fts])
+            mark = _mean([m for ts, _, _, m, _ in ticks if fts - p_ns <= ts < fts])
+            exp = rows.get(stamp)
+            entry = {
+                "charge_at": str(at),
+                "tardis_rate": str(rate),
+                "export_stamp": str(stamp),
+                "export_abs": None if exp is None else str(exp[0]),
+                "export_rel": None if exp is None else str(exp[1]),
+                "abs_over_rel": None if exp is None or not exp[1] else f"{exp[0] / exp[1]:.1f}",
+                "mark": None if mark is None else f"{mark:.1f}",
+                "rel_over_prev_premium": None if exp is None or not prev_prem else f"{exp[1] / prev_prem:.4f}",
+                "rel_over_same_premium": None if exp is None or not same_prem else f"{exp[1] / same_prem:.4f}",
+            }
+            out.append(entry)
+        print(json.dumps({"file": path.rsplit("/", 1)[-1], "periods": out}), flush=True)
+
+
 def main() -> None:
     check, args = sys.argv[1], sys.argv[2:]
     if check == "candles":
         candles(args)
     elif check == "funding":
         funding(args[0] if args else None)
+    elif check == "funding4h":
+        funding4h(args[0], args[1:])
     elif check == "engine":
         from engine_gate import engine
 
         engine()
+    elif check == "engine-b":
+        from engine_gate import engine_b
+
+        engine_b()
     else:
         raise SystemExit(f"unknown check {check}")
 
