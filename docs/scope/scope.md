@@ -133,7 +133,7 @@ spec [0005](../specs/0005-always-on-cloud-deployment/index.md) · code in [deplo
 - [x] Verify it: `/check verify always on cloud deployment` (passed 2026-10-17)
 - [x] Test it: `/test always on cloud deployment` (`scripts/tests/host-scripts-test.sh`, 2026-10-17)
 - [x] Review it (fresh model): `/check review always on cloud deployment`
-- [ ] Document it: `/document always on cloud deployment`
+- [x] Document it: `/document always on cloud deployment` (CHANGELOG, 2026-10-17)
 
 ## Slice 3: Start the data clock
 
