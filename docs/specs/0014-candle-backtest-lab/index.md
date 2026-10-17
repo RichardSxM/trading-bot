@@ -229,6 +229,8 @@ Deltas 3a to 3c ran on 2026-10-17 and all passed (rationale.md, *Gate deltas (20
 8. `StaleQuoteBlock` mixin in `trading_core/node/stale.py`, `PlaceholderTimed` moved onto it with a regression test; `buy_and_hold` pure rule and node class (shared `check_entry` inputs, `stale_quote_s`, `stale_check_s`, and funding staleness from the run file, attempt cap, outside close handling), registered. Satisfies **AC-12**, **AC-13**
 9. `lab backtest` run file model (`CANDLE_RANGE_FLOOR`, `stale_quote_s`, the candle `[context]` default), range checks (including the warmup funding row), funding at charge times with the 4 h era rule, the candle plan and bundle path in `apps/lab/src/lab/candle_backtest.py`, reports with the benchmark and `trading_core/lab/candle_metrics.py`, `buy_and_hold.toml`. Satisfies **AC-6**, **AC-15**, **AC-16**, **AC-17**
 
+Steps 4 to 9 were built on 2026-10-17. September 2026 was fetched, and the export was imported. `buy_and_hold` ran over that month twice: one entry at the first hour close's ask, the `range_end` exit at the last close's bid, 718 funding rows, and the two reports matched apart from ids and times.
+
 **Milestone 3: Data you can trust**
 10. Row checks (rounding tolerance, quiet flatness, 4 h stamps, funding disagreements), gap rows, manifest fields, and the funding coverage and carry check of `lab backtest`. Satisfies **AC-2a**, **AC-3**, **AC-4**, **AC-6**
 11. Retries, backoff, pause, failure exits, catalog cap, `--refetch`, the running month. Satisfies **AC-1**, **AC-5**

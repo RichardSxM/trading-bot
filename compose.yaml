@@ -587,6 +587,9 @@ services:
       LAB_CATALOG_CAP_GB: ${LAB_CATALOG_CAP_GB:-40}
       LAB_WORKERS: ${LAB_WORKERS:-2}
       LAB_TARDIS_DAY_GB: ${LAB_TARDIS_DAY_GB:-3}
+      # Public, unauthenticated Kraken Futures GETs for the candle lab (spec 0014 AC-5).
+      LAB_KRAKEN_FUTURES_URL: ${LAB_KRAKEN_FUTURES_URL:-https://futures.kraken.com}
+      LAB_KRAKEN_PAUSE_MS: ${LAB_KRAKEN_PAUSE_MS:-250}
     secrets:
       - source: postgres_lab_password
         target: postgres_password

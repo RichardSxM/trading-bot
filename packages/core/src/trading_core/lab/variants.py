@@ -6,7 +6,9 @@ product). A variant that equals ``base`` or an earlier variant is dropped, so ``
 with a latency of 0 adds nothing (both of its variants equal ``base``).
 """
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Final
 
 BASE: Final = "base"
@@ -73,3 +75,12 @@ def expand_variants(
         if all(candidate.values() != kept.values() for kept in variants):
             variants.append(candidate)
     return variants
+
+
+@dataclass(frozen=True)
+class CandleVariantSpec:
+    """One variant of a candle backtest (spec 0014 AC-7): its name, slippage, and grid values (``{}`` for none)."""
+
+    name: str
+    slippage_bps: Decimal
+    grid_point: Mapping[str, int | str | bool] = field(default_factory=dict)

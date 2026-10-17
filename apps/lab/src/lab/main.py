@@ -8,14 +8,17 @@ without ``GIT_COMMIT``, 130 interrupted by SIGINT or
 SIGTERM (``replay``, ``parity``, AC-13).
 
 ``replay`` runs ``base`` plus the variants its flags add (AC-6); ``parity`` replays the paper loop's
-strategy in memory and compares it with the paper decisions (AC-15). Only ``replay`` connects to
-Postgres, so the other commands run with ``--no-deps``.
+strategy in memory and compares it with the paper decisions (AC-15). ``fetch-candles`` and
+``import-funding`` fill the candle lab's tree (spec 0014; 1 bad rows or a failed fetch, 3 the cap),
+and ``backtest`` runs an hour level strategy over it (2 missing candles or funding). Only ``replay``
+and ``backtest`` connect to Postgres, so the other commands run with ``--no-deps``.
 """
 
 import argparse
 import logging
 import os
 import sys
+import time
 from datetime import date
 from pathlib import Path
 from typing import Final, NoReturn
@@ -23,14 +26,19 @@ from typing import Final, NoReturn
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from lab.candle_backtest import backtest
+from lab.candle_fetch import fetch_candles
+from lab.funding_import import import_funding
 from lab.paper_csv import read_paper_csv
 from lab.parity import parity
 from lab.replay import PostgresStore, replay
-from lab.runfile import Overrides, RunFileError, load_run
+from lab.runfile import Overrides, RunFileError, load_candle_run, load_run
 from lab.settings import LabSettings, ProbeSwitch
 from lab.strategies import registry_entry
 from lab.tardis_import import import_context, import_tardis, prune
 from trading_core.boot import boot
+from trading_core.lab.candles import fetch_months
+from trading_core.lab.errors import CandleInputError
 from trading_core.lab.parity import ParityInputError
 from trading_core.lab.tardis_days import import_days
 from trading_core.lab.variants import VariantError, VariantSpec, expand_variants
@@ -80,6 +88,16 @@ def parser() -> argparse.ArgumentParser:
     check = commands.add_parser("parity", help="compare a replay of the paper strategy with the paper decisions")
     check.add_argument("runfile", type=Path, help="a run file with [paper]")
     check.add_argument("csv", type=Path, help="the CSV from scripts/fetch-paper-decisions.sh")
+    test = commands.add_parser("backtest", help="backtest an hour level strategy over stored candles (spec 0014)")
+    test.add_argument("runfile", type=Path)
+    test.add_argument("--from", dest="from_", type=_day, help="first UTC day, overrides the run file")
+    test.add_argument("--to", type=_day, help="last UTC day, overrides the run file")
+    test.add_argument("--seed", type=int, help="overrides the run file's seed")
+    candles = commands.add_parser("fetch-candles", help="fetch Kraken 1 minute candles and funding (spec 0014)")
+    candles.add_argument("from_", metavar="from", help="first UTC month, YYYY-MM")
+    candles.add_argument("to", help="last UTC month, YYYY-MM")
+    funding = commands.add_parser("import-funding", help="merge Kraken's funding export ZIP or CSV (spec 0014)")
+    funding.add_argument("file", type=Path, help="the export ZIP, or its PF_XBTUSD.csv")
     drop = commands.add_parser("prune", help="delete a source tree of the lab catalog")
     drop.add_argument("--source", choices=("tardis", "own"), help="the tree to delete (both without it)")
     return root
@@ -193,6 +211,48 @@ def _parity(args: argparse.Namespace) -> int:
     return parity(started.settings, loaded, paper)
 
 
+def _backtest(args: argparse.Namespace) -> int:
+    configure_logging(process=PROCESS, env=os.environ.get("TRADING_ENV", ""))
+    try:
+        loaded = load_candle_run(
+            args.runfile,
+            Overrides(from_=args.from_, to=args.to, seed=args.seed),
+            test_strategies=ProbeSwitch().lab_test_strategies,
+        )
+    except RunFileError as exc:
+        for problem in exc.problems:
+            print(f"lab backtest: {problem}", file=sys.stderr)
+        log.error("lab_bad_input", extra={"fields": {"problems": exc.problems}})
+        return EXIT_USAGE
+    started = boot("worker", settings_cls=LabSettings, secrets=(POSTGRES_PASSWORD,))
+    logging.getLogger("trading_core.node.recording").setLevel(logging.WARNING)
+    settings = started.settings
+    if _unknown_commit(settings):
+        return EXIT_CONFIG
+    engine = create_engine(settings.database_url(started.secrets[POSTGRES_PASSWORD]), pool_size=1, pool_pre_ping=True)
+    try:
+        return backtest(settings, loaded, PostgresStore(sessionmaker(engine)))
+    finally:
+        engine.dispose()
+
+
+def _fetch_candles(args: argparse.Namespace) -> int:
+    configure_logging(process=PROCESS, env=os.environ.get("TRADING_ENV", ""))
+    try:
+        months = fetch_months(args.from_, args.to, time.time_ns())
+    except CandleInputError as exc:
+        print(f"lab fetch-candles: {exc}", file=sys.stderr)
+        log.error("lab_bad_input", extra={"fields": {"problems": [str(exc)]}})
+        return EXIT_USAGE
+    started = boot("worker", settings_cls=LabSettings)
+    return fetch_candles(started.settings, months)
+
+
+def _import_funding(args: argparse.Namespace) -> int:
+    started = boot("worker", settings_cls=LabSettings)
+    return import_funding(started.settings, args.file)
+
+
 def _prune(args: argparse.Namespace) -> int:
     started = boot("worker", settings_cls=LabSettings)
     try:
@@ -215,6 +275,12 @@ def main(argv: list[str] | None = None) -> NoReturn:
         sys.exit(_import_tardis(args))
     if args.command == "parity":
         sys.exit(_parity(args))
+    if args.command == "backtest":
+        sys.exit(_backtest(args))
+    if args.command == "fetch-candles":
+        sys.exit(_fetch_candles(args))
+    if args.command == "import-funding":
+        sys.exit(_import_funding(args))
     if args.command == "prune":
         sys.exit(_prune(args))
     sys.exit(EXIT_USAGE)  # unreachable: the subparser is required

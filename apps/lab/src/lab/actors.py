@@ -22,7 +22,7 @@ from uuid import UUID
 
 from nautilus_trader.common.actor import Actor
 from nautilus_trader.common.events import TimeEvent
-from nautilus_trader.model.data import QuoteTick
+from nautilus_trader.model.data import Bar, BarType, QuoteTick
 from nautilus_trader.model.enums import OrderSide as NautilusOrderSide
 from nautilus_trader.model.enums import PositionSide as NautilusPositionSide
 from nautilus_trader.model.enums import TimeInForce
@@ -52,6 +52,8 @@ from trading_core.strategy.blocks import EntryBlocks
 
 # The decision reason of the runner's close when a segment's data ends (AC-8).
 SEGMENT_END: Final = "segment_end"
+# The same close at the end of a candle backtest's range (spec 0014 AC-14).
+RANGE_END: Final = "range_end"
 _UNUSED_STALE_QUOTE_S: Final = Decimal(10)
 
 
@@ -136,6 +138,7 @@ class LabRecorder(RecordingActor):
         blocks: EntryBlocks,
         risk: RiskLimits,
         funding_boundaries: Sequence[int] = (),
+        bar_type: BarType | None = None,
     ) -> None:
         # The stale quote age and the ledger feed only the snapshots and the booked funding, which
         # the lab never starts (it samples funding at ``funding_boundaries`` instead).
@@ -154,6 +157,10 @@ class LabRecorder(RecordingActor):
         self._lab_instrument_id = instrument_id
         self._funding_boundaries = tuple(funding_boundaries)
         self._markouts = MarkoutTracker()
+        # The strategy's own internal bar type: subscribing to the same one adds no second aggregator
+        # (spec 0014 gate G-3b), and its volume 0 bars are the report's ``zero_volume_bars`` (AC-16).
+        self._bar_type = bar_type
+        self.zero_volume_bars = 0
 
     def on_start(self) -> None:
         """Subscribe to every order and position event (the instrument and snapshots are not replay
@@ -161,6 +168,8 @@ class LabRecorder(RecordingActor):
         self.msgbus.subscribe(topic="events.order.*", handler=self._guarded(self._on_lab_order_event))
         self.msgbus.subscribe(topic="events.position.*", handler=self._guarded(self._on_position_event))
         self.subscribe_quote_ticks(self._lab_instrument_id)
+        if self._bar_type is not None:
+            self.subscribe_bars(self._bar_type)
         sample = self._guarded(self._on_funding_boundary)
         for boundary in self._funding_boundaries:
             self.clock.set_time_alert_ns(name=f"funding-{boundary}", alert_time_ns=boundary, callback=sample)
@@ -172,6 +181,11 @@ class LabRecorder(RecordingActor):
         """Feed the mid to the markouts, only while a fill waits for one (most quotes cost nothing)."""
         if self._markouts.waiting:
             self._markouts.on_mid(tick.ts_init, _mid(tick))
+
+    def on_bar(self, bar: Bar) -> None:
+        """Count the strategy's bars with no volume (quiet hours, or hours with no candles at all)."""
+        if bar.bar_type == self._bar_type and bar.volume.as_decimal() == 0:
+            self.zero_volume_bars += 1
 
     def markouts(self, last_ts_ns: int) -> list[FillMarkouts]:
         """Every fill's markouts, once the segment's data has ended at ``last_ts_ns`` (AC-10)."""
@@ -215,11 +229,13 @@ class SegmentEndCloser(Actor):  # type: ignore[misc]  # Actor is Cython with no 
     """The lab runner's segment end (AC-8): when the data ends it stops new entries, cancels the
     strategy's orders, and closes any open position with a reduce only market order.
 
-    It acts at ``close_at_ns`` (the last delta's ``ts_init``), so the cancel and the close reach
-    the venue before the stream's final batch and fill against the last book. The close goes out
+    It acts at ``close_at_ns`` (the last delta's ``ts_init``, or a candle range's last point + 1 ms),
+    so the cancel and the close reach the venue before the stream's final batch or quote and fill
+    against it. The close goes out
     through the strategy's own order factory and ``submit_order``, because a netting position
     belongs to the strategy that opened it; the strategy itself is not changed. A ``decisions``
-    row with intent ``exit`` and reason ``segment_end`` is recorded first and tags the order.
+    row with intent ``exit`` and ``reason`` (``segment_end``, or ``range_end`` in the candle lab) is
+    recorded first and tags the order.
     """
 
     def __init__(
@@ -232,6 +248,7 @@ class SegmentEndCloser(Actor):  # type: ignore[misc]  # Actor is Cython with no 
         run_id: UUID,
         instrument_id: InstrumentId,
         close_at_ns: int,
+        reason: str = SEGMENT_END,
     ) -> None:
         super().__init__()
         self._strategy = strategy
@@ -241,6 +258,7 @@ class SegmentEndCloser(Actor):  # type: ignore[misc]  # Actor is Cython with no 
         self._run_id = run_id
         self._close_instrument_id = instrument_id
         self._close_at_ns = close_at_ns
+        self._reason = reason
         # The close order and its decision, once sent; the unit settles any rest the book left (AC-8).
         self.close_id: str | None = None
         self.close_decision: UUID | None = None
@@ -269,7 +287,7 @@ class SegmentEndCloser(Actor):  # type: ignore[misc]  # Actor is Cython with no 
         self._strategy.submit_order(order)
 
     def record_close_decision(self, side: OrderSide, quantity: Decimal, decided_ns: int) -> UUID:
-        """Record the ``segment_end`` exit decision and return its id."""
+        """Record the exit decision with this closer's reason and return its id."""
         quote = self.cache.quote_tick(self._close_instrument_id)
         inputs: JsonObject = {"position_qty": quantity}
         if quote is not None:
@@ -280,7 +298,7 @@ class SegmentEndCloser(Actor):  # type: ignore[misc]  # Actor is Cython with no 
             instrument_id=self._close_instrument_id.value,
             intent=Intent.EXIT,
             side=side,
-            reason=SEGMENT_END,
+            reason=self._reason,
             inputs=inputs,
             risk_verdict=RiskVerdict.APPROVED,
             decided_ns=decided_ns,

@@ -125,7 +125,7 @@ class MemoryStore:
     def __init__(self) -> None:
         self.bundles: list[RunBundle] = []
 
-    def prepare(self, instrument, strategy, git_commit, config):
+    def prepare(self, instrument, strategy, kind, git_commit, config):
         return uuid4()
 
     def write_bundle(self, bundle) -> None:

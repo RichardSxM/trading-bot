@@ -15,14 +15,19 @@ from uuid import UUID
 
 import msgspec
 from nautilus_trader.config import StrategyConfig
+from nautilus_trader.model.data import BarSpecification
+from nautilus_trader.model.enums import BarAggregation, PriceType
 
 from lab.probes import RaiseProbe, RaiseProbeConfig
+from trading_core.lab.candles import CANDLE_STALE_CHECK_S
+from trading_core.node.buy_and_hold import STRATEGY_NAME as BUY_AND_HOLD
+from trading_core.node.buy_and_hold import BuyAndHold, BuyAndHoldConfig
 from trading_core.node.maker_probe import MakerProbe, MakerProbeConfig
 from trading_core.node.placeholder import STRATEGY_NAME as PLACEHOLDER
 from trading_core.node.placeholder import PlaceholderConfig, PlaceholderTimed, Record
 from trading_core.node.random_taker import RandomTaker, RandomTakerConfig
 from trading_core.node.strategy import KfsStrategy, PauseGate
-from trading_core.recording.enums import Env
+from trading_core.recording.enums import Env, StrategyKind
 from trading_core.risk.check import RiskLimits
 from trading_core.strategy.blocks import EntryBlocks
 
@@ -78,6 +83,9 @@ class RunContext:
     order_id_tag: str
     taker_fee: Decimal  # the run's fee, which the engine's instrument copy also charges (AC-5)
     market: MarketContextValues = field(default_factory=MarketContextValues)
+    # A candle run's stale quote block (spec 0014 AC-13): the run file's limit, checked every 60 s.
+    stale_quote_s: Decimal = Decimal(300)
+    stale_check_s: int = CANDLE_STALE_CHECK_S
 
 
 # Stands in for the run while checking a config at startup, before any run exists.
@@ -111,6 +119,8 @@ class StrategyEntry:
     run_fields: Callable[[RunContext], dict[str, object]]
     # The config's ``entry_mode`` default, or None when it has no ``entry_mode`` (``--pair-entry`` needs one, AC-6).
     default_entry_mode: str | None = None
+    # ``lab replay`` runs scalping strategies, ``lab backtest`` hour level ones (spec 0014 AC-11).
+    kind: StrategyKind = StrategyKind.SCALPING
 
     def entry_mode(self, user: Mapping[str, ConfigValue]) -> str | None:
         """The entry mode ``[strategy.config]`` gives, else the default; None for a strategy without one."""
@@ -140,6 +150,13 @@ class StrategyEntry:
         except msgspec.ValidationError as exc:
             raise StrategyConfigError([str(exc)]) from None
         return config
+
+    def config_value(self, user: Mapping[str, ConfigValue], name: str) -> object:
+        """One field of the config ``[strategy.config]`` builds (its default when not set), checked at startup.
+
+        Raises ``StrategyConfigError`` like ``check_config``.
+        """
+        return getattr(self.build_config(user, _CHECK_CONTEXT), name, None)
 
     def check_config(self, user: Mapping[str, ConfigValue]) -> None:
         """Validate ``[strategy.config]`` at startup by building the config for a stand in run."""
@@ -189,6 +206,15 @@ def _placeholder_fields(context: RunContext) -> dict[str, object]:
     }
 
 
+def _candle_fields(context: RunContext) -> dict[str, object]:
+    # A candle strategy: the placeholder's run fields plus the candle run's stale quote block (spec 0014).
+    return {
+        **_placeholder_fields(context),
+        "stale_quote_s": str(context.stale_quote_s),
+        "stale_check_s": context.stale_check_s,
+    }
+
+
 def _placeholder(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
     if not isinstance(config, PlaceholderConfig):
         raise TypeError(f"placeholder_timed needs a PlaceholderConfig, not {type(config).__name__}")
@@ -205,6 +231,12 @@ def _maker_probe(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, r
     if not isinstance(config, MakerProbeConfig):
         raise TypeError(f"maker_probe needs a MakerProbeConfig, not {type(config).__name__}")
     return MakerProbe(config, gate, blocks, record)
+
+
+def _buy_and_hold(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
+    if not isinstance(config, BuyAndHoldConfig):
+        raise TypeError(f"buy_and_hold needs a BuyAndHoldConfig, not {type(config).__name__}")
+    return BuyAndHold(config, gate, blocks, record)
 
 
 def _raise_probe(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
@@ -234,6 +266,14 @@ REGISTRY: Final[Mapping[str, StrategyEntry]] = {
         factory=_placeholder,
         run_fields=_placeholder_fields,
     ),
+    # Candle lab strategies (spec 0014): hour level, run by ``lab backtest`` only.
+    BUY_AND_HOLD: StrategyEntry(
+        name=BUY_AND_HOLD,
+        config_cls=BuyAndHoldConfig,
+        factory=_buy_and_hold,
+        run_fields=_candle_fields,
+        kind=StrategyKind.HOUR_LEVEL,
+    ),
 }
 
 
@@ -247,6 +287,23 @@ TEST_REGISTRY: Final[Mapping[str, StrategyEntry]] = {
         default_entry_mode="maker",
     ),
 }
+
+
+CANDLE_BAR_STEPS: Final = frozenset({BarAggregation.MINUTE, BarAggregation.HOUR, BarAggregation.DAY})
+
+
+def bar_spec_problem(text: object) -> str | None:
+    """Why ``bar_spec`` cannot drive a candle strategy, or None (spec 0014 AC-11).
+
+    Only a time step of ``MINUTE``, ``HOUR``, or ``DAY`` with price type ``LAST`` is accepted.
+    """
+    try:
+        spec = BarSpecification.from_str(str(text))
+    except ValueError, KeyError:
+        return f"bar_spec {text!r} is not a bar specification like 1-HOUR-LAST"
+    if spec.aggregation not in CANDLE_BAR_STEPS or spec.price_type != PriceType.LAST or spec.step < 1:
+        return f"bar_spec {text!r}: only MINUTE, HOUR, or DAY steps with LAST prices are accepted"
+    return None
 
 
 def registry_entry(name: str, *, test_strategies: bool = False) -> StrategyEntry:

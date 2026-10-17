@@ -1,0 +1,174 @@
+"""covers: spec 0014 AC-1, AC-2, AC-2a, AC-4 (months, candle rows, funding periods, the merge)."""
+
+from decimal import Decimal
+
+import pytest
+
+from trading_core.lab.candles import (
+    FUNDING_CARRY_MAX_NS,
+    FUNDING_HOURLY_FROM_NS,
+    MINUTE_NS,
+    FundingRow,
+    Month,
+    MonthManifest,
+    RawCandle,
+    build_candles,
+    carried_rate,
+    charge_time_ns,
+    expected_charge_times,
+    fetch_months,
+    find_gaps,
+    is_complete,
+    merge_funding,
+    missing_charges,
+    rows_by_month,
+    snap_volume,
+)
+from trading_core.lab.errors import CandleInputError
+from trading_core.marketdata.hours import HOUR_NS
+
+D = Decimal
+SEP = Month(2026, 9)
+NOW = Month(2026, 10).start_ns + 17 * 24 * HOUR_NS  # 2026-10-18
+TICK, STEP = D(1), D("0.0001")
+
+
+def _raw(minute, o="100", h="101", lo="99", c="100", v="1.5"):
+    return RawCandle((SEP.start_ns + minute * MINUTE_NS) // 1_000_000, o, h, lo, c, v)
+
+
+def test_month_bounds_and_parsing():
+    assert str(Month.parse("2026-09")) == "2026-09"
+    assert Month(2026, 12).next() == Month(2027, 1)
+    assert SEP.end_ns - SEP.start_ns == 30 * 24 * HOUR_NS
+    assert Month.of_ns(SEP.end_ns - 1) == SEP
+    for bad in ("2026-9", "2026-13", "202609", "x"):
+        with pytest.raises(CandleInputError):
+            Month.parse(bad)
+
+
+def test_fetch_months_are_inclusive_and_bounded():
+    assert fetch_months("2026-08", "2026-10", NOW) == [Month(2026, 8), SEP, Month(2026, 10)]
+    with pytest.raises(CandleInputError, match="before 2022-03"):
+        fetch_months("2022-02", "2022-04", NOW)
+    with pytest.raises(CandleInputError, match="after the current month"):
+        fetch_months("2026-10", "2026-11", NOW)
+    with pytest.raises(CandleInputError, match="is after"):
+        fetch_months("2026-09", "2026-08", NOW)
+
+
+def test_a_month_is_complete_once_it_ended_before_the_fetch():
+    assert is_complete(SEP, NOW)
+    assert not is_complete(Month(2026, 10), NOW)
+    assert is_complete(SEP, SEP.end_ns)
+
+
+def test_charge_time_is_stamp_plus_the_period():
+    four_h_stamp = FUNDING_HOURLY_FROM_NS - 4 * HOUR_NS
+    assert charge_time_ns(four_h_stamp) == FUNDING_HOURLY_FROM_NS
+    assert charge_time_ns(FUNDING_HOURLY_FROM_NS) == FUNDING_HOURLY_FROM_NS + HOUR_NS
+    # A stamp of 2022-04-30 20:00 is charged on 2022-05-01 00:00, so it files under May.
+    stamp = Month(2022, 5).start_ns - 4 * HOUR_NS
+    assert Month.of_ns(FundingRow.from_stamp(stamp, D("0.0001"), "export").charge_ns) == Month(2022, 5)
+
+
+def test_expected_charge_times_switch_from_four_hourly_to_hourly():
+    start = FUNDING_HOURLY_FROM_NS - 12 * HOUR_NS  # 2022-09-29 00:00
+    times = expected_charge_times(start, FUNDING_HOURLY_FROM_NS + 3 * HOUR_NS)
+    offsets = [(t - start) // HOUR_NS for t in times]
+    assert offsets == [4, 8, 12, 13, 14]
+    assert expected_charge_times(start, start + HOUR_NS) == []
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [("0.3565999999999999", D("0.3566")), ("1.5", D("1.5000")), ("0", D("0")), ("0.00000000001", D("0"))],
+)
+def test_noise_volumes_snap_to_the_step(text, expected):
+    assert snap_volume(D(text), STEP) == expected
+
+
+def test_a_volume_further_off_than_the_noise_is_bad():
+    assert snap_volume(D("0.356601"), STEP) is None
+
+
+def test_build_candles_rounds_flags_quiet_and_dedupes():
+    raw = [
+        _raw(0, v="0.3565999999999999"),
+        _raw(1, o="100", h="100", lo="100", c="100", v="0"),
+        _raw(1, o="100", h="100", lo="100", c="100", v="0"),  # identical page edge repeat
+        _raw(2, o="100", h="102", lo="100", c="101", v="0.000000001"),  # rounds to 0, not flat
+        RawCandle(SEP.end_ns // 1_000_000, "1", "1", "1", "1", "1"),  # next month: dropped
+    ]
+    build = build_candles(raw, SEP, TICK, STEP)
+    assert build.bad == []
+    assert [(r.ts_ns - SEP.start_ns) // MINUTE_NS for r in build.rows] == [1, 2, 3]
+    assert [r.quiet for r in build.rows] == [False, True, False]
+    assert build.rows[0].volume == D("0.3566")
+    assert (build.volume_rounded_rows, build.zero_volume_trade_rows) == (2, 1)
+
+
+def test_build_candles_lists_bad_rows():
+    raw = [_raw(0, o="100.5"), _raw(1, v="0.12345"), _raw(2), _raw(2, c="99")]
+    bad = build_candles(raw, SEP, TICK, STEP).bad
+    assert [field for _, field, _ in bad] == ["duplicate", "open", "volume"]
+
+
+def test_find_gaps_counts_missing_minutes_and_runs_of_five():
+    rows = build_candles([_raw(m) for m in (0, 1, 3, 9, 10)], SEP, TICK, STEP).rows
+    missing, gaps = find_gaps(rows, SEP.start_ns, SEP.start_ns + 12 * MINUTE_NS)
+    assert missing == 1 + 5 + 1
+    assert [(g.start_ns - SEP.start_ns) // MINUTE_NS for g in gaps] == [4]
+    assert (gaps[0].minutes, gaps[0].end_ns) == (5, SEP.start_ns + 9 * MINUTE_NS)
+
+
+def test_merge_adds_keeps_and_flags_disagreements():
+    t = SEP.start_ns
+    stored = [FundingRow(t, D("0.0001"), HOUR_NS, "export")]
+    new = [
+        FundingRow(t, D("0.0001"), HOUR_NS, "api"),
+        FundingRow(t + HOUR_NS, D("0.0002"), HOUR_NS, "api"),
+    ]
+    merged = merge_funding(stored, new)
+    assert (merged.added, merged.present, merged.conflicts) == (1, 1, [])
+    assert [r.source for r in merged.rows] == ["export", "api"]
+    again = merge_funding(merged.rows, new)
+    assert (again.added, again.present) == (0, 2)
+    clash = merge_funding(stored, [FundingRow(t, D("0.0003"), HOUR_NS, "api")])
+    assert clash.conflicts == [(str(t), "rate", "stored 0.0001, api 0.0003")]
+
+
+def test_rows_by_month_and_missing_charges():
+    t = SEP.end_ns - HOUR_NS
+    rows = [FundingRow(t, D("0"), HOUR_NS, "api"), FundingRow(SEP.end_ns, D("0"), HOUR_NS, "api")]
+    assert {str(m): len(r) for m, r in rows_by_month(rows).items()} == {"2026-09": 1, "2026-10": 1}
+    assert missing_charges(rows[:1], t - 2 * HOUR_NS, t) == 2
+    assert missing_charges([], None, None) == 0
+
+
+def test_carried_rate_is_the_latest_row_inside_the_carry_limit():
+    t = SEP.start_ns
+    rows = [FundingRow(t, D("0.0001"), HOUR_NS, "api")]
+    assert carried_rate(rows, t) == rows[0]
+    assert carried_rate(rows, t + FUNDING_CARRY_MAX_NS) == rows[0]
+    assert carried_rate(rows, t + FUNDING_CARRY_MAX_NS + 1) is None
+    assert carried_rate(rows, t - 1) is None
+
+
+def test_manifest_funding_fields_are_recomputed():
+    t = SEP.start_ns
+    first, last = t + MINUTE_NS, t + 2 * HOUR_NS
+    manifest = MonthManifest("2026-09", 2, 0, 0, 0, 0, [], first, last, 0, 0, 0, True, "2026-10-01T00:00:00Z")
+    rows = [FundingRow(t + HOUR_NS, D("0"), HOUR_NS, "export"), FundingRow(t + 2 * HOUR_NS, D("0"), HOUR_NS, "api")]
+    updated = manifest.with_funding(rows)
+    assert (updated.funding_rows, updated.funding_sources, updated.missing_funding_charges) == (2, ["api", "export"], 0)
+    assert updated.complete
+    assert updated.fetched_at == manifest.fetched_at
+
+
+def test_the_charge_at_the_month_end_belongs_to_the_next_month():
+    hourly = [FundingRow(SEP.start_ns + h * HOUR_NS, D("0"), HOUR_NS, "api") for h in range(1, 720)]
+    manifest = MonthManifest(
+        "2026-09", 0, 0, 0, 0, 0, [], SEP.start_ns + MINUTE_NS, SEP.end_ns, 0, 0, 0, True, "2026-10-01T00:00:00Z"
+    )
+    assert manifest.with_funding(hourly).missing_funding_charges == 0

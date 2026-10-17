@@ -45,7 +45,7 @@ from lab.report import (
 )
 from lab.runfile import LoadedRun
 from lab.settings import LabSettings
-from lab.strategies import ConfigValue
+from lab.strategies import ConfigValue, registry_entry
 from lab.units import TRADER_ID, UnitPlan, UnitResult, run_unit
 from trading_core.lab.errors import ReplayInterruptedError, UnitFailedError
 from trading_core.lab.fill_stats import EntryFill, EntryOrder, SideStats, fill_stats
@@ -112,8 +112,10 @@ type FundingSourceName = Literal["tardis", "own", "none"]
 class Store(Protocol):
     """Where a replay keeps its rows: the laptop Postgres as ``lab_app`` (AC-11), or memory in tests."""
 
-    def prepare(self, instrument: InstrumentRow, strategy: str, git_commit: str | None, config: JsonObject) -> UUID:
-        """Ensure the instrument and strategy version rows; return the version id."""
+    def prepare(
+        self, instrument: InstrumentRow, strategy: str, kind: StrategyKind, git_commit: str | None, config: JsonObject
+    ) -> UUID:
+        """Ensure the instrument and strategy version rows (the strategy of ``kind``); return the version id."""
         ...
 
     def write_bundle(self, bundle: RunBundle) -> None:
@@ -127,13 +129,13 @@ class PostgresStore:
     def __init__(self, sessions: Callable[[], Session]) -> None:
         self._sessions = sessions
 
-    def prepare(self, instrument: InstrumentRow, strategy: str, git_commit: str | None, config: JsonObject) -> UUID:
+    def prepare(
+        self, instrument: InstrumentRow, strategy: str, kind: StrategyKind, git_commit: str | None, config: JsonObject
+    ) -> UUID:
         """Upsert the instrument and ensure the strategy version, in one commit."""
         with self._sessions() as session:
             repository.upsert_instrument(session, instrument)
-            version_id = repository.ensure_strategy_version(
-                session, strategy, StrategyKind.SCALPING, git_commit, config
-            )
+            version_id = repository.ensure_strategy_version(session, strategy, kind, git_commit, config)
             session.commit()
         return version_id
 
@@ -180,12 +182,12 @@ def plan_run(
     return plan_segments(hours, tree.gaps(days), incomplete, files)
 
 
-def _stamp[R: DataclassInstance](rows: Iterable[R], run_id: UUID) -> list[R]:
+def stamp_run_id[R: DataclassInstance](rows: Iterable[R], run_id: UUID) -> list[R]:
     """The rows with the variant's run id in place of the unit placeholder (AC-12)."""
     return [replace(row, run_id=run_id) for row in rows]
 
 
-def _scoped(rows: Iterable[RiskEventRow], run_id: UUID) -> list[RiskEventRow]:
+def scope_risk_events(rows: Iterable[RiskEventRow], run_id: UUID) -> list[RiskEventRow]:
     """The risk events with the run id added to each ``event_key``.
 
     ``risk_events`` is unique on ``(env, event_key)``, and a replay's client order ids follow the
@@ -340,15 +342,15 @@ def build_bundle(
     """Merge a variant's units, stamp its run id, and score it; nothing is written here."""
     run = batch.loaded.run
     run_id = uuid.uuid4()
-    decisions = _stamp(_merged(units, lambda u: u.decisions, lambda r: r.decided_ns), run_id)
-    risk_events = _scoped(_merged(units, lambda u: u.risk_events, lambda r: r.occurred_ns), run_id)
-    orders = _stamp(_merged(units, lambda u: u.orders, lambda r: r.last_event_ns), run_id)
-    order_events = _stamp(_merged(units, lambda u: u.order_events, lambda r: r.occurred_ns), run_id)
-    fills = _stamp(_merged(units, lambda u: u.fills, lambda r: r.filled_ns), run_id)
-    positions = _stamp(_merged(units, lambda u: u.positions, lambda r: r.opened_ns), run_id)
+    decisions = stamp_run_id(_merged(units, lambda u: u.decisions, lambda r: r.decided_ns), run_id)
+    risk_events = scope_risk_events(_merged(units, lambda u: u.risk_events, lambda r: r.occurred_ns), run_id)
+    orders = stamp_run_id(_merged(units, lambda u: u.orders, lambda r: r.last_event_ns), run_id)
+    order_events = stamp_run_id(_merged(units, lambda u: u.order_events, lambda r: r.occurred_ns), run_id)
+    fills = stamp_run_id(_merged(units, lambda u: u.fills, lambda r: r.filled_ns), run_id)
+    positions = stamp_run_id(_merged(units, lambda u: u.positions, lambda r: r.opened_ns), run_id)
     spreads = {coid: spread for unit in units for coid, spread in unit.spreads.items()}
     payments = apply_funding([s for unit in units for s in unit.funding_samples], batch.funding_rates)
-    positions, funding = _with_funding(positions, payments, run_id, run.instrument_id)
+    positions, funding = with_funding(positions, payments, run_id, run.instrument_id)
 
     closed = [p for p in positions if p.status == PositionStatus.CLOSED]
     metrics = run_metrics(
@@ -481,7 +483,7 @@ def _fill_stats(
     return fill_stats(entry_orders, entry_fills)
 
 
-def _with_funding(
+def with_funding(
     positions: Sequence[PositionRow], payments: Sequence[FundingPayment], run_id: UUID, instrument_id: str
 ) -> tuple[list[PositionRow], list[FundingRow]]:
     """Each payment as a ``computed`` funding row of its position, and each position's ``funding_total``.
@@ -528,7 +530,7 @@ def _report(
     status: Status = "interrupted" if interrupted else "completed" if error is None else "failed"
     return LabReport(
         status=status,
-        error=None if error is None else _error_info(error),
+        error=None if error is None else error_info(error),
         run_id=None if bundle is None else str(bundle.run.id),
         batch_id=str(batch.batch_id),
         variant=variant.name,
@@ -545,7 +547,7 @@ def _report(
     )
 
 
-def _error_info(error: Exception) -> ErrorInfo:
+def error_info(error: Exception) -> ErrorInfo:
     """The failure as the report shows it: a worker's exception keeps its own type name (AC-13)."""
     if isinstance(error, UnitFailedError):
         return ErrorInfo(type=error.error_type, message=str(error))
@@ -555,7 +557,7 @@ def _error_info(error: Exception) -> ErrorInfo:
 def _failed(batch: Batch, variant: VariantSpec, error: Exception, *, started_at: datetime) -> LabReport:
     log.error(
         "lab_variant_failed",
-        extra={"fields": {"variant": variant.name, "error": f"{_error_info(error).type}: {error}"}},
+        extra={"fields": {"variant": variant.name, "error": f"{error_info(error).type}: {error}"}},
     )
     report = _report(batch, variant, started_at=started_at, ended_at=datetime.now(UTC), error=error)
     write_variant(batch.folder, report, None)
@@ -764,6 +766,7 @@ def replay(
     version_id = store.prepare(
         instrument_row(pinned_instrument(run.instrument_id)),
         run.strategy.name,
+        registry_entry(run.strategy.name, test_strategies=settings.lab_test_strategies).kind,
         settings.git_commit,
         run.version_config(),
     )

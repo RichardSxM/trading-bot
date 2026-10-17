@@ -1,6 +1,7 @@
 """covers: spec 0008 AC-3 (the run file and overrides are validated at startup, every problem listed, exit 64)
 and AC-17 (exit 78 in live, or for a replay from an image built without GIT_COMMIT)."""
 
+import tomllib
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -9,9 +10,10 @@ from types import SimpleNamespace
 import pytest
 
 from lab.main import main
-from lab.runfile import Overrides, RunFileError, load_run
+from lab.runfile import Overrides, RunFileError, load_candle_run, load_run
 from lab.settings import LabSettings
 from lab.strategies import REGISTRY
+from trading_core.recording.enums import StrategyKind
 
 RUNS = Path(__file__).parents[1] / "runs"
 GOOD = (RUNS / "random_taker_own.toml").read_text()
@@ -26,7 +28,9 @@ def _write(tmp_path: Path, text: str) -> Path:
 
 def test_the_committed_run_files_are_valid():
     for path in sorted(RUNS.glob("*.toml")):
-        loaded = load_run(path, Overrides())
+        name = tomllib.loads(path.read_text())["strategy"]["name"]
+        load = load_candle_run if REGISTRY[name].kind == StrategyKind.HOUR_LEVEL else load_run
+        loaded = load(path, Overrides())
         assert loaded.run.strategy.name in REGISTRY
         assert len(loaded.sha256) == 64
 

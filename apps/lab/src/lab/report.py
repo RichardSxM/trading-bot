@@ -78,6 +78,48 @@ class BandReport(_Model):
     passed: bool
 
 
+class MonthQuality(_Model):
+    """One month the range touches, from its manifest (whole month, not prorated to the range)."""
+
+    month: str
+    missing_minutes: int
+    quiet_minutes: int
+    volume_rounded_rows: int
+    zero_volume_trade_rows: int
+    missing_funding_charges: int
+
+
+class SideSplitReport(_Model):
+    """Closed trades and their net P&L on one side."""
+
+    trades: int
+    net_pnl: Decimal
+
+
+class CandleReport(_Model):
+    """What a candle backtest adds (spec 0014 AC-16): marked equity, the splits, costs, and data quality."""
+
+    range: tuple[int, int]
+    marked_max_drawdown: Decimal
+    longest_drawdown_hours: int
+    long: SideSplitReport
+    short: SideSplitReport
+    exposure: Decimal
+    profit_factor: Decimal | None
+    expectancy: Decimal | None
+    liquidations: int
+    ruined: bool
+    first_decision_ns: int | None
+    benchmark: Decimal | None
+    # Data quality: the span with candles, the gap rows overlapping the range, and per month figures.
+    first_candle_ns: int | None
+    last_candle_ns: int | None
+    gaps: list[tuple[int, int, int]]
+    months: list[MonthQuality]
+    carried_funding_charges: int
+    zero_volume_bars: int
+
+
 class LabReport(_Model):
     """One variant's report."""
 
@@ -97,6 +139,8 @@ class LabReport(_Model):
     before_funding: bool
     # An ``own`` run whose rates missed this boundary applies no funding at all (spec 0009 AC-14).
     funding_skipped_ns: int | None = None
+    # Set on a candle backtest's completed variant (spec 0014).
+    candle: CandleReport | None = None
 
 
 def _plain(value: object) -> object:
@@ -220,6 +264,94 @@ def report_markdown(report: LabReport) -> str:
     return "\n".join(lines)
 
 
+def candle_report_markdown(report: LabReport) -> str:
+    """A candle backtest variant as a short Markdown page (spec 0014 AC-16)."""
+    config = report.run_config
+    lines = [f"# Backtest `{report.variant}` · {report.strategy}", "", f"- Status: **{report.status}**"]
+    if report.error is not None:
+        lines.append(f"- Error: `{report.error.type}`: {report.error.message}")
+    lines += [
+        f"- Batch: `{report.batch_id}`",
+        f"- Run: `{report.run_id or 'not written'}`",
+        f"- Bars: {config.get('bar_type')}; slippage {config.get('slippage_bps')} bps per side",
+        f"- Fees: maker {config.get('maker_fee')}, taker {config.get('taker_fee')}",
+        f"- Funding: {config.get('funding_source')}",
+        "",
+    ]
+    results, candle = report.results, report.candle
+    if results is not None and candle is not None:
+        lines += [
+            "## Results",
+            "",
+            "| Measure | Value |",
+            "|---|---|",
+            f"| Net P&L (USD) | {_money(results.net_pnl)} |",
+            f"| Return after costs | {_pct(results.return_after_costs)} |",
+            f"| Buy and hold, before costs | {'n/a' if candle.benchmark is None else _pct(candle.benchmark)} |",
+            f"| Max drawdown, realized | {_pct(results.max_drawdown)} |",
+            f"| Max drawdown, marked to market | {_pct(candle.marked_max_drawdown)} |",
+            f"| Longest drawdown (hours) | {candle.longest_drawdown_hours} |",
+            f"| Closed trades | {results.trade_count} (long {candle.long.trades}, short {candle.short.trades}) |",
+            f"| Net P&L long / short (USD) | {_money(candle.long.net_pnl)} / {_money(candle.short.net_pnl)} |",
+            f"| Win rate | {_pct(results.win_rate)} |",
+            f"| Profit factor | {'n/a' if candle.profit_factor is None else f'{candle.profit_factor:.3f}'} |",
+            f"| Expectancy per trade (USD) | {_money(candle.expectancy)} |",
+            f"| Exposure time | {_pct(candle.exposure)} |",
+            f"| Fees (USD) | {_money(results.fees_total)} |",
+            f"| Funding (USD) | {_money(results.funding_total)} |",
+            f"| Liquidations | {candle.liquidations}{' (ruined)' if candle.ruined else ''} |",
+            f"| First decision | {'none' if candle.first_decision_ns is None else _utc(candle.first_decision_ns)} |",
+            "",
+            "## Data quality",
+            "",
+            f"- Candles from {_span(candle.first_candle_ns)} to {_span(candle.last_candle_ns)}",
+            f"- Gap rows overlapping the range: {len(candle.gaps)}",
+            f"- Funding charges at a carried rate: {candle.carried_funding_charges}",
+            f"- Zero volume `{config.get('bar_spec')}` bars: {candle.zero_volume_bars}",
+            "",
+            "Per month touched (whole months, not prorated to the range):",
+            "",
+            "| Month | Missing minutes | Quiet minutes | Rounded volumes | Zero volume trades | Missing funding |",
+            "|---|---|---|---|---|---|",
+        ]
+        lines += [
+            f"| {m.month} | {m.missing_minutes} | {m.quiet_minutes} | {m.volume_rounded_rows} | "
+            f"{m.zero_volume_trade_rows} | {m.missing_funding_charges} |"
+            for m in candle.months
+        ]
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _span(ns: int | None) -> str:
+    return "n/a" if ns is None else _utc(ns)
+
+
+def candle_index_markdown(batch_id: str, reports: Sequence[LabReport]) -> str:
+    """Every candle variant side by side (spec 0014 AC-16)."""
+    lines = [
+        f"# Backtest batch `{batch_id}`",
+        "",
+        "| Variant | Status | Net P&L (USD) | Return | Max DD realized | Max DD marked | Fees (USD) | "
+        "Funding (USD) | Trades | Exposure | Liquidations | First decision | Buy and hold |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+    ]
+    for report in reports:
+        r, c = report.results, report.candle
+        name = report.variant.replace("=", "-")
+        if r is None or c is None:
+            lines.append(f"| [{report.variant}]({name}.md) | {report.status} |" + " n/a |" * 11)
+            continue
+        first = "none" if c.first_decision_ns is None else _utc(c.first_decision_ns)
+        bench = "n/a" if c.benchmark is None else _pct(c.benchmark)
+        lines.append(
+            f"| [{report.variant}]({name}.md) | {report.status} | {_money(r.net_pnl)} | {_pct(r.return_after_costs)} | "
+            f"{_pct(r.max_drawdown)} | {_pct(c.marked_max_drawdown)} | {_money(r.fees_total)} | "
+            f"{_money(r.funding_total)} | {r.trade_count} | {_pct(c.exposure)} | {c.liquidations} | {first} | {bench} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
 def index_markdown(batch_id: str, reports: Sequence[LabReport]) -> str:
     """Every variant of the batch side by side (failed and interrupted ones marked): net P&L, fees,
     trades, and each side's fill rate and markouts at 1, 5, and 30 s (AC-18)."""
@@ -252,6 +384,8 @@ def write_variant(folder: Path, report: LabReport, bundle: RunBundle | None) -> 
     folder.mkdir(parents=True, exist_ok=True)
     name = report.variant.replace("=", "-")
     (folder / f"{name}.json").write_text(report_json(report), encoding="utf-8")
-    (folder / f"{name}.md").write_text(report_markdown(report), encoding="utf-8")
+    candle = report.run_config.get("source") == "candles"
+    markdown = candle_report_markdown(report) if candle else report_markdown(report)
+    (folder / f"{name}.md").write_text(markdown, encoding="utf-8")
     if bundle is not None:
         (folder / f"{name}.bundle.json").write_text(bundle_json(bundle), encoding="utf-8")
