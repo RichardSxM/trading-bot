@@ -347,8 +347,8 @@ Tracer Bullet: the first slice is one real thread from a real signal (the trader
 
 ## Follow-up
 
-- [ ] Create the Pushover account and application, buy the iOS app, enable Critical Alerts for Pushover in iOS Settings, and place the token and user key with `place-secrets.sh`.
-- [ ] Create the healthchecks.io account, its Pushover and email integrations, and the checks `alerter-alive` (1 min, grace 2 min), `backup-verified` (24 h, grace 2 h), `restore-drill` (35 days, grace 1 day).
+- [x] Create the Pushover account and application, buy the iOS app, enable Critical Alerts for Pushover in iOS Settings, and place the token and user key with `place-secrets.sh`.
+- [x] Create the healthchecks.io account, its Pushover and email integrations, and the checks `alerter-alive` (1 min, grace 2 min), `backup-verified` (24 h, grace 2 h), `restore-drill` (35 days, grace 1 day).
 - [ ] /sync: add `apps/alerter/AGENTS.md`, point to it from root `AGENTS.md`, widen the dashboard rule to "the control streams", and record under `## Agent skills` `Declined:` the Pushover, healthchecks.io, and Docker socket proxy skills (declined on 2026-10-16).
 - [ ] Kraken's scheduled maintenance (status.kraken.com) could open a mute window by itself; for now you mute by hand.
 - [ ] Spec 0001's deferred Nautilus JSON log sink would let `engine_error` match fields instead of text; revisit if it proves noisy.
