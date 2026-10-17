@@ -264,7 +264,7 @@ spec [0013](../specs/0013-phone-alerts-health-checks/index.md) · code in `apps/
   - [x] Host, backup, and block age: `host.jsonl`, deploy window, disk check, verified backup and drill pings, `entries_blocked_since`, `context_hour_missing` (AC-4, AC-5, AC-6, AC-7, AC-11)
   - [x] Phone polish and dashboard: live fills, mute and test commands, Activity feed, daily note (AC-8, AC-12, AC-16, AC-18)
 - [ ] Verify it: `/check verify phone alerts & health checks`
-- [ ] Test it: `/test phone alerts & health checks`
+- [x] Test it: `/test phone alerts & health checks`
 - [x] Review it (fresh model): `/check review phone alerts & health checks`
 - [ ] Document it: `/document phone alerts & health checks`
 
