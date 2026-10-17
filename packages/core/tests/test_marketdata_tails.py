@@ -146,3 +146,44 @@ def test_no_book_yet_resolves_nothing():
         == []
     )
     assert state.open_outages == {"a": [Outage(10, None, "idle")]}
+
+
+E = "PF_ETHUSD.KRAKEN"
+
+
+def resolve_two(state, *, books):
+    return resolve_tails(
+        state,
+        books=books,
+        silences={key(t): StreamMark("b", 1_900 * S) for t in STEADY},
+        silence_tables=STEADY,
+        raw_tables=(OI, LIQ),
+        stop_table=OI,
+        silence_ns=60 * S,
+    )
+
+
+def test_an_instrument_no_longer_recorded_does_not_hold_back_an_open_line():
+    """The VPS on 2026-10-17 (verify.md step 12): ETH was last recorded days before, in run old, so
+    its book never reaches run a. A's open line must still resolve for BTC."""
+    state = TailState(run_ends={X: {"a": 1_000 * S}}, open_outages={"a": [Outage(700 * S, None, "idle")]})
+
+    gaps = resolve_two(state, books={X: CURRENT_BOOK, E: StreamMark("old", 10 * S)})
+
+    assert gaps == sorted(Gap(700 * S, X, "reconnect", 1_000 * S, stream=t) for t in (OI, LIQ))
+    assert state == TailState()
+
+
+def test_an_open_line_waits_while_no_book_has_reached_its_run():
+    """A pass can read run a's outages before any book converted a's hours: nothing is placed yet."""
+    state = TailState(open_outages={"a": [Outage(700 * S, None, "idle")]})
+
+    assert resolve_two(state, books={X: StreamMark("old", 600 * S), E: StreamMark("old", 10 * S)}) == []
+    assert state.open_outages == {"a": [Outage(700 * S, None, "idle")]}
+
+
+def test_an_open_line_waits_for_a_second_recorded_instrument_still_in_the_run():
+    state = TailState(run_ends={X: {"a": 1_000 * S}}, open_outages={"a": [Outage(700 * S, None, "idle")]})
+
+    assert resolve_two(state, books={X: CURRENT_BOOK, E: StreamMark("a", 900 * S)}) == []
+    assert state.open_outages == {"a": [Outage(700 * S, None, "idle")]}

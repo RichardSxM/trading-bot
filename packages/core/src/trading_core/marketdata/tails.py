@@ -15,7 +15,8 @@ pass converted first, on the run folder still existing, or on a pass being kille
 
 A run is resolved, per instrument, once its end is known and every steady stream of the instrument
 has passed it. A run with no book rows never gets an end: it lies inside the ``recorder_down``
-around it, so its entries are dropped once the book has moved on past them.
+around it, so its entries are dropped once the book has moved on past them. An instrument whose
+book never reached a run (no longer recorded) takes no part in that run's open lines.
 """
 
 from collections.abc import Iterable, Mapping
@@ -86,6 +87,16 @@ def resolve_tails(
             and ts < book.last_ts
         )
 
+    def covers(instrument: str, run: str, ts: int) -> bool:
+        # The book has reached this run: it ended it, is in it, or is past ts. An instrument no
+        # longer recorded (its book stopped before the run) has no say in the run's open lines.
+        book = books[instrument]
+        return (
+            run in state.run_ends.get(instrument, {})
+            or book.run == run
+            or (book.last_ts is not None and ts < book.last_ts)
+        )
+
     def passed(instrument: str, run: str) -> bool:
         # Every steady stream has ended the run (its last row is stored) or is past it.
         for table in steady:
@@ -105,12 +116,19 @@ def resolve_tails(
     for run in sorted(runs):
         open_lines = state.open_outages.get(run, [])
         ends = {instrument: ready(instrument, run) for instrument in instruments}
-        # Open lines are shared by every instrument: they go once each instrument is resolved or bookless.
-        if open_lines and all(
-            end is not None or all(bookless(instrument, run, o.start_ns) for o in open_lines)
-            for instrument, end in ends.items()
+        # Open lines are shared by every instrument the run covers: they go once each of those is
+        # resolved or bookless, and wait while no book has reached the run yet.
+        first = min((o.start_ns for o in open_lines), default=0)
+        covering = {i: end for i, end in ends.items() if covers(i, run, first)}
+        if (
+            open_lines
+            and covering
+            and all(
+                end is not None or all(bookless(instrument, run, o.start_ns) for o in open_lines)
+                for instrument, end in covering.items()
+            )
         ):
-            for instrument, end in ends.items():
+            for instrument, end in covering.items():
                 if end is not None:
                     gaps.extend(
                         Gap(o.start_ns, instrument, "reconnect", o.end_ns, stream=table)
