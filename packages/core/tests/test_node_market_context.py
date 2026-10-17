@@ -129,7 +129,7 @@ def test_live_start_subscribes_open_interest_and_liquidations_on_the_bus_only():
     from trading_core.node.context_types import LiquidationTick, OpenInterestUpdate, context_data_type
 
     strategy = _live_strategy()
-    commands = []
+    commands: list[object] = []
     strategy.msgbus.register("DataEngine.execute", commands.append)
 
     strategy.on_start()
