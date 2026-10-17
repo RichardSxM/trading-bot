@@ -24,7 +24,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 9 | Kill switch & loss limits | Slice 4 | done |
 | 10 | Leverage & liquidation guard | Slice 4 | done |
 | 11 | Restart & outage safety | Slice 4 | planned |
-| 12 | Phone alerts & health checks | Slice 5 | in-progress |
+| 12 | Phone alerts & health checks | Slice 5 | done |
 | 13 | Candle backtest lab | Slice 6 | planned |
 | 14 | Scalping simulator | Slice 6 | done |
 | 15 | Strategy scoring & promotion gate | Slice 6 | planned |
@@ -246,7 +246,7 @@ After a crash, restart, or dropped connection, the bot rebuilds its view from th
 
 ## Slice 5: Stay informed
 
-### 12. Phone alerts & health checks · in-progress
+### 12. Phone alerts & health checks · done
 Push alerts to your phone for fills, limit hits, errors, and a missing heartbeat, so you know within a minute when something is wrong.
 **Done when:** each alert type reaches your phone within a minute, and a stopped bot triggers an alert on its own.
 **Carried over from specs 0005 and 0006:** alert on:
@@ -263,10 +263,10 @@ spec [0013](../specs/0013-phone-alerts-health-checks/index.md) · code in `apps/
   - [x] Container logs: socket proxy, log polling with cursors and replay set, the full rule table, storm cap, Postgres down queue, coverage test (AC-3, AC-4, AC-7, AC-10, AC-15, AC-19)
   - [x] Host, backup, and block age: `host.jsonl`, deploy window, disk check, verified backup and drill pings, `entries_blocked_since`, `context_hour_missing` (AC-4, AC-5, AC-6, AC-7, AC-11)
   - [x] Phone polish and dashboard: live fills, mute and test commands, Activity feed, daily note (AC-8, AC-12, AC-16, AC-18)
-- [ ] Verify it: `/check verify phone alerts & health checks`
+- [ ] Verify it: `/check verify phone alerts & health checks` (all passed on the VPS except the live fill push, which waits for feature 19)
 - [x] Test it: `/test phone alerts & health checks`
 - [x] Review it (fresh model): `/check review phone alerts & health checks`
-- [ ] Document it: `/document phone alerts & health checks`
+- [x] Document it: `/document phone alerts & health checks`
 
 ## Slice 6: The strategy lab
 
