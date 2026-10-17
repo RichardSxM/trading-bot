@@ -9,7 +9,7 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import RowMapping, func, or_, select, text, update
+from sqlalchemy import RowMapping, case, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -19,7 +19,7 @@ from trading_core.alerts.model import Delivery, Episode, Tier
 from trading_core.alerts.rules import DAILY, TRADER_DOWN
 from trading_core.recording.errors import AlertConflictError
 from trading_core.recording.models import Alert, Fill, Instrument, Position
-from trading_core.recording.repository import _check_env, _table
+from trading_core.recording.repository import check_env, table_of
 from trading_core.settings import get_settings
 
 _OPEN = "resolved_at IS NULL"
@@ -37,8 +37,8 @@ class AlertRepository:
         Raises ``EnvMismatchError`` for another env, and ``AlertConflictError`` when a different
         open episode already holds the fingerprint.
         """
-        _check_env(episode.env)
-        table = _table(Alert)
+        check_env(episode.env)
+        table = table_of(Alert)
         with self._sessions.begin() as session:
             changed = session.execute(
                 update(table)
@@ -53,7 +53,14 @@ class AlertRepository:
                     occurrences=func.greatest(table.c.occurrences, episode.occurrences),
                     sends=func.greatest(table.c.sends, episode.sends),
                     last_sent_at=func.greatest(table.c.last_sent_at, episode.last_sent_at),
-                    delivery=episode.delivery.value,
+                    # A save older than the row (fewer sends, or seen earlier) keeps the row's delivery.
+                    delivery=case(
+                        (
+                            (table.c.sends <= episode.sends) & (table.c.last_seen_at <= episode.last_seen_at),
+                            episode.delivery.value,
+                        ),
+                        else_=table.c.delivery,
+                    ),
                 )
                 .returning(table.c.id)
             ).first()
@@ -72,7 +79,7 @@ class AlertRepository:
     def load_active(self, failed_since: datetime) -> list[Episode]:
         """The open episodes, plus failed ones opened at or after ``failed_since`` (for the retry cycle)."""
         env = get_settings().trading_env
-        table = _table(Alert)
+        table = table_of(Alert)
         query = (
             select(table)
             .where(
@@ -121,7 +128,7 @@ class AlertRepository:
     def daily_sent(self, fingerprint: str) -> bool:
         """True when this env holds a ``daily`` row with ``fingerprint`` (AC-18's sent marker), any delivery."""
         env = get_settings().trading_env
-        table = _table(Alert)
+        table = table_of(Alert)
         query = select(table.c.id).where(
             table.c.env == env, table.c.rule == DAILY.id, table.c.fingerprint == fingerprint
         )
@@ -136,7 +143,7 @@ class AlertRepository:
         realized P&L per currency of positions closed in the UTC day before ``now``'s.
         """
         env = get_settings().trading_env
-        alerts, positions = _table(Alert), _table(Position)
+        alerts, positions = table_of(Alert), table_of(Position)
         since = now - daily.WINDOW
         day_start, day_end = daily.yesterday(now)
         with self._sessions() as session:

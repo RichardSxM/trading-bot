@@ -98,11 +98,13 @@ _FUNDING_KEYS: Final = {
 # Shared helpers ---------------------------------------------------------------------------
 
 
-def _table(model: type[Base]) -> Table:
+def table_of(model: type[Base]) -> Table:
+    """The Core ``Table`` behind ``model``."""
     return Base.metadata.tables[model.__tablename__]
 
 
-def _check_env(env: str) -> None:
+def check_env(env: str) -> None:
+    """Raises ``EnvMismatchError`` when ``env`` is not this process's ``TRADING_ENV``."""
     expected = get_settings().trading_env
     if env != expected:
         raise EnvMismatchError(f"row env {env!r} differs from TRADING_ENV={expected!r}")
@@ -172,7 +174,7 @@ def _insert_or_compare(
     ``RecordConflictError``. ``where`` names the partial unique index to arbitrate on;
     ``ignore`` lists mutable columns left out of the comparison.
     """
-    table = _table(model)
+    table = table_of(model)
     stmt = insert(table).values(dict(values))
     if where is None:
         stmt = stmt.on_conflict_do_nothing(index_elements=list(key))
@@ -210,7 +212,7 @@ def _guarded_upsert(
     The stored row stays locked until the caller commits, so a concurrent writer cannot slip
     past the check.
     """
-    table = _table(model)
+    table = table_of(model)
     key_values = {name: values[name] for name in key}
     stored = _stored(session, table, key_values, lock=True)
     if stored is not None:
@@ -274,7 +276,7 @@ def ensure_strategy_version(
     """
     if git_commit is None:
         git_commit = get_settings().git_commit
-    strategies = _table(models.Strategy)
+    strategies = table_of(models.Strategy)
     session.execute(
         insert(strategies).values(id=uuid.uuid7(), name=name, kind=kind).on_conflict_do_nothing(index_elements=["name"])
     )
@@ -282,7 +284,7 @@ def ensure_strategy_version(
     if strategy.kind != kind:
         raise RecordConflictError(strategies.name, {"name": name}, {"kind": strategy.kind}, {"kind": kind})
 
-    versions = _table(models.StrategyVersion)
+    versions = table_of(models.StrategyVersion)
     digest = version_hash(git_commit, config)
     values = {
         "id": uuid.uuid7(),
@@ -344,7 +346,7 @@ def start_run(
     A live run needs a known commit (``UnknownCommitError``) and a latest ``paper → live``
     promotion with verdict ``pass`` (``PromotionRequiredError``).
     """
-    _check_env(env)
+    check_env(env)
     if mode == RunMode.LIVE:
         _require_live_gate(session, version_id)
     row = RunRow(
@@ -366,7 +368,7 @@ def start_run(
         )
         .values(status=RunStatus.ABORTED, ended_at=row.started_at, updated_at=func.now())
     )
-    session.execute(insert(_table(models.StrategyRun)).values(column_values(row)))
+    session.execute(insert(table_of(models.StrategyRun)).values(column_values(row)))
     return row.id
 
 
@@ -377,7 +379,7 @@ def finish_run(session: Session, run_id: UUID, status: RunStatus, ended_ns: int)
     run = session.get(models.StrategyRun, run_id)
     if run is None:
         raise MissingParentError(f"run {run_id} not found")
-    _check_env(run.env)
+    check_env(run.env)
     finished = session.execute(
         update(models.StrategyRun)
         .where(models.StrategyRun.id == run_id, models.StrategyRun.status == RunStatus.RUNNING)
@@ -398,7 +400,7 @@ def close_abandoned(session: Session, env: Env, trader_id: str, current_run_id: 
     Each gets one critical ``reconcile_mismatch`` risk event keyed ``abandoned:<position_id>``.
     Every order those runs left open is ``canceled``. Calling it again changes nothing.
     """
-    _check_env(env)
+    check_env(env)
     earlier_runs = select(models.StrategyRun.id).where(
         models.StrategyRun.env == env,
         models.StrategyRun.trader_id == trader_id,
@@ -473,7 +475,7 @@ def close_abandoned(session: Session, env: Env, trader_id: str, current_run_id: 
 
 def record_decision(session: Session, row: DecisionRow) -> None:
     """Record a strategy decision (its id comes from the strategy, before it submits orders)."""
-    _check_env(row.env)
+    check_env(row.env)
     _insert_or_compare(session, models.Decision, column_values(row), ["id"])
 
 
@@ -484,7 +486,7 @@ def upsert_order(session: Session, row: OrderRow) -> None:
     ``decision_id``, and ``order_type`` change only while the stored order is a stub
     (status ``unknown``). A breach raises ``RecordConflictError``.
     """
-    _check_env(row.env)
+    check_env(row.env)
     _guarded_upsert(
         session,
         models.Order,
@@ -539,7 +541,7 @@ def _stub_order(session: Session, row: FillRow) -> UUID:
         status=OrderStatus.UNKNOWN,
         last_event_ns=0,
     )
-    session.execute(insert(_table(models.Order)).values(column_values(stub)))
+    session.execute(insert(table_of(models.Order)).values(column_values(stub)))
     record_risk_event(
         session,
         RiskEventRow(
@@ -564,7 +566,7 @@ def record_fill(session: Session, row: FillRow) -> None:
     'unknown'``) and an ``orphan_fill`` risk event in the same transaction. A fill whose side
     or instrument differs from its order's raises ``RecordConflictError``.
     """
-    _check_env(row.env)
+    check_env(row.env)
     order_id = _find_order(session, row.env, row.run_id, row.client_order_id)
     if order_id is None:
         order_id = _stub_order(session, row)
@@ -573,7 +575,7 @@ def record_fill(session: Session, row: FillRow) -> None:
         side, instrument_id = session.execute(select(order.side, order.instrument_id).where(order.id == order_id)).one()
         if (side, instrument_id) != (row.side, row.instrument_id):
             raise RecordConflictError(
-                _table(order).name,
+                table_of(order).name,
                 {"id": order_id, "client_order_id": row.client_order_id},
                 {"side": side, "instrument_id": instrument_id},
                 {"side": row.side, "instrument_id": row.instrument_id},
@@ -586,7 +588,7 @@ def upsert_position(session: Session, row: PositionRow) -> None:
 
     ``funding_total`` is written only by the insert: ``record_funding`` owns it after that (spec 0011 AC-14).
     """
-    _check_env(row.env)
+    check_env(row.env)
     _guarded_upsert(
         session,
         models.Position,
@@ -602,7 +604,7 @@ def record_order_event(session: Session, row: OrderEventRow) -> None:
 
     Raises ``MissingParentError`` when the order cannot be found.
     """
-    _check_env(row.env)
+    check_env(row.env)
     order_id = _find_order(session, row.env, row.run_id, row.client_order_id)
     if order_id is None:
         raise MissingParentError(f"order {row.client_order_id} not found for run {row.run_id}")
@@ -613,7 +615,7 @@ def record_order_event(session: Session, row: OrderEventRow) -> None:
 
 def record_position_snapshot(session: Session, row: PositionSnapshotRow) -> None:
     """Record a position mark to market; raises ``MissingParentError`` for an unknown position."""
-    _check_env(row.env)
+    check_env(row.env)
     if session.get(models.Position, row.position_id) is None:
         raise MissingParentError(f"position {row.position_id} not found")
     _insert_or_compare(session, models.PositionSnapshot, column_values(row), ["position_id", "captured_ns"])
@@ -621,7 +623,7 @@ def record_position_snapshot(session: Session, row: PositionSnapshotRow) -> None
 
 def record_account_snapshot(session: Session, row: AccountSnapshotRow) -> None:
     """Record the balances of one account currency."""
-    _check_env(row.env)
+    check_env(row.env)
     _insert_or_compare(
         session,
         models.AccountSnapshot,
@@ -637,13 +639,13 @@ def record_funding(session: Session, row: FundingRow) -> bool:
     same transaction (spec 0011 AC-14). Returns True when the row is new. Raises
     ``MissingParentError`` for an unknown position.
     """
-    _check_env(row.env)
+    check_env(row.env)
     if row.position_id is not None and session.get(models.Position, row.position_id) is None:
         raise MissingParentError(f"position {row.position_id} not found")
     key, where = _FUNDING_KEYS[row.source]
     inserted = _insert_or_compare(session, models.FundingPayment, column_values(row), key, where)
     if inserted and row.position_id is not None:
-        position = _table(models.Position)
+        position = table_of(models.Position)
         session.execute(
             update(position)
             .where(position.c.id == row.position_id)
@@ -654,7 +656,7 @@ def record_funding(session: Session, row: FundingRow) -> bool:
 
 def record_run_result(session: Session, row: RunResultRow) -> None:
     """Record the scored metrics of a run over one sample."""
-    _check_env(row.env)
+    check_env(row.env)
     _insert_or_compare(session, models.RunResult, column_values(row), ["run_id", "sample"])
 
 
@@ -663,7 +665,7 @@ def record_run_result(session: Session, row: RunResultRow) -> None:
 
 def record_risk_event(session: Session, row: RiskEventRow) -> None:
     """Record a risk event, idempotent on ``(env, event_key)``."""
-    _check_env(row.env)
+    check_env(row.env)
     _insert_or_compare(session, models.RiskEvent, column_values(row), ["env", "event_key"])
 
 
@@ -691,7 +693,7 @@ def report_conflict(session: Session, error: RecordConflictError) -> None:
     )
     # The report time differs on every call, so only the key decides "already reported".
     session.execute(
-        insert(_table(models.RiskEvent))
+        insert(table_of(models.RiskEvent))
         .values(column_values(row))
         .on_conflict_do_nothing(index_elements=["env", "event_key"])
     )
@@ -704,7 +706,7 @@ def record_control_command(session: Session, row: ControlCommandRow) -> None:
     Receiving the same command again is a no-op, whatever its handling state; a different
     ``cmd``, ``env``, or time for the same id raises ``RecordConflictError``.
     """
-    _check_env(row.env)
+    check_env(row.env)
     _insert_or_compare(session, models.ControlCommand, column_values(row), ["id"], ignore=_CONTROL_HANDLING)
 
 
@@ -726,7 +728,7 @@ def set_control_outcome(
     command = session.get(models.ControlCommand, command_id, with_for_update=True, populate_existing=True)
     if command is None:
         raise MissingParentError(f"control command {command_id} not found")
-    _check_env(command.env)
+    check_env(command.env)
     if command.outcome == outcome:
         return
     if command.outcome != ControlOutcome.RECEIVED:
@@ -764,7 +766,7 @@ def record_promotion(session: Session, row: PromotionRow, evidence_run_ids: Sequ
         )
     _insert_or_compare(session, models.Promotion, column_values(row), ["id"])
     session.execute(
-        insert(_table(models.PromotionEvidence))
+        insert(table_of(models.PromotionEvidence))
         .values([{"promotion_id": row.id, "run_id": run_id} for run_id in evidence_run_ids])
         .on_conflict_do_nothing()
     )
@@ -810,7 +812,7 @@ def _check_bundle_rows(bundle: RunBundle) -> None:
 
 def _insert_all(session: Session, model: type[Base], rows: Sequence[dict[str, object]]) -> None:
     if rows:
-        session.execute(insert(_table(model)), rows)
+        session.execute(insert(table_of(model)), rows)
 
 
 def write_run_bundle(session: Session, bundle: RunBundle) -> UUID:

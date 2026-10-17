@@ -119,8 +119,8 @@ def result_to_fields(result: ControlResult) -> dict[str, str]:
 
 def from_fields(fields: Fields) -> ControlMessage:
     """Parse a ``{env}:control`` entry; raises ``ControlFormatError`` for anything but version 1."""
-    values = _strings(fields, ("id", "cmd", "issued_at", "expires_at", "schema_version"))
-    _check_version(values)
+    values = required_strings(fields, ("id", "cmd", "issued_at", "expires_at", "schema_version"))
+    check_version(values)
     try:
         cmd = ControlCmd(values["cmd"])
     except ValueError:
@@ -131,24 +131,24 @@ def from_fields(fields: Fields) -> ControlMessage:
     except ValueError:
         raise ControlFormatError(f"unknown control source {source_text!r}") from None
     return ControlMessage(
-        _uuid(values["id"]),
+        parse_uuid(values["id"]),
         cmd,
-        _utc(values["issued_at"], "issued_at"),
-        _utc(values["expires_at"], "expires_at"),
+        parse_utc(values["issued_at"], "issued_at"),
+        parse_utc(values["expires_at"], "expires_at"),
         source,
     )
 
 
 def result_from_fields(fields: Fields) -> ControlResult:
     """Parse a ``{env}:control:results`` entry; raises ``ControlFormatError`` for anything but version 1."""
-    values = _strings(fields, ("id", "outcome", "outcome_at", "schema_version"))
-    _check_version(values)
+    values = required_strings(fields, ("id", "outcome", "outcome_at", "schema_version"))
+    check_version(values)
     try:
         outcome = ControlOutcome(values["outcome"])
     except ValueError:
         raise ControlFormatError(f"unknown control outcome {values['outcome']!r}") from None
     return ControlResult(
-        _uuid(values["id"]), outcome, _utc(values["outcome_at"], "outcome_at"), field(fields, "reason")
+        parse_uuid(values["id"]), outcome, parse_utc(values["outcome_at"], "outcome_at"), field(fields, "reason")
     )
 
 
@@ -167,7 +167,8 @@ def field(fields: Fields, name: str) -> str | None:
     return raw if isinstance(raw, str) else None
 
 
-def _strings(fields: Fields, names: tuple[str, ...]) -> dict[str, str]:
+def required_strings(fields: Fields, names: tuple[str, ...]) -> dict[str, str]:
+    """The text of each field in ``names``; raises ``ControlFormatError`` when any is missing."""
     values = {name: field(fields, name) for name in names}
     missing = [name for name, value in values.items() if value is None]
     if missing:
@@ -175,19 +176,22 @@ def _strings(fields: Fields, names: tuple[str, ...]) -> dict[str, str]:
     return {name: value for name, value in values.items() if value is not None}
 
 
-def _check_version(values: Mapping[str, str]) -> None:
+def check_version(values: Mapping[str, str]) -> None:
+    """Raises ``ControlFormatError`` unless ``values["schema_version"]`` is ``SCHEMA_VERSION``."""
     if values["schema_version"] != SCHEMA_VERSION:
         raise ControlFormatError(f"unknown control schema_version {values['schema_version']!r}")
 
 
-def _uuid(text: str) -> uuid.UUID:
+def parse_uuid(text: str) -> uuid.UUID:
+    """``text`` as a UUID; raises ``ControlFormatError`` when it is not one."""
     try:
         return uuid.UUID(text)
     except ValueError:
         raise ControlFormatError(f"control id {text!r} is not a UUID") from None
 
 
-def _utc(text: str, name: str) -> datetime:
+def parse_utc(text: str, name: str) -> datetime:
+    """``text`` (ISO 8601 with a zone) as a UTC datetime; raises ``ControlFormatError`` naming ``name``."""
     try:
         moment = datetime.fromisoformat(text)
     except ValueError:

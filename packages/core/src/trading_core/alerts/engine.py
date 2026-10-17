@@ -97,14 +97,17 @@ class AlertEngine:
         self._rules = rules
         self._open: dict[str, Episode] = {}
         self._failed: dict[EpisodeKey, Episode] = {}
+        # When each failed episode's push first failed; the retry age counts from here (AC-14).
+        self._failed_since: dict[EpisodeKey, datetime] = {}
         self._recent: OrderedDict[EpisodeKey, Episode] = OrderedDict()
         self._inflight: set[EpisodeKey] = set()
         self._logins: deque[datetime] = deque()
         # The storm cap (AC-10): the UTC hour counted, warning and info pushes sent in it, the
-        # ones admitted and not yet reported (by ``id`` of the push), and the hour's storm episode.
+        # ones admitted this hour and not yet reported (by episode and reason), and the hour's
+        # storm episode.
         self._hour: datetime | None = None
         self._hour_sent = 0
-        self._counted: set[int] = set()
+        self._counted: set[tuple[EpisodeKey, PushReason]] = set()
         self._storm: Episode | None = None
         # The hold windows (AC-11, AC-12), and each summary push's covered episodes until it is sent.
         self._holds: dict[HoldKind, Hold] = {}
@@ -124,7 +127,11 @@ class AlertEngine:
             if episode.is_open and episode.fingerprint not in self._open:
                 self._open[episode.fingerprint] = episode
             if episode.delivery is Delivery.FAILED:
-                self._failed.setdefault(key_of(episode), episode)
+                key = key_of(episode)
+                self._failed.setdefault(key, episode)
+                # The row keeps no failure time: its last good send (or its open) is the earliest
+                # the failing could have started.
+                self._failed_since.setdefault(key, episode.last_sent_at or episode.opened_at)
 
     @property
     def open_episodes(self) -> tuple[Episode, ...]:
@@ -165,7 +172,9 @@ class AlertEngine:
         details = dict(result.fields)
         if rule.id == ENTRY_BLOCK.id:
             details["since"] = min([opened_at, *self._rejoin(fingerprint, now)]).isoformat()
-        text_title, text_body = messages.check(rule.id, result.subject, result.fields)
+        text_title, text_body = messages.check(
+            rule.id, result.subject, result.fields, entry_block_s=self._config.entry_block_s
+        )
         episode = Episode(
             env=self._config.env,
             rule=rule.id,
@@ -324,14 +333,14 @@ class AlertEngine:
     def retry(self, now: datetime) -> Decision:
         """Pushes for failed episodes: critical first, then oldest, at most ``retry_limit`` (AC-14).
 
-        An episode failing for longer than ``retry_max_age_s`` (since it opened) stops retrying and
-        stays ``failed``.
+        An episode failing for longer than ``retry_max_age_s`` (since its push first failed) stops
+        retrying and stays ``failed``.
         """
         now = _utc(now)
         cutoff = now - timedelta(seconds=self._config.retry_max_age_s)
         for key, episode in list(self._failed.items()):
-            if episode.opened_at < cutoff:
-                del self._failed[key]
+            if self._failed_since.get(key, episode.opened_at) < cutoff:
+                self._drop_failed(key)
         due = sorted(
             (e for k, e in self._failed.items() if k not in self._inflight),
             key=lambda e: (e.severity is not Tier.CRITICAL, e.opened_at),
@@ -352,10 +361,10 @@ class AlertEngine:
         at = _utc(at)
         key = key_of(push.episode)
         self._inflight.discard(key)
-        if id(push) in self._counted:
-            self._counted.discard(id(push))
+        self._roll(at)
+        if (key, push.reason) in self._counted:
+            self._counted.discard((key, push.reason))
             if delivery is Delivery.SENT:
-                self._roll(at)
                 self._hour_sent += 1
         if push.reason is PushReason.RESOLVED:
             return ()
@@ -369,11 +378,12 @@ class AlertEngine:
         current = self._find(key) or episode
         if delivery in (Delivery.SENT, Delivery.DRY_RUN):
             updated = replace(current, delivery=delivery, sends=current.sends + 1, last_sent_at=at)
-            self._failed.pop(key, None)
+            self._drop_failed(key)
         else:
             updated = replace(current, delivery=delivery)
             if delivery is Delivery.FAILED:
                 self._failed[key] = updated
+                self._failed_since.setdefault(key, at)
         self._put(updated)
         return updated
 
@@ -530,7 +540,7 @@ class AlertEngine:
             self._inflight.discard(key)
             if push.reason is PushReason.RESOLVED:
                 continue
-            self._failed.pop(key, None)
+            self._drop_failed(key)
             held = replace(self._find(key) or push.episode, delivery=hold.delivery)
             self._put(held)
             store.append(held)
@@ -576,14 +586,14 @@ class AlertEngine:
                 pushes.append(push)
                 continue
             if self._storm is None and self._hour_sent + len(self._counted) < self._config.hourly_cap - 1:
-                self._counted.add(id(push))
+                self._counted.add((key_of(push.episode), push.reason))
                 pushes.append(push)
                 continue
             store += self._cap(push)
             if self._storm is None:
                 storm_push = self._open_storm(now)
                 store.append(storm_push.episode)
-                self._counted.add(id(storm_push))
+                self._counted.add((key_of(storm_push.episode), storm_push.reason))
                 pushes.append(storm_push)
             else:
                 self._storm = replace(self._storm, occurrences=self._storm.occurrences + 1, last_seen_at=now)
@@ -629,8 +639,10 @@ class AlertEngine:
 
     def _roll(self, now: datetime) -> None:
         hour = now.replace(minute=0, second=0, microsecond=0)
-        if hour != self._hour:
+        if self._hour is None or hour > self._hour:
+            # A push admitted last hour and never reported stops holding a place in the new one.
             self._hour, self._hour_sent, self._storm = hour, 0, None
+            self._counted.clear()
 
     # Helpers --------------------------------------------------------------------------------
 
@@ -641,6 +653,10 @@ class AlertEngine:
         if rule.kind is not kind:
             raise AlertEngineError(f"rule {rule_id!r} is a {rule.kind.value} rule, not {kind.value}")
         return rule
+
+    def _drop_failed(self, key: EpisodeKey) -> None:
+        self._failed.pop(key, None)
+        self._failed_since.pop(key, None)
 
     def _find(self, key: EpisodeKey) -> Episode | None:
         current = self._open.get(key[0])

@@ -153,8 +153,25 @@ def _step(value: Decimal, step: Decimal) -> Decimal:
     return _places(value, _decimals(step))
 
 
-def check(rule_id: str, subject: str | None, fields: Mapping[str, object]) -> tuple[str, str]:
-    """Title text and body for an episode opened by a condition check."""
+def span(seconds: int) -> str:
+    """A configured length in plain words: "an hour", "2 hours", "10 min", or "45 s"."""
+    if seconds == 3600:
+        return "an hour"
+    if seconds % 3600 == 0:
+        return f"{seconds // 3600} hours"
+    if seconds >= 60:
+        return f"{round(seconds / 60)} min"
+    return f"{seconds} s"
+
+
+def check(
+    rule_id: str, subject: str | None, fields: Mapping[str, object], *, entry_block_s: int = 3600
+) -> tuple[str, str]:
+    """Title text and body for an episode opened by a condition check.
+
+    ``entry_block_s`` is the configured block length (``ALERTS_ENTRY_BLOCK_S``) the
+    ``entry_block`` title names.
+    """
     if rule_id == "trader_down":
         return trader_down(fields)
     if rule_id == "service_down":
@@ -173,7 +190,7 @@ def check(rule_id: str, subject: str | None, fields: Mapping[str, object]) -> tu
     if rule_id == "entry_block":
         reason = str(subject or fields.get("reason") or "")
         plain = PLAIN_WORDS.get(BlockReason(reason)) if reason in BlockReason else None
-        return "Entries blocked for over an hour", f"{plain or words(reason)} ({reason})."
+        return f"Entries blocked for over {span(entry_block_s)}", f"{plain or words(reason)} ({reason})."
     return words(rule_id), ""
 
 

@@ -100,6 +100,18 @@ def test_a_block_pushes_once_it_has_lasted_an_hour_counted_from_its_since():
     assert push.message == "No fresh prices from Kraken (stale_feed)."
 
 
+@pytest.mark.parametrize(
+    ("block_s", "title"),
+    [(600, "Entries blocked for over 10 min"), (7200, "Entries blocked for over 2 hours")],
+)
+def test_the_block_title_names_the_configured_length(block_s, title):
+    engine = AlertEngine(EngineConfig(env="demo", entry_block_s=block_s))
+
+    [push] = block(engine, NOW, ["stale_feed"], {"stale_feed": NOW - timedelta(hours=3)})
+
+    assert push.title == f"[demo] {title}"
+
+
 def test_a_block_already_an_hour_old_pushes_at_once():
     engine = AlertEngine(CONFIG)
 

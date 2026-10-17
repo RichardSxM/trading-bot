@@ -3,8 +3,9 @@
 ``AlertCommands.run`` reads the stream in consumer group ``alerter`` (its own pending entries
 first), and for each entry: decodes it (a bad one gets ``failed invalid``), answers an expired
 one with ``expired``, otherwise runs it through ``execute`` and appends the outcome to
-``{env}:control:alerts:results``, then acknowledges the entry. A Redis error is logged at most
-once a minute and the read retries every second.
+``{env}:control:alerts:results``, then acknowledges the entry. A test runs beside the reader (its
+pushes can take minutes while Pushover fails), so a mute behind it is not kept waiting. A Redis
+error is logged at most once a minute and the read retries every second.
 
 ``MuteKey`` keeps ``{env}:alerts:mute`` (``until`` and ``command_id``, with the mute's length as
 its TTL), so a restarted alerter picks the mute up again.
@@ -71,6 +72,9 @@ class AlertCommands:
         self._last_warning: float | None = None
         self._group_ready = False
         self._pending = True
+        # Tests still running beside the reader, by entry id, so a pending read skips them.
+        self._running: set[str] = set()
+        self._tasks: set[asyncio.Task[None]] = set()
 
     async def run(self) -> None:
         """Read and handle entries until cancelled."""
@@ -95,12 +99,17 @@ class AlertCommands:
         reply = await self._client.xreadgroup(
             GROUP, CONSUMER, streams, count=READ_COUNT, block=None if self._pending else BLOCK_MS
         )
-        entries = stream_entries(reply)
+        entries = [(i, f) for i, f in stream_entries(reply) if i not in self._running]
         if self._pending and not entries:
             self._pending = False
         for entry_id, fields in entries:
             await self._handle(entry_id, fields)
         return len(entries)
+
+    async def drain(self) -> None:
+        """Wait for the tests still running beside the reader."""
+        while self._tasks:
+            await asyncio.gather(*self._tasks)
 
     async def _handle(self, entry_id: str, fields: Fields) -> None:
         try:
@@ -115,25 +124,42 @@ class AlertCommands:
                 await self._append(
                     AlertResult(command_id, ControlOutcome.FAILED, self._now(), _cmd_or_none(fields), "invalid")
                 )
+            await self._client.xack(self._stream, GROUP, entry_id)
+            return
+        now = self._now()
+        if msg.expires_at <= now:
+            await self._answer(entry_id, msg, AlertResult(msg.id, ControlOutcome.EXPIRED, now, msg.cmd))
+        elif msg.cmd is AlertCmd.TEST:
+            self._running.add(entry_id)
+            task = asyncio.create_task(self._test(entry_id, msg))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
         else:
-            now = self._now()
-            if msg.expires_at <= now:
-                result = AlertResult(msg.id, ControlOutcome.EXPIRED, now, msg.cmd)
-            else:
-                result = await self._run(msg)
-            log.info(
-                "alert command done",
-                extra={
-                    "fields": {
-                        "code": "alert_command_done",
-                        "id": str(msg.id),
-                        "cmd": msg.cmd.value,
-                        "outcome": result.outcome.value,
-                        "reason": result.reason,
-                    }
-                },
-            )
-            await self._append(result)
+            await self._answer(entry_id, msg, await self._run(msg))
+
+    async def _test(self, entry_id: str, msg: AlertCommand) -> None:
+        try:
+            await self._answer(entry_id, msg, await self._run(msg))
+        except (RedisError, OSError, TimeoutError) as exc:
+            # Not acknowledged: the next pending read finds it again.
+            self._redis_failed(exc)
+        finally:
+            self._running.discard(entry_id)
+
+    async def _answer(self, entry_id: str, msg: AlertCommand, result: AlertResult) -> None:
+        log.info(
+            "alert command done",
+            extra={
+                "fields": {
+                    "code": "alert_command_done",
+                    "id": str(msg.id),
+                    "cmd": msg.cmd.value,
+                    "outcome": result.outcome.value,
+                    "reason": result.reason,
+                }
+            },
+        )
+        await self._append(result)
         await self._client.xack(self._stream, GROUP, entry_id)
 
     async def _run(self, msg: AlertCommand) -> AlertResult:

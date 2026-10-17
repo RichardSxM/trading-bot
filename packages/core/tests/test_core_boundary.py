@@ -1,8 +1,10 @@
 """covers: spec 0008 Code placement, the core boundary (Build plan task 21).
 
 Only ``node/`` and ``catalog/`` carry the ``node`` extra: ``nautilus_trader`` is allowed in those
-two, ``pyarrow`` and ``numpy`` only in ``catalog/``. The files are parsed, never imported, so the
-check runs on any host.
+two, ``pyarrow`` and ``numpy`` only in ``catalog/``. The pure ``alerts/`` folder (spec 0013)
+imports no I/O package and, of core, only itself, ``strategy``, and ``secrets`` (the redaction
+registry every push text passes). The files are parsed, never imported, so the check runs on any
+host.
 """
 
 import ast
@@ -16,6 +18,49 @@ ALLOWED = {
     "pyarrow": {"catalog"},
     "numpy": {"catalog"},
 }
+
+
+# pure core folder -> the trading_core modules it may import (its own folder always)
+PURE = {"alerts": {"trading_core.strategy", "trading_core.secrets"}}
+# packages that mean I/O, a framework, or an ORM
+IO = {
+    "asyncio",
+    "httpx",
+    "logging",
+    "nautilus_trader",
+    "os",
+    "pathlib",
+    "psycopg",
+    "redis",
+    "socket",
+    "sqlalchemy",
+    "subprocess",
+}
+
+
+def imports(path):
+    """Each absolute import in ``path`` as (line, module name)."""
+    for node in ast.walk(ast.parse(path.read_text(), filename=str(path))):
+        if isinstance(node, ast.Import):
+            yield from ((node.lineno, alias.name) for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            yield node.lineno, node.module
+
+
+def impure(root):
+    """One line per import in a pure folder of an I/O package or a core module outside its list."""
+    found = []
+    for folder, allowed in PURE.items():
+        for path in sorted((root / folder).rglob("*.py")):
+            relative = path.relative_to(root)
+            for line, name in imports(path):
+                top = name.split(".")[0]
+                core = top == "trading_core" and not any(
+                    name == ok or name.startswith(ok + ".") for ok in {f"trading_core.{folder}", *allowed}
+                )
+                if top in IO or core:
+                    found.append(f"{relative}:{line} imports {name}")
+    return found
 
 
 def violations(root):
@@ -54,4 +99,21 @@ def test_the_check_catches_a_module_that_breaks_the_rule(tmp_path):
         "marketdata/bad.py:2 imports numpy",
         "node/bad.py:1 imports pyarrow.parquet",
         "top.py:1 imports nautilus_trader.core",
+    ]
+
+
+def test_the_pure_alerts_folder_stays_free_of_io():
+    assert (SRC / "alerts").is_dir()
+    assert impure(SRC) == []
+
+
+def test_the_purity_check_catches_io_and_other_core_modules(tmp_path):
+    (tmp_path / "alerts").mkdir()
+    (tmp_path / "alerts" / "ok.py").write_text(
+        "from trading_core.alerts.model import Tier\nfrom trading_core.secrets import redact\n"
+    )
+    (tmp_path / "alerts" / "bad.py").write_text("import redis\nfrom trading_core.recording.models import Alert\n")
+    assert impure(tmp_path) == [
+        "alerts/bad.py:1 imports redis",
+        "alerts/bad.py:2 imports trading_core.recording.models",
     ]

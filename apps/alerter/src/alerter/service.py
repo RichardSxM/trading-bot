@@ -58,6 +58,9 @@ FILL_LOOKUP_S: Final = 2.0
 FILL_LOOKUPS: Final = 6
 # Test pushes, loudest first, so the critical one is on the lock screen by the time you look.
 ALL_TIERS: Final = (Tier.CRITICAL, Tier.WARNING, Tier.INFO)
+# A test pushes three times and the critical one repeats until acknowledged, so a second test
+# this soon after the last (a double tap, a retried request, a replayed entry) is refused.
+TEST_COOLDOWN_S: Final = 30.0
 RESTART_AFTER_S: Final = 5.0
 # How long the checks wait for the stored episodes before starting from memory alone (AC-9, AC-15).
 LOAD_WAIT_S: Final = 15.0
@@ -119,6 +122,7 @@ class Alerter:
         self._started_at = clock()
         self._note_failed = False
         self._pushes: set[asyncio.Task[object]] = set()
+        self._last_test_at: datetime | None = None
         self._mute = mute
         self._commands = None if control is None else AlertCommands(control, env, self.execute, clock)
         self.daily = DailyNote(
@@ -306,12 +310,35 @@ class Alerter:
         """Run ``work`` as its own task, kept until it finishes."""
         task = asyncio.create_task(work)
         self._pushes.add(task)
-        task.add_done_callback(self._pushes.discard)
+        task.add_done_callback(self._task_done)
         return task
 
+    def _task_done(self, task: asyncio.Task[object]) -> None:
+        self._pushes.discard(task)
+        if task.cancelled() or task.exception() is None:
+            return
+        log.error(
+            "alerter task crashed",
+            exc_info=task.exception(),
+            extra={"fields": {"code": "alerter_task_crashed", "task": task.get_name()}},
+        )
+
     async def deliver(self, push: Push) -> Outcome:
-        """Send one push and record its outcome on the episode."""
-        outcome = await self._deliverer.send(push)
+        """Send one push and record its outcome on the episode.
+
+        A push that raises instead of answering is logged and recorded ``failed``, so it leaves the
+        in flight set and the retry cycle picks it up (AC-14).
+        """
+        try:
+            outcome = await self._deliverer.send(push)
+        except Exception as exc:
+            log.exception(
+                "push crashed",
+                extra={
+                    "fields": {"code": "alerter_task_crashed", "task": "push", "fingerprint": push.episode.fingerprint}
+                },
+            )
+            outcome = Outcome(Delivery.FAILED, f"crashed: {type(exc).__name__}")
         self._note_failed = outcome.delivery is Delivery.FAILED
         for updated in self._engine.record(push, outcome.delivery, self._clock()):
             self._store.put(updated)
@@ -324,11 +351,15 @@ class Alerter:
 
         A mute holds warning and info pushes until ``issued_at`` plus its length, replacing any
         mute before it; an unmute ends it, and the warnings it held that are still open go out as
-        one summary. A test sends one marked push per tier through the delivery path and fails
-        with ``push_failed`` when any of them failed.
+        one summary. A test sends one marked push per tier through the delivery path, all at once,
+        and fails with ``push_failed`` when any of them failed, or with ``too_soon`` within
+        ``TEST_COOLDOWN_S`` of the last test. A mute without its length fails
+        ``invalid``.
         """
         now = self._clock()
-        if msg.cmd is AlertCmd.MUTE and msg.mute_s is not None:
+        if msg.cmd is AlertCmd.MUTE:
+            if msg.mute_s is None:
+                return AlertResult(msg.id, ControlOutcome.FAILED, now, msg.cmd, "invalid")
             until = msg.issued_at + timedelta(seconds=msg.mute_s)
             if self._mute is not None:
                 await self._mute.set(until, msg.id, now)
@@ -339,10 +370,13 @@ class Alerter:
                 await self._mute.clear()
             self.apply(self._engine.close_hold(HoldKind.MUTE, now))
             return AlertResult(msg.id, ControlOutcome.EXECUTED, self._clock(), msg.cmd)
+        if self._last_test_at is not None and (now - self._last_test_at).total_seconds() < TEST_COOLDOWN_S:
+            return AlertResult(msg.id, ControlOutcome.FAILED, now, msg.cmd, "too_soon")
+        self._last_test_at = now
         decision = self._engine.test_episodes(str(msg.id), ALL_TIERS, now)
         for episode in decision.store:
             self._store.put(episode)
-        outcomes = [await self.deliver(push) for push in decision.pushes]
+        outcomes = await asyncio.gather(*(self.deliver(push) for push in decision.pushes))
         if any(o.delivery is Delivery.FAILED for o in outcomes):
             return AlertResult(msg.id, ControlOutcome.FAILED, self._clock(), msg.cmd, "push_failed")
         return AlertResult(msg.id, ControlOutcome.EXECUTED, self._clock(), msg.cmd)
