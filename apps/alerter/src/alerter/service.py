@@ -368,7 +368,9 @@ class Alerter:
     # The process -----------------------------------------------------------------------------
 
     async def run(self) -> None:
-        """Run every loop until cancelled."""
+        """Run every loop until cancelled; the host files are read first, so a deploy still under way
+        holds from the first pass of the other loops (AC-11)."""
+        await self.read_host()
         loops: list[tuple[str, Callable[[], Awaitable[None]], float]] = [
             ("heartbeat", self.check_heartbeat, CHECK_S),
             ("entry_blocks", self.check_entry_blocks, BLOCKS_S),

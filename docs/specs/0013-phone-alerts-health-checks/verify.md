@@ -19,7 +19,7 @@ To read alert rows: `docker compose exec -T postgres psql -U postgres -d kfs -c 
 
 ## Part B: VPS, real pushes
 
-1. **The push path (AC-17, AC-20).** `kfs-compose run --rm alerter alerter test`. Three pushes arrive: the critical one sounds with your phone on Do Not Disturb and repeats every minute until you acknowledge it in Pushover; the warning one notifies normally; the info one arrives silently. `kfs-compose logs alerter | grep -c pushover_app_token` prints 0.
+1. **The push path (AC-17, AC-20).** `kfs-compose run --rm alerter alerter test`. Three pushes arrive: the critical one sounds with your phone on Do Not Disturb and repeats every minute until you acknowledge it in Pushover; the warning one notifies normally; the info one arrives silently. `kfs-compose logs alerter | grep -cF -f /etc/kfs/secrets/pushover_app_token` and the same for `pushover_user_key` print 0 (the secret's name does appear once, in the `secret loaded` line with its fingerprint).
 2. **Bot down at night (AC-1).** With Do Not Disturb on, `kfs-compose stop trader`. Within 60 s a critical `[demo] Trader down` push sounds. Start it: a silent "resolved after N min" follows.
 3. **VPS silent (AC-2).** `kfs-compose stop alerter`. Within 3 min healthchecks.io sends `alerter-alive` down through Pushover and email. Start it: healthchecks.io sends the recovery.
 4. **Push failure path (AC-14).** Replace `pushover_app_token` with a wrong value and recreate the alerter. `alerter test` fails, the row is `failed`, and within 2 min healthchecks.io reports `alerter-alive` failing. Restore the token and recreate; the failed rows are sent on the next cycle.
@@ -54,7 +54,7 @@ These steps fake the VPS's `/var/log/kfs` so you can check the host side without
 
 - [x] `entry_block` since: vary `entries_blocked_since` (2 h back, now, in the future, missing). → the push comes at once, after `ALERTS_ENTRY_BLOCK_S`, or counts from now in the last two cases. → AC-6
 - [x] `disk_low` free GB: a value just under the floor (for example 4.99 GB under 5) reads 4.9, never 5.0. → AC-4
-- [ ] Deploy window start: on the VPS, the "deploy started" line in `host.jsonl` carries the same `started_at` as that deploy's `deploys.jsonl` line, so the window closes on the outcome line, not after 15 min. → AC-11
+- [x] Deploy window start: on the VPS, the "deploy started" line in `host.jsonl` carries the same `started_at` as that deploy's `deploys.jsonl` line, so the window closes on the outcome line, not after 15 min. → AC-11 (2026-10-16, deploy of b8949f8: both lines carry `started_at` 2026-10-16T23:09:54Z)
 
 ### Acceptance criteria coverage (Part C)
 

@@ -209,6 +209,74 @@ def test_a_deploy_window_from_the_files_holds_a_warning_into_one_summary(tmp_pat
     assert alerter._engine.holds == ()
 
 
+def started_line(at):
+    stamp = at.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {"ts": stamp, "level": "INFO", "msg": "deploy started", "sha": SHA, "started_at": stamp}
+
+
+def outcome_line(started, finished):
+    return {
+        "sha": SHA,
+        "started_at": started.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "finished_at": finished.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "outcome": "deployed",
+    }
+
+
+def test_an_alerter_recreated_mid_deploy_opens_the_window_from_the_start_line(tmp_path):
+    async def run():
+        alerter, clock, deliverer, _, logs = make(tmp_path)
+        began = clock() - timedelta(minutes=2)
+        crit = {"ts": "2026-10-16T02:00:00Z", "level": "CRITICAL", "msg": "autoheal_gave_up", "container": "x"}
+        append(logs / HOST_FILE, crit, started_line(began))
+        (logs / DEPLOYS_FILE).touch()
+        await alerter.read_host()
+        holds = alerter._engine.holds
+        alerter.apply(alerter._engine.observe(warning_line(clock())))
+        await settle(alerter)
+        during = list(deliverer.sent)
+        clock.advance(60)
+        append(logs / DEPLOYS_FILE, outcome_line(began, clock()))
+        await alerter.read_host()
+        await settle(alerter)
+        return holds, during, deliverer, alerter
+
+    holds, during, deliverer, alerter = asyncio.run(run())
+
+    [hold] = holds
+    assert hold.started_at == NOW - timedelta(minutes=2)
+    assert hold.until == NOW + timedelta(minutes=13)  # 15 min from the deploy's start
+    assert during == []  # neither the old critical line nor the warning
+    [summary] = deliverer.sent
+    assert summary.title == "[demo] 1 warning during deploy"
+    assert alerter._engine.holds == ()
+
+
+def test_a_finished_or_old_deploy_opens_no_window_at_start(tmp_path):
+    async def run(name, outcome, minutes_ago):
+        alerter, clock, _, _, logs = make(tmp_path / name)
+        began = clock() - timedelta(minutes=minutes_ago)
+        append(logs / HOST_FILE, started_line(began))
+        (logs / DEPLOYS_FILE).touch()
+        if outcome:
+            append(logs / DEPLOYS_FILE, outcome_line(began, clock()))
+        await alerter.read_host()
+        return alerter._engine.holds
+
+    for name, outcome, minutes_ago in (("done", True, 2), ("old", False, 15)):
+        (tmp_path / name).mkdir()
+        assert asyncio.run(run(name, outcome, minutes_ago)) == (), name
+
+
+def test_the_first_look_back_reads_only_the_tail(tmp_path):
+    path = tmp_path / "f.jsonl"
+    append(path, "x" * (100 << 10) + "\n", "last\n", "partial")
+    follower = FileFollower(path)
+
+    assert follower.read() == []
+    assert follower.tail == ["last"]
+
+
 def test_no_host_directory_means_no_host_reads_and_no_disk_check(tmp_path):
     async def run():
         alerter, _, deliverer, _, _ = make(tmp_path, host=False)

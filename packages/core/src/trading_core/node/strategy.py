@@ -200,7 +200,11 @@ class KfsStrategy(Strategy):  # type: ignore[misc]  # Strategy is Cython with no
         self.subscribe_index_prices(instrument_id)
         self.subscribe_funding_rates(instrument_id)
         for cls in (OpenInterestUpdate, LiquidationTick):
-            self.subscribe_data(context_data_type(cls, instrument_id), instrument_id=instrument_id)
+            # The message bus only: ContextFeedActor publishes these. ``subscribe_data`` would also
+            # send a SubscribeData to the Kraken data client, which has no handler for it and logs
+            # an error on every start. The topic is the one ``publish_data`` uses.
+            data_type = context_data_type(cls, instrument_id)
+            self.msgbus.subscribe(topic=f"data.{data_type.topic}", handler=self.handle_data)
 
     def on_mark_price(self, update: MarkPriceUpdate) -> None:
         """Fold a mark price into the market context."""

@@ -123,6 +123,25 @@ def test_live_a_clock_behind_the_latest_update_snapshots_at_that_update_and_logs
     assert len(behind) == 1
 
 
+def test_live_start_subscribes_open_interest_and_liquidations_on_the_bus_only():
+    from nautilus_trader.data.messages import SubscribeData
+
+    from trading_core.node.context_types import LiquidationTick, OpenInterestUpdate, context_data_type
+
+    strategy = _live_strategy()
+    commands: list[object] = []
+    strategy.msgbus.register("DataEngine.execute", commands.append)
+
+    strategy.on_start()
+
+    # A SubscribeData would reach the Kraken data client, which raises for custom data.
+    # (Mark, index, and funding commands subclass SubscribeData; those the client handles.)
+    assert not [c for c in commands if type(c) is SubscribeData]
+    for cls in (OpenInterestUpdate, LiquidationTick):
+        topic = f"data.{context_data_type(cls, INSTRUMENT_ID).topic}"
+        assert strategy.msgbus.has_subscribers(topic)
+
+
 def test_mark_and_index_give_the_basis_at_each_bar(caplog):
     from nautilus_trader.model.data import IndexPriceUpdate, MarkPriceUpdate
     from nautilus_trader.model.objects import Price
