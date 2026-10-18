@@ -238,6 +238,8 @@ Steps 4 to 9 were built on 2026-10-17. September 2026 was fetched, and the expor
 11. Retries, backoff, pause, failure exits, catalog cap, `--refetch`, the running month. Satisfies **AC-1**, **AC-5**
 12. Price rounding in `build_candles` (noise snap, extremes toward the body, the open and close bad row, the check order, `lab_candles_price_rounded`) and the required manifest field `price_rounded_rows` (an old manifest counts as none), then fetch every month since 2022-03 and time it. The timed AC-23 run is one uninterrupted `fetch-candles 2022-03 <current month>` without `--refetch`: every stored manifest lacks the new field, so every month is fetched again. A run resumed after a failure is not the timed run. Satisfies **AC-1**, **AC-3**, **AC-4**, **AC-6**, **AC-23**
 
+Steps 10 to 12 were built on 2026-10-18 (81b4858, 561abfe). The timed run `fetch-candles 2022-03 2026-10` took 757 s with exit 0. It stored 56 months (2,404,662 bars, 78 MB) and rounded 35 candles, all in 2023-08 to 2024-01. Those of 2023-12 and 2024-01 were noise snaps only. `range_problems` passes for 2022-03-24 to 2026-09-30.
+
 **Milestone 4: A real strategy**
 13. `trading_core/strategy/indicators.py` (Decimal EMA, MACD) and `swings.py` with their unit tests. Satisfies **AC-13**, **AC-20**
 14. `macd_baseline` pure rules, node class, run file. Satisfies **AC-13**
