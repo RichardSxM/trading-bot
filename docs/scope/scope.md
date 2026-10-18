@@ -183,12 +183,12 @@ The recorder falls over at BTC's busiest hours because the Nautilus feather writ
 **Done when:** the recorder runs 24 h on the VPS through both daily peaks with no full queue, no restart, and no sequence hole outside Kraken maintenance, and reports its own headroom every minute.
 spec [0012](../specs/0012-recorder-buffered-writer/index.md) · code in [apps/recorder/src/recorder/writer.py](../../apps/recorder/src/recorder/writer.py), [apps/recorder/src/recorder/main.py](../../apps/recorder/src/recorder/main.py), [packages/core/src/trading_core/marketdata/writer.py](../../packages/core/src/trading_core/marketdata/writer.py)
 - [x] Design it (spec): `/architect order book recorder`
-- [ ] Build it: `/develop recorder buffered writer`
+- [x] Build it: `/develop recorder buffered writer`
   - [x] Thin thread: core flush and boundary rules, the writer for book deltas with hold, tick, cap, and rotation, through the compactor (AC-2, AC-3, AC-9)
   - [x] All types and parity: the full routing, the shared instrument file, the serialize and parity tests, wired into `main.py` with the flush actor and settings (AC-1, AC-2, AC-3, AC-5, AC-9)
   - [x] Failure and stats: fail closed, the drop paths, shutdown, the 60 s stats with queue depth and tick lag, the benchmark (AC-4, AC-5, AC-6, AC-7)
   - [x] Thread safety: the sequence watch lock, since timer callbacks run off the event loop thread (AC-10)
-  - [ ] VPS: deploy, the VPS benchmark, the 24 h check (AC-7, AC-8). Deployed 2026-10-15 18:40 UTC (4d55abd), benchmark 57,975 msg/s; the 24 h check runs until 2026-10-16 18:40 UTC
+  - [x] VPS: deploy, the VPS benchmark, the 24 h check (AC-7, AC-8). Deployed 2026-10-15 18:40 UTC (4d55abd), benchmark 57,975 msg/s; the 24 h check passed over 2026-10-17 16:26 to 2026-10-18 16:26 UTC (busy_pct at most 6, no restart, no hole)
 - [ ] Verify it: `/check verify recorder buffered writer`
 - [x] Test it: `/test recorder buffered writer`
 - [x] Review it (fresh model): `/check review recorder buffered writer`
