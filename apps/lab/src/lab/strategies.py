@@ -3,8 +3,8 @@
 Each entry names the paper loop's own strategy class, its config class, and how the run's
 values reach that config. A replay builds the strategy exactly as the trader does, with a
 pause gate, entry blocks, and a ``record`` callable (AC-7); nothing here subclasses or patches
-a strategy. The one exception is the test only ``raise_probe`` (``lab.probes``), which exists only
-when the caller asks for the test strategies (``LAB_TEST_STRATEGIES=1``, AC-13).
+a strategy. The exceptions are the test only ``raise_probe`` and ``peek_probe`` (``lab.probes``),
+which exist only when the caller asks for the test strategies (``LAB_TEST_STRATEGIES=1``, AC-13).
 """
 
 from collections.abc import Callable, Mapping
@@ -18,7 +18,7 @@ from nautilus_trader.config import StrategyConfig
 from nautilus_trader.model.data import BarSpecification
 from nautilus_trader.model.enums import BarAggregation, PriceType
 
-from lab.probes import RaiseProbe, RaiseProbeConfig
+from lab.probes import PeekProbe, RaiseProbe, RaiseProbeConfig
 from trading_core.lab.candles import CANDLE_STALE_CHECK_S
 from trading_core.node.buy_and_hold import STRATEGY_NAME as BUY_AND_HOLD
 from trading_core.node.buy_and_hold import BuyAndHold, BuyAndHoldConfig
@@ -265,6 +265,12 @@ def _macd_baseline(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks,
     return MacdBaseline(config, gate, blocks, record)
 
 
+def _peek_probe(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
+    if not isinstance(config, MacdBaselineConfig):
+        raise TypeError(f"peek_probe needs a MacdBaselineConfig, not {type(config).__name__}")
+    return PeekProbe(config, gate, blocks, record)
+
+
 def _raise_probe(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
     if not isinstance(config, RaiseProbeConfig):
         raise TypeError(f"raise_probe needs a RaiseProbeConfig, not {type(config).__name__}")
@@ -310,8 +316,16 @@ REGISTRY: Final[Mapping[str, StrategyEntry]] = {
 }
 
 
-# Only with LAB_TEST_STRATEGIES=1 (tests): a maker_probe that raises at a set time (AC-13).
+# Only with LAB_TEST_STRATEGIES=1 (tests): a maker_probe that raises at a set time (AC-13), and a
+# macd_baseline that decides about each bar from the next one (spec 0014 AC-19).
 TEST_REGISTRY: Final[Mapping[str, StrategyEntry]] = {
+    "peek_probe": StrategyEntry(
+        name="peek_probe",
+        config_cls=MacdBaselineConfig,
+        factory=_peek_probe,
+        run_fields=_candle_fields,
+        kind=StrategyKind.HOUR_LEVEL,
+    ),
     "raise_probe": StrategyEntry(
         name="raise_probe",
         config_cls=RaiseProbeConfig,

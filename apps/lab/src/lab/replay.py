@@ -173,13 +173,19 @@ def plan_run(
 ) -> SegmentPlan:
     """The clean segments of the run's range (AC-4); ``hours_kept`` narrows the range's hours first (parity, AC-15)."""
     run = loaded.run
-    days = required_days(run.source, run.from_, run.to)
+    return plan_days(tree, required_days(run.source, run.from_, run.to), hours_kept)
+
+
+def plan_days(
+    tree: SourceTree, days: Sequence[date], hours_kept: Callable[[list[int]], list[int]] | None = None
+) -> SegmentPlan:
+    """The clean segments of ``days`` in ``tree`` (AC-4), for a caller with no replay run file (candle parity)."""
     hours = hours_of(days) if hours_kept is None else hours_kept(hours_of(days))
     incomplete: set[int] = set()
     for day in days:
         incomplete |= tree.incomplete_hours(day)
     files = {hour: tree.hour_files(hour) for hour in hours}
-    return plan_segments(hours, tree.gaps(days), incomplete, files)
+    return plan_segments(hours, tree.gaps(list(days)), incomplete, files)
 
 
 def stamp_run_id[R: DataclassInstance](rows: Iterable[R], run_id: UUID) -> list[R]:
@@ -612,7 +618,7 @@ class _VariantState:
         return self.error is not None or len(self.units) == self.plans
 
 
-class _Interrupts:
+class Interrupts:
     """SIGINT and SIGTERM raise ``ReplayInterruptedError`` in the parent, except inside ``shield``.
 
     A signal during a write is held until the write ends, so a variant is never half written:
@@ -646,7 +652,7 @@ class _Interrupts:
 
 
 @contextmanager
-def _handling(interrupts: _Interrupts) -> Iterator[None]:
+def interrupt_handling(interrupts: Interrupts) -> Iterator[None]:
     previous = {sig: signal.signal(sig, interrupts.handle) for sig in (signal.SIGINT, signal.SIGTERM)}
     try:
         yield
@@ -666,7 +672,7 @@ def run_batch(
     states: Mapping[str, _VariantState] = {v.name: _VariantState(v, len(plans[v.name])) for v in variants}
     started_at = datetime.now(UTC)
     reports: list[LabReport] = []
-    interrupts = _Interrupts()
+    interrupts = Interrupts()
     pool = UnitPool(
         [plan for v in variants for plan in plans[v.name]],
         batch.settings.lab_workers,
@@ -693,7 +699,7 @@ def run_batch(
                     )
 
     interrupted = False
-    with _handling(interrupts):
+    with interrupt_handling(interrupts):
         try:
             write_ready()  # a variant with no unit at all is complete at once
             for outcome in pool.outcomes():

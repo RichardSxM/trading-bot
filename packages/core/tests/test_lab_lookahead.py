@@ -1,0 +1,78 @@
+"""covers: spec 0014 AC-19 (the look ahead check: where the cuts fall, and how a cut run must match)."""
+
+import pytest
+
+from trading_core.lab.lookahead import DecidedKey, cut_times, first_mismatch
+from trading_core.marketdata.hours import HOUR_NS
+
+T0 = 1_788_220_800_000_000_000  # 2026-09-01 00:00 UTC
+DAY = 24 * HOUR_NS
+
+
+def _key(hour, intent="enter", side="buy", reason="macd_entry", verdict="approved"):
+    return DecidedKey(T0 + hour * HOUR_NS, intent, side, reason, verdict)
+
+
+def test_the_cuts_are_whole_hours_in_the_middle_80_percent_and_the_same_for_a_seed():
+    cuts = cut_times(7, T0, T0 + 30 * DAY, 3)
+    assert cuts == cut_times(7, T0, T0 + 30 * DAY, 3)
+    assert cuts != cut_times(8, T0, T0 + 30 * DAY, 3)
+    assert cuts == sorted(set(cuts))
+    assert len(cuts) == 3
+    assert all(c % HOUR_NS == 0 for c in cuts)
+    assert all(T0 + 3 * DAY <= c <= T0 + 27 * DAY for c in cuts)
+
+
+def test_every_middle_hour_can_be_drawn():
+    drawn = {c for seed in range(400) for c in cut_times(seed, T0, T0 + DAY, 1)}
+    # 24 h: 2.4 h left out at each end, so 03:00 to 21:00 inclusive.
+    assert drawn == {T0 + h * HOUR_NS for h in range(3, 22)}
+
+
+def test_a_range_too_short_for_the_cuts_is_refused():
+    with pytest.raises(ValueError, match="fewer than"):
+        cut_times(7, T0, T0 + 2 * HOUR_NS, 3)
+
+
+def test_equal_decisions_before_the_cut_match_whatever_follows_it():
+    full = [_key(1), _key(5, "exit", "sell", "macd_exit"), _key(9)]
+    cut = [_key(1), _key(5, "exit", "sell", "macd_exit"), _key(6, reason="range_end")]
+    assert first_mismatch(full, cut, T0 + 6 * HOUR_NS) is None
+
+
+def test_a_decision_at_the_cut_itself_is_not_compared():
+    assert first_mismatch([_key(1), _key(6)], [_key(1)], T0 + 6 * HOUR_NS) is None
+
+
+def test_a_decision_the_cut_run_lacks_is_the_mismatch():
+    found = first_mismatch([_key(1), _key(3)], [_key(1)], T0 + 6 * HOUR_NS)
+    assert found is not None
+    assert (found.full, found.cut) == (_key(3), None)
+
+
+def test_an_extra_decision_in_the_cut_run_is_the_mismatch():
+    found = first_mismatch([_key(1)], [_key(1), _key(2, side="sell")], T0 + 6 * HOUR_NS)
+    assert found is not None
+    assert (found.full, found.cut) == (None, _key(2, side="sell"))
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        _key(2, side="sell"),
+        _key(2, verdict="rejected"),
+        _key(2, reason="other"),
+        _key(2, intent="exit"),
+        _key(2, side=None),
+    ],
+)
+def test_any_changed_field_is_a_mismatch(changed):
+    found = first_mismatch([_key(1), _key(2)], [_key(1), changed], T0 + 6 * HOUR_NS)
+    assert found is not None
+    assert found.cut_ns == T0 + 6 * HOUR_NS
+
+
+def test_a_moved_decision_is_a_mismatch():
+    moved = DecidedKey(T0 + 2 * HOUR_NS + 1, "enter", "buy", "macd_entry", "approved")
+    found = first_mismatch([_key(2)], [moved], T0 + 6 * HOUR_NS)
+    assert found is not None

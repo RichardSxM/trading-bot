@@ -1,0 +1,29 @@
+# Candle parity for the MACD baseline (spec 0014 AC-21): `lab candle-parity runs/macd_parity.toml`
+# runs it over the own order book days twice, through the order book and through the candles, and
+# matches the entries. 1 minute bars give enough decisions over a few recorded days, and without
+# market context both sides see the same inputs (the order book side would also get mark, index,
+# open interest, and liquidations). Needs the own days in catalog-lab/own and the candle months.
+instrument_id = "PF_XBTUSD.KRAKEN"
+from = 2026-10-08                    # UTC day, inclusive: the own days on the laptop
+to = 2026-10-10                      # UTC day, inclusive
+seed = 7
+stale_quote_s = 300
+maker_fee = "0.0002"                 # strings, parsed as Decimal (Kraken base tier)
+taker_fee = "0.0005"
+slippage_bps = "2"                   # per side, the candle side's synthetic spread
+starting_balance_usd = "10000"
+leverage = "2"
+
+[risk]                               # RiskLimits (spec 0006 check_entry), same field names
+max_order_notional = "20000"
+max_leverage = "2"
+
+[strategy]
+name = "macd_baseline"
+[strategy.config]
+notional_usd = "10000"
+bar_spec = "1-MINUTE-LAST"
+use_market_context = false
+
+[parity]                             # read only by lab candle-parity
+latency_ms = 25                      # the order book side's latency

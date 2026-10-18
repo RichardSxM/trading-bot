@@ -3,15 +3,18 @@
 Exit codes: 0 done, 1 a variant failed (``replay``), the parity ratio is under 0.95 (``parity``),
 or a day could not be imported (``import-tardis``), 2 required days missing (or, for ``parity``, no
 decision left to compare), 3 the catalog cap would be passed, 64 bad input (every problem listed),
-78 ``TRADING_ENV=live`` (the lab only ever runs in demo, AC-17) or, for ``replay``, an image built
-without ``GIT_COMMIT``, 130 interrupted by SIGINT or
-SIGTERM (``replay``, ``parity``, AC-13).
+78 ``TRADING_ENV=live`` (the lab only ever runs in demo, AC-17) or, for ``replay`` and ``backtest``,
+an image built without ``GIT_COMMIT``, 130 interrupted by SIGINT or SIGTERM (``replay``, ``parity``,
+``backtest``, ``candle-parity``; AC-13, spec 0014 AC-18).
 
 ``replay`` runs ``base`` plus the variants its flags add (AC-6); ``parity`` replays the paper loop's
 strategy in memory and compares it with the paper decisions (AC-15). ``fetch-candles`` and
 ``import-funding`` fill the candle lab's tree (spec 0014; 1 bad rows or a failed fetch, 3 the cap),
-and ``backtest`` runs an hour level strategy over it (2 missing candles or funding). Only ``replay``
-and ``backtest`` connect to Postgres, so the other commands run with ``--no-deps``.
+and ``backtest`` runs an hour level strategy over it (2 missing candles or funding; ``--lookahead-check``
+reruns the first variant cut at three hours, AC-19). ``candle-parity`` runs one strategy over own
+days through both the order book and the candle path and compares their entries (1 under 0.95, 2
+missing data or nothing to compare, AC-21). Only ``replay`` and ``backtest`` connect to Postgres,
+so the other commands run with ``--no-deps``.
 """
 
 import argparse
@@ -28,6 +31,7 @@ from sqlalchemy.orm import sessionmaker
 
 from lab.candle_backtest import backtest
 from lab.candle_fetch import fetch_candles
+from lab.candle_parity import candle_parity
 from lab.funding_import import import_funding
 from lab.paper_csv import read_paper_csv
 from lab.parity import parity
@@ -96,6 +100,17 @@ def parser() -> argparse.ArgumentParser:
     test.add_argument(
         "--sweep-slippage", action="store_true", help="add the slippage=0 and slippage=2x variants (not with a grid)"
     )
+    test.add_argument(
+        "--lookahead-check",
+        action="store_true",
+        help="run the first variant again cut at three seeded hours and compare its decisions",
+    )
+    side = commands.add_parser(
+        "candle-parity", help="compare the candle path with the order book over own days (spec 0014)"
+    )
+    side.add_argument("runfile", type=Path, help="a candle run file, [parity] optional")
+    side.add_argument("--from", dest="from_", type=_day, help="first UTC day, overrides the run file")
+    side.add_argument("--to", type=_day, help="last UTC day, overrides the run file")
     candles = commands.add_parser("fetch-candles", help="fetch Kraken 1 minute candles and funding (spec 0014)")
     candles.add_argument("from_", metavar="from", help="first UTC month, YYYY-MM")
     candles.add_argument("to", help="last UTC month, YYYY-MM")
@@ -238,9 +253,34 @@ def _backtest(args: argparse.Namespace) -> int:
         return EXIT_CONFIG
     engine = create_engine(settings.database_url(started.secrets[POSTGRES_PASSWORD]), pool_size=1, pool_pre_ping=True)
     try:
-        return backtest(settings, loaded, PostgresStore(sessionmaker(engine)), variants=variants)
+        return backtest(
+            settings,
+            loaded,
+            PostgresStore(sessionmaker(engine)),
+            variants=variants,
+            lookahead_check=args.lookahead_check,
+        )
     finally:
         engine.dispose()
+
+
+def _candle_parity(args: argparse.Namespace) -> int:
+    configure_logging(process=PROCESS, env=os.environ.get("TRADING_ENV", ""))
+    try:
+        loaded = load_candle_run(args.runfile, Overrides(from_=args.from_, to=args.to))
+    except RunFileError as exc:
+        problems = exc.problems
+    else:
+        grid = loaded.run.strategy.grid
+        problems = ["strategy.grid: lab candle-parity runs one config; remove the grid"] if grid else []
+    if problems:
+        for problem in problems:
+            print(f"lab candle-parity: {problem}", file=sys.stderr)
+        log.error("lab_bad_input", extra={"fields": {"problems": problems}})
+        return EXIT_USAGE
+    started = boot("worker", settings_cls=LabSettings)
+    logging.getLogger("trading_core.node.recording").setLevel(logging.WARNING)
+    return candle_parity(started.settings, loaded)
 
 
 def _fetch_candles(args: argparse.Namespace) -> int:
@@ -284,6 +324,8 @@ def main(argv: list[str] | None = None) -> NoReturn:
         sys.exit(_parity(args))
     if args.command == "backtest":
         sys.exit(_backtest(args))
+    if args.command == "candle-parity":
+        sys.exit(_candle_parity(args))
     if args.command == "fetch-candles":
         sys.exit(_fetch_candles(args))
     if args.command == "import-funding":

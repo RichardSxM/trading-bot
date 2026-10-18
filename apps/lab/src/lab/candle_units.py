@@ -73,11 +73,13 @@ class CandleUnitPlan:
     env: Env = Env.DEMO
     test_strategies: bool = False
     market: MarketContextValues = field(default_factory=MarketContextValues)
+    # A look ahead cut run (AC-19): the same data ending at this whole hour (``end_ns`` equals it).
+    cut_ns: int | None = None
 
     @property
     def label(self) -> str:
-        """One unit runs the whole range, for the worker pool's process names and logs."""
-        return "candles"
+        """One unit runs the whole range (or up to a look ahead cut), for the worker pool's process names and logs."""
+        return "candles" if self.cut_ns is None else f"cut-{self.cut_ns}"
 
 
 @dataclass(frozen=True)

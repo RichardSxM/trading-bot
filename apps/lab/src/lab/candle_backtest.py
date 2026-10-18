@@ -5,14 +5,17 @@ carried rate, and the warmup row) and exits 2 before anything is written when so
 missing. Then each variant runs as one candle unit in the worker pool. The parent turns each
 unit's funding samples into payments with the stored rates (a missing row is charged at the
 latest rate when it is at most ``FUNDING_CARRY_MAX`` old), scores it, writes the bundle as
-``lab_app`` with mode ``backtest``, and writes the reports in variant order.
+``lab_app`` with mode ``backtest``, and writes the reports in variant order (AC-7). With
+``--lookahead-check`` the first variant also runs cut at three seeded hours, and a cut run whose
+decisions before the cut differ fails it (AC-19). A failed unit fails only its variant; SIGINT or
+SIGTERM writes ``interrupted`` reports and exits 130 (AC-18).
 """
 
 import logging
 import sys
 import uuid
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from importlib.metadata import version
@@ -24,7 +27,16 @@ from lab.candle_fetch import candle_tree
 from lab.candle_units import CandleUnitPlan, CandleUnitResult, run_candle_unit
 from lab.instruments import pinned_instrument
 from lab.pool import Target, UnitDone, UnitPool
-from lab.replay import Store, error_info, scope_risk_events, stamp_run_id, with_funding
+from lab.replay import (
+    EXIT_INTERRUPTED,
+    Interrupts,
+    Store,
+    error_info,
+    interrupt_handling,
+    scope_risk_events,
+    stamp_run_id,
+    with_funding,
+)
 from lab.report import (
     CandleReport,
     LabReport,
@@ -50,8 +62,9 @@ from trading_core.lab.candles import (
     carried_rate,
     expected_charge_times,
 )
-from trading_core.lab.errors import FundingRateMissingError
+from trading_core.lab.errors import FundingRateMissingError, LookaheadMismatchError, ReplayInterruptedError
 from trading_core.lab.funding import FundingPayment, FundingRate, FundingSample, apply_funding
+from trading_core.lab.lookahead import DecidedKey, cut_times, first_mismatch
 from trading_core.lab.metrics import ClosedTrade, FundingCash, run_metrics
 from trading_core.lab.variants import CandleVariantSpec, expand_candle_variants
 from trading_core.marketdata.hours import HOUR_NS
@@ -76,6 +89,8 @@ EXIT_MISSING: Final = 2
 FUNDING_SOURCE: Final = "kraken_export+api"
 # How many uncovered charge times the refusal lists (AC-6).
 LISTED_CHARGES: Final = 10
+# How many cut runs ``--lookahead-check`` adds to the first variant (AC-19).
+LOOKAHEAD_CUTS: Final = 3
 
 
 def range_ns(loaded: LoadedCandleRun) -> tuple[int, int]:
@@ -102,6 +117,27 @@ def stored_funding(tree: CandleTree, start_ns: int, end_ns: int) -> list[Funding
 
 def range_problems(tree: CandleTree, start_ns: int, end_ns: int) -> list[str]:
     """Why the range cannot run (AC-6), or nothing: missing months, the stored span, and funding coverage."""
+    problems = span_problems(tree, start_ns, end_ns)
+    if any(tree.read_manifest(m) is None for m in range_months(start_ns, end_ns)):
+        return problems
+    rows = stored_funding(tree, start_ns, end_ns)
+    uncovered = [t for t in expected_charge_times(start_ns, end_ns) if carried_rate(rows, t) is None]
+    if uncovered:
+        listed = ", ".join(ns_to_utc(t).isoformat() for t in uncovered[:LISTED_CHARGES])
+        problem = f"{len(uncovered)} funding charge times have no rate within 3 h, first: {listed}"
+        first_api = next((r.charge_ns for r in rows if r.source == "api"), None)
+        if first_api is None or uncovered[0] < first_api:
+            problem += "; run lab import-funding with Kraken's funding export"
+        problems.append(problem)
+    if not any(start_ns - FUNDING_CARRY_MAX_NS <= r.charge_ns <= start_ns for r in rows):
+        problems.append("no funding row in the 3 h before the range start to warm the strategy's market context")
+    return problems
+
+
+def span_problems(tree: CandleTree, start_ns: int, end_ns: int) -> list[str]:
+    """Why the stored candles do not cover the range (AC-6, AC-21), or nothing: missing months, or the
+    range starting before the first stored minute's day or ending after the last fetched minute.
+    A missing month is the only problem listed."""
     months = range_months(start_ns, end_ns)
     manifests = {m: tree.read_manifest(m) for m in months}
     missing = [str(m) for m, manifest in manifests.items() if manifest is None]
@@ -119,17 +155,6 @@ def range_problems(tree: CandleTree, start_ns: int, end_ns: int) -> list[str]:
     if last.last_ts_ns is None or last.last_ts_ns < end_ns:
         fetched = "none" if last.last_ts_ns is None else ns_to_utc(last.last_ts_ns).isoformat()
         problems.append(f"the range ends after the last fetched minute ({fetched})")
-    rows = stored_funding(tree, start_ns, end_ns)
-    uncovered = [t for t in expected_charge_times(start_ns, end_ns) if carried_rate(rows, t) is None]
-    if uncovered:
-        listed = ", ".join(ns_to_utc(t).isoformat() for t in uncovered[:LISTED_CHARGES])
-        problem = f"{len(uncovered)} funding charge times have no rate within 3 h, first: {listed}"
-        first_api = next((r.charge_ns for r in rows if r.source == "api"), None)
-        if first_api is None or uncovered[0] < first_api:
-            problem += "; run lab import-funding with Kraken's funding export"
-        problems.append(problem)
-    if not any(start_ns - FUNDING_CARRY_MAX_NS <= r.charge_ns <= start_ns for r in rows):
-        problems.append("no funding row in the 3 h before the range start to warm the strategy's market context")
     return problems
 
 
@@ -486,12 +511,14 @@ def backtest(
     store: Store,
     *,
     variants: Sequence[CandleVariantSpec] | None = None,
+    lookahead_check: bool = False,
     target: Target[CandleUnitPlan, CandleUnitResult] = run_candle_unit,
 ) -> int:
     """Run ``lab backtest`` after validation; returns the exit code.
 
     ``variants`` come from ``expand_candle_variants`` (checked before anything is read); the default
-    is the run file's own (``base``, or its grid).
+    is the run file's own (``base``, or its grid). ``lookahead_check`` runs the first variant again
+    cut at ``LOOKAHEAD_CUTS`` times (AC-19).
     """
     run = loaded.run
     if variants is None:
@@ -531,25 +558,154 @@ def backtest(
             "fields": {"batch_id": str(batch_id), "variants": [v.name for v in variants], "range": [start_ns, end_ns]}
         },
     )
-    started_at = datetime.now(UTC)
-    pool = UnitPool(
-        [candle_plan(batch, v) for v in variants], settings.lab_workers, target=target, env=settings.trading_env
-    )
-    by_name = {v.name: v for v in variants}
-    done: dict[str, LabReport] = {}
-    try:
-        for outcome in pool.outcomes():
-            variant = by_name[outcome.plan.variant]
-            if isinstance(outcome, UnitDone):
-                done[variant.name] = finish_candle_variant(batch, variant, outcome.result, store, started_at=started_at)
-            else:
-                done[variant.name] = _failed(batch, variant, outcome.error, started_at=started_at)
-    finally:
-        pool.terminate_all()
-    reports = [done[v.name] for v in variants]
+    # Look ahead is a property of the code, not of a parameter value: only the first variant is cut (AC-19).
+    cuts = cut_times(run.seed, start_ns, end_ns, LOOKAHEAD_CUTS) if lookahead_check else []
+    reports, interrupted = run_candle_batch(batch, variants, store, cuts=cuts, target=target)
     (batch.folder / "index.md").write_text(candle_index_markdown(str(batch_id), reports), encoding="utf-8")
     failed = [r.variant for r in reports if r.status == "failed"]
     log.info(
-        "lab_batch_done", extra={"fields": {"batch_id": str(batch_id), "variants": len(reports), "failed": failed}}
+        "lab_batch_done",
+        extra={
+            "fields": {
+                "batch_id": str(batch_id),
+                "variants": len(reports),
+                "failed": failed,
+                "interrupted": interrupted,
+            }
+        },
     )
+    if interrupted:
+        return EXIT_INTERRUPTED
     return EXIT_FAILED if failed else EXIT_OK
+
+
+@dataclass
+class _VariantState:
+    """What the parent knows of one variant while its units run: the full run and, when checked, its cut runs."""
+
+    spec: CandleVariantSpec
+    cuts: Sequence[int]
+    full: CandleUnitResult | None = None
+    cut_units: dict[int, CandleUnitResult] = field(default_factory=dict)
+    error: Exception | None = None
+
+    @property
+    def resolved(self) -> bool:
+        return self.error is not None or (self.full is not None and len(self.cut_units) == len(self.cuts))
+
+
+def decided_keys(unit: CandleUnitResult) -> list[DecidedKey]:
+    """The unit's decisions as look ahead keys, without the range end closer's (a cut run has its own)."""
+    return [
+        DecidedKey(d.decided_ns, d.intent, d.side, d.reason, d.risk_verdict)
+        for _, d in unit.decisions
+        if d.reason != RANGE_END
+    ]
+
+
+def _key_fields(key: DecidedKey | None) -> dict[str, JsonValue] | None:
+    if key is None:
+        return None
+    return {
+        "decided_at": ns_to_utc(key.decided_ns).isoformat(),
+        "intent": key.intent,
+        "side": key.side,
+        "reason": key.reason,
+        "verdict": key.verdict,
+    }
+
+
+def lookahead_error(state: _VariantState) -> LookaheadMismatchError | None:
+    """Compare the full run with each cut run, earliest cut first (AC-19); the first mismatch fails the variant."""
+    assert state.full is not None
+    full = decided_keys(state.full)
+    for cut in sorted(state.cut_units):
+        mismatch = first_mismatch(full, decided_keys(state.cut_units[cut]), cut)
+        if mismatch is None:
+            continue
+        fields = {
+            "variant": state.spec.name,
+            "cut": ns_to_utc(cut).isoformat(),
+            "full": _key_fields(mismatch.full),
+            "cut_run": _key_fields(mismatch.cut),
+        }
+        log.error("lab_lookahead_mismatch", extra={"fields": fields})
+        return LookaheadMismatchError(
+            f"cut at {fields['cut']}: the full run has {fields['full']}, the cut run has {fields['cut_run']}"
+        )
+    log.info(
+        "lab_lookahead_passed",
+        extra={"fields": {"variant": state.spec.name, "cuts": [ns_to_utc(c).isoformat() for c in sorted(state.cuts)]}},
+    )
+    return None
+
+
+def candle_plans(batch: CandleBatch, variant: CandleVariantSpec, cuts: Sequence[int]) -> list[CandleUnitPlan]:
+    """The variant's full unit, then one unit cut at each of ``cuts`` (the same data, ending at the cut)."""
+    plan = candle_plan(batch, variant)
+    return [plan, *(replace(plan, end_ns=cut, cut_ns=cut) for cut in cuts)]
+
+
+def run_candle_batch(
+    batch: CandleBatch,
+    variants: Sequence[CandleVariantSpec],
+    store: Store,
+    *,
+    cuts: Sequence[int] = (),
+    target: Target[CandleUnitPlan, CandleUnitResult] = run_candle_unit,
+) -> tuple[list[LabReport], bool]:
+    """Run every variant in the worker pool and write each one in plan order (AC-7, AC-18).
+
+    ``cuts`` are the look ahead cut times for the first variant (AC-19), empty without the check.
+    Returns the reports in variant order and whether the batch was interrupted.
+    """
+    states = {v.name: _VariantState(v, cuts if i == 0 else ()) for i, v in enumerate(variants)}
+    started_at = datetime.now(UTC)
+    reports: list[LabReport] = []
+    interrupts = Interrupts()
+    pool = UnitPool(
+        [plan for v in variants for plan in candle_plans(batch, v, states[v.name].cuts)],
+        batch.settings.lab_workers,
+        target=target,
+        env=batch.settings.trading_env,
+    )
+
+    def write_ready() -> None:
+        while len(reports) < len(variants) and states[variants[len(reports)].name].resolved:
+            state = states[variants[len(reports)].name]
+            with interrupts.shield():
+                error = state.error if state.error is not None or not state.cuts else lookahead_error(state)
+                if error is not None:
+                    reports.append(_failed(batch, state.spec, error, started_at=started_at))
+                else:
+                    assert state.full is not None
+                    reports.append(finish_candle_variant(batch, state.spec, state.full, store, started_at=started_at))
+
+    interrupted = False
+    with interrupt_handling(interrupts):
+        try:
+            for outcome in pool.outcomes():
+                state = states[outcome.plan.variant]
+                if state.error is not None:
+                    continue
+                if not isinstance(outcome, UnitDone):
+                    state.error = outcome.error
+                    pool.fail_variant(state.spec.name)
+                elif outcome.plan.cut_ns is None:
+                    state.full = outcome.result
+                else:
+                    state.cut_units[outcome.plan.cut_ns] = outcome.result
+                write_ready()
+        except ReplayInterruptedError:
+            interrupted = True
+            log.warning("lab_batch_interrupted", extra={"fields": {"batch_id": str(batch.batch_id)}})
+        finally:
+            interrupts.hold()
+            pool.terminate_all()
+    if interrupted:
+        now = datetime.now(UTC)
+        for v in variants[len(reports) :]:
+            report = _report(batch, v, "interrupted", started_at=started_at, ended_at=now)
+            write_variant(batch.folder, report, None)
+            reports.append(report)
+    return reports, interrupted

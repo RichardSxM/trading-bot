@@ -60,6 +60,13 @@ class WorkerDiedError(LabError):
         self.exitcode = exitcode
 
 
+class LookaheadMismatchError(LabError):
+    """A cut run's decisions before the cut differ from the full run's (spec 0014 AC-19).
+
+    The strategy saw data the engine had not fed yet, so its variant fails.
+    """
+
+
 class ReplayInterruptedError(LabError):
     """SIGINT or SIGTERM reached the parent during a replay (AC-13).
 
