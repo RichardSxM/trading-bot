@@ -246,6 +246,8 @@ Steps 10 to 12 were built on 2026-10-18 (81b4858, 561abfe). The timed run `fetch
 15. `LiquidationGuard` actor, the ruin stop, and the liquidation then re-entry test. Satisfies **AC-14**
 16. Grid and `--sweep-slippage` variants (`CandleVariantSpec`, pure expansion in `trading_core/lab/variants.py`). Satisfies **AC-7**
 
+Steps 13 to 16 were built on 2026-10-18 (f4e7173). `macd_baseline` over 2026-08-01 to 2026-09-30 made 51 round trips (first decision 2026-08-03 14:00, net +140.53 USD after 510.29 USD of fees) in 47.5 s. A 2×2 grid on `fast` and `slow` ran four variants, its default point matching the base run exactly; `--sweep-slippage` gave +349.47, +140.53, and −65.24 USD at 0, 2, and 4 bps. The guard closes without cancelling first, and a stop cancelled during a range end close or a kill switch is expected, so neither raises a stop failure. With a fixed `notional_usd`, the entry after a liquidation is refused (about the maintenance margin is left), and the test shows that refused new entry.
+
 **Milestone 5: Proof**
 17. Pytest prefix check over every candle strategy and `--lookahead-check`. Satisfies **AC-19**
 18. `lab candle-parity` and `macd_parity.toml`, run on the own days. Satisfies **AC-21**
