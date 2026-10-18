@@ -26,6 +26,7 @@ from trading_core.catalog.context import read_funding_updates
 from trading_core.catalog.layout import FUNDING_TABLE
 from trading_core.catalog.sink import COMPRESSION, atomic_write
 from trading_core.lab.candles import CandleGap, CandleRow, FundingRow, FundingSource, Month, MonthManifest
+from trading_core.lab.errors import OutdatedManifestError
 
 BAR_TABLE: Final = "bar"
 GAP_SCHEMA: Final = pa.schema(
@@ -167,8 +168,16 @@ class CandleTree:
         atomic_write(self.manifest_file(Month.parse(manifest.month)), lambda tmp: tmp.write_text(text, "utf-8"))
 
     def read_manifest(self, month: Month) -> MonthManifest | None:
-        """The month's manifest, or ``None`` when the month is not committed."""
+        """The month's manifest, or ``None`` when the month is not committed.
+
+        A manifest written before a required field existed counts as no manifest everywhere (spec
+        0014 AC-4), so the month is fetched again. Any other malformed manifest raises
+        ``CandleInputError``.
+        """
         path = self.manifest_file(month)
         if not path.is_file():
             return None
-        return MonthManifest(**json.loads(path.read_text(encoding="utf-8")))
+        try:
+            return MonthManifest.from_json(json.loads(path.read_text(encoding="utf-8")))
+        except OutdatedManifestError:
+            return None

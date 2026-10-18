@@ -1,7 +1,9 @@
 """covers: spec 0014 AC-1, AC-2, AC-4 (the candles tree: month files round trip, manifest written as JSON)."""
 
+import json
 from decimal import Decimal
 
+import pytest
 from nautilus_trader.model.currencies import BTC, USD
 from nautilus_trader.model.identifiers import InstrumentId, Symbol
 from nautilus_trader.model.instruments import CryptoPerpetual
@@ -9,6 +11,7 @@ from nautilus_trader.model.objects import Price, Quantity
 
 from trading_core.catalog.candles import CandleTree
 from trading_core.lab.candles import MINUTE_NS, CandleGap, CandleRow, FundingRow, Month, MonthManifest
+from trading_core.lab.errors import CandleInputError
 from trading_core.marketdata.hours import HOUR_NS
 
 D = Decimal
@@ -71,6 +74,20 @@ def test_gaps_and_manifest_round_trip(tmp_path):
     tree.write_gaps(SEP, gaps)
     assert tree.read_gaps(SEP) == gaps
     assert tree.read_manifest(SEP) is None
-    manifest = MonthManifest("2026-09", 1, 0, 0, 0, 0, [], 1, 2, 5, 1, 0, True, "2026-10-01T00:00:00Z")
+    manifest = MonthManifest("2026-09", 1, 0, 0, 0, 0, 0, [], 1, 2, 5, 1, 0, True, "2026-10-01T00:00:00Z")
     tree.write_manifest(manifest)
     assert tree.read_manifest(SEP) == manifest
+
+
+def test_an_outdated_manifest_reads_as_none_and_a_broken_one_raises(tmp_path):
+    tree = CandleTree(tmp_path, INSTRUMENT)
+    tree.write_manifest(MonthManifest("2026-09", 1, 0, 0, 0, 0, 0, [], 1, 2, 5, 1, 0, True, "2026-10-01T00:00:00Z"))
+    path = tree.manifest_file(SEP)
+    data = json.loads(path.read_text())
+    del data["price_rounded_rows"]
+    path.write_text(json.dumps(data))
+    assert tree.read_manifest(SEP) is None
+    del data["bar_rows"]
+    path.write_text(json.dumps(data))
+    with pytest.raises(CandleInputError):
+        tree.read_manifest(SEP)

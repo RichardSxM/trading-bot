@@ -57,7 +57,7 @@ def _day_of_candles(settings, *, funding_hours=range(25), source=lambda hour: "a
     if funding:
         tree.write_funding(SEP, funding)
     manifest = MonthManifest(
-        "2026-09", len(rows), 0, 0, 0, 0, [], rows[0].ts_ns, rows[-1].ts_ns, 0, 0, 0, False, "2026-09-02T00:00:00Z"
+        "2026-09", len(rows), 0, 0, 0, 0, 0, [], rows[0].ts_ns, rows[-1].ts_ns, 0, 0, 0, False, "2026-09-02T00:00:00Z"
     )
     tree.write_manifest(manifest.with_funding(tree.read_funding(SEP)))
     return tree
@@ -185,3 +185,14 @@ def test_the_run_file_is_checked_before_anything_is_read(tmp_path, change, probl
     with pytest.raises(RunFileError) as caught:
         load_candle_run(_write_run(tmp_path, RUN.replace(*change)), Overrides())
     assert any(problem in p for p in caught.value.problems)
+
+
+def test_an_outdated_manifest_counts_as_a_missing_month(settings):
+    tree = _day_of_candles(settings)
+    path = tree.manifest_file(SEP)
+    data = json.loads(path.read_text())
+    del data["price_rounded_rows"]
+    path.write_text(json.dumps(data))
+    assert range_problems(tree, SEP.start_ns, SEP.start_ns + DAY) == [
+        "no committed candles for 2026-09; run lab fetch-candles"
+    ]

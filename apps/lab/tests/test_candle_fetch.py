@@ -27,12 +27,12 @@ NOW = OCT.start_ns + 17 * 24 * HOUR_NS  # 2026-10-18, so August and September ar
 PAGE = 3
 
 
-def _candle(month, minute, close="100", volume="1.5"):
+def _candle(month, minute, close="100", volume="1.5", high="101", low="99"):
     return {
         "time": (month.start_ns + minute * MINUTE_NS) // 1_000_000,
         "open": "100",
-        "high": "101",
-        "low": "99",
+        "high": high,
+        "low": low,
         "close": close,
         "volume": volume,
     }
@@ -320,3 +320,37 @@ def test_the_kraken_url_must_be_https():
     with pytest.raises(ValueError, match="https"):
         LabSettings(trading_env="demo", lab_kraken_futures_url="http://futures.kraken.com")
     assert LabSettings(trading_env="demo").lab_kraken_futures_url == "https://futures.kraken.com"
+
+
+def test_off_tick_extremes_commit_rounded_and_are_logged(settings, caplog):
+    caplog.set_level(logging.INFO)
+    candles = [_candle(SEP, 0, high="101.7"), _candle(SEP, 1, low="98.99999999999"), _candle(SEP, 2)]
+    assert _run(settings, FakeKraken(candles, []), [SEP]) == 0
+    tree = candle_tree(settings.lab_catalog_dir)
+    manifest = tree.read_manifest(SEP)
+    assert manifest is not None
+    assert manifest.price_rounded_rows == 2
+    assert [r.high for r in tree.read_bars(SEP)] == [D(101)] * 3
+    [fields] = [r.fields for r in caplog.records if r.getMessage() == "lab_candles_price_rounded"]
+    assert fields == {
+        "month": "2026-09",
+        "price_rounded_rows": 2,
+        "roundings": [{"minute": "2026-09-01T00:00:00Z", "field": "high", "raw": "101.7", "stored": "101"}],
+    }
+
+
+def test_a_month_with_an_outdated_manifest_is_fetched_again_without_refetch(settings):
+    candles = [_candle(SEP, m) for m in range(3)]
+    assert _run(settings, FakeKraken(candles, []), [SEP]) == 0
+    tree = candle_tree(settings.lab_catalog_dir)
+    path = tree.manifest_file(SEP)
+    data = json.loads(path.read_text())
+    del data["price_rounded_rows"]
+    path.write_text(json.dumps(data))
+
+    again = FakeKraken(candles, [])
+    assert _run(settings, again, [SEP]) == 0
+    assert again.urls == [FUNDING_PATH, CANDLES_PATH]
+    manifest = tree.read_manifest(SEP)
+    assert manifest is not None
+    assert manifest.price_rounded_rows == 0

@@ -22,10 +22,11 @@ from trading_core.lab.candles import (
     merge_funding,
     missing_charges,
     quiet_prefix_problems,
+    round_price,
     rows_by_month,
     snap_volume,
 )
-from trading_core.lab.errors import CandleInputError
+from trading_core.lab.errors import CandleInputError, OutdatedManifestError
 from trading_core.marketdata.hours import HOUR_NS
 
 D = Decimal
@@ -112,7 +113,62 @@ def test_build_candles_rounds_flags_quiet_and_dedupes():
 def test_build_candles_lists_bad_rows():
     raw = [_raw(0, o="100.5"), _raw(1, v="0.12345"), _raw(2), _raw(2, c="99")]
     bad = build_candles(raw, SEP, TICK, STEP).bad
-    assert [field for _, field, _ in bad] == ["duplicate", "open", "volume"]
+    assert [field for _, field, _ in bad] == ["open", "volume", "duplicate"]
+
+
+@pytest.mark.parametrize(
+    ("text", "name", "expected"),
+    [
+        ("25920.8322615", "high", D(25920)),
+        ("28319.01027283563", "low", D(28320)),
+        ("39522.99999999999", "high", D(39523)),
+        ("42938.99999999999", "low", D(42939)),
+        ("100.00000001", "open", D(100)),
+        ("100.0000001", "open", None),
+        ("100.5", "close", None),
+        ("101", "high", D(101)),
+    ],
+)
+def test_prices_snap_noise_and_round_extremes_toward_the_body(text, name, expected):
+    assert round_price(D(text), TICK, name) == expected
+
+
+def test_off_tick_extremes_are_stored_rounded_and_counted_once():
+    raw = [
+        _raw(0, h="101.7", lo="98.2"),  # two real roundings, one candle
+        _raw(1, h="100.99999999999"),  # a noise snap only: counted, not listed
+        _raw(2, h="99.99999999999", c="100"),  # high snaps to the close, not a bad row
+        _raw(3),
+    ]
+    build = build_candles(raw, SEP, TICK, STEP)
+    assert build.bad == []
+    assert [(r.high, r.low) for r in build.rows[:3]] == [(D(101), D(99)), (D(101), D(99)), (D(100), D(99))]
+    assert build.price_rounded_rows == 3
+    assert [(r.field, r.raw, r.stored) for r in build.price_roundings] == [
+        ("high", "101.7", D(101)),
+        ("low", "98.2", D(99)),
+    ]
+
+
+def test_a_bad_row_is_never_counted_as_rounded():
+    build = build_candles([_raw(0, o="100.5", h="101.7")], SEP, TICK, STEP)
+    assert [field for _, field, _ in build.bad] == ["open"]
+    assert (build.price_rounded_rows, build.price_roundings, build.rows) == (0, [], [])
+
+
+def test_page_edge_copies_that_differ_only_in_noise_are_one_row():
+    raw = [_raw(0, h="101"), _raw(0, h="100.99999999999"), _raw(1)]
+    build = build_candles(raw, SEP, TICK, STEP)
+    assert build.bad == []
+    assert len(build.rows) == 2
+
+
+def test_a_volume_0_candle_that_rounds_flat_is_quiet():
+    raw = [_raw(0, c="100"), _raw(1, o="100", h="100.000000001", lo="99.99999999999", c="100", v="0")]
+    build = build_candles(raw, SEP, TICK, STEP)
+    assert build.bad == []
+    assert build.rows[1].quiet
+    assert build.price_rounded_rows == 1
 
 
 def test_off_minute_times_and_inconsistent_extremes_are_bad_rows():
@@ -202,7 +258,7 @@ def test_carried_rate_is_the_latest_row_inside_the_carry_limit():
 def test_manifest_funding_fields_are_recomputed():
     t = SEP.start_ns
     first, last = t + MINUTE_NS, t + 2 * HOUR_NS
-    manifest = MonthManifest("2026-09", 2, 0, 0, 0, 0, [], first, last, 0, 0, 0, True, "2026-10-01T00:00:00Z")
+    manifest = MonthManifest("2026-09", 2, 0, 0, 0, 0, 0, [], first, last, 0, 0, 0, True, "2026-10-01T00:00:00Z")
     rows = [FundingRow(t + HOUR_NS, D("0"), HOUR_NS, "export"), FundingRow(t + 2 * HOUR_NS, D("0"), HOUR_NS, "api")]
     updated = manifest.with_funding(rows)
     assert (updated.funding_rows, updated.funding_sources, updated.missing_funding_charges) == (2, ["api", "export"], 0)
@@ -213,6 +269,19 @@ def test_manifest_funding_fields_are_recomputed():
 def test_the_charge_at_the_month_end_belongs_to_the_next_month():
     hourly = [FundingRow(SEP.start_ns + h * HOUR_NS, D("0"), HOUR_NS, "api") for h in range(1, 720)]
     manifest = MonthManifest(
-        "2026-09", 0, 0, 0, 0, 0, [], SEP.start_ns + MINUTE_NS, SEP.end_ns, 0, 0, 0, True, "2026-10-01T00:00:00Z"
+        "2026-09", 0, 0, 0, 0, 0, 0, [], SEP.start_ns + MINUTE_NS, SEP.end_ns, 0, 0, 0, True, "2026-10-01T00:00:00Z"
     )
     assert manifest.with_funding(hourly).missing_funding_charges == 0
+
+
+def test_a_manifest_without_a_later_field_is_outdated_and_other_gaps_are_input_errors():
+    manifest = MonthManifest("2026-09", 2, 0, 0, 0, 0, 0, [], 1, 2, 0, 0, 0, True, "2026-10-01T00:00:00Z")
+    data = vars(manifest).copy()
+    assert MonthManifest.from_json(data) == manifest
+    with pytest.raises(OutdatedManifestError):
+        MonthManifest.from_json({k: v for k, v in data.items() if k != "price_rounded_rows"})
+    with pytest.raises(CandleInputError, match="missing") as caught:
+        MonthManifest.from_json({k: v for k, v in data.items() if k != "bar_rows"})
+    assert not isinstance(caught.value, OutdatedManifestError)
+    with pytest.raises(CandleInputError, match="unknown"):
+        MonthManifest.from_json({**data, "extra": 1})

@@ -45,6 +45,8 @@ CANDLES_PATH: Final = f"/api/charts/v1/trade/{SYMBOL}/1m"
 FUNDING_PATH: Final = "/derivatives/api/v4/historicalfundingrates"
 # The expected size of one stored month, for the catalog cap check (AC-5).
 CANDLE_MONTH_GB: Final = Decimal("0.1")
+# At most this many real price roundings are listed in ``lab_candles_price_rounded`` (AC-1).
+ROUNDINGS_LOGGED: Final = 50
 
 EXIT_OK: Final = 0
 EXIT_FAILED: Final = 1
@@ -169,6 +171,21 @@ def fetch_month(tree: CandleTree, http: KrakenHttp, month: Month, fetch_start_ns
         raise BadRowsError(str(month), build.bad)
     if build.quiet_unchecked:
         log.warning("lab_candles_quiet_unchecked", extra={"fields": {"month": str(month)}})
+    if build.price_rounded_rows:
+        roundings = [
+            {"minute": _iso(r.open_ns), "field": r.field, "raw": r.raw, "stored": str(r.stored)}
+            for r in build.price_roundings[:ROUNDINGS_LOGGED]
+        ]
+        log.info(
+            "lab_candles_price_rounded",
+            extra={
+                "fields": {
+                    "month": str(month),
+                    "price_rounded_rows": build.price_rounded_rows,
+                    "roundings": roundings,
+                }
+            },
+        )
     rows = [r for r in build.rows if r.open_ns < end_ns]
     missing, gaps = find_gaps(rows, month.start_ns, end_ns)
     tree.manifest_file(month).unlink(missing_ok=True)
@@ -179,6 +196,7 @@ def fetch_month(tree: CandleTree, http: KrakenHttp, month: Month, fetch_start_ns
         bar_rows=len(rows),
         quiet_minutes=sum(r.quiet for r in rows),
         volume_rounded_rows=build.volume_rounded_rows,
+        price_rounded_rows=build.price_rounded_rows,
         zero_volume_trade_rows=build.zero_volume_trade_rows,
         funding_rows=0,
         funding_sources=[],
@@ -256,6 +274,7 @@ def fetch_candles(
                         "bar_rows": done.bar_rows,
                         "quiet_minutes": done.quiet_minutes,
                         "volume_rounded_rows": done.volume_rounded_rows,
+                        "price_rounded_rows": done.price_rounded_rows,
                         "missing_minutes": done.missing_minutes,
                         "gap_count": done.gap_count,
                         "funding_rows": done.funding_rows,
