@@ -5,7 +5,7 @@ from decimal import Decimal
 
 import pytest
 
-from lab.candle_backtest import backtest
+from lab.candle_backtest import backtest, range_problems
 from lab.candle_fetch import candle_tree
 from lab.runfile import Overrides, RunFileError, load_candle_run
 from trading_core.lab.candles import MINUTE_NS, CandleRow, FundingRow, Month, MonthManifest
@@ -45,7 +45,7 @@ def _write_run(tmp_path, text=RUN):
     return path
 
 
-def _day_of_candles(settings, *, funding_hours=range(25)):
+def _day_of_candles(settings, *, funding_hours=range(25), source=lambda hour: "api"):
     """2026-09-01 as 1440 rising minutes, committed, with hourly funding at the given hours."""
     tree = candle_tree(settings.lab_catalog_dir)
     rows = []
@@ -53,7 +53,7 @@ def _day_of_candles(settings, *, funding_hours=range(25)):
         o = D(60000 + m)
         rows.append(CandleRow(SEP.start_ns + (m + 1) * MINUTE_NS, o, o + 5, o - 5, o + 1, D(1), False))
     tree.write_bars(SEP, rows)
-    funding = [FundingRow(SEP.start_ns + h * HOUR_NS, D("0.0001"), HOUR_NS, "api") for h in funding_hours]
+    funding = [FundingRow(SEP.start_ns + h * HOUR_NS, D("0.0001"), HOUR_NS, source(h)) for h in funding_hours]
     if funding:
         tree.write_funding(SEP, funding)
     manifest = MonthManifest(
@@ -131,6 +131,33 @@ def test_a_missing_month_or_funding_hole_exits_2_and_writes_nothing(settings, tm
     assert backtest(settings, loaded, store) == 2
     assert store.bundles == []
     assert not settings.lab_reports_dir.exists() or not any(settings.lab_reports_dir.iterdir())
+
+
+def test_a_hole_before_the_first_api_row_hints_at_the_funding_export(settings):
+    start, end = SEP.start_ns, SEP.start_ns + DAY
+    hole = [h for h in range(25) if not 6 <= h <= 11]  # 06:00 to 08:00 carried, 09:00 to 11:00 uncovered
+
+    tree = _day_of_candles(settings, funding_hours=hole, source=lambda h: "export" if h < 12 else "api")
+    [problem] = range_problems(tree, start, end)
+    assert problem.startswith("3 funding charge times have no rate within 3 h, first: 2026-09-01T09:00:00+00:00")
+    assert problem.endswith("run lab import-funding with Kraken's funding export")
+
+    tree = _day_of_candles(settings, funding_hours=hole)  # the hole lies after the first api row
+    [problem] = range_problems(tree, start, end)
+    assert "import-funding" not in problem
+
+
+def test_a_range_with_no_warmup_funding_row_is_refused(settings):
+    tree = _day_of_candles(settings, funding_hours=range(1, 25))  # nothing at or in the 3 h before 00:00
+    assert range_problems(tree, SEP.start_ns, SEP.start_ns + DAY) == [
+        "no funding row in the 3 h before the range start to warm the strategy's market context"
+    ]
+
+
+def test_a_range_past_the_last_fetched_minute_is_refused(settings):
+    tree = _day_of_candles(settings)
+    problems = range_problems(tree, SEP.start_ns, SEP.start_ns + 2 * DAY)
+    assert problems[0].startswith("the range ends after the last fetched minute (2026-09-02T00:00:00")
 
 
 def test_a_carried_hour_is_charged_and_counted(settings, tmp_path):

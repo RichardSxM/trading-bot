@@ -66,6 +66,10 @@ class Month:
         """The month after this one."""
         return Month(self.year + 1, 1) if self.month == 12 else Month(self.year, self.month + 1)
 
+    def previous(self) -> Month:
+        """The month before this one."""
+        return Month(self.year - 1, 12) if self.month == 1 else Month(self.year, self.month - 1)
+
     @property
     def start_ns(self) -> int:
         """The month's first nanosecond."""
@@ -173,20 +177,37 @@ class RawCandle:
 
 @dataclass
 class CandleBuild:
-    """The rows built from one month's raw candles, with the counts the manifest keeps and every bad row."""
+    """The rows built from one month's raw candles, with the counts the manifest keeps and every bad row.
+
+    ``quiet_unchecked`` is true when the month opens with quiet rows and no previous close was given,
+    so those rows were only checked flat (AC-3).
+    """
 
     rows: list[CandleRow] = field(default_factory=list)
     volume_rounded_rows: int = 0
     zero_volume_trade_rows: int = 0
     bad: list[tuple[str, str, str]] = field(default_factory=list)
+    quiet_unchecked: bool = False
 
 
-def build_candles(raw: Iterable[RawCandle], month: Month, tick: Decimal, step: Decimal) -> CandleBuild:
-    """Turn a month's raw candles into rows, sorted by close time, one per minute (AC-1).
+def _quiet_problem(row: CandleRow, prev_close: Decimal) -> tuple[str, str, str] | None:
+    """The bad row of a quiet minute that is not flat at the previous close, or ``None``."""
+    if row.open == prev_close:
+        return None
+    return (str(row.open_ns), "quiet", f"flat at {row.open}, previous close {prev_close}")
+
+
+def build_candles(
+    raw: Iterable[RawCandle], month: Month, tick: Decimal, step: Decimal, prev_close: Decimal | None = None
+) -> CandleBuild:
+    """Turn a month's raw candles into rows, sorted by close time, one per minute (AC-1, AC-3).
 
     Identical repeats across page edges are kept once; candles outside the month are dropped. A
-    volume off the step by more than ``VOLUME_NOISE``, a price off the tick, or two different
-    candles for one minute are bad rows.
+    volume off the step by more than ``VOLUME_NOISE``, a price off the tick, a time off the whole
+    minute, a high below the open or close, a low above them, two different candles for one minute,
+    or a quiet minute not flat at the close of the latest earlier candle are bad rows. For the
+    month's first rows that close is ``prev_close`` (the previous month's last stored candle); when
+    it is ``None`` they are only checked flat and ``quiet_unchecked`` says so.
     """
     build = CandleBuild()
     seen: dict[int, RawCandle] = {}
@@ -194,11 +215,15 @@ def build_candles(raw: Iterable[RawCandle], month: Month, tick: Decimal, step: D
         open_ns = candle.time_ms * 1_000_000
         if not month.start_ns <= open_ns < month.end_ns:
             continue
+        if candle.time_ms % (MINUTE_NS // 1_000_000):
+            build.bad.append((str(open_ns), "time", f"{candle.time_ms} ms is not on a whole minute"))
+            continue
         if open_ns in seen:
             if seen[open_ns] != candle:
                 build.bad.append((str(open_ns), "duplicate", f"{seen[open_ns]} vs {candle}"))
             continue
         seen[open_ns] = candle
+    last_close = prev_close
     for open_ns in sorted(seen):
         candle = seen[open_ns]
         prices = [Decimal(p) for p in (candle.open, candle.high, candle.low, candle.close)]
@@ -212,11 +237,33 @@ def build_candles(raw: Iterable[RawCandle], month: Month, tick: Decimal, step: D
         if off_tick:
             continue
         o, h, lo, c = prices
+        if h < max(o, c):
+            build.bad.append((str(open_ns), "high", f"{candle.high} below open or close"))
+        if lo > min(o, c):
+            build.bad.append((str(open_ns), "low", f"{candle.low} above open or close"))
         quiet = is_quiet(o, h, lo, c, volume)
+        row = CandleRow(open_ns + MINUTE_NS, o, h, lo, c, volume, quiet)
+        if quiet and last_close is None:
+            build.quiet_unchecked = True
+        elif quiet and last_close is not None and (problem := _quiet_problem(row, last_close)):
+            build.bad.append(problem)
+        last_close = c
         build.volume_rounded_rows += volume != Decimal(candle.volume)
         build.zero_volume_trade_rows += volume == 0 and not quiet
-        build.rows.append(CandleRow(open_ns + MINUTE_NS, o, h, lo, c, volume, quiet))
+        build.rows.append(row)
     return build
+
+
+def quiet_prefix_problems(rows: Sequence[CandleRow], prev_close: Decimal) -> list[tuple[str, str, str]]:
+    """The bad rows among a month's leading quiet rows (up to its first trade minute) checked against
+    ``prev_close``, the previous month's last close (AC-3, the ``--refetch`` check of the next month)."""
+    bad: list[tuple[str, str, str]] = []
+    for row in rows:
+        if not row.quiet:
+            break
+        if problem := _quiet_problem(row, prev_close):
+            bad.append(problem)
+    return bad
 
 
 @dataclass(frozen=True)

@@ -3,8 +3,11 @@
 import io
 import json
 import logging
+import urllib.error
 import zipfile
+from dataclasses import replace
 from decimal import Decimal
+from email.message import Message
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -71,9 +74,28 @@ def settings(tmp_path):
     return lab_settings(tmp_path / "catalog", tmp_path / "reports")
 
 
-def _run(settings, kraken, months):
-    http = KrakenHttp("https://kraken.test", 0, opener=kraken)
-    return fetch_candles(settings, months, http=http, clock=lambda: NOW)
+def _run(settings, kraken, months, *, refetch=False, waits=None, clock=lambda: NOW):
+    sleep = (waits if waits is not None else []).append
+    http = KrakenHttp("https://kraken.test", 0, opener=kraken, sleep=sleep)
+    return fetch_candles(settings, months, refetch=refetch, http=http, clock=clock)
+
+
+class Flaky:
+    """Fails the first requests with the given errors, then serves ``kraken``."""
+
+    def __init__(self, kraken, errors):
+        self.kraken = kraken
+        self.errors = list(errors)
+        self.calls = 0
+
+    def __call__(self, request, timeout):
+        self.calls += 1
+        if self.errors:
+            error = self.errors.pop(0)
+            if isinstance(error, int):
+                raise urllib.error.HTTPError(request.full_url, error, "nope", Message(), None)
+            raise error
+        return self.kraken(request, timeout)
 
 
 def test_fetch_writes_bars_funding_gaps_and_manifest_then_skips(settings):
@@ -123,7 +145,117 @@ def test_a_failed_request_exits_1(settings):
     def broken(request, timeout):
         raise OSError("connection refused")
 
-    assert _run(settings, broken, [SEP]) == 1
+    waits: list[float] = []
+    assert _run(settings, broken, [SEP], waits=waits) == 1
+    assert waits == [1, 2, 4, 8, 16]  # a connection error is retried five times first
+
+
+def _quiet(month, minute, price):
+    return _candle(month, minute) | {"open": price, "high": price, "low": price, "close": price, "volume": "0"}
+
+
+def test_429_and_503_are_retried_with_backoff(settings, caplog):
+    caplog.set_level(logging.WARNING)
+    kraken = Flaky(FakeKraken([_candle(SEP, 0)], []), [429, 503])
+    waits: list[float] = []
+    assert _run(settings, kraken, [SEP], waits=waits) == 0
+    assert waits == [1, 2]
+    retries = [r.fields for r in caplog.records if r.getMessage() == "lab_fetch_retry"]
+    assert [(f["status"], f["attempt"], f["wait_s"]) for f in retries] == [(429, 1, 1), (503, 2, 2)]
+    assert retries[0]["url"] == "https://kraken.test" + FUNDING_PATH  # no query string
+    assert candle_tree(settings.lab_catalog_dir).read_manifest(SEP) is not None
+
+
+def test_a_429_storm_exits_1_and_keeps_the_months_before(settings, caplog):
+    caplog.set_level(logging.ERROR)
+    calls = {"n": 0}
+    kraken = FakeKraken([_candle(AUG, 0), _candle(SEP, 0)], [])
+
+    def storm_after_august(request, timeout):
+        calls["n"] += 1
+        if calls["n"] > 2:  # funding, then August's one page
+            raise urllib.error.HTTPError(request.full_url, 429, "Too Many Requests", Message(), None)
+        return kraken(request, timeout)
+
+    waits: list[float] = []
+    assert _run(settings, storm_after_august, [AUG, SEP], waits=waits) == 1
+    assert waits == [1, 2, 4, 8, 16]
+    [failed] = [r.fields for r in caplog.records if r.getMessage() == "lab_fetch_failed"]
+    assert (failed["url"], failed["status"]) == ("https://kraken.test" + CANDLES_PATH, 429)
+    tree = candle_tree(settings.lab_catalog_dir)
+    assert tree.read_manifest(AUG) is not None
+    assert tree.read_manifest(SEP) is None
+
+
+def test_another_4xx_or_a_bad_body_fails_without_a_retry(settings):
+    waits: list[float] = []
+    assert _run(settings, Flaky(FakeKraken([], []), [404]), [SEP], waits=waits) == 1
+    assert waits == []
+
+    def not_json(request, timeout):
+        return io.BytesIO(b"<html>maintenance</html>")
+
+    assert _run(settings, not_json, [SEP], waits=waits) == 1
+    assert waits == []
+
+
+def test_the_catalog_cap_exits_3_before_the_month_is_requested(settings):
+    kraken = FakeKraken([_candle(SEP, 0)], [])
+    small = settings.model_copy(update={"lab_catalog_cap_gb": D("0.05")})  # under one 0.1 GB month
+    assert _run(small, kraken, [SEP]) == 3
+    assert kraken.urls == [FUNDING_PATH]
+    assert candle_tree(settings.lab_catalog_dir).read_manifest(SEP) is None
+
+
+def test_refetch_fetches_a_complete_month_again(settings):
+    candles = [_candle(SEP, m) for m in range(3)]
+    assert _run(settings, FakeKraken(candles, []), [SEP]) == 0
+    tree = candle_tree(settings.lab_catalog_dir)
+    first, rows = tree.read_manifest(SEP), tree.read_bars(SEP)
+
+    later = FakeKraken(candles, [])
+    assert _run(settings, later, [SEP], refetch=True, clock=lambda: NOW + HOUR_NS) == 0
+    assert later.urls == [FUNDING_PATH, CANDLES_PATH]
+    again = tree.read_manifest(SEP)
+    assert first is not None
+    assert again is not None
+    assert again.fetched_at != first.fetched_at
+    assert again == replace(first, fetched_at=again.fetched_at)
+    assert tree.read_bars(SEP) == rows
+
+
+def test_a_quiet_first_row_is_checked_against_the_previous_month(settings, caplog):
+    caplog.set_level(logging.WARNING)
+    assert _run(settings, FakeKraken([_quiet(SEP, 0, "100"), _candle(SEP, 1)], []), [SEP]) == 0
+    assert [r.fields for r in caplog.records if r.getMessage() == "lab_candles_quiet_unchecked"] == [
+        {"month": "2026-09"}
+    ]
+
+    # With August stored (last close 100), a quiet September start at 99 is a bad row.
+    candles = [_candle(AUG, 0, close="100"), _quiet(SEP, 0, "99"), _candle(SEP, 1)]
+    assert _run(settings, FakeKraken(candles, []), [AUG, SEP], refetch=True) == 1
+    tree = candle_tree(settings.lab_catalog_dir)
+    assert tree.read_manifest(SEP) is not None  # the committed September stays as it was
+    assert tree.read_bars(SEP)[0].open == D(100)
+
+
+def test_a_refetch_that_breaks_the_next_months_quiet_rows_exits_1_but_commits(settings, caplog):
+    assert _run(settings, FakeKraken([_candle(AUG, 0, close="100"), _quiet(SEP, 0, "100")], []), [AUG, SEP]) == 0
+
+    caplog.set_level(logging.ERROR)
+    moved = FakeKraken([_candle(AUG, 0) | {"high": "102", "close": "101"}], [])
+    assert _run(settings, moved, [AUG], refetch=True) == 1
+    [bad] = [r.fields for r in caplog.records if r.getMessage() == "lab_candles_bad_rows"]
+    assert bad["scope"] == "2026-09"
+    assert [row["field"] for row in bad["rows"]] == ["quiet"]
+    assert candle_tree(settings.lab_catalog_dir).read_bars(AUG)[-1].close == D(101)  # August still committed
+
+
+def test_main_takes_refetch():
+    from lab.main import parser
+
+    assert parser().parse_args(["fetch-candles", "2026-09", "2026-09", "--refetch"]).refetch
+    assert not parser().parse_args(["fetch-candles", "2026-09", "2026-09"]).refetch
 
 
 def _export(tmp_path, rows, header="timestamp,tradeable,absolute_rate,relative_rate", member="exports/PF_XBTUSD.csv"):

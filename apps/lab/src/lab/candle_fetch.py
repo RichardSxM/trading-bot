@@ -2,7 +2,8 @@
 
 Funding is fetched once and merged into every month its rows are charged in, then each candle
 month is paged, checked, and written: bars, gaps, and last the manifest, the month's commit point.
-A complete month is skipped. A month that fails writes nothing, and the months before it stay.
+A complete month is skipped unless ``--refetch`` is given. A month that fails writes nothing, and
+the months before it stay.
 """
 
 import logging
@@ -29,6 +30,7 @@ from trading_core.lab.candles import (
     find_gaps,
     is_complete,
     merge_funding,
+    quiet_prefix_problems,
     rows_by_month,
 )
 from trading_core.lab.errors import BadRowsError
@@ -137,17 +139,39 @@ def page_month(http: KrakenHttp, month: Month, end_ns: int) -> list[RawCandle]:
     return candles
 
 
+def last_close(tree: CandleTree, month: Month) -> Decimal | None:
+    """The close of ``month``'s last stored candle, or ``None`` when the month is not committed or holds none."""
+    if tree.read_manifest(month) is None:
+        return None
+    rows = tree.read_bars(month)
+    return rows[-1].close if rows else None
+
+
 def fetch_month(tree: CandleTree, http: KrakenHttp, month: Month, fetch_start_ns: int) -> MonthManifest:
-    """Fetch, check, and commit one month. Raises ``BadRowsError`` or ``FetchFailedError`` before any write."""
+    """Fetch, check, and commit one month. Raises ``BadRowsError`` or ``FetchFailedError`` before any write.
+
+    A quiet first row is checked against the previous month's last stored close (AC-3). An old
+    manifest is removed before the first write, so a month killed partway has none and is fetched
+    again from scratch.
+    """
     instrument = tree.instrument
     complete = is_complete(month, fetch_start_ns)
     end_ns = month.end_ns if complete else fetch_start_ns - fetch_start_ns % MINUTE_NS
     raw = page_month(http, month, end_ns)
-    build = build_candles(raw, month, instrument.price_increment.as_decimal(), instrument.size_increment.as_decimal())
+    build = build_candles(
+        raw,
+        month,
+        instrument.price_increment.as_decimal(),
+        instrument.size_increment.as_decimal(),
+        prev_close=last_close(tree, month.previous()),
+    )
     if build.bad:
         raise BadRowsError(str(month), build.bad)
+    if build.quiet_unchecked:
+        log.warning("lab_candles_quiet_unchecked", extra={"fields": {"month": str(month)}})
     rows = [r for r in build.rows if r.open_ns < end_ns]
     missing, gaps = find_gaps(rows, month.start_ns, end_ns)
+    tree.manifest_file(month).unlink(missing_ok=True)
     tree.write_bars(month, rows)
     tree.write_gaps(month, gaps)
     manifest = MonthManifest(
@@ -170,14 +194,29 @@ def fetch_month(tree: CandleTree, http: KrakenHttp, month: Month, fetch_start_ns
     return manifest
 
 
+def check_next_month(tree: CandleTree, month: Month) -> None:
+    """After a ``--refetch`` of ``month``: the next month's stored leading quiet rows must be flat at
+    ``month``'s last close (AC-3). Raises ``BadRowsError`` scoped to the next month."""
+    following, close = month.next(), last_close(tree, month)
+    if close is None or tree.read_manifest(following) is None:
+        return
+    bad = quiet_prefix_problems(tree.read_bars(following), close)
+    if bad:
+        raise BadRowsError(str(following), bad)
+
+
 def fetch_candles(
     settings: LabSettings,
     months: list[Month],
     *,
+    refetch: bool = False,
     http: KrakenHttp | None = None,
     clock: Callable[[], int] = time.time_ns,
 ) -> int:
-    """Fetch funding once, then each month in order. Returns the exit code (AC-1, AC-2, AC-5)."""
+    """Fetch funding once, then each month in order. Returns the exit code (AC-1, AC-2, AC-5).
+
+    A complete month is skipped unless ``refetch`` is set.
+    """
     tree = candle_tree(settings.lab_catalog_dir)
     client = http or KrakenHttp(settings.lab_kraken_futures_url, settings.lab_kraken_pause_ms)
     fetch_start_ns = clock()
@@ -191,7 +230,7 @@ def fetch_candles(
         )
         for month in months:
             manifest = tree.read_manifest(month)
-            if manifest is not None and manifest.complete:
+            if manifest is not None and manifest.complete and not refetch:
                 log.info("lab_candles_month_skipped", extra={"fields": {"month": str(month)}})
                 continue
             used = tree_bytes(settings.lab_catalog_dir)
@@ -225,6 +264,8 @@ def fetch_candles(
                     }
                 },
             )
+            if refetch:
+                check_next_month(tree, month)
     except BadRowsError as exc:
         log_bad_rows(exc)
         return EXIT_FAILED

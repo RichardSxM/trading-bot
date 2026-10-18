@@ -1,4 +1,4 @@
-"""covers: spec 0014 AC-1, AC-2, AC-2a, AC-4 (months, candle rows, funding periods, the merge)."""
+"""covers: spec 0014 AC-1, AC-2, AC-2a, AC-3, AC-4 (months, candle rows, funding periods, the merge)."""
 
 from decimal import Decimal
 
@@ -21,6 +21,7 @@ from trading_core.lab.candles import (
     is_complete,
     merge_funding,
     missing_charges,
+    quiet_prefix_problems,
     rows_by_month,
     snap_volume,
 )
@@ -112,6 +113,49 @@ def test_build_candles_lists_bad_rows():
     raw = [_raw(0, o="100.5"), _raw(1, v="0.12345"), _raw(2), _raw(2, c="99")]
     bad = build_candles(raw, SEP, TICK, STEP).bad
     assert [field for _, field, _ in bad] == ["duplicate", "open", "volume"]
+
+
+def test_off_minute_times_and_inconsistent_extremes_are_bad_rows():
+    off_minute = RawCandle(SEP.start_ns // 1_000_000 + 30_000, "100", "101", "99", "100", "1")
+    raw = [off_minute, _raw(1, h="99"), _raw(2, lo="101"), _raw(3, o="98", h="99", lo="97", c="100")]
+    bad = build_candles(raw, SEP, TICK, STEP).bad
+    assert [field for _, field, _ in bad] == ["time", "high", "low", "high"]
+
+
+def _quiet(minute, price):
+    return _raw(minute, o=price, h=price, lo=price, c=price, v="0")
+
+
+def test_a_quiet_minute_must_be_flat_at_the_previous_close():
+    raw = [_raw(0, c="100"), _quiet(1, "100"), _quiet(3, "100"), _quiet(4, "101")]
+    build = build_candles(raw, SEP, TICK, STEP)
+    assert [(ts, field) for ts, field, _ in build.bad] == [(str(SEP.start_ns + 4 * MINUTE_NS), "quiet")]
+    assert not build.quiet_unchecked
+
+
+def test_the_first_quiet_rows_are_checked_against_the_previous_month():
+    raw = [_quiet(0, "100"), _raw(1)]
+    assert build_candles(raw, SEP, TICK, STEP, prev_close=D(100)).bad == []
+    assert [f for _, f, _ in build_candles(raw, SEP, TICK, STEP, prev_close=D(99)).bad] == ["quiet"]
+    unchecked = build_candles(raw, SEP, TICK, STEP)
+    assert unchecked.bad == []
+    assert unchecked.quiet_unchecked
+    assert not build_candles([_raw(0), _quiet(1, "100")], SEP, TICK, STEP).quiet_unchecked
+
+
+def test_the_quiet_prefix_check_stops_at_the_first_trade_minute():
+    rows = build_candles(
+        [_quiet(0, "100"), _quiet(1, "100"), _raw(2, lo="97", c="97"), _quiet(3, "97")], SEP, TICK, STEP
+    ).rows
+    assert quiet_prefix_problems(rows, D(100)) == []
+    assert [ts for ts, _, _ in quiet_prefix_problems(rows, D(99))] == [
+        str(SEP.start_ns + m * MINUTE_NS) for m in (0, 1)
+    ]
+
+
+def test_month_previous_wraps_the_year():
+    assert Month(2026, 1).previous() == Month(2025, 12)
+    assert Month(2026, 9).previous() == Month(2026, 8)
 
 
 def test_find_gaps_counts_missing_minutes_and_runs_of_five():

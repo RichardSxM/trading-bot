@@ -96,6 +96,7 @@ def parser() -> argparse.ArgumentParser:
     candles = commands.add_parser("fetch-candles", help="fetch Kraken 1 minute candles and funding (spec 0014)")
     candles.add_argument("from_", metavar="from", help="first UTC month, YYYY-MM")
     candles.add_argument("to", help="last UTC month, YYYY-MM")
+    candles.add_argument("--refetch", action="store_true", help="fetch complete months again too")
     funding = commands.add_parser("import-funding", help="merge Kraken's funding export ZIP or CSV (spec 0014)")
     funding.add_argument("file", type=Path, help="the export ZIP, or its PF_XBTUSD.csv")
     drop = commands.add_parser("prune", help="delete a source tree of the lab catalog")
@@ -245,7 +246,7 @@ def _fetch_candles(args: argparse.Namespace) -> int:
         log.error("lab_bad_input", extra={"fields": {"problems": [str(exc)]}})
         return EXIT_USAGE
     started = boot("worker", settings_cls=LabSettings)
-    return fetch_candles(started.settings, months)
+    return fetch_candles(started.settings, months, refetch=args.refetch)
 
 
 def _import_funding(args: argparse.Namespace) -> int:
