@@ -14,7 +14,7 @@ one fill per trade (the one linked to its position, when it was), one event per 
 row keeps the order it was first seen in, the "sequence within the unit" of AC-12.
 """
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Final
@@ -27,16 +27,19 @@ from nautilus_trader.model.enums import OrderSide as NautilusOrderSide
 from nautilus_trader.model.enums import PositionSide as NautilusPositionSide
 from nautilus_trader.model.enums import TimeInForce
 from nautilus_trader.model.events import OrderFilled, OrderInitialized
-from nautilus_trader.model.identifiers import InstrumentId
+from nautilus_trader.model.identifiers import ClientOrderId, InstrumentId
+from nautilus_trader.model.objects import Currency
+from nautilus_trader.model.position import Position
 
 from trading_core.lab.errors import RecordingFailedError
 from trading_core.lab.funding import FundingSample, PositionKey
 from trading_core.lab.markouts import FillMarkouts, MarkoutTracker
+from trading_core.node import guard
 from trading_core.node.funding import FundingLedger
 from trading_core.node.recording import RecordingActor
 from trading_core.node.strategy import KfsStrategy, PauseGate
 from trading_core.recording.enums import Env, Intent, OrderSide, RiskVerdict
-from trading_core.recording.mappers import DECISION_TAG
+from trading_core.recording.mappers import DECISION_TAG, weighted_avg
 from trading_core.recording.rows import (
     DecisionRow,
     FillRow,
@@ -48,12 +51,17 @@ from trading_core.recording.rows import (
 )
 from trading_core.recording.spool import WriteCall, WriteItem
 from trading_core.risk.check import RiskLimits
+from trading_core.risk.liquidation import liquidation_price, maintenance_rate
 from trading_core.strategy.blocks import EntryBlocks
 
 # The decision reason of the runner's close when a segment's data ends (AC-8).
 SEGMENT_END: Final = "segment_end"
 # The same close at the end of a candle backtest's range (spec 0014 AC-14).
 RANGE_END: Final = "range_end"
+# The liquidation guard's close when the quote crosses the liquidation price, and its ruin close (AC-14).
+LIQUIDATED: Final = "liquidated"
+RUINED: Final = "ruined"
+USD: Final = Currency.from_str("USD")
 _UNUSED_STALE_QUOTE_S: Final = Decimal(10)
 
 
@@ -225,6 +233,28 @@ class LabRecorder(RecordingActor):
         self._rows.funding_samples.append(FundingSample(event.ts_event, mid, position.signed_decimal_qty(), key))
 
 
+def closing_side(position: Position) -> OrderSide:
+    """The side of the order that closes ``position``."""
+    return OrderSide.SELL if position.side == NautilusPositionSide.LONG else OrderSide.BUY
+
+
+def submit_market_close(strategy: KfsStrategy, position: Position, decision: UUID) -> str:
+    """Close ``position`` with a reduce only market order through the strategy's own order factory and
+    ``submit_order`` (a netting position belongs to the strategy that opened it), tagged with
+    ``decision``; return the order's client order id."""
+    order = strategy.order_factory.market(
+        position.instrument_id,
+        NautilusOrderSide.SELL if position.side == NautilusPositionSide.LONG else NautilusOrderSide.BUY,
+        position.quantity,
+        time_in_force=TimeInForce.GTC,
+        reduce_only=True,
+        tags=[f"{DECISION_TAG}{decision}"],
+    )
+    strategy.submit_order(order)
+    client_order_id: str = order.client_order_id.value
+    return client_order_id
+
+
 class SegmentEndCloser(Actor):  # type: ignore[misc]  # Actor is Cython with no stubs
     """The lab runner's segment end (AC-8): when the data ends it stops new entries, cancels the
     strategy's orders, and closes any open position with a reduce only market order.
@@ -273,18 +303,10 @@ class SegmentEndCloser(Actor):  # type: ignore[misc]  # Actor is Cython with no 
         position = next(iter(self.cache.positions_open(instrument_id=self._close_instrument_id)), None)
         if position is None:
             return
-        closing = OrderSide.SELL if position.side == NautilusPositionSide.LONG else OrderSide.BUY
-        decision = self.record_close_decision(closing, position.quantity.as_decimal(), self.clock.timestamp_ns())
-        order = self._strategy.order_factory.market(
-            self._close_instrument_id,
-            NautilusOrderSide.SELL if closing == OrderSide.SELL else NautilusOrderSide.BUY,
-            position.quantity,
-            time_in_force=TimeInForce.GTC,
-            reduce_only=True,
-            tags=[f"{DECISION_TAG}{decision}"],
+        decision = self.record_close_decision(
+            closing_side(position), position.quantity.as_decimal(), self.clock.timestamp_ns()
         )
-        self.close_id = order.client_order_id.value
-        self._strategy.submit_order(order)
+        self.close_id = submit_market_close(self._strategy, position, decision)
 
     def record_close_decision(self, side: OrderSide, quantity: Decimal, decided_ns: int) -> UUID:
         """Record the exit decision with this closer's reason and return its id."""
@@ -306,3 +328,146 @@ class SegmentEndCloser(Actor):  # type: ignore[misc]  # Actor is Cython with no 
         self._rows(WriteItem(WriteCall.RECORD_DECISION, row))
         self.close_decision = row.id
         return row.id
+
+
+@dataclass
+class RuinFlag:
+    """When ``LiquidationGuard`` found account equity at zero or below (AC-14), else None."""
+
+    at_ns: int | None = None
+
+
+class LiquidationGuard(Actor):  # type: ignore[misc]  # Actor is Cython with no stubs
+    """The candle lab's forced liquidation and ruin stop (spec 0014 AC-14).
+
+    On every quote while a position is open it compares the side's quote with the position's
+    liquidation price (``risk.liquidation.liquidation_price`` with the approved entry decision's
+    ``figures.equity``, no other notional, the entry's taker fee in USD, and the run's
+    maintenance rate). A long's bid at or below it, or a short's ask at or above it, records an
+    ``exit`` decision with reason ``liquidated`` and closes at market on that quote through the
+    strategy's own order factory, as ``SegmentEndCloser`` does. Funding is booked after the run, so
+    it does not move the price. When the account balance plus open P&L is zero or below, it closes
+    what is still open (reason ``ruined``), sets the ``RuinFlag``, and calls ``on_ruin``, which ends
+    the variant early.
+    """
+
+    def __init__(
+        self,
+        *,
+        strategy: KfsStrategy,
+        rows: UnitRows,
+        env: Env,
+        run_id: UUID,
+        instrument_id: InstrumentId,
+        taker_fee: Decimal,
+        risk: RiskLimits,
+        ruin: RuinFlag,
+        on_ruin: Callable[[], None],
+    ) -> None:
+        super().__init__()
+        self._on_ruin = on_ruin
+        self._strategy = strategy
+        self._rows = rows
+        self._env = env
+        self._run_id = run_id
+        self._guard_instrument_id = instrument_id
+        self._taker_fee = taker_fee
+        self._risk = risk
+        self._ruin = ruin
+        # The liquidation price per opened position ((position id, opened ns) under netting).
+        self._liq: dict[tuple[str, int], Decimal | None] = {}
+        self._close_id: str | None = None
+
+    def on_start(self) -> None:
+        """Watch every quote."""
+        self.subscribe_quote_ticks(self._guard_instrument_id)
+
+    def on_quote_tick(self, tick: QuoteTick) -> None:
+        """Liquidate a position whose quote crossed its liquidation price; stop the run on ruin."""
+        if self._ruin.at_ns is not None:
+            return
+        position = next(iter(self.cache.positions_open(instrument_id=self._guard_instrument_id)), None)
+        if position is not None and not self._closing():
+            liq_px = self.liquidation_px(position)
+            long = position.side == NautilusPositionSide.LONG
+            bid, ask = tick.bid_price.as_decimal(), tick.ask_price.as_decimal()
+            if liq_px is not None and ((long and bid <= liq_px) or (not long and ask >= liq_px)):
+                self._close(position, LIQUIDATED, {"liq_px": liq_px, "bid": bid, "ask": ask})
+                position = None
+        if self._equity() <= 0:
+            if position is not None and not self._closing():
+                self._close(position, RUINED, {"equity": self._equity()})
+            self._ruin.at_ns = tick.ts_event
+            self.log.warning(f"account equity reached zero at {tick.ts_event}; ending the variant")
+            self._on_ruin()
+
+    def liquidation_px(self, position: Position) -> Decimal | None:
+        """The position's liquidation price, computed once when it opened (``None``: none reachable)."""
+        key = (position.id.value, position.ts_opened)
+        if key not in self._liq:
+            self._liq[key] = self._liquidation_px(position)
+        return self._liq[key]
+
+    def _liquidation_px(self, position: Position) -> Decimal | None:
+        instrument = self.cache.instrument(self._guard_instrument_id)
+        if instrument is None:
+            raise LookupError(f"instrument {self._guard_instrument_id} not in the cache")
+        opening = self.cache.order(position.opening_order_id)
+        if opening is None:
+            raise RecordingFailedError(f"position {position.id} has no opening order in the cache")
+        # The entry price from the opening order's fills (Decimal; the position's own average is a float).
+        entry_px = weighted_avg(
+            [(e.last_px.as_decimal(), e.last_qty.as_decimal()) for e in opening.events if isinstance(e, OrderFilled)]
+        )
+        if entry_px is None:
+            raise RecordingFailedError(f"position {position.id}'s opening order has no fill")
+        quantity = position.quantity.as_decimal()
+        return liquidation_price(
+            OrderSide.BUY if position.side == NautilusPositionSide.LONG else OrderSide.SELL,
+            quantity,
+            entry_px,
+            self._entry_equity(position, opening.tags),
+            Decimal(0),
+            self._taker_fee * quantity * entry_px,
+            maintenance_rate(guard.margin_maint(instrument), self._risk.maintenance_margin_rate),
+        )
+
+    def _entry_equity(self, position: Position, tags: Sequence[str] | None) -> Decimal:
+        # ``figures.equity`` of the approved entry decision that tagged the opening order.
+        ids = [t.removeprefix(DECISION_TAG) for t in tags or () if t.startswith(DECISION_TAG)]
+        seen = self._rows.decisions.get(UUID(ids[0])) if ids else None
+        if seen is None or "equity" not in seen[1].inputs:
+            raise RecordingFailedError(f"position {position.id} has no recorded entry equity")
+        return Decimal(str(seen[1].inputs["equity"]))
+
+    def _equity(self) -> Decimal:
+        account = self.portfolio.account(self._guard_instrument_id.venue)
+        if account is None:
+            raise LookupError(f"no account for {self._guard_instrument_id.venue}")
+        balance = account.balance_total(USD)
+        return (Decimal(0) if balance is None else balance.as_decimal()) + guard.unrealized(self.cache)
+
+    def _closing(self) -> bool:
+        order = None if self._close_id is None else self.cache.order(ClientOrderId(self._close_id))
+        return order is not None and not order.is_closed
+
+    def _close(self, position: Position, reason: str, extra: JsonObject) -> None:
+        # No cancel first: the strategy cancels its own stop once the position closes, so it never
+        # reads a stop it did not cancel as a failed one.
+        quote = self.cache.quote_tick(self._guard_instrument_id)
+        inputs: JsonObject = {"position_qty": position.quantity.as_decimal(), **extra}
+        if quote is not None:
+            inputs = {**inputs, "mid": _mid(quote)}
+        row = DecisionRow(
+            env=self._env,
+            run_id=self._run_id,
+            instrument_id=self._guard_instrument_id.value,
+            intent=Intent.EXIT,
+            side=closing_side(position),
+            reason=reason,
+            inputs=inputs,
+            risk_verdict=RiskVerdict.APPROVED,
+            decided_ns=self.clock.timestamp_ns(),
+        )
+        self._rows(WriteItem(WriteCall.RECORD_DECISION, row))
+        self._close_id = submit_market_close(self._strategy, position, row.id)

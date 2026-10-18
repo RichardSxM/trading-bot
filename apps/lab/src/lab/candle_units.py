@@ -3,8 +3,9 @@
 ``run_candle_unit`` builds the AC-8 venue (L1 book, the run's fees, no latency, no queue, fills only
 from quotes), adds the pinned instrument with the run's fees, the ``LabRecorder`` (sampling funding
 at every expected charge time and counting the strategy's zero volume bars), the
-``PositionSideFlag``, the registered strategy built exactly as the trader builds it, and the range
-end closer, then feeds the candle stream through ``add_data_iterator``. It returns a picklable
+``PositionSideFlag``, the registered strategy built exactly as the trader builds it, the
+``LiquidationGuard`` (which can end the run early on ruin), and the range end closer, then feeds the
+candle stream through ``add_data_iterator``. It returns a picklable
 ``CandleUnitResult``. Rows carry the placeholder ``UNIT_RUN_ID``; the parent stamps the run id.
 """
 
@@ -19,6 +20,7 @@ from typing import Final
 
 from nautilus_trader.backtest.engine import BacktestEngine, BacktestEngineConfig
 from nautilus_trader.backtest.models import MakerTakerFeeModel
+from nautilus_trader.common.component import set_backtest_force_stop
 from nautilus_trader.config import LoggingConfig
 from nautilus_trader.model.currencies import USD
 from nautilus_trader.model.data import BarType
@@ -26,7 +28,7 @@ from nautilus_trader.model.enums import AccountType, BookType, OmsType
 from nautilus_trader.model.identifiers import InstrumentId, TraderId, Venue
 from nautilus_trader.model.objects import Money
 
-from lab.actors import RANGE_END, LabRecorder, SegmentEndCloser, UnitRows
+from lab.actors import RANGE_END, LabRecorder, LiquidationGuard, RuinFlag, SegmentEndCloser, UnitRows
 from lab.candle_stream import CandleStream, PositionSideFlag, SideFlag
 from lab.instruments import pinned_instrument, with_fees
 from lab.strategies import ConfigValue, MarketContextValues, RunContext, registry_entry
@@ -97,6 +99,8 @@ class CandleUnitResult:
     zero_volume_bars: int
     first_trade_ns: int | None
     last_point_ns: int
+    # When account equity reached zero and the variant ended early (AC-14), else None.
+    ruined_ns: int | None
     events: int
     # (month, events) per month streamed, and that month's wall seconds.
     month_events: tuple[tuple[str, int], ...]
@@ -211,6 +215,20 @@ def run_candle_unit(plan: CandleUnitPlan) -> CandleUnitResult:
         funding_boundaries=expected_charge_times(plan.start_ns, plan.end_ns),
         bar_type=bar_type,
     )
+    ruin = RuinFlag()
+    liquidation_guard = LiquidationGuard(
+        strategy=strategy,
+        rows=rows,
+        env=plan.env,
+        run_id=UNIT_RUN_ID,
+        instrument_id=instrument_id,
+        taker_fee=plan.taker_fee,
+        risk=plan.risk,
+        ruin=ruin,
+        # The engine's own early stop: its loop ends at the next event, with no timer flushed to the
+        # range end, so nothing reaches the strategy after ruin (AC-14).
+        on_ruin=lambda: set_backtest_force_stop(True),
+    )
     # The funding row known at the range start, so the first entry is not refused as funding_stale (AC-6).
     strategy.warm_market_context(stream.warmup())
     engine = make_candle_engine(plan)
@@ -218,6 +236,7 @@ def run_candle_unit(plan: CandleUnitPlan) -> CandleUnitResult:
         engine.add_actor(recorder)
         engine.add_actor(PositionSideFlag(flag))
         engine.add_strategy(strategy)
+        engine.add_actor(liquidation_guard)
         engine.add_actor(closer)
         engine.add_data_iterator("candles", stream.chunks())
         engine.run(start=plan.start_ns, end=final_ts)
@@ -246,6 +265,7 @@ def run_candle_unit(plan: CandleUnitPlan) -> CandleUnitResult:
         zero_volume_bars=recorder.zero_volume_bars,
         first_trade_ns=stream.first_trade_ns,
         last_point_ns=last_point,
+        ruined_ns=ruin.at_ns,
         events=stream.events,
         month_events=tuple(month_events),
         month_seconds=tuple(month_seconds),

@@ -41,7 +41,7 @@ from trading_core.lab.candles import fetch_months
 from trading_core.lab.errors import CandleInputError
 from trading_core.lab.parity import ParityInputError
 from trading_core.lab.tardis_days import import_days
-from trading_core.lab.variants import VariantError, VariantSpec, expand_variants
+from trading_core.lab.variants import VariantError, VariantSpec, expand_candle_variants, expand_variants
 from trading_core.logs import configure_logging
 from trading_core.secrets import POSTGRES_PASSWORD
 
@@ -93,6 +93,9 @@ def parser() -> argparse.ArgumentParser:
     test.add_argument("--from", dest="from_", type=_day, help="first UTC day, overrides the run file")
     test.add_argument("--to", type=_day, help="last UTC day, overrides the run file")
     test.add_argument("--seed", type=int, help="overrides the run file's seed")
+    test.add_argument(
+        "--sweep-slippage", action="store_true", help="add the slippage=0 and slippage=2x variants (not with a grid)"
+    )
     candles = commands.add_parser("fetch-candles", help="fetch Kraken 1 minute candles and funding (spec 0014)")
     candles.add_argument("from_", metavar="from", help="first UTC month, YYYY-MM")
     candles.add_argument("to", help="last UTC month, YYYY-MM")
@@ -220,10 +223,13 @@ def _backtest(args: argparse.Namespace) -> int:
             Overrides(from_=args.from_, to=args.to, seed=args.seed),
             test_strategies=ProbeSwitch().lab_test_strategies,
         )
-    except RunFileError as exc:
-        for problem in exc.problems:
+        run = loaded.run
+        variants = expand_candle_variants(run.slippage_bps, run.strategy.grid, sweep_slippage=args.sweep_slippage)
+    except (RunFileError, VariantError) as exc:
+        problems = exc.problems if isinstance(exc, RunFileError) else [str(exc)]
+        for problem in problems:
             print(f"lab backtest: {problem}", file=sys.stderr)
-        log.error("lab_bad_input", extra={"fields": {"problems": exc.problems}})
+        log.error("lab_bad_input", extra={"fields": {"problems": problems}})
         return EXIT_USAGE
     started = boot("worker", settings_cls=LabSettings, secrets=(POSTGRES_PASSWORD,))
     logging.getLogger("trading_core.node.recording").setLevel(logging.WARNING)
@@ -232,7 +238,7 @@ def _backtest(args: argparse.Namespace) -> int:
         return EXIT_CONFIG
     engine = create_engine(settings.database_url(started.secrets[POSTGRES_PASSWORD]), pool_size=1, pool_pre_ping=True)
     try:
-        return backtest(settings, loaded, PostgresStore(sessionmaker(engine)))
+        return backtest(settings, loaded, PostgresStore(sessionmaker(engine)), variants=variants)
     finally:
         engine.dispose()
 

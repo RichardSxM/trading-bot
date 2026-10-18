@@ -1,4 +1,5 @@
-"""covers: spec 0014 AC-6, AC-11, AC-15, AC-16, AC-17 (lab backtest: run file, range checks, bundle, reports)."""
+"""covers: spec 0014 AC-6, AC-7, AC-11, AC-15, AC-16, AC-17 (lab backtest: run file, range checks, variants,
+bundle, reports)."""
 
 import json
 from decimal import Decimal
@@ -196,3 +197,51 @@ def test_an_outdated_manifest_counts_as_a_missing_month(settings):
     assert range_problems(tree, SEP.start_ns, SEP.start_ns + DAY) == [
         "no committed candles for 2026-09; run lab fetch-candles"
     ]
+
+
+GRID = RUN.replace('name = "buy_and_hold"', 'name = "macd_baseline"').replace(
+    'notional_usd = "10000"', 'notional_usd = "10000"\n[strategy.grid]\nslow = [26, 21]\nfast = [8, 12]'
+)
+
+
+def test_a_grid_runs_one_variant_per_point_in_plan_order_with_its_own_version(settings, tmp_path):
+    """covers: spec 0014 AC-7 (the grid)."""
+    _day_of_candles(settings)
+    store = MemoryStore()
+    assert backtest(settings, load_candle_run(_write_run(tmp_path, GRID), Overrides()), store) == 0
+
+    points = [(b.run.run_config["variant"], b.run.run_config["grid_point"]) for b in store.bundles]
+    assert sorted((name, point["fast"], point["slow"]) for name, point in points if isinstance(point, dict)) == [
+        ("grid-1", 8, 26),
+        ("grid-2", 8, 21),
+        ("grid-3", 12, 26),
+        ("grid-4", 12, 21),
+    ]
+    assert len({b.run.strategy_version_id for b in store.bundles}) == 4
+    [folder] = list(settings.lab_reports_dir.iterdir())
+    index = (folder / "index.md").read_text()
+    assert [index.index(f"grid-{n}") for n in range(1, 5)] == sorted(index.index(f"grid-{n}") for n in range(1, 5))
+    assert {p.name for p in folder.glob("grid-*.md")} == {f"grid-{n}.md" for n in range(1, 5)}
+
+
+def test_the_slippage_sweep_widens_and_removes_the_quoted_spread(settings, tmp_path):
+    """covers: spec 0014 AC-7 (--sweep-slippage)."""
+    from trading_core.lab.variants import expand_candle_variants
+
+    _day_of_candles(settings)
+    loaded = load_candle_run(_write_run(tmp_path), Overrides())
+    store = MemoryStore()
+    variants = expand_candle_variants(loaded.run.slippage_bps, {}, sweep_slippage=True)
+    assert backtest(settings, loaded, store, variants=variants) == 0
+
+    fills = {b.run.run_config["variant"]: [f.price for f in b.fills] for b in store.bundles}
+    # The entry at the 01:00 close (minute 59's close, 60060) and the range end at the last close (61440).
+    assert fills == {
+        "base": [D(60073), D(61427)],  # 2 bps: ceil(60060 x 1.0002), floor(61440 x 0.9998)
+        "slippage=0": [D(60060), D(61440)],
+        "slippage=2x": [D(60085), D(61415)],  # 4 bps
+    }
+    # Slippage is not a strategy setting, so the three share one strategy version.
+    assert len({b.run.strategy_version_id for b in store.bundles}) == 1
+    [folder] = list(settings.lab_reports_dir.iterdir())
+    assert {p.name for p in folder.glob("*.md")} == {"base.md", "slippage-0.md", "slippage-2x.md", "index.md"}

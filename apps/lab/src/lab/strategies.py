@@ -22,12 +22,15 @@ from lab.probes import RaiseProbe, RaiseProbeConfig
 from trading_core.lab.candles import CANDLE_STALE_CHECK_S
 from trading_core.node.buy_and_hold import STRATEGY_NAME as BUY_AND_HOLD
 from trading_core.node.buy_and_hold import BuyAndHold, BuyAndHoldConfig
+from trading_core.node.macd_baseline import STRATEGY_NAME as MACD_BASELINE
+from trading_core.node.macd_baseline import MacdBaseline, MacdBaselineConfig
 from trading_core.node.maker_probe import MakerProbe, MakerProbeConfig
 from trading_core.node.placeholder import STRATEGY_NAME as PLACEHOLDER
 from trading_core.node.placeholder import PlaceholderConfig, PlaceholderTimed, Record
 from trading_core.node.random_taker import RandomTaker, RandomTakerConfig
 from trading_core.node.strategy import KfsStrategy, PauseGate
 from trading_core.recording.enums import Env, StrategyKind
+from trading_core.recording.spool import WriteItem
 from trading_core.risk.check import RiskLimits
 from trading_core.strategy.blocks import EntryBlocks
 
@@ -109,6 +112,10 @@ _CHECK_CONTEXT: Final = RunContext(
 )
 
 
+def _discard(item: WriteItem) -> None:
+    """The record callable of a strategy built only to be checked."""
+
+
 @dataclass(frozen=True)
 class StrategyEntry:
     """One registered strategy: its class, its config class, and the run fields it takes."""
@@ -161,6 +168,19 @@ class StrategyEntry:
     def check_config(self, user: Mapping[str, ConfigValue]) -> None:
         """Validate ``[strategy.config]`` at startup by building the config for a stand in run."""
         self.build_config(user, _CHECK_CONTEXT)
+
+    def check_strategy(self, user: Mapping[str, ConfigValue]) -> None:
+        """Validate ``[strategy.config]`` (or one grid point of it) by building the config and the
+        strategy itself for a stand in run, so a value its constructor refuses fails at startup.
+
+        Raises ``StrategyConfigError`` like ``check_config``, and for a ``ValueError`` of the constructor.
+        """
+        config = self.build_config(user, _CHECK_CONTEXT)
+        gate = PauseGate()
+        try:
+            self.build(config, gate, EntryBlocks(), _discard)
+        except ValueError as exc:
+            raise StrategyConfigError([str(exc)]) from None
 
     def build(self, config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
         """The strategy, with the same constructor arguments the trader passes."""
@@ -239,6 +259,12 @@ def _buy_and_hold(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, 
     return BuyAndHold(config, gate, blocks, record)
 
 
+def _macd_baseline(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
+    if not isinstance(config, MacdBaselineConfig):
+        raise TypeError(f"macd_baseline needs a MacdBaselineConfig, not {type(config).__name__}")
+    return MacdBaseline(config, gate, blocks, record)
+
+
 def _raise_probe(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
     if not isinstance(config, RaiseProbeConfig):
         raise TypeError(f"raise_probe needs a RaiseProbeConfig, not {type(config).__name__}")
@@ -271,6 +297,13 @@ REGISTRY: Final[Mapping[str, StrategyEntry]] = {
         name=BUY_AND_HOLD,
         config_cls=BuyAndHoldConfig,
         factory=_buy_and_hold,
+        run_fields=_candle_fields,
+        kind=StrategyKind.HOUR_LEVEL,
+    ),
+    MACD_BASELINE: StrategyEntry(
+        name=MACD_BASELINE,
+        config_cls=MacdBaselineConfig,
+        factory=_macd_baseline,
         run_fields=_candle_fields,
         kind=StrategyKind.HOUR_LEVEL,
     ),

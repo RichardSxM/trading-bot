@@ -11,7 +11,7 @@ latest rate when it is at most ``FUNDING_CARRY_MAX`` old), scores it, writes the
 import logging
 import sys
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -19,7 +19,7 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import Final
 
-from lab.actors import RANGE_END
+from lab.actors import LIQUIDATED, RANGE_END
 from lab.candle_fetch import candle_tree
 from lab.candle_units import CandleUnitPlan, CandleUnitResult, run_candle_unit
 from lab.instruments import pinned_instrument
@@ -53,7 +53,7 @@ from trading_core.lab.candles import (
 from trading_core.lab.errors import FundingRateMissingError
 from trading_core.lab.funding import FundingPayment, FundingRate, FundingSample, apply_funding
 from trading_core.lab.metrics import ClosedTrade, FundingCash, run_metrics
-from trading_core.lab.variants import BASE, CandleVariantSpec
+from trading_core.lab.variants import CandleVariantSpec, expand_candle_variants
 from trading_core.marketdata.hours import HOUR_NS
 from trading_core.node.recording import instrument_row
 from trading_core.recording.enums import (
@@ -140,7 +140,8 @@ class CandleBatch:
     batch_id: uuid.UUID
     loaded: LoadedCandleRun
     settings: LabSettings
-    version_id: uuid.UUID
+    # Each variant's strategy version, by variant name (the grid values are part of its config hash, AC-7).
+    version_ids: Mapping[str, uuid.UUID]
     folder: Path
     start_ns: int
     end_ns: int
@@ -236,7 +237,7 @@ def _run_config(batch: CandleBatch, variant: CandleVariantSpec, gaps: Sequence[C
         "stale_quote_s": run.stale_quote_s,
         "context": {**run.context.model_dump(), "liquidations_available": False},
         "bar_type": str(batch.tree.bar_type),
-        "bar_spec": batch.loaded.bar_spec,
+        "bar_spec": str(variant.grid_point.get("bar_spec", batch.loaded.bar_spec)),
         "funding_source": FUNDING_SOURCE,
         "candle_gaps": [[g.start_ns, g.end_ns, g.minutes] for g in gaps],
         "range": [batch.start_ns, batch.end_ns],
@@ -328,7 +329,7 @@ def build_candle_bundle(
         env=Env.DEMO,
         mode=RunMode.BACKTEST,
         status=RunStatus.COMPLETED,
-        strategy_version_id=batch.version_id,
+        strategy_version_id=batch.version_ids[variant.name],
         trader_id=TRADER_ID,
         run_config=_run_config(batch, variant, gaps),
         data_start_at=ns_to_utc(batch.start_ns),
@@ -381,8 +382,9 @@ def build_candle_bundle(
         exposure=measures.exposure,
         profit_factor=measures.profit_factor,
         expectancy=measures.expectancy,
-        liquidations=sum(1 for d in decisions if d.intent == Intent.EXIT and d.reason == "liquidated"),
-        ruined=False,
+        liquidations=sum(1 for d in decisions if d.intent == Intent.EXIT and d.reason == LIQUIDATED),
+        ruined=unit.ruined_ns is not None,
+        ruined_ns=unit.ruined_ns,
         first_decision_ns=first_decision,
         benchmark=measures.benchmark,
         first_candle_ns=first_ns,
@@ -483,10 +485,17 @@ def backtest(
     loaded: LoadedCandleRun,
     store: Store,
     *,
+    variants: Sequence[CandleVariantSpec] | None = None,
     target: Target[CandleUnitPlan, CandleUnitResult] = run_candle_unit,
 ) -> int:
-    """Run ``lab backtest`` after validation; returns the exit code."""
+    """Run ``lab backtest`` after validation; returns the exit code.
+
+    ``variants`` come from ``expand_candle_variants`` (checked before anything is read); the default
+    is the run file's own (``base``, or its grid).
+    """
     run = loaded.run
+    if variants is None:
+        variants = expand_candle_variants(run.slippage_bps, run.strategy.grid)
     tree = candle_tree(settings.lab_catalog_dir)
     start_ns, end_ns = range_ns(loaded)
     problems = range_problems(tree, start_ns, end_ns)
@@ -495,21 +504,21 @@ def backtest(
             print(f"lab backtest: {problem}", file=sys.stderr)
         log.error("lab_candles_missing", extra={"fields": {"problems": problems}})
         return EXIT_MISSING
-    variants = [CandleVariantSpec(BASE, run.slippage_bps)]
     entry = registry_entry(run.strategy.name, test_strategies=settings.lab_test_strategies)
-    version_id = store.prepare(
-        instrument_row(pinned_instrument(run.instrument_id)),
-        run.strategy.name,
-        entry.kind,
-        settings.git_commit,
-        dict(run.strategy.config),
-    )
+    instrument = instrument_row(pinned_instrument(run.instrument_id))
+    # One strategy version per distinct config; the slippage variants share base's.
+    version_ids = {
+        v.name: store.prepare(
+            instrument, run.strategy.name, entry.kind, settings.git_commit, {**run.strategy.config, **v.grid_point}
+        )
+        for v in variants
+    }
     batch_id = uuid.uuid7()
     batch = CandleBatch(
         batch_id=batch_id,
         loaded=loaded,
         settings=settings,
-        version_id=version_id,
+        version_ids=version_ids,
         folder=settings.lab_reports_dir / str(batch_id),
         start_ns=start_ns,
         end_ns=end_ns,

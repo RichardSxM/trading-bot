@@ -109,6 +109,8 @@ class CandleReport(_Model):
     expectancy: Decimal | None
     liquidations: int
     ruined: bool
+    # When account equity reached zero and the variant ended early, else None (AC-14).
+    ruined_ns: int | None = None
     first_decision_ns: int | None
     benchmark: Decimal | None
     # Data quality: the span with candles, the gap rows overlapping the range, and per month figures.
@@ -299,7 +301,8 @@ def candle_report_markdown(report: LabReport) -> str:
             f"| Exposure time | {_pct(candle.exposure)} |",
             f"| Fees (USD) | {_money(results.fees_total)} |",
             f"| Funding (USD) | {_money(results.funding_total)} |",
-            f"| Liquidations | {candle.liquidations}{' (ruined)' if candle.ruined else ''} |",
+            f"| Liquidations | {candle.liquidations} |",
+            f"| Ruined | {'no' if candle.ruined_ns is None else f'yes, at {_utc(candle.ruined_ns)}'} |",
             f"| First decision | {'none' if candle.first_decision_ns is None else _utc(candle.first_decision_ns)} |",
             "",
             "## Data quality",
