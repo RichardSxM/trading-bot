@@ -338,7 +338,7 @@ code in `packages/core/src/trading_core/gate`, `packages/core/src/trading_core/v
 - [ ] Build it: `/develop strategy scoring & promotion gate`
   - [x] Thin thread: migration `0009` and `gate_app`, code and frozen hashes, thresholds file, daily equity and measures in the bundles, `lab study` and `lab holdout` for candles, `gate import` and `push-bundles.sh`, `gate evaluate`, the ranking table (AC-1 to AC-8, AC-18, AC-22, AC-23)
   - [x] Full candidate gate: folds, bootstrap, PBO, deflated Sharpe, every check and missing data reason, `lab gate --dry-run`, determinism (AC-8 to AC-13)
-  - [ ] Replay studies: taker and maker studies, replay day selection, benchmark day limiting, the `random_taker` loser study (AC-2 to AC-4, AC-10)
+  - [ ] Replay studies: a 2022 Tardis spike, taker and maker studies, Tardis only replay days (43 development, 1st of month holdout), replay grid capped at 4, benchmark day limiting, the `random_taker` loser study (AC-2 to AC-5, AC-10, AC-24)
   - [ ] Paper and live guards: `trader.version`, manual promotion, the placeholder transition, the paper guard, the live guard on `frozen_hash`, paper to live evaluation (AC-14 to AC-17)
   - [ ] Dashboard depth and proof: study detail, promotion log, paper progress, permission and boundary tests, `verify.md` (AC-19 to AC-23)
   - [x] Fixes from the first verify: `lab holdout` resumes missing benchmarks, no self benchmark, benchmarks left out of the trial count (AC-4, AC-5, AC-10, AC-11, AC-19)
