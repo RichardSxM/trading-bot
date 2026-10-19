@@ -328,6 +328,8 @@ def start_paper_loop(settings: TraderSettings, secrets: Mapping[str, SecretStr],
     blocks = EntryBlocks()
     env = Env(settings.trading_env)
     replayed = replay_spool(settings.spool_dir, sessions, blocks)
+    # The version commits on its own, so a start refused for a missing paper promotion still leaves
+    # the version row behind for `gate promote --manual --version <id>` (spec 0015 AC-15).
     with sessions.begin() as session:
         config = settings.strategy_config()
         version_id = repository.ensure_strategy_version(
@@ -338,6 +340,7 @@ def start_paper_loop(settings: TraderSettings, secrets: Mapping[str, SecretStr],
             config,
             versioning.freeze(PlaceholderTimed.__module__, config),
         )
+    with sessions.begin() as session:
         run_id = repository.start_run(
             session,
             env=env,
