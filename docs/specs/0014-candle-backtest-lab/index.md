@@ -254,6 +254,8 @@ Steps 13 to 16 were built on 2026-10-18 (f4e7173). `macd_baseline` over 2026-08-
 19. Determinism test, failure isolation and interrupt tests. Satisfies **AC-17**, **AC-18**
 20. Full history timing and memory into verify.md; boundary test still passes (`test_core_boundary.py` covers the new modules). Satisfies **AC-22**, **AC-23**
 
+Steps 18 to 20 were built on 2026-10-18 (c5e0142), and step 17 in part. `lab candle-parity` over the own days 2026-10-08 to 2026-10-10 matched 70 of 70 entries (ratio 1.0000, 17 segments). `lab backtest` now writes in plan order, fails only the variant whose unit failed, and exits 130 with `interrupted` reports. `buy_and_hold` over 2022-03-24 to 2026-09-30 took 1974 s with `ru_maxrss` 698 MB, inside both budgets; a 16 point `macd_baseline` grid took 4h19m with two workers. `--lookahead-check` runs and passes `macd_baseline`, but whole hour cuts cannot catch a strategy that peeks one bar ahead, so the `peek_probe` tests are strict xfails and the cut placement is owed to `/architect` before step 17 is done.
+
 ## Consequences
 
 **Positive**:

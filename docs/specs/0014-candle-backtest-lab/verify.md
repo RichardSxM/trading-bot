@@ -1,5 +1,5 @@
 # Verify: candle backtest lab · spec 0014 · updated 2026-10-18
-_Steps derived from spec 0014 acceptance criteria. `/check verify` runs these; `/test` locks the durable ones. Milestone 3 steps so far; later milestones append._
+_Steps derived from spec 0014 acceptance criteria. `/check verify` runs these; `/test` locks the durable ones. Milestones 3 to 5. The AC-19 cut placement is still owed to `/architect` (see the look ahead steps)._
 
 ## Commands
 - [ ] `docker compose run --rm --no-deps lab fetch-candles 2021-12 2022-04` → exit 64 before any request (month before 2022-03) → AC-1
@@ -12,14 +12,43 @@ _Steps derived from spec 0014 acceptance criteria. `/check verify` runs these; `
 - [ ] With a small `LAB_CATALOG_CAP_GB`, run `fetch-candles` → exit 3 with ERROR `lab_catalog_full` before the month's first request → AC-5
 - [ ] `--refetch` a stored month whose next month opens with quiet rows at a different price → exit 1 with bad rows scoped to the next month, the refetched month still committed → AC-3
 - [ ] `range_problems` over 2022-03-24 to 2026-09-30 on the full tree → no problem → AC-6
+- [ ] `lab backtest runs/macd_baseline.toml` → one `base` variant; no decision before the 50th hour bar (first decision on or after 2026-08-03 02:00); every approved `macd_entry` has a reduce only stop market order 3 % from its entry fill (not from the mid); every `macd_exit` cancels that stop; zero risk events → AC-13
+- [ ] In that run's bundle, every `macd_entry` decision's inputs hold `histogram`, `histogram_previous`, `trend_ema`, `stop_px` (3 % from the mid), and `equity` → AC-13, AC-14
+- [ ] A run file with `[strategy.grid] fast = [8, 12]`, `slow = [21, 26]` (and neither in `[strategy.config]`) → variants `grid-1` to `grid-4` in sorted key order, each its own `strategy_versions` row, `run_config.grid_point` set, and the reports and `index.md` in plan order; the `fast = 12, slow = 26` point matches the `base` run exactly → AC-7
+- [ ] The same grid with `--sweep-slippage` → exit 64 before anything is read; a grid of 17 points, a key also in `[strategy.config]`, a run field (`taker_fee`), an empty list, or `slow = [26, 12]` with `fast = 12` → exit 64 with every problem listed → AC-7
+- [ ] `lab backtest runs/macd_baseline.toml --sweep-slippage` → `base`, `slippage=0`, `slippage=2x`, the same entries, fills at the candle price ± 0, 2, and 4 bps, one shared strategy version; with `slippage_bps = "0"` it runs `base` alone → AC-7
+- [ ] `pytest tests/test_candle_unit.py -k "liquidation or ruined"` → a 1.9x long through a crash closes with an `exit` decision reason `liquidated` at the crossing bid, and the next hour close records a new (refused) entry; a gap far through the liquidation price ends the run with `ruined` set at that quote and nothing after it → AC-14
+- [ ] `pytest tests/test_strategy_swings.py tests/test_strategy_indicators.py` (core) → no swing before its confirming bar, a prefix feed gives exactly the confirmed swings, the EMA seeds with the SMA and steps by 2 / (n + 1) → AC-13, AC-20
+
+- [ ] `lab backtest runs/macd_baseline.toml --lookahead-check` → exit 0, INFO `lab_lookahead_passed` naming the three seeded whole hour cuts inside the middle 80 % of the range, and the `base` bundle written as usual → AC-19
+- [ ] `pytest tests/test_lookahead.py` → every `hour_level` strategy in the registry (`buy_and_hold`, `macd_baseline`) decides the same before each of five cuts on a seeded synthetic month. The two `peek_probe` tests are strict xfails: a strategy that peeks one bar ahead is not caught by whole hour cuts (decisions stamped exactly at the cut are left out), so AC-19 waits for `/architect candle backtest lab: AC-19 whole hour cuts cannot catch a one bar peek` → AC-19
+- [ ] `lab candle-parity runs/macd_parity.toml` over the own days → prints the ratio, the counts, and every unmatched `enter`; exit 0 at 0.95 or more, exit 1 below, exit 2 when an own day manifest or a candle month is missing; no Postgres connection, and a run file with a grid exits 64 → AC-21
+- [ ] `pytest tests/test_candle_determinism.py` → a 2×2 grid with `LAB_WORKERS` 1 and 2 gives the same report JSON and rows apart from ids and times, and the bundles land in plan order even when `grid-1` is slowed → AC-17
+- [ ] `pytest tests/test_candle_failure.py` → a unit that raises, or a worker that dies, fails only its variant (no rows, `status: failed`, ERROR `lab_variant_failed`), the others complete, exit 1; SIGTERM against a hanging unit writes `interrupted` reports and `index.md` and exits 130 → AC-18
+- [ ] `TRADING_ENV=live lab candle-parity runs/macd_parity.toml` → exit 78; without the Postgres secret it boots and never connects (`tests/test_safety.py`); `test_core_boundary.py` passes with `trading_core/lab/lookahead.py` and `candle_parity.py` in the pure folder → AC-22
+- [ ] `lab backtest runs/buy_and_hold.toml --from 2022-03-24 --to 2026-09-30` → exit 0 inside 60 min, `ru_maxrss` under 1.5 GB → AC-23
 
 ## Value sourcing
 - [ ] Price rounding: a high of `25920.8322615` → 25920 (floor), a low of `28319.01027283563` → 28320 (ceiling), `39522.99999999999` → 39523 (noise snap), an open `100.00000001` → 100, an open `100.0000001` → bad row; the tick comes from the pinned instrument (`price_increment` 1) → AC-1
 - [ ] Volume rounding: `0.3565999999999999` → 0.3566, `0.12345` → bad row; the step comes from the pinned instrument (`size_increment` 0.0001) → AC-1
 - [ ] `complete`: a fetch of the running month gives `complete: false` and is fetched again on the next run → AC-1
+- [ ] Liquidation price: change `maintenance_margin_rate` in `[risk]` and the guard's `liq_px` (in the `liquidated` decision's inputs) moves with it; the equity input is the entry decision's recorded `equity`, the fee is `taker_fee × qty × entry fill price` → AC-14
+- [ ] Slippage per side: a variant's fills differ from the candle price by exactly its `slippage_bps` (0, base, or 2x), rounded away to the tick → AC-7, AC-10
+
+- [ ] Cut times: `cut_times(seed, start, end, count)` takes the range's whole hours, leaves out the first and last 10 % of the span, and samples them with `random.Random(seed)`; the same seed gives the same cuts → AC-19
+- [ ] Parity matching: only `enter` decisions, approved or refused, with the same side and at most 60 s apart, each matched once, earliest first; ratio = matches ÷ max(book, candles), pass at 0.95 → AC-21
 
 ## Recorded runs
 - AC-23 full fetch: one uninterrupted `fetch-candles 2022-03 2026-10` started 2026-10-18 07:45:45 UTC (image at 561abfe) and took 757 s with exit 0, under the 30 minute budget. 56 months, 2,404,662 bars, 78 MB. Rounded candles: 2023-08 13, 2023-09 5, 2023-10 8, 2023-11 5, 2023-12 2, 2024-01 2 (the last two months are noise snaps only). Every manifest has `price_rounded_rows`, and only 2026-10 is incomplete.
 
+- Milestone 4 real run (image at f4e7173): `macd_baseline` over 2026-08-01 to 2026-09-30 made 51 round trips, net +140.53 USD after 510.29 USD of fees, in 47.5 s (ru_maxrss 563 MB). Grid of `fast` × `slow`: +140.53 (12, 26), −114.61 (8, 21), −214.03 (8, 26), −158.27 (12, 21). Slippage sweep: +349.47 at 0 bps, +140.53 at 2 bps, −65.24 at 4 bps.
+
+- Milestone 5 real runs (image at c5e0142, laptop, 2026-10-18):
+  - `macd_baseline.toml --lookahead-check` (2026-08-01 to 2026-09-30): exit 0 in 150 s, `lab_lookahead_passed` with cuts 2026-08-19T23:00, 2026-09-03T18:00, and 2026-09-09T19:00 UTC.
+  - `candle-parity runs/macd_parity.toml` (own days 2026-10-08 to 2026-10-10): ratio 1.0000, 70 matched (book 70, candles 70) over 17 segments, in 37m23s.
+  - `buy_and_hold.toml` over 2022-03-24 to 2026-09-30: exit 0 in 1974 s (32m54s, budget 60 min), `ru_maxrss` 698 MB (budget 1.5 GB). 16,880,082 events in 1472.7 s of replay; planning 64 s, boot 17 s, and 6m54s after the replay (writing the bundle). Events per second per month: mean 12,753, highest 15,130, lowest 206 (2022-03, eight days of warmup) and then 5,243 (2024-02). One trade, net +3855.42 USD.
+  - A 16 point `macd_baseline` grid (`fast` [8, 12] × `slow` [21, 26] × `signal` [7, 9] × `trend_ema` [50, 100]) over the same range with `LAB_WORKERS=2`: exit 0 in 15538 s (4h18m58s), measured only. Each unit replayed in 1188 to 1299 s for `grid-1` to `grid-6`, 2194 to 2680 s for `grid-7` to `grid-12` (the laptop slowed down), and 1695 to 1989 s for the rest, plus 3 to 7.5 min per variant after the replay. `ru_maxrss` grew from 704 MB (`grid-1`) to 1094 MB (`grid-16`), since a reused worker keeps its memory. Every point lost about 5,010 to 5,093 USD over 172 to 283 trades, with 25,670 entries refused `leverage_cap` (once equity halves, the fixed 10,000 USD notional is over 2x).
+  - The same grid with `--lookahead-check`: exit 0 in 22809 s (6h20m09s), measured only. `grid-1` passed the check (`lab_lookahead_passed`, cuts 2023-03-30T04:00, 2023-11-21T08:00, and 2026-03-22T08:00 UTC, no mismatch). The three cut units replayed in 486 s, 1280 s, and 2405 s next to the full `grid-1` unit at 3690 s. The full units took 1604 to 4710 s (the slowest ones ran beside the cut units, so the laptop was busier). Every variant's net P&L and trade count match the run without the check exactly. `ru_maxrss` grew from 612 MB to 1151 MB (`grid-16`), still under the 1.5 GB budget.
+
 ## Acceptance-criteria coverage
-- AC-1: fetch refusal, rounding, value sourcing steps · AC-3: bad open, refetch next month check · AC-4: manifest field, outdated manifest · AC-5: retries, catalog cap · AC-6: missing month refusal, full range check · AC-23: the recorded full fetch (the backtest timings come with task 20)
+- AC-1: fetch refusal, rounding, value sourcing steps · AC-3: bad open, refetch next month check · AC-4: manifest field, outdated manifest · AC-5: retries, catalog cap · AC-6: missing month refusal, full range check · AC-23: the recorded full fetch and the full history backtest timings · AC-7: grid, sweep, and refusals · AC-13: the macd run, its inputs, the indicator tests · AC-14: liquidation and ruin tests, the liquidation price sourcing · AC-20: the swing tests · AC-17: the determinism test · AC-18: the failure and interrupt tests · AC-19: the look ahead run and tests (one bar peek still open) · AC-21: the candle parity run · AC-22: the live refusal and boundary step
