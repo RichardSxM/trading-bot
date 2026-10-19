@@ -108,15 +108,8 @@ def test_the_registry_has_the_two_candle_strategies():
     assert HOUR_LEVEL == ["buy_and_hold", "macd_baseline"]
 
 
-# AC-19 cuts on whole hours and compares only decisions strictly before the cut, and the cut run still
-# builds the bar that closes at the cut, so a peek of exactly one bar is never compared. The fix is
-# owed to /architect; until it lands these two tests show the blind spot.
-ONE_BAR_BLIND_SPOT = pytest.mark.xfail(
-    strict=True, reason="AC-19 whole hour cuts cannot catch a one bar peek (owed to /architect)"
-)
-
-
-@ONE_BAR_BLIND_SPOT
+# A cut lies 1 to 59 minutes past an hour, so the cut run has the bar that closed before it but not
+# the next one: a decision about that bar made from the next one is in the full run only.
 def test_a_strategy_that_reads_the_next_bar_fails_the_prefix_check(month):
     full, mismatches = _prefix_mismatches(_plan(month, "peek_probe"), 1)
     assert {k.reason for k in full} == {PEEK_REASON}
@@ -130,7 +123,6 @@ def _settings(tmp_path, month):
     return worker_settings(month, tmp_path / "reports", 1, lab_test_strategies=True)
 
 
-@ONE_BAR_BLIND_SPOT
 def test_lookahead_check_fails_the_peeking_variant_and_writes_no_bundle(tmp_path, month, caplog):
     path = tmp_path / "run.toml"
     path.write_text(RUN.format(name="peek_probe"), encoding="utf-8")

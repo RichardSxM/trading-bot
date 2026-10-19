@@ -6,7 +6,7 @@ missing. Then each variant runs as one candle unit in the worker pool. The paren
 unit's funding samples into payments with the stored rates (a missing row is charged at the
 latest rate when it is at most ``FUNDING_CARRY_MAX`` old), scores it, writes the bundle as
 ``lab_app`` with mode ``backtest``, and writes the reports in variant order (AC-7). With
-``--lookahead-check`` the first variant also runs cut at three seeded hours, and a cut run whose
+``--lookahead-check`` the first variant also runs cut at three seeded minutes (never a whole hour), and a cut run whose
 decisions before the cut differ fails it (AC-19). A failed unit fails only its variant; SIGINT or
 SIGTERM writes ``interrupted`` reports and exits 130 (AC-18).
 """

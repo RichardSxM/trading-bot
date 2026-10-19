@@ -73,7 +73,7 @@ class CandleUnitPlan:
     env: Env = Env.DEMO
     test_strategies: bool = False
     market: MarketContextValues = field(default_factory=MarketContextValues)
-    # A look ahead cut run (AC-19): the same data ending at this whole hour (``end_ns`` equals it).
+    # A look ahead cut run (AC-19): the same data ending at this cut, a minute off the hour (``end_ns`` equals it).
     cut_ns: int | None = None
 
     @property
