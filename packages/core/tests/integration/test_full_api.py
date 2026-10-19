@@ -4,7 +4,7 @@ spec 0008 AC-11 (a replay bundle with fill stats and risk events)."""
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
-from uuid import uuid7
+from uuid import UUID, uuid7
 
 import pytest
 from sqlalchemy import func, insert, select
@@ -496,7 +496,7 @@ def _start_live(session: Session, version_id) -> object:
     )
 
 
-def _start_paper(session: Session, version_id) -> object:
+def _start_paper(session: Session, version_id) -> UUID:
     return repository.start_run(
         session,
         env=Env.DEMO,

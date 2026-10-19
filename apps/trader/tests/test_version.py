@@ -5,7 +5,7 @@ import json
 import pytest
 
 from trader import version
-from trader.main import TraderSettings
+from trader.main import EXIT_CONFIG, TraderSettings
 from trading_core import versioning
 from trading_core.node.placeholder import STRATEGY_NAME, PlaceholderTimed
 
@@ -33,6 +33,6 @@ def test_bad_config_exits_78_and_prints_nothing_to_stdout(monkeypatch, capsys):
         version.main()
 
     out = capsys.readouterr()
-    assert exit_info.value.code == version.EXIT_CONFIG
+    assert exit_info.value.code == EXIT_CONFIG
     assert out.out == ""
     assert "kraken_key_check_timeout_s" in out.err
