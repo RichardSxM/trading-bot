@@ -63,6 +63,7 @@ class StudyRunInput:
 
     ``funding_missing`` is set when a position spanned a funding charge time with no payment row, and
     ``cost_setting_missing`` when ``run_config`` lacks the slippage (candle) or latency (replay) setting.
+    ``starting_balance`` is None for a run that never recorded one; such a run never counts as completed.
     """
 
     run_id: UUID
@@ -71,7 +72,7 @@ class StudyRunInput:
     grid_point: int | None
     frozen_hash: str
     status: str
-    starting_balance: Decimal
+    starting_balance: Decimal | None
     daily: tuple[DayEquity, ...] = ()
     summary: RunSummary | None = None
     measures: Measures | None = None
@@ -80,11 +81,13 @@ class StudyRunInput:
 
     @property
     def completed(self) -> bool:
-        """True when the run completed and its results were written."""
-        return self.status == COMPLETED and self.summary is not None
+        """True when the run completed, its results were written, and it recorded a starting balance."""
+        return self.status == COMPLETED and self.summary is not None and self.starting_balance is not None
 
     def series(self, lab: Lab) -> DailySeries:
         """Its daily series: chained for a candle run, one segment per day for a replay run."""
+        if self.starting_balance is None:
+            raise ValueError(f"run {self.run_id} recorded no starting balance")
         return daily_series(self.daily, self.starting_balance, chained=lab == Lab.CANDLE)
 
 

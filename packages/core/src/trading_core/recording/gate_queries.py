@@ -193,7 +193,7 @@ def study_evidence(session: Session, name: str) -> StudyEvidence:
         version = session.get(models.StrategyVersion, run.strategy_version_id)
         assert version is not None
         final_version_id, final_frozen, code_hash = version.id, version.frozen_hash, version.code_hash
-    if holdout is not None:
+    if holdout is not None and holdout.starting_balance is not None:
         trades = holdout_trades(session, holdout.run_id, holdout.starting_balance)
     inputs = CandidateInputs(
         study_id=study.id,

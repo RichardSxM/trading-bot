@@ -175,6 +175,15 @@ def test_a_failed_holdout_does_not_count():
     assert _codes(evaluate_candidate(replace(inputs, runs=tuple(failed)))) == [("holdout", "missing_run")]
 
 
+def test_a_holdout_without_a_starting_balance_does_not_count():
+    inputs = _inputs()
+    no_balance = [replace(r, starting_balance=None) if r.role == Role.HOLDOUT else r for r in inputs.runs]
+
+    result = evaluate_candidate(replace(inputs, runs=tuple(no_balance)))
+    assert _codes(result) == [("holdout", "missing_run")]
+    assert result.verdict == GateVerdict.INSUFFICIENT
+
+
 def test_fail_beats_insufficient_beats_pass():
     fail, short = Reason("failed", "holdout_sharpe"), Reason("too_few_trades", "trade_floor")
 
