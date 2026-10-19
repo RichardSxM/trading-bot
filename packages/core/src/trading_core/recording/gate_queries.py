@@ -168,11 +168,13 @@ def study_evidence(session: Session, name: str) -> StudyEvidence:
         .all()
     )
     runs = tuple(_run_input(session, r, lab) for r in study_runs)
-    kind = session.execute(select(models.Strategy.kind).where(models.Strategy.id == study.strategy_id)).scalar_one()
+    strategy_name, kind = session.execute(
+        select(models.Strategy.name, models.Strategy.kind).where(models.Strategy.id == study.strategy_id)
+    ).one()
     trials = session.execute(
         select(func.count(func.distinct(models.StudyRun.frozen_hash)))
         .join(models.Study, models.Study.id == models.StudyRun.study_id)
-        .where(models.Study.strategy_id == study.strategy_id)
+        .where(models.Study.strategy_id == study.strategy_id, models.StudyRun.role != StudyRole.BENCHMARK)
     ).scalar_one()
     plan_study = study.plan.get("study")
     seed = plan_study.get("seed") if isinstance(plan_study, Mapping) else None
@@ -196,6 +198,7 @@ def study_evidence(session: Session, name: str) -> StudyEvidence:
     inputs = CandidateInputs(
         study_id=study.id,
         lab=Lab(study.lab),
+        strategy_name=strategy_name,
         strategy_kind=kind,
         thresholds=Thresholds.from_json(study.thresholds),
         seed=seed if isinstance(seed, int) else 0,
@@ -505,7 +508,9 @@ def study_detail(session: Session, study_id: UUID) -> StudyDetail | None:
         .all()
     )
     trials = session.execute(
-        select(func.count(func.distinct(models.StudyRun.frozen_hash))).where(models.StudyRun.study_id == study_id)
+        select(func.count(func.distinct(models.StudyRun.frozen_hash))).where(
+            models.StudyRun.study_id == study_id, models.StudyRun.role != StudyRole.BENCHMARK
+        )
     ).scalar_one()
     attempts = [
         AttemptLine(p.id, p.decided_at, p.verdict, [r for r in p.reasons if isinstance(r, Mapping)], p.metrics)

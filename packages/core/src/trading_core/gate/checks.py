@@ -104,8 +104,17 @@ def check_holdout_sharpe(series: DailySeries, out: Outcome) -> Decimal | None:
 def check_beats_benchmark(
     inputs: CandidateInputs, series: DailySeries, holdout_sharpe: Decimal | None, strategy: str, out: Outcome
 ) -> None:
-    """``beats_buy_and_hold`` or ``beats_macd_baseline``: the holdout Sharpe must beat the benchmark's, same days."""
+    """``beats_buy_and_hold`` or ``beats_macd_baseline``: the holdout Sharpe must beat the benchmark's, same days.
+
+    A study of the benchmark's own strategy can't be judged against itself: the check does not apply
+    and passes, recorded like ``pbo`` (``<check>_applicable`` false, the benchmark Sharpe null, no reason).
+    """
     check = "beats_buy_and_hold" if strategy == BUY_AND_HOLD else "beats_macd_baseline"
+    applicable = strategy in benchmark_names(inputs.strategy_kind, inputs.strategy_name)
+    out.metric(f"{check}_applicable", applicable)
+    if not applicable:
+        out.metric(f"{strategy}_sharpe", None)
+        return
     benchmark = inputs.benchmark(strategy)
     if benchmark is None:
         out.metric(f"{strategy}_sharpe", None)
@@ -123,6 +132,15 @@ BENCHMARKS: Final[Mapping[str, tuple[str, ...]]] = {
     "scalping": (BUY_AND_HOLD,),
     "hour_level": (BUY_AND_HOLD, MACD_BASELINE),
 }
+
+
+def benchmark_names(kind: str, studied: str) -> tuple[str, ...]:
+    """The benchmarks a study runs and is judged against (AC-4): its kind's list minus the studied strategy.
+
+    Matched by strategy name on purpose, whatever the study's config. ``lab holdout`` and the gate
+    both use this one rule, so they can't drift apart.
+    """
+    return tuple(name for name in BENCHMARKS.get(kind, BENCHMARKS["scalping"]) if name != studied)
 
 
 # Slice 2: the rest of the candidate gate ------------------------------------------------------

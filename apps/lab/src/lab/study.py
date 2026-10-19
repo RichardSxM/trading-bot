@@ -9,8 +9,10 @@ completed; a different plan under the same name exits 64 before any run.
 ``lab holdout`` holds the study's advisory lock, needs every grid point completed, picks the final one
 (best development daily Sharpe, ties to the lowest index), and runs it once from ``holdout_start`` to
 the last complete UTC day of the catalog, unless that frozen version already spent its holdout. Then
-the benchmarks (``buy_and_hold``, plus ``macd_baseline`` for an hour level study) run over the same
-range. Every run writes its bundle beside its report, for ``scripts/push-bundles.sh``.
+the benchmarks (``buy_and_hold``, plus ``macd_baseline`` for an hour level study, minus the studied
+strategy itself) run over the same range. When this study already ran its holdout, a rerun only fills
+in the benchmarks still missing, over the stored holdout range. Every run writes its bundle beside its
+report, for ``scripts/push-bundles.sh``.
 
 Only candle studies are built so far; a replay study is refused (exit 64) until Slice 3.
 """
@@ -28,7 +30,7 @@ from pathlib import Path
 from typing import Final, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from lab.candle_backtest import backtest
@@ -39,12 +41,13 @@ from lab.runfile import LoadedCandleRun, Overrides, RunFileError, candle_run_fro
 from lab.settings import LabSettings
 from lab.strategies import registry_entry
 from lab.study_rows import StudyContext
+from trading_core.gate.checks import benchmark_names
 from trading_core.gate.thresholds import Thresholds
 from trading_core.lab.candles import Month
 from trading_core.lab.variants import CandleVariantSpec, expand_candle_variants
 from trading_core.node.recording import instrument_row
 from trading_core.recording import models, repository
-from trading_core.recording.enums import RunStatus, StrategyKind, StudyLab, StudyRole
+from trading_core.recording.enums import StrategyKind, StudyLab, StudyRole
 from trading_core.recording.rows import JsonValue, StrategyVersionRow, StudyRow, canonical_json
 from trading_core.thresholds_file import packaged_thresholds
 
@@ -350,6 +353,7 @@ def _holdout_locked(settings: LabSettings, stored: StudyRow, store: StudyStore) 
     thresholds = Thresholds.from_json(stored.thresholds)
     base = candle_run_from_raw(f"study:{stored.name}", canonical_json(run_file).encode(), run_file, Overrides())
     variants = expand_candle_variants(base.run.slippage_bps, base.run.strategy.grid)
+    entry = registry_entry(base.run.strategy.name, test_strategies=settings.lab_test_strategies)
     with store.session() as session:
         done = repository.completed_grid_points(session, stored.id)
         missing = [v.name for i, v in enumerate(variants) if i not in done]
@@ -358,11 +362,16 @@ def _holdout_locked(settings: LabSettings, stored: StudyRow, store: StudyStore) 
         final = repository.final_grid_point(session, stored.id)
         assert final is not None
         final_hash = done[final].frozen_hash
-        spent = repository.holdout_spent(session, final_hash)
+        own = repository.study_holdout(session, stored.id)
+        spent = own is None and repository.holdout_spent(session, final_hash)
+        have = repository.completed_benchmarks(session, stored.id)
+    todo = [n for n in benchmark_names(entry.kind, base.run.strategy.name) if n not in have]
+    start = thresholds.holdout_start
+    if own is not None:
+        return _resume_benchmarks(settings, stored, store, base, entry.kind, final_hash, own, todo)
     if spent:
         return _refuse("holdout", [f"frozen version {final_hash[:12]} already spent its holdout"])
     variant = variants[final]
-    entry = registry_entry(base.run.strategy.name, test_strategies=settings.lab_test_strategies)
     frozen = entry.frozen({**base.run.strategy.config, **variant.grid_point})
     if frozen is None or frozen.frozen_hash != final_hash:
         return _refuse(
@@ -373,16 +382,14 @@ def _holdout_locked(settings: LabSettings, stored: StudyRow, store: StudyStore) 
         return _refuse(
             "holdout", [f"the catalog holds no complete day from {thresholds.holdout_start}; run lab fetch-candles"]
         )
-    start = thresholds.holdout_start
     holdout = replace(base, run=base.run.model_copy(update={"from_": start, "to": end}))
-    study_row = stored
     log.info(
         "lab_holdout_planned",
         extra={"fields": {"study": stored.name, "grid_point": final, "range": [str(start), str(end)]}},
     )
     context = _context(
         store,
-        study_row,
+        stored,
         StudyRole.HOLDOUT,
         base.run.strategy.name,
         entry.kind,
@@ -392,36 +399,67 @@ def _holdout_locked(settings: LabSettings, stored: StudyRow, store: StudyStore) 
     code = backtest(settings, holdout, store, variants=[variant], study=context)
     if code != EXIT_OK:
         return code
-    names = ["buy_and_hold"] + (["macd_baseline"] if entry.kind == StrategyKind.HOUR_LEVEL else [])
-    with store.session() as session:
-        have = set(
-            session.execute(
-                select(models.Strategy.name)
-                .join(models.StrategyVersion, models.StrategyVersion.strategy_id == models.Strategy.id)
-                .join(models.StrategyRun, models.StrategyRun.strategy_version_id == models.StrategyVersion.id)
-                .join(models.StudyRun, models.StudyRun.run_id == models.StrategyRun.id)
-                .where(
-                    models.StudyRun.study_id == stored.id,
-                    models.StudyRun.role == StudyRole.BENCHMARK,
-                    models.StudyRun.status == RunStatus.COMPLETED,
-                )
-            ).scalars()
+    return _run_benchmarks(settings, stored, store, base, entry.kind, todo, start, end)
+
+
+def _resume_benchmarks(
+    settings: LabSettings,
+    stored: StudyRow,
+    store: StudyStore,
+    base: LoadedCandleRun,
+    kind: StrategyKind,
+    final_hash: str,
+    own: tuple[str, datetime | None],
+    todo: list[str],
+) -> int:
+    """The study already ran its holdout (AC-5): never again; run only the missing benchmarks over its stored range.
+
+    No frozen hash recheck and no catalog end check, because benchmarks don't use the studied code,
+    and the range ends at the holdout run's ``data_end_at``, never a recomputed catalog end.
+    """
+    own_hash, data_end_at = own
+    if own_hash != final_hash:
+        return _refuse(
+            "holdout",
+            [f"the study's holdout ran frozen version {own_hash[:12]}, not the final grid point's {final_hash[:12]}"],
         )
+    if not todo:
+        return _refuse("holdout", [f"study {stored.name!r} already ran its holdout and every benchmark"])
+    if data_end_at is None:
+        return _refuse("holdout", [f"study {stored.name!r}: the holdout run has no data_end_at"])
+    start = Thresholds.from_json(stored.thresholds).holdout_start
+    end = (data_end_at - timedelta(microseconds=1)).astimezone(UTC).date()  # data_end_at is the exclusive midnight
+    log.info(
+        "lab_holdout_resumed",
+        extra={"fields": {"study": stored.name, "benchmarks": todo, "range": [str(start), str(end)]}},
+    )
+    return _run_benchmarks(settings, stored, store, base, kind, todo, start, end)
+
+
+def _run_benchmarks(
+    settings: LabSettings,
+    stored: StudyRow,
+    store: StudyStore,
+    base: LoadedCandleRun,
+    kind: StrategyKind,
+    names: list[str],
+    start: date,
+    end: date,
+) -> int:
+    """Each named benchmark once over ``start``..``end`` as a candle run (AC-4); stops at the first failure."""
     for name in names:
-        if name in have:
-            continue
         bench = _benchmark_run(BENCHMARK_FILES[name], base, start, end)
         bench_entry = registry_entry(name)
         bench_variant = CandleVariantSpec("base", bench.run.slippage_bps)
         context = _context(
             store,
-            study_row,
+            stored,
             StudyRole.BENCHMARK,
             name,
             bench_entry.kind,
             bench.run.instrument_id,
             {bench_variant.name: None},
-            studied=(base.run.strategy.name, entry.kind),
+            studied=(base.run.strategy.name, kind),
         )
         code = backtest(settings, bench, store, variants=[bench_variant], study=context)
         if code != EXIT_OK:

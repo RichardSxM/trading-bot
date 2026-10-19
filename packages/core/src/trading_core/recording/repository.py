@@ -1002,6 +1002,37 @@ def holdout_spent(session: Session, frozen_hash: str) -> bool:
     )
 
 
+def study_holdout(session: Session, study_id: UUID) -> tuple[str, datetime | None] | None:
+    """This study's completed holdout run as ``(frozen_hash, data_end_at)``, or None (AC-5, the resume rule)."""
+    row = session.execute(
+        select(models.StudyRun.frozen_hash, models.StrategyRun.data_end_at)
+        .join(models.StrategyRun, models.StrategyRun.id == models.StudyRun.run_id)
+        .where(
+            models.StudyRun.study_id == study_id,
+            models.StudyRun.role == StudyRole.HOLDOUT,
+            models.StudyRun.status == RunStatus.COMPLETED,
+        )
+    ).first()
+    return None if row is None else (row[0], row[1])
+
+
+def completed_benchmarks(session: Session, study_id: UUID) -> set[str]:
+    """The strategy names of the study's completed benchmark runs (AC-4)."""
+    return set(
+        session.execute(
+            select(models.Strategy.name)
+            .join(models.StrategyVersion, models.StrategyVersion.strategy_id == models.Strategy.id)
+            .join(models.StrategyRun, models.StrategyRun.strategy_version_id == models.StrategyVersion.id)
+            .join(models.StudyRun, models.StudyRun.run_id == models.StrategyRun.id)
+            .where(
+                models.StudyRun.study_id == study_id,
+                models.StudyRun.role == StudyRole.BENCHMARK,
+                models.StudyRun.status == RunStatus.COMPLETED,
+            )
+        ).scalars()
+    )
+
+
 def study_lock_key(study_id: UUID) -> int:
     """The advisory lock key of a study: its id's first 8 bytes as a signed 64 bit integer."""
     return int.from_bytes(study_id.bytes[:8], "big", signed=True)

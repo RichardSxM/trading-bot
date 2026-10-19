@@ -8,12 +8,12 @@ import pytest
 from sqlalchemy import create_engine, func, select
 
 from lab.runfile import RunFileError
-from lab.study import EXIT_OK, EXIT_USAGE, StudyStore, load_study, run_holdout, run_study
+from lab.study import EXIT_FAILED, EXIT_OK, EXIT_USAGE, StudyStore, load_study, run_holdout, run_study
 from trading_core.gate.verdict import evaluate_candidate
 from trading_core.lab.candles import Month
 from trading_core.recording import models
 from trading_core.recording.bundle_codec import parse_bundle
-from trading_core.recording.gate_queries import study_evidence
+from trading_core.recording.gate_queries import study_detail, study_evidence
 from trading_core.recording.rows import RunBundle, StudyRunRow
 from trading_core.secrets import POSTGRES_PASSWORD, read_secret
 from trading_core.settings import Settings
@@ -116,7 +116,7 @@ def _study_run(bundle: RunBundle) -> StudyRunRow:
 
 
 @pytest.mark.postgres
-def test_a_candle_study_runs_resumes_and_spends_its_holdout_once(tmp_path):
+def test_a_candle_study_runs_resumes_and_spends_its_holdout_once(tmp_path, monkeypatch):
     """Runs in the lab service: ``docker compose --profile lab run --rm -T --entrypoint pytest lab -q -m postgres``."""
     catalog, reports = tmp_path / "catalog", tmp_path / "reports"
     _catalog(catalog)
@@ -143,15 +143,31 @@ def test_a_candle_study_runs_resumes_and_spends_its_holdout_once(tmp_path):
         other = load_study(_write(tmp_path, text.replace("seed = 42", "seed = 1"), "o"))
         assert run_study(settings, other, store) == EXIT_USAGE
 
+        # Stopped before its benchmarks: the holdout lands, no benchmark does.
+        monkeypatch.setattr("lab.study.benchmark_names", lambda kind, studied: ())
+        assert run_holdout(settings, name, store) == EXIT_OK
+        monkeypatch.undo()
+        assert sorted(_study_run(b).role for b in _bundles(reports)) == ["development", "development", "holdout"]
+
+        # The catalog end moves on. A benchmark failing during the resume exits 1 and reruns no holdout.
+        synthetic_month(catalog, month=Month(2025, 11), days=12)
+        monkeypatch.setattr("lab.study.backtest", lambda *args, **kwargs: EXIT_FAILED)
+        assert run_holdout(settings, name, store) == EXIT_FAILED
+        monkeypatch.undo()
+
+        # The resume runs only the missing benchmark, over the stored holdout range; a study of
+        # macd_baseline never runs a macd_baseline benchmark (AC-4).
         assert run_holdout(settings, name, store) == EXIT_OK
         roles = sorted((_study_run(b).role, b.strategy_name or "") for b in _bundles(reports))
         assert roles == [
             ("benchmark", "buy_and_hold"),
-            ("benchmark", "macd_baseline"),
             ("development", "macd_baseline"),
             ("development", "macd_baseline"),
             ("holdout", "macd_baseline"),
         ]
+        bench = next(b for b in _bundles(reports) if _study_run(b).role == "benchmark")
+        assert bench.run.data_end_at is not None
+        assert bench.run.data_end_at.date().isoformat() == "2025-11-06"  # the holdout's range, not the new end
         holdout = next(b for b in _bundles(reports) if _study_run(b).role == "holdout")
         assert holdout.run.data_start_at is not None
         assert holdout.run.data_end_at is not None
@@ -165,8 +181,15 @@ def test_a_candle_study_runs_resumes_and_spends_its_holdout_once(tmp_path):
             before = session.execute(select(func.count()).select_from(models.Promotion)).scalar_one()
             preview = evaluate_candidate(study_evidence(session, name).inputs)
             after = session.execute(select(func.count()).select_from(models.Promotion)).scalar_one()
+            assert holdout.study is not None
+            detail = study_detail(session, holdout.study.id)
         assert preview.verdict.value in {"pass", "fail", "insufficient"}
+        assert preview.metrics["beats_macd_baseline_applicable"] is False
+        assert "missing_benchmark" not in {r.code for r in preview.reasons}
         assert before == after
+        # Two grid points, the holdout sharing one's frozen hash, and the benchmark left out (AC-19).
+        assert detail is not None
+        assert detail.trials == 2
 
         assert run_holdout(settings, name, store) == EXIT_USAGE
         with store.session() as session:

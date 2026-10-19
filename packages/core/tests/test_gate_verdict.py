@@ -1,4 +1,5 @@
-"""covers: spec 0015 AC-10, AC-12 (the checks and the fail before insufficient before pass rule)."""
+"""covers: spec 0015 AC-4 (the shared benchmark rule), AC-10, AC-12 (the checks and the fail before
+insufficient before pass rule)."""
 
 import random
 from dataclasses import replace
@@ -6,7 +7,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from uuid import UUID
 
-from trading_core.gate.checks import Reason
+from trading_core.gate.checks import Reason, benchmark_names
 from trading_core.gate.inputs import (
     BUY_AND_HOLD,
     MACD_BASELINE,
@@ -79,6 +80,7 @@ def _inputs(*, holdout_drift=0.004, bench_drift=0.0, kind="hour_level", trades=1
     base = CandidateInputs(
         study_id=UUID(int=7),
         lab=Lab.CANDLE,
+        strategy_name="macd_x",
         strategy_kind=kind,
         thresholds=THRESHOLDS,
         seed=1,
@@ -124,6 +126,28 @@ def test_a_scalping_study_needs_only_buy_and_hold():
     inputs = replace(inputs, runs=tuple(r for r in inputs.runs if r.strategy != MACD_BASELINE))
 
     assert evaluate_candidate(inputs).verdict == GateVerdict.PASS
+
+
+def test_the_benchmark_rule_drops_the_studied_strategy_by_name():
+    assert benchmark_names("hour_level", "macd_x") == (BUY_AND_HOLD, MACD_BASELINE)
+    assert benchmark_names("hour_level", MACD_BASELINE) == (BUY_AND_HOLD,)
+    assert benchmark_names("scalping", "random_taker") == (BUY_AND_HOLD,)
+    assert benchmark_names("hour_level", BUY_AND_HOLD) == (MACD_BASELINE,)
+
+
+def test_a_study_of_a_benchmark_strategy_skips_that_comparison():
+    inputs = _inputs(strategy_name=MACD_BASELINE)
+    inputs = replace(
+        inputs, runs=tuple(r for r in inputs.runs if r.strategy != MACD_BASELINE or r.role != Role.BENCHMARK)
+    )
+
+    result = evaluate_candidate(inputs)
+
+    assert result.reasons == ()
+    assert result.verdict == GateVerdict.PASS
+    assert result.metrics["beats_macd_baseline_applicable"] is False
+    assert result.metrics["macd_baseline_sharpe"] is None
+    assert result.metrics["beats_buy_and_hold_applicable"] is True
 
 
 def test_missing_evidence_is_insufficient_and_never_a_pass():

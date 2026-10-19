@@ -259,7 +259,7 @@ def evaluate_candidate(inputs: CandidateInputs) -> GateResult:
     check_trade_floor(inputs, holdout, out)
     check_fee_hurdle(inputs, holdout, out)
     holdout_sharpe = check_holdout_sharpe(series, out)
-    for strategy in BENCHMARKS.get(inputs.strategy_kind, BENCHMARKS["scalping"]):
+    for strategy in BENCHMARKS.get(inputs.strategy_kind, BENCHMARKS["scalping"]):  # self benchmark: not applicable
         check_beats_benchmark(inputs, series, holdout_sharpe, strategy, out)
     points = _development_points(inputs)
     folds = _walk_forward(inputs, points, out)

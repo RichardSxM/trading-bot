@@ -101,11 +101,13 @@ class CandidateInputs:
     """Everything ``evaluate_candidate`` reads for one study.
 
     ``code_hash`` is the final version's (None when it predates spec 0015). ``trial_count`` is N for
-    the deflated Sharpe: distinct frozen hashes over every study run of the strategy, failed ones too.
+    the deflated Sharpe: distinct frozen hashes over the strategy's development and holdout study
+    runs, failed ones too (benchmarks are yardsticks, not attempts).
     """
 
     study_id: UUID
     lab: Lab
+    strategy_name: str
     strategy_kind: str
     thresholds: Thresholds
     seed: int
