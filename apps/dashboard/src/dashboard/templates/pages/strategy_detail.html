@@ -1,0 +1,22 @@
+{% extends "shell.html" %}
+{% from "components/table.html" import table %}
+{% block page %}
+<div class="board">
+  <section class="region region--wide" aria-labelledby="study-h">
+    <header class="region__head"><h2 class="region__title" id="study-h">{{ detail_title }}</h2><span class="region__meta">{{ trials }} trial{{ "" if trials == 1 else "s" }} in this study · <a href="/strategies">back to the ranking</a></span></header>
+    {{ table("Study summary", ranking_columns, ranking, "No numbers yet.") }}
+  </section>
+  <section class="region region--wide" aria-labelledby="folds-h">
+    <header class="region__head"><h2 class="region__title" id="folds-h">Walk forward folds</h2><span class="region__meta">latest evaluation · the in sample winner, scored out of sample</span></header>
+    {{ table("Walk forward folds", fold_columns, folds, "Folds appear once the study is evaluated.") }}
+  </section>
+  <section class="region region--wide" aria-labelledby="figures-h">
+    <header class="region__head"><h2 class="region__title" id="figures-h">Bounds, benchmarks, and concentration</h2></header>
+    {{ table("Bounds, benchmarks, and concentration", [("Measure", False), ("Value", True)], figures, "No numbers yet.") }}
+  </section>
+  <section class="region region--wide" aria-labelledby="attempts-h">
+    <header class="region__head"><h2 class="region__title" id="attempts-h">Every attempt</h2><span class="region__meta">newest first · times in UTC</span></header>
+    {{ table("Every attempt", attempt_columns, attempts, "No evaluation yet.") }}
+  </section>
+</div>
+{% endblock %}

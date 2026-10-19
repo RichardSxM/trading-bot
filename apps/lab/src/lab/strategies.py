@@ -19,6 +19,7 @@ from nautilus_trader.model.data import BarSpecification
 from nautilus_trader.model.enums import BarAggregation, PriceType
 
 from lab.probes import PeekProbe, RaiseProbe, RaiseProbeConfig
+from trading_core import versioning
 from trading_core.lab.candles import CANDLE_STALE_CHECK_S
 from trading_core.node.buy_and_hold import STRATEGY_NAME as BUY_AND_HOLD
 from trading_core.node.buy_and_hold import BuyAndHold, BuyAndHoldConfig
@@ -30,9 +31,11 @@ from trading_core.node.placeholder import PlaceholderConfig, PlaceholderTimed, R
 from trading_core.node.random_taker import RandomTaker, RandomTakerConfig
 from trading_core.node.strategy import KfsStrategy, PauseGate
 from trading_core.recording.enums import Env, StrategyKind
+from trading_core.recording.rows import JsonObject
 from trading_core.recording.spool import WriteItem
 from trading_core.risk.check import RiskLimits
 from trading_core.strategy.blocks import EntryBlocks
+from trading_core.versioning import FrozenHashes
 
 type ConfigValue = int | str | bool
 type Factory = Callable[[StrategyConfig, PauseGate, EntryBlocks, Record], KfsStrategy]
@@ -128,6 +131,13 @@ class StrategyEntry:
     default_entry_mode: str | None = None
     # ``lab replay`` runs scalping strategies, ``lab backtest`` hour level ones (spec 0014 AC-11).
     kind: StrategyKind = StrategyKind.SCALPING
+    # The ``trading_core.node`` module the strategy class lives in, for its frozen hashes (spec 0015
+    # AC-1). None for a test probe, whose versions keep NULL hashes and so can never be promoted.
+    module: str | None = None
+
+    def frozen(self, config: JsonObject) -> FrozenHashes | None:
+        """The version's ``code_hash`` and ``frozen_hash`` with ``config``; None for a strategy without a module."""
+        return None if self.module is None else versioning.freeze(self.module, config)
 
     def entry_mode(self, user: Mapping[str, ConfigValue]) -> str | None:
         """The entry mode ``[strategy.config]`` gives, else the default; None for a strategy without one."""
@@ -280,12 +290,14 @@ def _raise_probe(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, r
 REGISTRY: Final[Mapping[str, StrategyEntry]] = {
     "random_taker": StrategyEntry(
         name="random_taker",
+        module=RandomTaker.__module__,
         config_cls=RandomTakerConfig,
         factory=_random_taker,
         run_fields=_random_taker_fields,
     ),
     "maker_probe": StrategyEntry(
         name="maker_probe",
+        module=MakerProbe.__module__,
         config_cls=MakerProbeConfig,
         factory=_maker_probe,
         run_fields=_random_taker_fields,
@@ -294,6 +306,7 @@ REGISTRY: Final[Mapping[str, StrategyEntry]] = {
     # The paper loop's own strategy, for the parity check (AC-15); its run file uses [paper].
     PLACEHOLDER: StrategyEntry(
         name=PLACEHOLDER,
+        module=PlaceholderTimed.__module__,
         config_cls=PlaceholderConfig,
         factory=_placeholder,
         run_fields=_placeholder_fields,
@@ -301,6 +314,7 @@ REGISTRY: Final[Mapping[str, StrategyEntry]] = {
     # Candle lab strategies (spec 0014): hour level, run by ``lab backtest`` only.
     BUY_AND_HOLD: StrategyEntry(
         name=BUY_AND_HOLD,
+        module=BuyAndHold.__module__,
         config_cls=BuyAndHoldConfig,
         factory=_buy_and_hold,
         run_fields=_candle_fields,
@@ -308,6 +322,7 @@ REGISTRY: Final[Mapping[str, StrategyEntry]] = {
     ),
     MACD_BASELINE: StrategyEntry(
         name=MACD_BASELINE,
+        module=MacdBaseline.__module__,
         config_cls=MacdBaselineConfig,
         factory=_macd_baseline,
         run_fields=_candle_fields,

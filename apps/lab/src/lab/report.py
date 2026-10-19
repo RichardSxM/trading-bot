@@ -8,18 +8,15 @@ runs of the same inputs goes in, except ``run_id``, ``batch_id``, ``started_at``
 ``ended_at`` (AC-12).
 """
 
-import dataclasses
 import json
 from collections.abc import Sequence
-from datetime import datetime
 from decimal import Decimal
-from enum import Enum
 from pathlib import Path
 from typing import Literal
-from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
+from trading_core.recording.bundle_codec import bundle_json
 from trading_core.recording.rows import JsonValue, RunBundle, ns_to_utc
 
 Status = Literal["completed", "failed", "interrupted"]
@@ -145,26 +142,9 @@ class LabReport(_Model):
     candle: CandleReport | None = None
 
 
-def _plain(value: object) -> object:
-    if isinstance(value, Decimal):
-        return format(value, "f")
-    if isinstance(value, UUID):
-        return str(value)
-    if isinstance(value, datetime):
-        return value.isoformat()
-    if isinstance(value, Enum):
-        return value.value
-    raise TypeError(f"{type(value).__name__} is not JSON serializable")
-
-
 def report_json(report: LabReport) -> str:
     """The report as JSON with sorted keys."""
     return json.dumps(report.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
-
-
-def bundle_json(bundle: RunBundle) -> str:
-    """The exact bundle written to Postgres, in the report's encoding, for feature 15."""
-    return json.dumps(dataclasses.asdict(bundle), indent=2, sort_keys=True, default=_plain) + "\n"
 
 
 def _utc(ns: int) -> str:

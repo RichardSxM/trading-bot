@@ -24,6 +24,7 @@ from trading_core.recording.enums import (
     ControlOutcome,
     DecidedBy,
     Env,
+    EquityBasis,
     FundingSource,
     Granularity,
     InstrumentKind,
@@ -43,6 +44,9 @@ from trading_core.recording.enums import (
     Sample,
     Severity,
     Stage,
+    StrategyKind,
+    StudyLab,
+    StudyRole,
     TimeInForce,
     Verdict,
 )
@@ -409,6 +413,36 @@ class PromotionRow(_Row):
     decided_by: DecidedBy
     notes: str | None = None
     decided_at: datetime
+    # Spec 0015: what a gate decision rests on. A manual promotion has no study and no reasons.
+    frozen_hash: str | None = None
+    study_id: UUID | None = None
+    thresholds_hash: str | None = None
+    reasons: Sequence[JsonValue] = ()
+    metrics: JsonObject = field(default_factory=dict)
+    gate_commit: str | None = None
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        # Stored JSONB comes back as a list of plain values; compare like with like.
+        object.__setattr__(self, "reasons", json.loads(canonical_json(list(self.reasons))))
+
+
+@dataclass(frozen=True, kw_only=True)
+class PromotionFoldRow(_Row):
+    """One walk forward fold an evaluation scored (``promotion_folds``, spec 0015 AC-9)."""
+
+    promotion_id: UUID
+    fold: int
+    is_start: date
+    is_end: date
+    oos_start: date
+    oos_end: date
+    chosen_grid_point: int
+    is_sharpe: Decimal | None = None
+    oos_sharpe: Decimal | None = None
+    oos_return: Decimal
+    oos_trades: int
+    oos_net_pnl: Decimal
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -423,8 +457,93 @@ class FxRateRow(_Row):
 
 
 @dataclass(frozen=True, kw_only=True)
+class StrategyVersionRow(_Row):
+    """A strategy version as a bundle carries it to the VPS (``strategy_versions``, spec 0015 AC-7).
+
+    ``strategy_id`` is the laptop's; ``import_run_bundle`` maps it to the VPS strategy of the same name.
+    """
+
+    id: UUID
+    strategy_id: UUID
+    git_commit: str
+    config: JsonObject
+    version_hash: str
+    code_hash: str | None = None
+    frozen_hash: str | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class StudyRow(_Row):
+    """A study and its frozen plan and thresholds (``studies``, spec 0015 AC-2)."""
+
+    id: UUID = field(default_factory=uuid.uuid7)
+    strategy_id: UUID
+    name: str
+    lab: StudyLab
+    code_hash: str
+    plan: JsonObject
+    plan_hash: str
+    thresholds: JsonObject
+    thresholds_hash: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class StudyRunRow(_Row):
+    """A run's role in its study (``study_runs``, spec 0015 AC-3); ``grid_point`` is None for a benchmark."""
+
+    study_id: UUID
+    run_id: UUID
+    role: StudyRole
+    grid_point: int | None = None
+    frozen_hash: str
+    status: RunStatus
+
+
+@dataclass(frozen=True, kw_only=True)
+class DailyEquityRow(_Row):
+    """Equity at one UTC day's close (``run_daily_equity``, spec 0015 AC-6)."""
+
+    run_id: UUID
+    env: Env
+    day: date
+    equity_close: Decimal
+    basis: EquityBasis
+    trades_closed: int
+    fees: Decimal
+    funding: Decimal
+    currency: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class RunMeasuresRow(_Row):
+    """A run's drawdown, splits, concentration, and cost per trade (``run_measures``, spec 0015)."""
+
+    run_id: UUID
+    env: Env
+    drawdown_basis: EquityBasis
+    marked_max_drawdown: Decimal | None = None
+    longest_drawdown_hours: int | None = None
+    exposure: Decimal | None = None
+    long_trades: int
+    long_net_pnl: Decimal
+    short_trades: int
+    short_net_pnl: Decimal
+    profit_factor: Decimal | None = None
+    expectancy: Decimal | None = None
+    top_trades_profit_share: Decimal | None = None
+    avg_gross_edge: Decimal | None = None
+    avg_round_trip_cost: Decimal | None = None
+    currency: str
+
+
+@dataclass(frozen=True, kw_only=True)
 class RunBundle:
-    """A finished backtest or replay, written in one transaction by ``write_run_bundle``."""
+    """A finished backtest or replay, written in one transaction by ``write_run_bundle``.
+
+    Spec 0015 adds optional parts, so a plain ``lab backtest`` bundle stays valid: what the VPS needs
+    to recreate the version (``strategy_name``, ``strategy_kind``, ``version``, ``instrument``), and a
+    study run's ``study``, ``study_run``, ``daily_equity``, and ``measures``.
+    """
 
     run: RunRow
     results: Sequence[RunResultRow] = ()
@@ -437,3 +556,15 @@ class RunBundle:
     # Spec 0008: a replay's fill stats, and the risk events its strategy emitted.
     fill_stats: Sequence[RunFillStatsRow] = ()
     risk_events: Sequence[RiskEventRow] = ()
+    # Spec 0015.
+    strategy_name: str | None = None
+    strategy_kind: StrategyKind | None = None
+    version: StrategyVersionRow | None = None
+    instrument: InstrumentRow | None = None
+    study: StudyRow | None = None
+    # The studied strategy (a benchmark run's own strategy differs), to map the study's strategy id.
+    study_strategy_name: str | None = None
+    study_strategy_kind: StrategyKind | None = None
+    study_run: StudyRunRow | None = None
+    daily_equity: Sequence[DailyEquityRow] = ()
+    measures: RunMeasuresRow | None = None

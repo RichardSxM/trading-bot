@@ -1,10 +1,21 @@
 {% extends "shell.html" %}
-{% from "components/states.html" import empty_state %}
+{% from "components/table.html" import table %}
+{% from "components/states.html" import error_state %}
 {% block page %}
 <div class="board">
   <section class="region region--wide" aria-labelledby="strategies-h">
-    <header class="region__head"><h2 class="region__title" id="strategies-h">Backtests</h2></header>
-    {{ empty_state("Backtests and strategy scores appear here.", glyph="flask-conical") }}
+    <header class="region__head"><h2 class="region__title" id="strategies-h">Strategy ranking</h2><span class="region__meta">by walk forward Sharpe on unseen data · win rate shown, never ranked on · <a href="/strategies/log">promotion log</a></span></header>
+    {% if strategies_error %}
+    {{ error_state("Strategies unavailable.", " The dashboard cannot read Postgres right now. Reload in a moment.") }}
+    {% else %}
+    {{ table("Strategy ranking", ranking_columns, ranking, "Backtests and strategy scores appear here.", empty_glyph="flask-conical") }}
+    {% endif %}
   </section>
+  {% if paper %}
+  <section class="region region--wide" aria-labelledby="paper-h">
+    <header class="region__head"><h2 class="region__title" id="paper-h">Paper progress</h2><span class="region__meta">versions in paper · against the paper → live checks, computed now</span></header>
+    {{ table("Paper progress", paper_columns, paper, "No version is in paper.") }}
+  </section>
+  {% endif %}
 </div>
 {% endblock %}

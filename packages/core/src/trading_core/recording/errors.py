@@ -54,7 +54,11 @@ class MissingEvidenceError(RecordingError):
 
 
 class PromotionRequiredError(RecordingError):
-    """A live run for a version whose latest ``paper → live`` promotion is missing or failed."""
+    """A paper or live run for a version whose latest promotion into that stage is missing or not a pass (spec 0015)."""
+
+
+class ManualLivePromotionError(RecordingError):
+    """A manual promotion to live: only the gate may promote a version to live (spec 0015 AC-15)."""
 
 
 class UnknownCommitError(RecordingError):

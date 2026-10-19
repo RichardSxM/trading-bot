@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Receive lab bundle files and import them (spec 0015 AC-7). Linked as /usr/local/sbin/kfs-bundles.
+#
+#   tar cf - <batch>/*.bundle.json | ssh kfs@kfs-vps sudo -n kfs-bundles
+#                       # run by scripts/push-bundles.sh on the laptop, never by hand
+#
+# Reads a tar on stdin and keeps only its *.bundle.json members, unpacked into
+# /var/lib/kfs/bundles/<batch>/ (root owned, world readable, so the gate container's
+# app user can read the read only mount). Absolute paths and `..` are refused by tar.
+# Then runs `kfs-compose run --rm gate import` and exits with its status: 0 all loaded or
+# already there, 1 a file was refused (the others still loaded).
+set -euo pipefail
+
+KFS_PROCESS=kfs-bundles
+HOST_DIR=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+# shellcheck source=deploy/host/lib.sh
+. "$HOST_DIR/lib.sh"
+
+BUNDLE_DIR="$KFS_STATE_DIR/bundles"
+
+[ "$(id -u)" -eq 0 ] || { echo "kfs-bundles: run as root (sudo -n kfs-bundles)" >&2; exit 1; }
+install -d -m 0755 -o root -g root "$BUNDLE_DIR"
+tmp=$(mktemp -d "$BUNDLE_DIR/.incoming.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT
+tar -x -f - -C "$tmp" --no-same-owner --no-same-permissions --wildcards '*.bundle.json'
+count=0
+while IFS= read -r -d '' file; do
+    rel=${file#"$tmp"/}
+    install -D -m 0644 -o root -g root "$file" "$BUNDLE_DIR/$rel"
+    count=$((count + 1))
+done < <(find "$tmp" -type f -name '*.bundle.json' -print0)
+echo "kfs-bundles: received $count bundle file(s) into $BUNDLE_DIR"
+exec /usr/local/sbin/kfs-compose run --rm gate import

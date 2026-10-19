@@ -391,16 +391,31 @@ def load_candle_run(path: Path, overrides: Overrides, *, test_strategies: bool =
 
     Raises ``RunFileError`` listing every problem found (exit 64).
     """
+    data, raw = read_toml(path)
+    return candle_run_from_raw(str(path), data, raw, overrides, test_strategies=test_strategies)
+
+
+def read_toml(path: Path) -> tuple[bytes, dict[str, object]]:
+    """A TOML file's bytes and its parsed tables; ``RunFileError`` when it cannot be read or parsed."""
     try:
         data = path.read_bytes()
     except OSError as exc:
         raise RunFileError([f"{path}: cannot read ({exc.strerror})"]) from None
     try:
-        raw = tomllib.loads(data.decode("utf-8"))
+        return data, tomllib.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         raise RunFileError([f"{path}: not valid TOML ({exc})"]) from None
+
+
+def candle_run_from_raw(
+    path: str, data: bytes, raw: Mapping[str, object], overrides: Overrides, *, test_strategies: bool = False
+) -> LoadedCandleRun:
+    """Validate parsed candle run file tables (``load_candle_run`` after reading, or a study's stored plan).
+
+    Raises ``RunFileError`` listing every problem found (exit 64).
+    """
     try:
-        run = CandleRunFile.model_validate(_apply(raw, overrides))
+        run = CandleRunFile.model_validate(_apply(dict(raw), overrides))
     except ValidationError as exc:
         problems = [f"{_location(e['loc'])}: {e['msg']}" for e in exc.errors(include_url=False, include_input=False)]
         raise RunFileError(problems) from None
@@ -420,7 +435,7 @@ def load_candle_run(path: Path, overrides: Overrides, *, test_strategies: bool =
     if issues:
         raise RunFileError(issues)
     return LoadedCandleRun(
-        path=str(path),
+        path=path,
         sha256=hashlib.sha256(data).hexdigest(),
         run=run,
         bar_spec=str(bar_spec),

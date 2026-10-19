@@ -5,7 +5,8 @@ Roles are cluster wide and live outside Alembic, so a downgrade leaves them in p
 it again only resets the passwords and grants, so it is safe to repeat. The owner password and
 each required role password are secret files (spec 0003); an unusable one stops it with exit 1
 and one JSON error line. The lab role's password (spec 0008) is optional: the laptop has it,
-the VPS does not, and without it the role exists but cannot log in (``NOLOGIN``).
+the VPS does not, and without it the role exists but cannot log in (``NOLOGIN``). The gate role's
+password (spec 0015) is optional the same way: the VPS has it, a laptop may.
 """
 
 import logging
@@ -21,7 +22,14 @@ from psycopg.rows import TupleRow
 from pydantic import SecretStr, ValidationError
 
 from trading_core.logs import configure_logging
-from trading_core.secrets import POSTGRES_LAB_PASSWORD, POSTGRES_PASSWORD, SecretUnavailable, load_required, read_secret
+from trading_core.secrets import (
+    POSTGRES_GATE_PASSWORD,
+    POSTGRES_LAB_PASSWORD,
+    POSTGRES_PASSWORD,
+    SecretUnavailable,
+    load_required,
+    read_secret,
+)
 from trading_core.settings import Settings
 
 log = logging.getLogger(__name__)
@@ -32,7 +40,9 @@ BACKUP_ROLE: Final = "backup_app"
 LAB_ROLE: Final = "lab_app"
 # The alerter (spec 0013): writes only the ``alerts`` table, reads fills and positions.
 ALERTER_ROLE: Final = "alerter_app"
-APP_ROLES: Final = (TRADER_ROLE, DASHBOARD_ROLE, BACKUP_ROLE, LAB_ROLE, ALERTER_ROLE)
+# The promotion gate (spec 0015): imports lab bundles and appends promotions; never updates or deletes.
+GATE_ROLE: Final = "gate_app"
+APP_ROLES: Final = (TRADER_ROLE, DASHBOARD_ROLE, BACKUP_ROLE, LAB_ROLE, ALERTER_ROLE, GATE_ROLE)
 
 # Each app role's password file as the migrate service mounts it.
 ROLE_SECRETS: Final = {
@@ -42,7 +52,7 @@ ROLE_SECRETS: Final = {
     ALERTER_ROLE: "postgres_alerter_password",
 }
 # Roles whose password file may be absent; such a role is created or reset NOLOGIN.
-OPTIONAL_ROLE_SECRETS: Final = {LAB_ROLE: POSTGRES_LAB_PASSWORD}
+OPTIONAL_ROLE_SECRETS: Final = {LAB_ROLE: POSTGRES_LAB_PASSWORD, GATE_ROLE: POSTGRES_GATE_PASSWORD}
 # Everything role setup and Alembic need: the owner password, then the role passwords.
 MIGRATE_SECRETS: Final = (POSTGRES_PASSWORD, *ROLE_SECRETS.values())
 

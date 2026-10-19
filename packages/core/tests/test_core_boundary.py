@@ -8,6 +8,7 @@ host.
 """
 
 import ast
+import sys
 from pathlib import Path
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "trading_core"
@@ -116,4 +117,42 @@ def test_the_purity_check_catches_io_and_other_core_modules(tmp_path):
     assert impure(tmp_path) == [
         "alerts/bad.py:1 imports redis",
         "alerts/bad.py:2 imports trading_core.recording.models",
+    ]
+
+
+# Spec 0015 AC-23: the gate imports only the standard library (no I/O or clock module) and itself.
+GATE_FORBIDDEN_STDLIB = IO | {"time", "shutil", "sqlite3", "urllib", "http", "importlib"}
+
+
+def gate_impure(root):
+    """One line per import in ``gate/`` of a non stdlib package, an I/O or clock module, or another core module."""
+    found = []
+    for path in sorted((root / "gate").rglob("*.py")):
+        relative = path.relative_to(root)
+        for line, name in imports(path):
+            top = name.split(".")[0]
+            if top == "trading_core":
+                ok = name == "trading_core.gate" or name.startswith("trading_core.gate.")
+            else:
+                ok = top in sys.stdlib_module_names and top not in GATE_FORBIDDEN_STDLIB
+            if not ok:
+                found.append(f"{relative}:{line} imports {name}")
+    return found
+
+
+def test_the_gate_imports_only_the_stdlib_and_itself():
+    assert (SRC / "gate").is_dir()
+    assert gate_impure(SRC) == []
+
+
+def test_the_gate_check_catches_third_party_io_and_other_core_modules(tmp_path):
+    (tmp_path / "gate").mkdir()
+    (tmp_path / "gate" / "ok.py").write_text("import math\nfrom trading_core.gate.series import sharpe\n")
+    (tmp_path / "gate" / "bad.py").write_text(
+        "import pydantic\nimport time\nfrom trading_core.recording.rows import canonical_json\n"
+    )
+    assert gate_impure(tmp_path) == [
+        "gate/bad.py:1 imports pydantic",
+        "gate/bad.py:2 imports time",
+        "gate/bad.py:3 imports trading_core.recording.rows",
     ]

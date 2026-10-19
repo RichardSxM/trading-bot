@@ -156,6 +156,8 @@ services:
       - postgres_alerter_password
       # Optional: without it the lab role is created NOLOGIN. compose.vps.yaml leaves it out.
       - postgres_lab_password
+      # The promotion gate's role (spec 0015); scripts/dev-secrets.sh makes it on the laptop.
+      - postgres_gate_password
     depends_on:
       # Only where the laptop profile runs it (the clock service); ignored on the VPS.
       clock:
@@ -557,6 +559,40 @@ services:
       - .:/app
       - tools-cache:/cache
 
+  gate:
+    # The promotion gate (spec 0015), never started by `up`: run it as `kfs-compose run --rm gate import`
+    # or `gate evaluate <study>` on the VPS. Core only (no NautilusTrader), so it runs in either
+    # TRADING_ENV; what it imports is always demo. Reads the bundle files scripts/push-bundles.sh copies.
+    profiles: ["gate"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: ${IMAGE_TARGET:-runtime}
+      args:
+        PACKAGE: gate
+        APP_DIR: apps/gate
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
+    image: ${KFS_IMAGE_PREFIX:-kfs/}gate:${KFS_TAG:-${IMAGE_TARGET:-runtime}}
+    restart: "no"
+    logging: *logging
+    entrypoint: ["gate"]
+    environment:
+      <<: [*base-env, *app-db-env]
+      PROCESS_NAME: gate
+      POSTGRES_USER: gate_app
+      GATE_BUNDLE_DIR: /bundles
+    secrets:
+      - source: postgres_gate_password
+        target: postgres_password
+    volumes:
+      - ${GATE_BUNDLE_HOST_DIR:-./lab-reports}:/bundles:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    mem_limit: 512m
+
   lab:
     # Laptop only replay lab (spec 0008), never started by `up` and never deployed: run it as
     # `docker compose run --rm lab replay <runfile>` (import, parity, and prune take --no-deps).
@@ -628,6 +664,8 @@ secrets:
     file: ${SECRETS_DIR:-./secrets}/redis_dashboard_password
   postgres_alerter_password:
     file: ${SECRETS_DIR:-./secrets}/postgres_alerter_password
+  postgres_gate_password:
+    file: ${SECRETS_DIR:-./secrets}/postgres_gate_password
   redis_alerter_password:
     file: ${SECRETS_DIR:-./secrets}/redis_alerter_password
   pushover_app_token:

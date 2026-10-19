@@ -23,6 +23,7 @@ def test_role_passwords_cover_every_app_role():
         "backup_app": PASSWORDS["postgres_backup_password"],
         "alerter_app": PASSWORDS["postgres_alerter_password"],
         "lab_app": None,
+        "gate_app": None,
     }
     assert set(role_passwords(secrets)) == set(APP_ROLES)
 
@@ -33,6 +34,16 @@ def test_the_lab_password_is_used_when_present():
     secrets = {name: SecretStr(value) for name, value in PASSWORDS.items()} | {"postgres_lab_password": SecretStr(lab)}
 
     assert role_passwords(secrets)["lab_app"] == lab
+
+
+def test_the_gate_password_is_used_when_present():
+    """covers: spec 0015 AC-22 (gate_app logs in only where its password file exists)."""
+    gate = "gate-0123456789abcdef"
+    secrets = {name: SecretStr(value) for name, value in PASSWORDS.items()} | {
+        "postgres_gate_password": SecretStr(gate)
+    }
+
+    assert role_passwords(secrets)["gate_app"] == gate
 
 
 def test_a_missing_lab_password_file_is_skipped(tmp_path):

@@ -43,9 +43,12 @@ from trading_core.recording.enums import (
 from trading_core.recording.rows import DecisionRow, FillRow, InstrumentRow, OrderRow, PositionRow
 from trading_core.secrets import DEFAULT_SECRETS_DIR, POSTGRES_PASSWORD, load_required
 from trading_core.settings import Settings, get_settings
+from trading_core.versioning import FrozenHashes
 
 ALEMBIC_INI = Path(__file__).resolve().parents[2] / "alembic.ini"
 INSTRUMENT = "PF_XBTUSD.KRAKEN"
+# The world version's frozen hashes (spec 0015 AC-1), the same in every test: its commit and config are.
+WORLD_FROZEN = FrozenHashes(code_hash="c" * 64, frozen_hash="f" * 64)
 
 # Captured at import: the autouse clean_env fixture removes these before every test.
 _ENV = {name: value for name, value in os.environ.items() if name.startswith("POSTGRES_")}
@@ -277,7 +280,12 @@ def world(session: Session) -> World:
     """A fresh demo paper run (its own trader id) on a strategy version with a real looking commit."""
     repository.upsert_instrument(session, instrument_row())
     version_id = repository.ensure_strategy_version(
-        session, "tracer", StrategyKind.SCALPING, "0123456789abcdef", {"size": Decimal("0.001"), "window": 20}
+        session,
+        "tracer",
+        StrategyKind.SCALPING,
+        "0123456789abcdef",
+        {"size": Decimal("0.001"), "window": 20},
+        WORLD_FROZEN,
     )
     run_id = repository.start_run(
         session,

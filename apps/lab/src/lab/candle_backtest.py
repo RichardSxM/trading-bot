@@ -14,7 +14,7 @@ SIGTERM writes ``interrupted`` reports and exits 130 (AC-18).
 import logging
 import sys
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -50,6 +50,7 @@ from lab.report import (
 from lab.runfile import LoadedCandleRun
 from lab.settings import LabSettings
 from lab.strategies import registry_entry
+from lab.study_rows import RATIO_KIND, StudyContext, daily_equity_rows, daily_sharpe, measures_row
 from lab.units import TRADER_ID
 from trading_core.catalog.candles import CandleTree
 from trading_core.lab.candle_metrics import MarkFill, TradeOutcome, candle_measures, marked_equity
@@ -62,6 +63,7 @@ from trading_core.lab.candles import (
     carried_rate,
     expected_charge_times,
 )
+from trading_core.lab.daily import ClosedPosition, marked_daily, trade_measures
 from trading_core.lab.errors import FundingRateMissingError, LookaheadMismatchError, ReplayInterruptedError
 from trading_core.lab.funding import FundingPayment, FundingRate, FundingSample, apply_funding
 from trading_core.lab.lookahead import DecidedKey, cut_times, first_mismatch
@@ -71,6 +73,7 @@ from trading_core.marketdata.hours import HOUR_NS
 from trading_core.node.recording import instrument_row
 from trading_core.recording.enums import (
     Env,
+    EquityBasis,
     Intent,
     OrderSide,
     PositionSide,
@@ -80,6 +83,7 @@ from trading_core.recording.enums import (
     Sample,
 )
 from trading_core.recording.rows import JsonValue, RunBundle, RunResultRow, RunRow, ns_to_utc
+from trading_core.thresholds_file import packaged_thresholds
 
 log = logging.getLogger(__name__)
 
@@ -171,6 +175,10 @@ class CandleBatch:
     start_ns: int
     end_ns: int
     tree: CandleTree
+    # Spec 0015: the share of trades ``run_measures.top_trades_profit_share`` counts, and the study
+    # this batch belongs to (None for a plain ``lab backtest``).
+    top_quantile: Decimal = Decimal("0.05")
+    study: StudyContext | None = None
 
 
 def candle_plan(batch: CandleBatch, variant: CandleVariantSpec) -> CandleUnitPlan:
@@ -348,6 +356,17 @@ def build_candle_bundle(
     measures = candle_measures(
         run.starting_balance_usd, curve, trades, batch.start_ns, batch.end_ns, first_close, last_close
     )
+    closed_positions = [
+        ClosedPosition(
+            opening.get(p.id, p.side == PositionSide.LONG),
+            p.last_event_ns,
+            p.realized_pnl,
+            p.fees_total,
+            p.funding_total,
+        )
+        for p in closed
+    ]
+    closes = marked_daily(curve, batch.start_ns, batch.end_ns, run.starting_balance_usd, closed_positions, cash)
     gaps = _gaps(batch)
     run_row = RunRow(
         id=run_id,
@@ -368,6 +387,8 @@ def build_candle_bundle(
         sample=Sample.FULL,
         return_after_costs=metrics.return_after_costs,
         max_drawdown=metrics.max_drawdown,
+        risk_adjusted_ratio=daily_sharpe(closes, run.starting_balance_usd, chained=True),
+        ratio_kind=RATIO_KIND,
         win_rate=metrics.win_rate,
         trade_count=metrics.trade_count,
         fees_total=metrics.fees_total,
@@ -386,7 +407,18 @@ def build_candle_bundle(
         funding=funding,
         risk_events=risk_events,
         fill_stats=[],
+        daily_equity=daily_equity_rows(run_id, closes, EquityBasis.MARKED),
+        measures=measures_row(
+            run_id,
+            EquityBasis.MARKED,
+            trade_measures(closed_positions, batch.top_quantile),
+            marked_max_drawdown=measures.marked_max_drawdown,
+            longest_drawdown_hours=measures.longest_drawdown_hours,
+            exposure=measures.exposure,
+        ),
     )
+    if batch.study is not None:
+        bundle = batch.study.attach(bundle, variant.name)
     results = Results(
         net_pnl=metrics.net_pnl,
         return_after_costs=metrics.return_after_costs,
@@ -466,7 +498,7 @@ def finish_candle_variant(
         bundle, results, candle = build_candle_bundle(batch, variant, unit, started_at=started_at, ended_at=ended_at)
         store.write_bundle(bundle)
     except Exception as exc:
-        return _failed(batch, variant, exc, started_at=started_at)
+        return _failed(batch, variant, exc, started_at=started_at, store=store)
     report = _report(
         batch,
         variant,
@@ -495,13 +527,52 @@ def finish_candle_variant(
     return report
 
 
-def _failed(batch: CandleBatch, variant: CandleVariantSpec, error: Exception, *, started_at: datetime) -> LabReport:
+def trial_bundle(
+    batch: CandleBatch, variant: CandleVariantSpec, status: RunStatus, *, started_at: datetime, ended_at: datetime
+) -> RunBundle | None:
+    """In a study, the run row and ``study_runs`` row of a variant that did not complete, so it still
+    counts as a trial (spec 0015 AC-3); no results, daily equity, or measures. None outside a study."""
+    if batch.study is None:
+        return None
+    run = RunRow(
+        env=Env.DEMO,
+        mode=RunMode.BACKTEST,
+        status=status,
+        strategy_version_id=batch.version_ids[variant.name],
+        trader_id=TRADER_ID,
+        run_config=_run_config(batch, variant, _gaps(batch)),
+        data_start_at=ns_to_utc(batch.start_ns),
+        data_end_at=ns_to_utc(batch.end_ns),
+        started_at=started_at,
+        ended_at=ended_at,
+    )
+    return batch.study.attach(RunBundle(run=run), variant.name)
+
+
+def _write_trial(
+    batch: CandleBatch, variant: CandleVariantSpec, store: Store | None, status: RunStatus, started_at: datetime
+) -> RunBundle | None:
+    bundle = trial_bundle(batch, variant, status, started_at=started_at, ended_at=datetime.now(UTC))
+    if bundle is None or store is None:
+        return None
+    store.write_bundle(bundle)
+    return bundle
+
+
+def _failed(
+    batch: CandleBatch,
+    variant: CandleVariantSpec,
+    error: Exception,
+    *,
+    started_at: datetime,
+    store: Store | None = None,
+) -> LabReport:
     log.error(
         "lab_variant_failed",
         extra={"fields": {"variant": variant.name, "error": f"{error_info(error).type}: {error}"}},
     )
     report = _report(batch, variant, "failed", started_at=started_at, ended_at=datetime.now(UTC), error=error)
-    write_variant(batch.folder, report, None)
+    write_variant(batch.folder, report, _write_trial(batch, variant, store, RunStatus.FAILED, started_at))
     return report
 
 
@@ -513,12 +584,16 @@ def backtest(
     variants: Sequence[CandleVariantSpec] | None = None,
     lookahead_check: bool = False,
     target: Target[CandleUnitPlan, CandleUnitResult] = run_candle_unit,
+    study: Callable[[Mapping[str, uuid.UUID]], StudyContext] | None = None,
+    batch_id: uuid.UUID | None = None,
 ) -> int:
     """Run ``lab backtest`` after validation; returns the exit code.
 
     ``variants`` come from ``expand_candle_variants`` (checked before anything is read); the default
     is the run file's own (``base``, or its grid). ``lookahead_check`` runs the first variant again
-    cut at ``LOOKAHEAD_CUTS`` times (AC-19).
+    cut at ``LOOKAHEAD_CUTS`` times (AC-19). ``study`` builds the batch's study context from the
+    variants' version ids (spec 0015: ``lab study`` and ``lab holdout``); ``batch_id`` names the
+    report folder (a new id when None).
     """
     run = loaded.run
     if variants is None:
@@ -534,13 +609,14 @@ def backtest(
     entry = registry_entry(run.strategy.name, test_strategies=settings.lab_test_strategies)
     instrument = instrument_row(pinned_instrument(run.instrument_id))
     # One strategy version per distinct config; the slippage variants share base's.
+    configs = {v.name: {**run.strategy.config, **v.grid_point} for v in variants}
     version_ids = {
-        v.name: store.prepare(
-            instrument, run.strategy.name, entry.kind, settings.git_commit, {**run.strategy.config, **v.grid_point}
+        name: store.prepare(
+            instrument, run.strategy.name, entry.kind, settings.git_commit, config, entry.frozen(config)
         )
-        for v in variants
+        for name, config in configs.items()
     }
-    batch_id = uuid.uuid7()
+    batch_id = uuid.uuid7() if batch_id is None else batch_id
     batch = CandleBatch(
         batch_id=batch_id,
         loaded=loaded,
@@ -550,6 +626,8 @@ def backtest(
         start_ns=start_ns,
         end_ns=end_ns,
         tree=tree,
+        top_quantile=packaged_thresholds().top_trades_quantile,
+        study=None if study is None else study(version_ids),
     )
     batch.folder.mkdir(parents=True, exist_ok=True)
     log.info(
@@ -676,7 +754,7 @@ def run_candle_batch(
             with interrupts.shield():
                 error = state.error if state.error is not None or not state.cuts else lookahead_error(state)
                 if error is not None:
-                    reports.append(_failed(batch, state.spec, error, started_at=started_at))
+                    reports.append(_failed(batch, state.spec, error, started_at=started_at, store=store))
                 else:
                     assert state.full is not None
                     reports.append(finish_candle_variant(batch, state.spec, state.full, store, started_at=started_at))
@@ -706,6 +784,6 @@ def run_candle_batch(
         now = datetime.now(UTC)
         for v in variants[len(reports) :]:
             report = _report(batch, v, "interrupted", started_at=started_at, ended_at=now)
-            write_variant(batch.folder, report, None)
+            write_variant(batch.folder, report, _write_trial(batch, v, store, RunStatus.ABORTED, started_at))
             reports.append(report)
     return reports, interrupted

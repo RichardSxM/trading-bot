@@ -32,7 +32,7 @@ extend-exclude = [".claude"]
 select = ["E", "W", "F", "I", "B", "UP", "SIM", "RUF", "DTZ", "PT"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["trading_core", "trader", "recorder", "dashboard", "lab", "alerter"]
+known-first-party = ["trading_core", "trader", "recorder", "dashboard", "lab", "alerter", "gate"]
 
 # Strict everywhere; scripts/typecheck.sh runs it once per workspace package, inside Linux
 # (NautilusTrader has no Intel Mac wheel).
