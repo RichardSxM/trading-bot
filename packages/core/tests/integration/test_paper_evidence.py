@@ -31,7 +31,24 @@ def _close_a_trade(session: Session, world: World, realized: str) -> None:
     )
 
 
-def test_without_a_pass_no_paper_run_counts(session: Session, world: World):
+def test_a_run_started_before_the_latest_pass_does_not_count(session: Session, world: World):
+    # The paper guard (AC-14) means every paper run starts after some pass, so the world's run has one
+    # (conftest.paper_pass). A newer pass, dated after the run started, leaves no run to count.
+    repository.record_promotion(
+        session,
+        PromotionRow(
+            strategy_version_id=world.version_id,
+            from_stage=Stage.CANDIDATE,
+            to_stage=Stage.PAPER,
+            verdict=Verdict.PASS,
+            thresholds={},
+            decided_by=DecidedBy.MANUAL,
+            notes="re promoted",
+            decided_at=datetime(2027, 2, 1, tzinfo=UTC),  # after the world's run started (2027-01-15)
+            frozen_hash=WORLD_FROZEN.frozen_hash,
+        ),
+        [],
+    )
     _close_a_trade(session, world, "5")
 
     evidence = paper_evidence(session, WORLD_FROZEN.frozen_hash, NOW)

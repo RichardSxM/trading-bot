@@ -23,7 +23,7 @@ from trading_core.recording.enums import (
 )
 from trading_core.recording.rows import ControlCommandRow
 
-from .conftest import World, instrument_row, role_url
+from .conftest import PAPER_FROZEN, World, instrument_row, promote_to_paper, role_url
 
 
 @pytest.fixture
@@ -35,12 +35,14 @@ def trader_session(database: str, trading_env: None) -> Iterator[Session]:
     engine.dispose()
 
 
-def test_the_trader_role_can_run_the_whole_paper_write_path(trader_session: Session):
+def test_the_trader_role_can_run_the_whole_paper_write_path(trader_session: Session, engine: Engine):
     session = trader_session
     repository.upsert_instrument(session, instrument_row())
     version_id = repository.ensure_strategy_version(
-        session, "trader-role", StrategyKind.SCALPING, "0123456789abcdef", {"window": 20}
+        session, "trader-role", StrategyKind.SCALPING, "0123456789abcdef", {"window": 20}, PAPER_FROZEN
     )
+    session.commit()  # the owner promotes it next, and the trader role cannot (spec 0015 AC-22)
+    promote_to_paper(engine, version_id)
     run_id = repository.start_run(
         session,
         env=Env.DEMO,

@@ -11,6 +11,7 @@ import os
 import secrets
 from collections.abc import Iterator
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from uuid import UUID, uuid7
@@ -25,8 +26,9 @@ from sqlalchemy import Engine, create_engine, pool
 from sqlalchemy.orm import Session
 
 from trading_core.db_roles import MIGRATE_SECRETS, load_optional, role_passwords, setup_roles
-from trading_core.recording import repository
+from trading_core.recording import models, repository
 from trading_core.recording.enums import (
+    DecidedBy,
     Env,
     Intent,
     Liquidity,
@@ -37,10 +39,12 @@ from trading_core.recording.enums import (
     PositionSide,
     RiskVerdict,
     RunMode,
+    Stage,
     StrategyKind,
     TimeInForce,
+    Verdict,
 )
-from trading_core.recording.rows import DecisionRow, FillRow, InstrumentRow, OrderRow, PositionRow
+from trading_core.recording.rows import DecisionRow, FillRow, InstrumentRow, OrderRow, PositionRow, PromotionRow
 from trading_core.secrets import DEFAULT_SECRETS_DIR, POSTGRES_PASSWORD, load_required
 from trading_core.settings import Settings, get_settings
 from trading_core.versioning import FrozenHashes
@@ -49,6 +53,8 @@ ALEMBIC_INI = Path(__file__).resolve().parents[2] / "alembic.ini"
 INSTRUMENT = "PF_XBTUSD.KRAKEN"
 # The world version's frozen hashes (spec 0015 AC-1), the same in every test: its commit and config are.
 WORLD_FROZEN = FrozenHashes(code_hash="c" * 64, frozen_hash="f" * 64)
+# The frozen hashes of the versions the trader role tests start paper runs on.
+PAPER_FROZEN = FrozenHashes(code_hash="a" * 64, frozen_hash="e" * 64)
 
 # Captured at import: the autouse clean_env fixture removes these before every test.
 _ENV = {name: value for name, value in os.environ.items() if name.startswith("POSTGRES_")}
@@ -275,6 +281,31 @@ def instrument_row() -> InstrumentRow:
     )
 
 
+def paper_pass(session: Session, version_id: UUID, frozen_hash: str) -> UUID:
+    """A manual ``candidate → paper`` pass for ``frozen_hash``, so its versions may paper trade (spec 0015 AC-14)."""
+    row = PromotionRow(
+        strategy_version_id=version_id,
+        from_stage=Stage.CANDIDATE,
+        to_stage=Stage.PAPER,
+        verdict=Verdict.PASS,
+        thresholds={},
+        decided_by=DecidedBy.MANUAL,
+        notes="test",
+        decided_at=datetime(2026, 10, 1, tzinfo=UTC),
+        frozen_hash=frozen_hash,
+    )
+    return repository.record_promotion(session, row, [])
+
+
+def promote_to_paper(engine: Engine, version_id: UUID) -> None:
+    """``paper_pass`` committed as the owner, for a version a role without INSERT on ``promotions`` runs."""
+    with Session(engine) as owner, owner.begin():
+        version = owner.get(models.StrategyVersion, version_id)
+        assert version is not None
+        assert version.frozen_hash is not None
+        paper_pass(owner, version_id, version.frozen_hash)
+
+
 @pytest.fixture
 def world(session: Session) -> World:
     """A fresh demo paper run (its own trader id) on a strategy version with a real looking commit."""
@@ -287,6 +318,7 @@ def world(session: Session) -> World:
         {"size": Decimal("0.001"), "window": 20},
         WORLD_FROZEN,
     )
+    paper_pass(session, version_id, WORLD_FROZEN.frozen_hash)
     run_id = repository.start_run(
         session,
         env=Env.DEMO,

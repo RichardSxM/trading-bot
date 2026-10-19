@@ -358,6 +358,23 @@ def _require_live_gate(session: Session, version_id: UUID) -> None:
         )
 
 
+def _require_paper_promotion(session: Session, version_id: UUID) -> None:
+    """A paper run needs a latest ``candidate → paper`` pass for its frozen hash, by the gate or by hand
+    (spec 0015 AC-14), so a later non pass takes the version out of paper at its next start."""
+    version = session.get(models.StrategyVersion, version_id)
+    if version is None:
+        raise MissingParentError(f"strategy version {version_id} not found")
+    if version.frozen_hash is None:
+        raise PromotionRequiredError(f"strategy version {version_id} has no frozen hash, so it cannot paper trade")
+    latest = latest_promotion(session, version.frozen_hash, Stage.PAPER)
+    if latest is None or latest.verdict != Verdict.PASS:
+        found = "missing" if latest is None else str(latest.verdict)
+        raise PromotionRequiredError(
+            f"strategy version {version_id}: latest candidate → paper promotion of frozen hash"
+            f" {version.frozen_hash[:12]} is {found}, not a pass"
+        )
+
+
 def start_run(
     session: Session,
     *,
@@ -372,10 +389,13 @@ def start_run(
 ) -> UUID:
     """Start a run and return its id; first marks any ``running`` run of this env and trader ``aborted``.
 
-    A live run needs a known commit (``UnknownCommitError``) and a latest ``paper → live``
-    promotion with verdict ``pass`` (``PromotionRequiredError``).
+    A paper run needs a latest ``candidate → paper`` pass for its frozen hash, and a live run a
+    known commit (``UnknownCommitError``) and a latest ``paper → live`` gate pass
+    (``PromotionRequiredError`` for either).
     """
     check_env(env)
+    if mode == RunMode.PAPER:
+        _require_paper_promotion(session, version_id)
     if mode == RunMode.LIVE:
         _require_live_gate(session, version_id)
     row = RunRow(

@@ -79,6 +79,7 @@ from trading_core.node.sandbox import FeeSandboxExecClientFactory, sandbox_exec_
 from trading_core.node.strategy import KfsStrategy, PauseGate
 from trading_core.recording import repository
 from trading_core.recording.enums import Env, RunMode, RunStatus, StrategyKind
+from trading_core.recording.errors import PromotionRequiredError
 from trading_core.recording.queries import LossSeed, loss_seed, run_funding_total
 from trading_core.recording.rows import JsonObject
 from trading_core.recording.writer import RecordingWriter, deadletter_path, replay_spool, spool_path
@@ -108,6 +109,8 @@ STOP_BUDGET_S: Final = 25
 PURGE_BATCH: Final = 500
 # The control reader blocks 1 s per read, so its socket timeout sits above that.
 CONTROL_SOCKET_TIMEOUT_S: Final = 3.0
+# sysexits EX_CONFIG: the version has no candidate → paper pass (spec 0015 AC-14).
+EXIT_CONFIG: Final = 78
 
 KrakenUrls = tuple[str, str]
 
@@ -325,6 +328,8 @@ def start_paper_loop(settings: TraderSettings, secrets: Mapping[str, SecretStr],
     blocks = EntryBlocks()
     env = Env(settings.trading_env)
     replayed = replay_spool(settings.spool_dir, sessions, blocks)
+    # The version commits on its own, so a start refused for a missing paper promotion still leaves
+    # the version row behind for `gate promote --manual --version <id>` (spec 0015 AC-15).
     with sessions.begin() as session:
         config = settings.strategy_config()
         version_id = repository.ensure_strategy_version(
@@ -335,6 +340,7 @@ def start_paper_loop(settings: TraderSettings, secrets: Mapping[str, SecretStr],
             config,
             versioning.freeze(PlaceholderTimed.__module__, config),
         )
+    with sessions.begin() as session:
         run_id = repository.start_run(
             session,
             env=env,
@@ -733,6 +739,13 @@ def main() -> None:
     if settings.trading_env == "demo":
         try:
             paper = start_paper_loop(settings, started.secrets, config.trader_id.value)
+        except PromotionRequiredError as exc:
+            # A config problem, not an outage: no restart fixes it until a promotion lands (spec 0015 AC-14).
+            log.critical(
+                "no candidate to paper pass for this version, refusing to paper trade",
+                extra={"fields": {"code": "paper_promotion_required", "reason": str(exc)}},
+            )
+            sys.exit(EXIT_CONFIG)
         except Exception:
             log.critical(
                 "paper run could not start, exiting", exc_info=True, extra={"fields": {"code": "paper_start_failed"}}

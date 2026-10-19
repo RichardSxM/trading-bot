@@ -4,7 +4,7 @@ spec 0008 AC-11 (a replay bundle with fill stats and risk events)."""
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
-from uuid import uuid7
+from uuid import UUID, uuid7
 
 import pytest
 from sqlalchemy import func, insert, select
@@ -56,6 +56,7 @@ from trading_core.recording.rows import (
     column_values,
 )
 from trading_core.settings import get_settings
+from trading_core.versioning import FrozenHashes
 
 from .conftest import INSTRUMENT, WORLD_FROZEN, World
 
@@ -493,6 +494,59 @@ def _start_live(session: Session, version_id) -> object:
         run_config={},
         started_ns=1_900_000_000_000_000_000,
     )
+
+
+def _start_paper(session: Session, version_id) -> UUID:
+    return repository.start_run(
+        session,
+        env=Env.DEMO,
+        mode=RunMode.PAPER,
+        version_id=version_id,
+        trader_id=f"TRADER-{uuid7().hex[-8:]}",
+        run_config={},
+        started_ns=1_900_000_000_000_000_000,
+    )
+
+
+def _paper_decision(version_id, verdict: Verdict, day: int, frozen: str, by: DecidedBy = DecidedBy.MANUAL):
+    return replace(
+        _promotion(version_id, verdict, day, frozen=frozen, by=by), from_stage=Stage.CANDIDATE, to_stage=Stage.PAPER
+    )
+
+
+def test_a_paper_run_needs_a_latest_candidate_to_paper_pass(session: Session, world: World):
+    """covers: spec 0015 AC-14 (no promotion refuses; a pass starts; a later fail takes it back out of paper)."""
+    frozen = FrozenHashes(code_hash="1" * 64, frozen_hash="2" * 64)
+    version = repository.ensure_strategy_version(session, "tracer", StrategyKind.SCALPING, "abc123", {"w": 9}, frozen)
+    with pytest.raises(PromotionRequiredError, match="missing"):
+        _start_paper(session, version)
+
+    repository.record_promotion(session, _paper_decision(version, Verdict.PASS, 2, frozen.frozen_hash), [])
+    paper_run = _start_paper(session, version)
+    assert session.get(models.StrategyRun, paper_run) is not None
+
+    repository.record_promotion(
+        session, _paper_decision(version, Verdict.FAIL, 3, frozen.frozen_hash, by=DecidedBy.GATE), [paper_run]
+    )
+    with pytest.raises(PromotionRequiredError, match="fail"):
+        _start_paper(session, version)
+
+
+def test_a_paper_pass_follows_the_frozen_hash_to_another_commit(session: Session, world: World):
+    """covers: spec 0015 AC-14 (an ordinary redeploy of the same code keeps its paper pass)."""
+    redeployed = repository.ensure_strategy_version(
+        session, "tracer", StrategyKind.SCALPING, "fedcba987654", {"size": Decimal("0.001"), "window": 20}, WORLD_FROZEN
+    )
+
+    assert redeployed != world.version_id
+    assert session.get(models.StrategyRun, _start_paper(session, redeployed)) is not None
+
+
+def test_a_version_without_a_frozen_hash_never_paper_trades(session: Session, world: World):
+    unfrozen = repository.ensure_strategy_version(session, "tracer", StrategyKind.SCALPING, "abcdef", {"w": 3})
+
+    with pytest.raises(PromotionRequiredError, match="no frozen hash"):
+        _start_paper(session, unfrozen)
 
 
 def test_a_live_run_needs_a_known_commit_and_a_latest_pass(session: Session, world: World, live_process):

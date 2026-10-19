@@ -32,7 +32,7 @@ from trading_core.recording.enums import (
 )
 from trading_core.recording.rows import PositionSnapshotRow, ns_to_utc
 
-from .conftest import World, instrument_row, role_url
+from .conftest import PAPER_FROZEN, World, instrument_row, promote_to_paper, role_url
 
 NOW = 1_900_000_000_000_000_000
 
@@ -45,12 +45,14 @@ def sessions(database: str, trading_env: None) -> Iterator[sessionmaker[Session]
 
 
 @pytest.fixture
-def version_id(sessions: sessionmaker[Session]) -> UUID:
+def version_id(sessions: sessionmaker[Session], engine: Engine) -> UUID:
     with sessions.begin() as session:
         repository.upsert_instrument(session, instrument_row())
-        return repository.ensure_strategy_version(
-            session, "placeholder_timed", StrategyKind.SCALPING, "0123456789abcdef", {"interval_min": 15}
+        version_id = repository.ensure_strategy_version(
+            session, "placeholder_timed", StrategyKind.SCALPING, "0123456789abcdef", {"interval_min": 15}, PAPER_FROZEN
         )
+    promote_to_paper(engine, version_id)
+    return version_id
 
 
 def _start(sessions, version_id, trader_id) -> World:

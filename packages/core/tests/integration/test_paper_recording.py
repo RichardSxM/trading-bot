@@ -39,7 +39,7 @@ from trading_core.recording.spool import WriteCall, WriteItem, append, read
 from trading_core.recording.writer import RecordingWriter, deadletter_path, replay_spool, spool_path
 from trading_core.strategy.blocks import BlockReason, EntryBlocks
 
-from .conftest import World, instrument_row, role_url
+from .conftest import PAPER_FROZEN, World, instrument_row, promote_to_paper, role_url
 
 
 @pytest.fixture
@@ -50,12 +50,14 @@ def sessions(database: str, trading_env: None) -> Iterator[sessionmaker[Session]
 
 
 @pytest.fixture
-def run(sessions: sessionmaker[Session]) -> World:
+def run(sessions: sessionmaker[Session], engine: Engine) -> World:
     with sessions.begin() as session:
         repository.upsert_instrument(session, instrument_row())
         version_id = repository.ensure_strategy_version(
-            session, "placeholder_timed", StrategyKind.SCALPING, "0123456789abcdef", {"interval_min": 15}
+            session, "placeholder_timed", StrategyKind.SCALPING, "0123456789abcdef", {"interval_min": 15}, PAPER_FROZEN
         )
+    promote_to_paper(engine, version_id)
+    with sessions.begin() as session:
         run_id = repository.start_run(
             session,
             env=Env.DEMO,
