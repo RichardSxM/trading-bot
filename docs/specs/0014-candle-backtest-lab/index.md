@@ -1,7 +1,7 @@
 # 0014. Backtest hour level strategies on Kraken's 1 minute candle history, through the same engine and strategy code as the paper loop
 
 **Date**: 2026-10-17
-**Status**: In Progress
+**Status**: Accepted
 
 ## Summary
 
