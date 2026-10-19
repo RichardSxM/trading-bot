@@ -47,7 +47,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from trader.snapshot_writer import log_writer_crash, write_heartbeats
-from trading_core import env_guard
+from trading_core import env_guard, versioning
 from trading_core.boot import boot
 from trading_core.control.consumer import ControlConsumer
 from trading_core.control.halt import halt_key
@@ -326,8 +326,14 @@ def start_paper_loop(settings: TraderSettings, secrets: Mapping[str, SecretStr],
     env = Env(settings.trading_env)
     replayed = replay_spool(settings.spool_dir, sessions, blocks)
     with sessions.begin() as session:
+        config = settings.strategy_config()
         version_id = repository.ensure_strategy_version(
-            session, STRATEGY_NAME, StrategyKind.SCALPING, None, settings.strategy_config()
+            session,
+            STRATEGY_NAME,
+            StrategyKind.SCALPING,
+            None,
+            config,
+            versioning.freeze(PlaceholderTimed.__module__, config),
         )
         run_id = repository.start_run(
             session,
