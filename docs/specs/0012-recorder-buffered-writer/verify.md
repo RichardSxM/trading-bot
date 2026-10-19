@@ -61,3 +61,14 @@ _Added by `/develop` after the first laptop run. `/check verify` runs these; `/t
 - [x] `recorder_writer_stats` shows `dropped` 0 on every line. → AC-4
 
 On the first build run (2026-10-15, BTC and ETH): one `recorder_flush_slow` at 347 ms in the first minute, then `max_flush_ms` 66; `busy_pct` 7 to 10; last delta row 83 ms before the file's mtime; `dropped` 0.
+
+## /check verify result · 2026-10-19
+
+**Pass.** Feature 21 is verified against every acceptance criterion. The laptop checks ran on the current code, which is the same recorder code as the VPS release 2065fe9.
+
+- Step 1, laptop benchmark (AC-7): 600,000 messages at 15,131 messages per second (needs 10,000). One `recorder flush slow` line during the benchmark's first flush, as AC-6 allows.
+- Recorder tests: `docker compose run --rm --no-deps -T recorder pytest -q` gave 176 passed, 2 skipped, exit 0 (4m51s). They cover the core flush rules, the parity of the files against the old writer, fail closed, the drop paths, shutdown, and the stats (AC-1 to AC-6, AC-9, AC-10).
+- Step 2, laptop run: skipped this time. The laptop no longer records market data (the VPS runs the app), and step 5 already holds the laptop run from the build (2026-10-15). The same checks passed on the VPS instead (step 4 and below).
+- Step 3, VPS benchmark (AC-7): 57,975 messages per second (recorded in `index.md`).
+- Step 4, VPS 24 h check (AC-8): pass, see above.
+- After the 2065fe9 deploy (2026-10-18 16:36 UTC), the compactor converted the 16:00 hour at 18:05 UTC (20:05 Amsterdam) with the same file names and layout as before: `order_book_deltas` 2,140,740 rows, `trade_tick` 8,026, `mark_price_update` 9,002, `index_price_update` 9,002, `funding_rate_update` 9,002, `custom_open_interest_update` 8,809, with no `catalog_hour_mismatch` (AC-1, AC-2, AC-3).
