@@ -1,7 +1,7 @@
 # 0012. Write the recorder's feather files through our own buffered writer
 
 **Date**: 2026-10-15
-**Status**: In Progress
+**Status**: Accepted
 
 ## Summary
 
@@ -180,9 +180,9 @@ Tracer Bullet: book deltas first go all the way from the new writer through the 
 ## Follow-up
 
 - [x] Spec 0007: AC-1, the Decision, and the "Recorder headroom" follow up point here.
-- [ ] Feature 12: alert on `recorder_write_failed`, `recorder_writer_busy`, and `recorder_flush_slow`.
+- [x] Feature 12: alert on `recorder_write_failed`, `recorder_writer_busy`, and `recorder_flush_slow` (spec 0013, `trading_core/alerts/promises.py`).
 - [ ] ETH: once AC-8 passes, read a week of `recorder_writer_stats` and decide whether ETH fits on the 2 CPU VPS (disk at about 3.2 GB/h of feather, compactor time, the 30 GB catalog cap). That is a new `/architect` decision.
-- [ ] Spec 0009's VPS 24 h checks (steps 5 and 7) expect restarts at peaks until this ships; run them again after AC-8 passes.
+- [x] Spec 0009's VPS 24 h checks (steps 5 and 7) expect restarts at peaks until this ships; run them again after AC-8 passes. Step 5 passed on its rerun over the AC-8 window (2026-10-18).
 - [ ] A Nautilus upgrade from 1.231.0: run the parity test, and check whether `trader.subscribe("*", …)` and `kernel.instance_id` still behave the same.
 - [ ] `/sync` updates `apps/recorder/AGENTS.md` (it still says the recorder writes through Nautilus's streaming writer).
 
