@@ -50,6 +50,7 @@ from trading_core.marketdata.context import context_log_fields
 from trading_core.node import guard
 from trading_core.node.funding import FundingLedger
 from trading_core.node.guard import GuardedConfig
+from trading_core.node.stale import StaleQuoteBlock
 from trading_core.node.strategy import KfsStrategy, PauseGate
 from trading_core.recording.enums import (
     Env,
@@ -115,13 +116,15 @@ class PlaceholderConfig(GuardedConfig, frozen=True):
     stop_pct: Decimal
     stale_quote_s: Decimal
     stop_accept_timeout_s: Decimal
+    # How often the stale quote check runs (spec 0014 AC-13; the paper loop keeps 1 s).
+    stale_check_s: int = STALE_CHECK_NS // NS_PER_S
 
 
 def _ns(seconds: Decimal) -> int:
     return int(seconds * NS_PER_S)
 
 
-class PlaceholderTimed(KfsStrategy):
+class PlaceholderTimed(KfsStrategy, StaleQuoteBlock):
     """Enters on a fixed beat, protects with a stop, closes on time (see the module docstring)."""
 
     def __init__(
@@ -144,8 +147,6 @@ class PlaceholderTimed(KfsStrategy):
         self._bar_type = BarType.from_str(f"{config.instrument_id}-1-MINUTE-MID-INTERNAL")
         self._limits = config.risk_limits()
         self._boundary_ns = 0
-        self._stale_since_ns: int | None = None
-        self._started_ns = 0
         self._reset()
 
     def _reset(self) -> None:
@@ -178,11 +179,17 @@ class PlaceholderTimed(KfsStrategy):
     def on_start(self) -> None:
         """Subscribe to quotes and 1 minute mid bars, then arm the boundary and stale feed timers."""
         super().on_start()
-        self._started_ns = self.clock.timestamp_ns()
         self.subscribe_quote_ticks(self._instrument_id)
         self.subscribe_bars(self._bar_type)
         self._arm_boundary()
-        self.clock.set_timer_ns(_STALE, STALE_CHECK_NS, 0, 0, self._on_stale_check)
+        self.start_stale_check(
+            timer=_STALE,
+            instrument_id=self._instrument_id,
+            run_id=self._run_id,
+            blocks=self._blocks,
+            stale_quote_s=self._cfg.stale_quote_s,
+            stale_check_s=self._cfg.stale_check_s,
+        )
 
     def on_stop(self) -> None:
         """Cancel entries and pause (the base class); positions, stops, and exits stay."""
@@ -580,28 +587,6 @@ class PlaceholderTimed(KfsStrategy):
                 {"position_id": str(position.id), "last_reason": why},
             )
         self._alert(_EXIT_RETRY, self.clock.timestamp_ns() + EXIT_RETRY_NS, self._submit_exit)
-
-    # Stale feed -----------------------------------------------------------------------------
-
-    def _on_stale_check(self, event: object) -> None:
-        now = self.clock.timestamp_ns()
-        quote = self.cache.quote_tick(self._instrument_id)
-        # Before the first quote, the feed counts from the start: a fresh node is not a stale feed.
-        last_ns = self._started_ns if quote is None else quote.ts_event
-        stale = now - last_ns > _ns(self._cfg.stale_quote_s)
-        if stale and self._blocks.add(BlockReason.STALE_FEED):
-            self._stale_since_ns = now
-            self._risk_event(
-                f"stale_feed:{self._run_id}:{now}",
-                RiskEventKind.STALE_FEED,
-                Severity.WARNING,
-                f"no quote for {self._cfg.instrument_id} in {self._cfg.stale_quote_s} s; entries blocked",
-                None,
-                {"last_quote_ns": None if quote is None else quote.ts_event},
-            )
-        elif not stale and self._blocks.clear(BlockReason.STALE_FEED):
-            log.info("quotes fresh again", extra={"fields": {"code": "stale_feed_cleared"}})
-            self._stale_since_ns = None
 
     # Helpers --------------------------------------------------------------------------------
 

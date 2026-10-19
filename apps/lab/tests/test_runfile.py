@@ -1,6 +1,7 @@
 """covers: spec 0008 AC-3 (the run file and overrides are validated at startup, every problem listed, exit 64)
 and AC-17 (exit 78 in live, or for a replay from an image built without GIT_COMMIT)."""
 
+import tomllib
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -9,9 +10,10 @@ from types import SimpleNamespace
 import pytest
 
 from lab.main import main
-from lab.runfile import Overrides, RunFileError, load_run
+from lab.runfile import Overrides, RunFileError, load_candle_run, load_run
 from lab.settings import LabSettings
 from lab.strategies import REGISTRY
+from trading_core.recording.enums import StrategyKind
 
 RUNS = Path(__file__).parents[1] / "runs"
 GOOD = (RUNS / "random_taker_own.toml").read_text()
@@ -26,7 +28,9 @@ def _write(tmp_path: Path, text: str) -> Path:
 
 def test_the_committed_run_files_are_valid():
     for path in sorted(RUNS.glob("*.toml")):
-        loaded = load_run(path, Overrides())
+        name = tomllib.loads(path.read_text())["strategy"]["name"]
+        load = load_candle_run if REGISTRY[name].kind == StrategyKind.HOUR_LEVEL else load_run
+        loaded = load(path, Overrides())
         assert loaded.run.strategy.name in REGISTRY
         assert len(loaded.sha256) == 64
 
@@ -186,3 +190,52 @@ def test_the_guard_sizes_with_the_runs_taker_fee():
     assert isinstance(config, GuardedConfig)
     assert config.taker_fee == Decimal("0.001")
     assert "taker_fee" not in entry.user_fields()
+
+
+CANDLE = (RUNS / "macd_baseline.toml").read_text()
+
+
+@pytest.mark.parametrize(
+    ("grid", "problem"),
+    [
+        ("fast = [8, 12]", "fast is also set in [strategy.config]"),
+        ("taker_fee = [1]", "taker_fee is not a setting of macd_baseline"),
+        ("max_entry = []", "max_entry is not a setting"),
+        ("signal = []", "signal must list at least one value"),
+        ('signal = [1, 2, 3, 4, 5]\nstop_pct = ["1", "2", "3", "4"]', "gives 20 variants, at most 16"),
+        ('signal = [9, "x"]', "grid-2 {'signal': 'x'}"),
+        ('bar_spec = ["1-HOUR-LAST", "1-TICK-LAST"]', "grid-2 {'bar_spec': '1-TICK-LAST'}"),
+    ],
+)
+def test_a_bad_grid_is_refused_with_every_problem(tmp_path, grid, problem):
+    """covers: spec 0014 AC-7 (grid validation, exit 64)."""
+    text = CANDLE.replace("# [strategy.grid]", "[strategy.grid]\n" + grid)
+    text = text.replace('bar_spec = "1-HOUR-LAST"\n', "") if "bar_spec" in grid else text
+    text = text.replace("signal = 9\n", "") if grid.startswith("signal") else text
+    with pytest.raises(RunFileError) as caught:
+        load_candle_run(_write(tmp_path, text), Overrides())
+    assert any(problem in p for p in caught.value.problems), caught.value.problems
+
+
+def test_a_grid_point_the_strategy_refuses_fails_at_startup(tmp_path):
+    """covers: spec 0014 AC-7 (each grid point builds the strategy)."""
+    text = CANDLE.replace("slow = 26\n", "").replace("# [strategy.grid]", "[strategy.grid]\nslow = [26, 12]")
+    with pytest.raises(RunFileError) as caught:
+        load_candle_run(_write(tmp_path, text), Overrides())
+    assert caught.value.problems == [
+        "strategy.grid grid-2 {'slow': 12}: MACD needs fast below slow, got fast 12 and slow 12"
+    ]
+
+
+def test_a_good_grid_loads(tmp_path):
+    text = CANDLE.replace("fast = 12\n", "").replace("# [strategy.grid]", "[strategy.grid]\nfast = [8, 12]")
+    assert load_candle_run(_write(tmp_path, text), Overrides()).run.strategy.grid == {"fast": [8, 12]}
+
+
+def test_the_slippage_sweep_with_a_grid_exits_64_before_anything_starts(tmp_path, monkeypatch, capsys):
+    """covers: spec 0014 AC-7 (--sweep-slippage is refused with a grid)."""
+    monkeypatch.setattr("lab.main.boot", lambda *a, **k: pytest.fail("booted"))
+    text = CANDLE.replace("fast = 12\n", "").replace("# [strategy.grid]", "[strategy.grid]\nfast = [8, 12]")
+
+    assert _exit_code(["backtest", str(_write(tmp_path, text)), "--sweep-slippage"]) == 64
+    assert "--sweep-slippage cannot be combined with [strategy.grid]" in capsys.readouterr().err

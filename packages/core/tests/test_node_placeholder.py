@@ -403,6 +403,16 @@ def test_a_quote_gap_raises_one_stale_feed_event_and_clears():
     assert strategy._blocks.active() == ()  # cleared once quotes came back
 
 
+def test_the_stale_check_still_runs_every_second():
+    """Spec 0014 AC-13: moved onto ``StaleQuoteBlock``, the paper loop keeps its 1 s check against 10 s."""
+    _, strategy, rows = _run(Prices(10, lambda t: None if 5 <= t < 7 else 85000))
+
+    (event,) = [e for e in _risk_events(rows) if e.kind == RiskEventKind.STALE_FEED]
+    late_ns = event.occurred_ns - event.details["last_quote_ns"]
+    assert 10 * 1_000_000_000 < late_ns <= 11 * 1_000_000_000
+    assert strategy._cfg.stale_check_s == 1
+
+
 class _EmptyCache:
     def order(self, client_order_id):
         return None

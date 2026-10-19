@@ -4,14 +4,25 @@
 ``latency=4x``, and ``--pair-entry`` adds ``entry=taker``. Flags never combine (no cross
 product). A variant that equals ``base`` or an earlier variant is dropped, so ``--sweep-latency``
 with a latency of 0 adds nothing (both of its variants equal ``base``).
+
+A candle batch (spec 0014 AC-7) has its own variants: ``base``, the ``--sweep-slippage`` pair, or a
+``[strategy.grid]`` cross product (``expand_candle_variants``).
 """
 
-from dataclasses import dataclass
+import itertools
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Final
 
 BASE: Final = "base"
 TAKER: Final = "taker"
 LATENCY_SWEEP_FACTOR: Final = 4
+# A candle batch's grid gives at most this many variants (spec 0014 AC-7).
+MAX_GRID_VARIANTS: Final = 16
+SLIPPAGE_SWEEP_FACTOR: Final = 2
+
+type GridValue = int | str | bool
 
 
 class VariantError(ValueError):
@@ -72,4 +83,60 @@ def expand_variants(
     for candidate in candidates:
         if all(candidate.values() != kept.values() for kept in variants):
             variants.append(candidate)
+    return variants
+
+
+@dataclass(frozen=True)
+class CandleVariantSpec:
+    """One variant of a candle backtest (spec 0014 AC-7): its name, slippage, and grid values (``{}`` for none)."""
+
+    name: str
+    slippage_bps: Decimal
+    grid_point: Mapping[str, GridValue] = field(default_factory=dict)
+
+
+def grid_size(grid: Mapping[str, Sequence[GridValue]]) -> int:
+    """How many variants ``grid`` gives (the product of its list lengths; 0 for an empty grid)."""
+    if not grid:
+        return 0
+    size = 1
+    for values in grid.values():
+        size *= len(values)
+    return size
+
+
+def expand_candle_variants(
+    slippage_bps: Decimal,
+    grid: Mapping[str, Sequence[GridValue]],
+    *,
+    sweep_slippage: bool = False,
+) -> list[CandleVariantSpec]:
+    """A candle batch's variants in plan order (spec 0014 AC-7).
+
+    No grid and no flag: ``base`` alone. A grid replaces ``base`` with ``grid-1``, ``grid-2``, … over
+    the cross product of its lists, keys in sorted order and each list in file order (at most
+    ``MAX_GRID_VARIANTS``). ``sweep_slippage`` adds ``slippage=0`` and ``slippage=2x`` after ``base``,
+    and nothing when ``slippage_bps`` is 0. Raises ``VariantError`` for a grid with the sweep, an
+    empty list, or too many points.
+    """
+    if slippage_bps < 0:
+        raise ValueError(f"slippage_bps must be 0 or more, got {slippage_bps}")
+    if grid:
+        if sweep_slippage:
+            raise VariantError("--sweep-slippage cannot be combined with [strategy.grid]")
+        empty = sorted(k for k, values in grid.items() if not values)
+        if empty:
+            raise VariantError(f"[strategy.grid] lists must not be empty: {', '.join(empty)}")
+        size = grid_size(grid)
+        if size > MAX_GRID_VARIANTS:
+            raise VariantError(f"[strategy.grid] gives {size} variants, at most {MAX_GRID_VARIANTS} are allowed")
+        keys = sorted(grid)
+        return [
+            CandleVariantSpec(f"grid-{n}", slippage_bps, dict(zip(keys, point, strict=True)))
+            for n, point in enumerate(itertools.product(*(grid[k] for k in keys)), start=1)
+        ]
+    variants = [CandleVariantSpec(BASE, slippage_bps)]
+    if sweep_slippage and slippage_bps > 0:
+        variants.append(CandleVariantSpec("slippage=0", Decimal(0)))
+        variants.append(CandleVariantSpec("slippage=2x", slippage_bps * SLIPPAGE_SWEEP_FACTOR))
     return variants

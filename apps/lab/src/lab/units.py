@@ -99,6 +99,11 @@ class UnitPlan:
     market: MarketContextValues = field(default_factory=MarketContextValues)
     context_warmup_s: int = 7_200
 
+    @property
+    def label(self) -> str:
+        """The unit's segment, for the worker pool's process names and logs."""
+        return f"S{self.segment.index}"
+
 
 type Sequenced[R] = tuple[tuple[int, R], ...]
 

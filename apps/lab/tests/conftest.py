@@ -1,5 +1,6 @@
 """Lab test helpers: a clean environment, the committed fixture catalog, and tiny synthetic hour files."""
 
+import json
 import os
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -124,9 +125,12 @@ class MemoryStore:
 
     def __init__(self) -> None:
         self.bundles: list[RunBundle] = []
+        # One version id per distinct config, as ``ensure_strategy_version`` gives.
+        self.versions: dict[str, object] = {}
 
-    def prepare(self, instrument, strategy, git_commit, config):
-        return uuid4()
+    def prepare(self, instrument, strategy, kind, git_commit, config):
+        key = json.dumps({"strategy": strategy, "config": config}, sort_keys=True, default=str)
+        return self.versions.setdefault(key, uuid4())
 
     def write_bundle(self, bundle) -> None:
         self.bundles.append(bundle)

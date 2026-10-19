@@ -1,8 +1,16 @@
-"""covers: spec 0008 AC-6 (variant expansion: one change per flag, plan order, duplicates dropped)."""
+"""covers: spec 0008 AC-6 (variant expansion: one change per flag, plan order, duplicates dropped), spec 0014 AC-7."""
+
+from decimal import Decimal
 
 import pytest
 
-from trading_core.lab.variants import VariantError, VariantSpec, expand_variants
+from trading_core.lab.variants import (
+    CandleVariantSpec,
+    VariantError,
+    VariantSpec,
+    expand_candle_variants,
+    expand_variants,
+)
 
 
 def _names(variants: list[VariantSpec]) -> list[str]:
@@ -48,3 +56,49 @@ def test_pair_entry_is_refused_when_base_already_takes():
 def test_a_negative_latency_is_refused():
     with pytest.raises(ValueError, match="latency_ms"):
         expand_variants(-1, None)
+
+
+# covers: spec 0014 AC-7 (candle variants: base, the slippage sweep, the grid)
+
+
+def test_a_candle_batch_without_flags_runs_base_alone():
+    assert expand_candle_variants(Decimal(2), {}) == [CandleVariantSpec("base", Decimal(2))]
+
+
+def test_the_slippage_sweep_adds_zero_and_twice_after_base():
+    variants = expand_candle_variants(Decimal("2.5"), {}, sweep_slippage=True)
+
+    assert [(v.name, v.slippage_bps) for v in variants] == [
+        ("base", Decimal("2.5")),
+        ("slippage=0", Decimal(0)),
+        ("slippage=2x", Decimal(5)),
+    ]
+
+
+def test_the_slippage_sweep_adds_nothing_at_zero_slippage():
+    assert [v.name for v in expand_candle_variants(Decimal(0), {}, sweep_slippage=True)] == ["base"]
+
+
+def test_a_grid_replaces_base_with_its_cross_product_in_sorted_key_and_file_order():
+    variants = expand_candle_variants(Decimal(2), {"slow": [26, 21], "fast": [8, 12]})
+
+    assert [(v.name, dict(v.grid_point)) for v in variants] == [
+        ("grid-1", {"fast": 8, "slow": 26}),
+        ("grid-2", {"fast": 8, "slow": 21}),
+        ("grid-3", {"fast": 12, "slow": 26}),
+        ("grid-4", {"fast": 12, "slow": 21}),
+    ]
+    assert {v.slippage_bps for v in variants} == {Decimal(2)}
+
+
+def test_a_grid_allows_sixteen_points_and_refuses_more():
+    assert len(expand_candle_variants(Decimal(2), {"a": [1, 2, 3, 4], "b": [1, 2, 3, 4]})) == 16
+    with pytest.raises(VariantError, match="17 variants"):
+        expand_candle_variants(Decimal(2), {"a": list(range(17))})
+
+
+def test_a_grid_refuses_the_sweep_and_empty_lists():
+    with pytest.raises(VariantError, match="--sweep-slippage"):
+        expand_candle_variants(Decimal(2), {"fast": [8]}, sweep_slippage=True)
+    with pytest.raises(VariantError, match="must not be empty: slow"):
+        expand_candle_variants(Decimal(2), {"fast": [8], "slow": []})

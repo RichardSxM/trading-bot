@@ -1,0 +1,30 @@
+# The MACD baseline (spec 0014 AC-13): enter on a histogram cross with the trend EMA, exit when the
+# histogram weakens, a stop 3 % from the fill. Warmup (50 hour bars for the trend EMA) happens inside the range.
+# Needs `lab fetch-candles` for the range's months and `lab import-funding` for funding before the API window.
+instrument_id = "PF_XBTUSD.KRAKEN"
+from = 2026-08-01                    # UTC day, inclusive, >= 2022-03-24
+to = 2026-09-30                      # UTC day, inclusive
+seed = 7
+stale_quote_s = 300                  # entries are blocked only inside a real gap of about 5 minutes
+maker_fee = "0.0002"                 # strings, parsed as Decimal (Kraken base tier)
+taker_fee = "0.0005"
+slippage_bps = "2"                   # per side, built into the synthetic quote's spread
+starting_balance_usd = "10000"
+leverage = "2"
+
+[risk]                               # RiskLimits (spec 0006 check_entry), same field names
+max_order_notional = "20000"
+max_leverage = "2"
+
+[strategy]
+name = "macd_baseline"
+[strategy.config]
+notional_usd = "10000"               # quantity = notional / mid, floored to the size step
+bar_spec = "1-HOUR-LAST"
+fast = 12
+slow = 26
+signal = 9
+trend_ema = 50
+stop_pct = "3"
+# [strategy.grid]                    # optional, at most 16 combinations; keys must not also be set above
+# fast = [8, 12]
