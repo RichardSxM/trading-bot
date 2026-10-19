@@ -11,6 +11,7 @@ from trading_core.node.placeholder import STRATEGY_NAME, PlaceholderTimed
 
 
 def test_the_printed_version_is_the_one_the_trader_records(monkeypatch, capsys):
+    monkeypatch.setenv("TRADING_ENV", "demo")  # Compose sets it; CI runs pytest without it
     settings = TraderSettings()
     expected = versioning.freeze(PlaceholderTimed.__module__, settings.strategy_config())
 
@@ -25,6 +26,7 @@ def test_the_printed_version_is_the_one_the_trader_records(monkeypatch, capsys):
 
 
 def test_bad_config_exits_78_and_prints_nothing_to_stdout(monkeypatch, capsys):
+    monkeypatch.setenv("TRADING_ENV", "demo")
     monkeypatch.setenv("KRAKEN_KEY_CHECK_TIMEOUT_S", "-1")
 
     with pytest.raises(SystemExit) as exit_info:
