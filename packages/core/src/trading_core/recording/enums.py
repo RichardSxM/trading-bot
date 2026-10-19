@@ -41,6 +41,8 @@ class Verdict(StrEnum):
 
     PASS = "pass"
     FAIL = "fail"
+    # Spec 0015: the evidence could not decide (a missing metric, cost, run, or too few trades).
+    INSUFFICIENT = "insufficient"
 
 
 class DecidedBy(StrEnum):
@@ -48,6 +50,28 @@ class DecidedBy(StrEnum):
 
     GATE = "gate"
     MANUAL = "manual"
+
+
+class StudyLab(StrEnum):
+    """Which lab a study runs in (spec 0015)."""
+
+    CANDLE = "candle"
+    REPLAY = "replay"
+
+
+class StudyRole(StrEnum):
+    """What a run is for inside its study (spec 0015)."""
+
+    DEVELOPMENT = "development"
+    HOLDOUT = "holdout"
+    BENCHMARK = "benchmark"
+
+
+class EquityBasis(StrEnum):
+    """How a daily equity close or a drawdown was valued (spec 0015 AC-6)."""
+
+    MARKED = "marked"
+    REALIZED = "realized"
 
 
 class RunMode(StrEnum):
@@ -70,6 +94,10 @@ class RunStatus(StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     ABORTED = "aborted"
+
+
+TERMINAL_RUN_STATUSES = (RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.ABORTED)
+"""Statuses a run ends in; a ``study_runs`` row carries one (spec 0015)."""
 
 
 class Sample(StrEnum):

@@ -1,0 +1,193 @@
+"""The gate's checks (spec 0015 *Gate checks*), pure: each one gives its reasons and its metrics.
+
+A reason is ``{code, check, value, threshold}``. ``code`` is ``failed`` when the check's threshold was
+missed, and otherwise names why the evidence is insufficient (``too_few_trades``, ``missing_benchmark``,
+...). A passing check gives no reason, only metrics.
+"""
+
+import math
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from decimal import Decimal
+from typing import Final
+
+from trading_core.gate.inputs import BUY_AND_HOLD, MACD_BASELINE, CandidateInputs, Lab, StudyRunInput
+from trading_core.gate.series import DailySeries, annualized, sharpe, to_decimal
+
+FAILED: Final = "failed"
+# Insufficient evidence codes.
+TOO_FEW_TRADES: Final = "too_few_trades"
+TOO_FEW_DAYS: Final = "too_few_days"
+ZERO_VARIANCE: Final = "zero_variance"
+MISSING_RUN: Final = "missing_run"
+MISSING_BENCHMARK: Final = "missing_benchmark"
+MISSING_COST: Final = "missing_cost"
+MISSING_METRIC: Final = "missing_metric"
+NULL_CODE_HASH: Final = "null_code_hash"
+FOLD_WITHOUT_RUN: Final = "fold_without_run"
+
+type MetricValue = str | int | bool | list[MetricValue] | dict[str, MetricValue] | None
+
+
+@dataclass(frozen=True)
+class Reason:
+    """Why a check did not pass."""
+
+    code: str
+    check: str
+    value: str | None = None
+    threshold: str | None = None
+
+    @property
+    def fails(self) -> bool:
+        """True for a missed threshold, False for insufficient evidence."""
+        return self.code == FAILED
+
+    def to_json(self) -> dict[str, str | None]:
+        """The stored form."""
+        return {"code": self.code, "check": self.check, "value": self.value, "threshold": self.threshold}
+
+
+@dataclass
+class Outcome:
+    """Reasons and metrics collected while the checks run."""
+
+    reasons: list[Reason] = field(default_factory=list)
+    metrics: dict[str, MetricValue] = field(default_factory=dict)
+
+    def reason(self, code: str, check: str, value: object = None, threshold: object = None) -> None:
+        """Add a reason; values are stored as strings (fixed notation for a Decimal)."""
+        self.reasons.append(Reason(code, check, text_of(value), text_of(threshold)))
+
+    def metric(self, name: str, value: Decimal | int | str | bool | None) -> None:
+        """Record a metric (Decimals as fixed notation strings)."""
+        self.metrics[name] = text_of(value) if isinstance(value, Decimal) else value
+
+
+def text_of(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        return format(value, "f")
+    return str(value)
+
+
+def sharpe_metric(series: DailySeries) -> Decimal | None:
+    """The annualized daily Sharpe of a series as stored, or None."""
+    return to_decimal(annualized(sharpe(series.returns)))
+
+
+def check_trade_floor(inputs: CandidateInputs, holdout: StudyRunInput, out: Outcome) -> None:
+    """``trade_floor``: below the lab's floor of holdout trades is insufficient, never a pass."""
+    assert holdout.summary is not None
+    t = inputs.thresholds
+    floor = t.candle.min_holdout_trades if inputs.lab == Lab.CANDLE else t.replay.min_holdout_trades
+    trades = holdout.summary.trade_count
+    out.metric("holdout_trades", trades)
+    if trades < floor:
+        out.reason(TOO_FEW_TRADES, "trade_floor", trades, floor)
+
+
+def check_holdout_sharpe(series: DailySeries, out: Outcome) -> Decimal | None:
+    """``holdout_sharpe``: fails at or below 0; insufficient under 2 days or with zero variance."""
+    value = sharpe_metric(series)
+    out.metric("holdout_sharpe", value)
+    if len(series) < 2:
+        out.reason(TOO_FEW_DAYS, "holdout_sharpe", len(series), 2)
+    elif value is None:
+        out.reason(ZERO_VARIANCE, "holdout_sharpe")
+    elif value <= 0:
+        out.reason(FAILED, "holdout_sharpe", value, 0)
+    return value
+
+
+def check_beats_benchmark(
+    inputs: CandidateInputs, series: DailySeries, holdout_sharpe: Decimal | None, strategy: str, out: Outcome
+) -> None:
+    """``beats_buy_and_hold`` or ``beats_macd_baseline``: the holdout Sharpe must beat the benchmark's, same days."""
+    check = "beats_buy_and_hold" if strategy == BUY_AND_HOLD else "beats_macd_baseline"
+    benchmark = inputs.benchmark(strategy)
+    if benchmark is None:
+        out.metric(f"{strategy}_sharpe", None)
+        out.reason(MISSING_BENCHMARK, check)
+        return
+    bench = sharpe_metric(benchmark.series(Lab.CANDLE).only(series.days))
+    out.metric(f"{strategy}_sharpe", bench)
+    if holdout_sharpe is None or bench is None:
+        out.reason(MISSING_METRIC, check, holdout_sharpe, bench)
+    elif holdout_sharpe <= bench:
+        out.reason(FAILED, check, holdout_sharpe, bench)
+
+
+BENCHMARKS: Final[Mapping[str, tuple[str, ...]]] = {
+    "scalping": (BUY_AND_HOLD,),
+    "hour_level": (BUY_AND_HOLD, MACD_BASELINE),
+}
+
+
+# Slice 2: the rest of the candidate gate ------------------------------------------------------
+
+
+def check_fee_hurdle(inputs: CandidateInputs, holdout: StudyRunInput, out: Outcome) -> None:
+    """``fee_hurdle``: the average gross edge per trade must be at least ``fee_hurdle_k`` times the round trip cost."""
+    measures = holdout.measures
+    edge = None if measures is None else measures.avg_gross_edge
+    cost = None if measures is None else measures.avg_round_trip_cost
+    out.metric("avg_gross_edge", edge)
+    out.metric("avg_round_trip_cost", cost)
+    if edge is None or cost is None:
+        out.reason(MISSING_COST, "fee_hurdle")
+        return
+    hurdle = inputs.thresholds.fee_hurdle_k * cost
+    if edge < hurdle:
+        out.reason(FAILED, "fee_hurdle", edge, hurdle)
+
+
+def check_drawdown(inputs: CandidateInputs, holdout: StudyRunInput, out: Outcome) -> None:
+    """``drawdown_budget``: marked max drawdown (candle) or realized (replay) over the budget fails."""
+    assert holdout.summary is not None
+    if inputs.lab == Lab.CANDLE:
+        basis = "marked"
+        value = None if holdout.measures is None else holdout.measures.marked_max_drawdown
+    else:
+        basis, value = "realized", holdout.summary.max_drawdown
+    out.metric("holdout_max_drawdown", value)
+    out.metric("drawdown_basis", basis)
+    budget = inputs.thresholds.max_drawdown
+    if value is None:
+        out.reason(MISSING_METRIC, "drawdown_budget", None, budget)
+    elif value > budget:
+        out.reason(FAILED, "drawdown_budget", value, budget)
+
+
+def _share_check(check: str, part: Decimal, total: Decimal, limit: Decimal, metric: str, out: Outcome) -> None:
+    """A concentration check: skipped when the total is not a profit (another check fails it)."""
+    if total <= 0:
+        out.metric(metric, None)
+        return
+    share = part / total
+    out.metric(metric, share.quantize(Decimal("0.000001")))
+    if share > limit:
+        out.reason(FAILED, check, share.quantize(Decimal("0.000001")), limit)
+
+
+def check_concentration_folds(inputs: CandidateInputs, fold_nets: list[Decimal], out: Outcome) -> None:
+    """``concentration_fold``: the largest fold's share of walk forward net profit."""
+    if fold_nets:
+        limit = inputs.thresholds.concentration_max_share
+        _share_check("concentration_fold", max(fold_nets), sum(fold_nets, Decimal(0)), limit, "fold_share", out)
+
+
+def check_concentration(inputs: CandidateInputs, holdout: StudyRunInput, out: Outcome) -> None:
+    """``concentration_direction`` and ``concentration_top_trades`` over the holdout (AC-10)."""
+    limit = inputs.thresholds.concentration_max_share
+    if holdout.measures is not None:
+        m = holdout.measures
+        total = m.long_net_pnl + m.short_net_pnl
+        _share_check(
+            "concentration_direction", max(m.long_net_pnl, m.short_net_pnl), total, limit, "direction_share", out
+        )
+    nets = sorted((t.net_pnl for t in inputs.holdout_trades), reverse=True)
+    if nets:
+        top = sum(nets[: math.ceil(len(nets) * inputs.thresholds.top_trades_quantile)], Decimal(0))
+        _share_check("concentration_top_trades", top, sum(nets, Decimal(0)), limit, "top_trades_share", out)

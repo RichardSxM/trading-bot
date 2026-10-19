@@ -12,6 +12,7 @@ from trading_core.db_roles import (
     ALERTER_ROLE,
     BACKUP_ROLE,
     DASHBOARD_ROLE,
+    GATE_ROLE,
     LAB_ROLE,
     TRADER_ROLE,
     role_passwords,
@@ -41,6 +42,11 @@ TABLES = (
     "control_commands",
     "run_fill_stats",
     "alerts",
+    "studies",
+    "study_runs",
+    "run_daily_equity",
+    "run_measures",
+    "promotion_folds",
 )
 TRADER_UPDATES = {"orders", "positions", "strategy_runs", "control_commands", "fills", "funding_payments"}
 # What a replay bundle writes (spec 0008 AC-17): lab_app may read and insert these, nothing else.
@@ -61,6 +67,14 @@ LAB_TABLES = {
 }
 
 
+# Spec 0015: the study tables a bundle carries, and the folds only an evaluation writes.
+STUDY_TABLES = {"studies", "study_runs", "run_daily_equity", "run_measures"}
+GATE_ONLY_TABLES = STUDY_TABLES | {"promotion_folds"}
+# gate_app reads everything and inserts what an import and an evaluation write (AC-22).
+GATE_INSERTS = LAB_TABLES | GATE_ONLY_TABLES | {"promotions", "promotion_evidence"}
+LAB_READS = {"promotions", "promotion_folds", "promotion_evidence"}
+
+
 # The alerter (spec 0013): reads and writes alerts (no DELETE), reads fills, their instruments, and positions.
 ALERTER_GRANTS = {
     ("alerts", "SELECT"),
@@ -75,15 +89,21 @@ ALERTER_GRANTS = {
 def _expected(role: str, table: str, privilege: str) -> bool:
     if role == ALERTER_ROLE:
         return (table, privilege) in ALERTER_GRANTS
+    if role == GATE_ROLE:
+        return privilege == "SELECT" or (privilege == "INSERT" and table in GATE_INSERTS)
     if table == "alerts":
         return privilege == "SELECT" and role != LAB_ROLE
     if role == LAB_ROLE:
-        return privilege in {"SELECT", "INSERT"} and table in LAB_TABLES
+        if privilege == "SELECT" and table in LAB_READS:
+            return True
+        return privilege in {"SELECT", "INSERT"} and table in LAB_TABLES | STUDY_TABLES
     if privilege == "SELECT":
         return True
     if role != TRADER_ROLE:
         return False
-    return privilege == "INSERT" or (privilege == "UPDATE" and table in TRADER_UPDATES)
+    if privilege == "INSERT":
+        return table not in GATE_ONLY_TABLES
+    return privilege == "UPDATE" and table in TRADER_UPDATES
 
 
 @pytest.fixture
@@ -104,7 +124,7 @@ def test_table_privileges_match_the_security_model(engine: Engine):
     actual: dict[tuple[str, str, str], bool] = {}
     expected: dict[tuple[str, str, str], bool] = {}
     with engine.connect() as conn:
-        for role in (TRADER_ROLE, DASHBOARD_ROLE, BACKUP_ROLE, LAB_ROLE, ALERTER_ROLE):
+        for role in (TRADER_ROLE, DASHBOARD_ROLE, BACKUP_ROLE, LAB_ROLE, ALERTER_ROLE, GATE_ROLE):
             for table in TABLES:
                 for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE"):
                     key = (role, table, privilege)
@@ -151,6 +171,24 @@ def test_only_backup_app_may_run_the_downsample(engine: Engine):
         ),
         (LAB_ROLE, "SELECT count(*) FROM control_commands"),
         (ALERTER_ROLE, "DELETE FROM alerts"),
+        # Spec 0015 AC-22: promotions and the study tables are append only; the gate never controls the trader.
+        (GATE_ROLE, "UPDATE promotions SET notes = notes"),
+        (GATE_ROLE, "DELETE FROM promotions"),
+        (GATE_ROLE, "UPDATE studies SET name = name"),
+        (
+            GATE_ROLE,
+            "INSERT INTO control_commands (id, env, cmd, issued_at, expires_at, received_at)"
+            " VALUES (gen_random_uuid(), 'demo', 'pause', now(), now(), now())",
+        ),
+        (
+            LAB_ROLE,
+            "INSERT INTO promotions (id, strategy_version_id, from_stage, to_stage, verdict, thresholds,"
+            " decided_by, decided_at) VALUES (gen_random_uuid(), gen_random_uuid(), 'candidate', 'paper',"
+            " 'pass', '{}', 'manual', now())",
+        ),
+        (LAB_ROLE, "DELETE FROM run_daily_equity"),
+        (TRADER_ROLE, "DELETE FROM studies"),
+        (DASHBOARD_ROLE, "DELETE FROM promotion_folds"),
         (ALERTER_ROLE, "SELECT count(*) FROM orders"),
         (
             TRADER_ROLE,

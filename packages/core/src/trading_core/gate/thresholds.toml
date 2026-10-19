@@ -1,0 +1,33 @@
+# The promotion gate's thresholds (spec 0015), frozen into each study when `lab study` creates it.
+# Editing this file never changes an existing study. Change a value only in a new version, as a
+# deliberate commit, and never after looking at a result.
+version = 1
+# The final holdout: every day from here on is unseen until `lab holdout` (today minus 12 months, fixed in v1).
+holdout_start = 2025-10-19
+fee_hurdle_k = 1.5
+max_drawdown = 0.10
+pbo_max = 0.30
+cscv_blocks = 10
+dsr_min = 0.95
+bootstrap_resamples = 10000
+bootstrap_min_block_days = 5
+bootstrap_confidence = 0.95
+concentration_max_share = 0.60
+top_trades_quantile = 0.05
+
+[candle]
+first_in_sample_months = 12
+step_months = 6
+min_holdout_trades = 60
+
+[replay]
+first_in_sample_days = 15
+step_days = 7
+min_holdout_trades = 200
+
+[paper]
+min_days = 30
+min_trades_scalping = 100
+min_trades_hour_level = 20
+fill_rate_tolerance = 0.25
+slippage_tolerance_bps = 2

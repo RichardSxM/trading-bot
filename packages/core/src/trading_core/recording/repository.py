@@ -10,13 +10,15 @@ calls ``report_conflict`` with a fresh session, and fails closed.
 import hashlib
 import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from dataclasses import replace
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Final
 from uuid import UUID
 
-from sqlalchemy import ColumnElement, Table, and_, func, select, text, update
+from sqlalchemy import ColumnElement, Engine, Table, and_, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -26,6 +28,7 @@ from trading_core.recording.enums import (
     CLOSED_ORDER_STATUSES,
     SIM_MODES,
     ControlOutcome,
+    DecidedBy,
     Env,
     FundingSource,
     OrderOrigin,
@@ -36,9 +39,11 @@ from trading_core.recording.enums import (
     RiskEventKind,
     RunMode,
     RunStatus,
+    Sample,
     Severity,
     Stage,
     StrategyKind,
+    StudyRole,
     TimeInForce,
     Verdict,
 )
@@ -47,6 +52,7 @@ from trading_core.recording.errors import (
     ForeignRunError,
     InvalidModeError,
     InvalidTransitionError,
+    ManualLivePromotionError,
     MissingEvidenceError,
     MissingParentError,
     PromotionRequiredError,
@@ -56,6 +62,7 @@ from trading_core.recording.errors import (
 from trading_core.recording.rows import (
     AccountSnapshotRow,
     ControlCommandRow,
+    DailyEquityRow,
     DecisionRow,
     FillRow,
     FundingRow,
@@ -66,12 +73,16 @@ from trading_core.recording.rows import (
     OrderRow,
     PositionRow,
     PositionSnapshotRow,
+    PromotionFoldRow,
     PromotionRow,
     RiskEventRow,
     RunBundle,
     RunFillStatsRow,
+    RunMeasuresRow,
     RunResultRow,
     RunRow,
+    StrategyVersionRow,
+    StudyRow,
     canonical_json,
     column_values,
     normalize_json,
@@ -79,6 +90,7 @@ from trading_core.recording.rows import (
     version_hash,
 )
 from trading_core.settings import get_settings
+from trading_core.versioning import FrozenHashes
 
 _BOOKKEEPING: Final = frozenset({"id", "created_at", "updated_at"})
 # May go once from NULL to a value; NULL on either side counts as equal.
@@ -86,7 +98,6 @@ _FILL_ONCE: Final = "position_id"
 _ORDER_IMMUTABLE: Final = ("side", "instrument_id", "client_order_id")
 _ORDER_STUB_ONLY: Final = ("origin", "decision_id", "order_type")
 _POSITION_IMMUTABLE: Final = ("instrument_id", "position_ref", "opened_ns")
-_LIVE_GATE: Final = (Stage.PAPER, Stage.LIVE)
 # The trader's handling state of a control command; a redelivered command compares without it.
 _CONTROL_HANDLING: Final = frozenset({"received_at", "outcome", "outcome_at", "details"})
 _FUNDING_KEYS: Final = {
@@ -266,40 +277,51 @@ def upsert_instrument(session: Session, row: InstrumentRow) -> None:
 
 
 def ensure_strategy_version(
-    session: Session, name: str, kind: StrategyKind, git_commit: str | None, config: JsonObject
+    session: Session,
+    name: str,
+    kind: StrategyKind,
+    git_commit: str | None,
+    config: JsonObject,
+    frozen: FrozenHashes | None = None,
 ) -> UUID:
     """Return the id of the version with this commit and config, creating strategy and version if new.
 
     ``git_commit=None`` takes the commit the image was built from (``Settings.git_commit``).
-    Raises ``RecordConflictError`` when the strategy name exists with another kind, or the
-    version hash already belongs to another strategy.
+    ``frozen`` carries the version's ``code_hash`` and ``frozen_hash`` (spec 0015 AC-1, from
+    ``trading_core.versioning.freeze``); None stores NULL, which no promotion can pass.
+    Raises ``RecordConflictError`` when the strategy name exists with another kind, the version
+    hash already belongs to another strategy, or it was stored with other hashes (the same commit
+    and config over different code, possible only for an uncommitted change: commit it first).
     """
     if git_commit is None:
         git_commit = get_settings().git_commit
-    strategies = table_of(models.Strategy)
-    session.execute(
-        insert(strategies).values(id=uuid.uuid7(), name=name, kind=kind).on_conflict_do_nothing(index_elements=["name"])
-    )
-    strategy = session.execute(select(models.Strategy).where(models.Strategy.name == name)).scalar_one()
-    if strategy.kind != kind:
-        raise RecordConflictError(strategies.name, {"name": name}, {"kind": strategy.kind}, {"kind": kind})
+    strategy_id = _ensure_strategy(session, name, kind)
 
     versions = table_of(models.StrategyVersion)
     digest = version_hash(git_commit, config)
     values = {
         "id": uuid.uuid7(),
-        "strategy_id": strategy.id,
+        "strategy_id": strategy_id,
         "git_commit": git_commit,
         "config": normalize_json(config),
         "version_hash": digest,
+        "code_hash": None if frozen is None else frozen.code_hash,
+        "frozen_hash": None if frozen is None else frozen.frozen_hash,
     }
     session.execute(insert(versions).values(values).on_conflict_do_nothing(index_elements=["version_hash"]))
     version = session.execute(
         select(models.StrategyVersion).where(models.StrategyVersion.version_hash == digest)
     ).scalar_one()
-    if version.strategy_id != strategy.id:
+    if version.strategy_id != strategy_id:
         raise RecordConflictError(
-            versions.name, {"version_hash": digest}, {"strategy_id": version.strategy_id}, {"strategy_id": strategy.id}
+            versions.name, {"version_hash": digest}, {"strategy_id": version.strategy_id}, {"strategy_id": strategy_id}
+        )
+    if frozen is not None and version.frozen_hash is not None and version.frozen_hash != frozen.frozen_hash:
+        raise RecordConflictError(
+            versions.name,
+            {"version_hash": digest},
+            {"code_hash": version.code_hash, "frozen_hash": version.frozen_hash},
+            {"code_hash": frozen.code_hash, "frozen_hash": frozen.frozen_hash},
         )
     return version.id
 
@@ -307,25 +329,32 @@ def ensure_strategy_version(
 # Runs -------------------------------------------------------------------------------------
 
 
+def latest_promotion(session: Session, frozen_hash: str, to_stage: Stage) -> models.Promotion | None:
+    """The latest promotion of ``frozen_hash`` into ``to_stage`` (by ``decided_at``, then ``id``), or None."""
+    return session.execute(
+        select(models.Promotion)
+        .where(models.Promotion.frozen_hash == frozen_hash, models.Promotion.to_stage == to_stage)
+        .order_by(models.Promotion.decided_at.desc(), models.Promotion.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+
+
 def _require_live_gate(session: Session, version_id: UUID) -> None:
+    """A live run needs a known commit and a latest ``paper → live`` pass by the gate for its frozen hash
+    (spec 0015 AC-17, amending spec 0002 AC-15), so a redeploy of the same code keeps its promotion."""
     version = session.get(models.StrategyVersion, version_id)
     if version is None:
         raise MissingParentError(f"strategy version {version_id} not found")
     if version.git_commit == "unknown":
         raise UnknownCommitError(f"strategy version {version_id} has git_commit 'unknown'; a live run needs a commit")
-    latest = session.execute(
-        select(models.Promotion.verdict)
-        .where(
-            models.Promotion.strategy_version_id == version_id,
-            models.Promotion.from_stage == _LIVE_GATE[0],
-            models.Promotion.to_stage == _LIVE_GATE[1],
-        )
-        .order_by(models.Promotion.decided_at.desc())
-        .limit(1)
-    ).scalar_one_or_none()
-    if latest != Verdict.PASS:
+    if version.frozen_hash is None:
+        raise PromotionRequiredError(f"strategy version {version_id} has no frozen hash, so it cannot go live")
+    latest = latest_promotion(session, version.frozen_hash, Stage.LIVE)
+    if latest is None or latest.verdict != Verdict.PASS or latest.decided_by != DecidedBy.GATE:
+        found = "missing" if latest is None else f"{latest.verdict} by {latest.decided_by}"
         raise PromotionRequiredError(
-            f"strategy version {version_id}: latest paper → live promotion is {latest or 'missing'}, not pass"
+            f"strategy version {version_id}: latest paper → live promotion of its frozen hash is {found},"
+            " not a gate pass"
         )
 
 
@@ -748,28 +777,61 @@ def set_control_outcome(
 # Promotions and run bundles ---------------------------------------------------------------
 
 
-def record_promotion(session: Session, row: PromotionRow, evidence_run_ids: Sequence[UUID]) -> UUID:
-    """Record a promotion of a version with the runs it cites; returns the promotion id.
+def record_promotion(
+    session: Session,
+    row: PromotionRow,
+    evidence_run_ids: Sequence[UUID],
+    folds: Sequence[PromotionFoldRow] = (),
+) -> UUID:
+    """Append a promotion with the runs it cites and its folds; returns the promotion id. Never updates one.
 
-    Raises ``MissingEvidenceError`` when no run is cited, or a cited run is missing or
-    belongs to another strategy version.
+    Raises ``ManualLivePromotionError`` for a manual promotion to live (spec 0015 AC-15), and
+    ``MissingEvidenceError`` when a gate pass cites no run, or a cited run is missing or unrelated. A run
+    is related when it is of the promoted version, of a version with the same frozen hash, or a run of
+    the promotion's study (its grid points, holdout, and benchmarks).
     """
-    if not evidence_run_ids:
+    if row.decided_by == DecidedBy.MANUAL and row.to_stage == Stage.LIVE:
+        raise ManualLivePromotionError(f"promotion {row.id}: only the gate can promote to live")
+    if row.decided_by == DecidedBy.GATE and row.frozen_hash is None:
+        raise MissingEvidenceError(f"promotion {row.id}: a gate decision must name its frozen hash")
+    if not evidence_run_ids and row.decided_by == DecidedBy.GATE and row.verdict == Verdict.PASS:
         raise MissingEvidenceError(f"promotion {row.id} cites no evidence run")
-    runs = models.StrategyRun
-    found = session.execute(select(runs.id, runs.strategy_version_id).where(runs.id.in_(evidence_run_ids)))
-    versions = {run_id: version_id for run_id, version_id in found}
-    wrong = [run_id for run_id in evidence_run_ids if versions.get(run_id) != row.strategy_version_id]
-    if wrong:
-        raise MissingEvidenceError(
-            f"evidence runs {wrong} are missing or of another version than {row.strategy_version_id}"
+    runs, versions = models.StrategyRun, models.StrategyVersion
+    found = session.execute(
+        select(runs.id, runs.strategy_version_id, versions.frozen_hash)
+        .join(versions, versions.id == runs.strategy_version_id)
+        .where(runs.id.in_(evidence_run_ids))
+    ).all()
+    in_study: set[UUID] = set()
+    if row.study_id is not None and evidence_run_ids:
+        in_study = set(
+            session.execute(
+                select(models.StudyRun.run_id).where(
+                    models.StudyRun.study_id == row.study_id, models.StudyRun.run_id.in_(evidence_run_ids)
+                )
+            ).scalars()
         )
+    related = {
+        run_id
+        for run_id, version_id, frozen in found
+        if version_id == row.strategy_version_id
+        or (row.frozen_hash is not None and frozen == row.frozen_hash)
+        or run_id in in_study
+    }
+    wrong = [run_id for run_id in evidence_run_ids if run_id not in related]
+    if wrong:
+        raise MissingEvidenceError(f"evidence runs {wrong} are missing or unrelated to promotion {row.id}")
     _insert_or_compare(session, models.Promotion, column_values(row), ["id"])
-    session.execute(
-        insert(table_of(models.PromotionEvidence))
-        .values([{"promotion_id": row.id, "run_id": run_id} for run_id in evidence_run_ids])
-        .on_conflict_do_nothing()
-    )
+    if evidence_run_ids:
+        session.execute(
+            insert(table_of(models.PromotionEvidence))
+            .values([{"promotion_id": row.id, "run_id": run_id} for run_id in dict.fromkeys(evidence_run_ids)])
+            .on_conflict_do_nothing()
+        )
+    for fold in folds:
+        if fold.promotion_id != row.id:
+            raise ForeignRunError(f"fold {fold.fold} belongs to promotion {fold.promotion_id}, not {row.id}")
+        _insert_or_compare(session, models.PromotionFold, column_values(fold), ["promotion_id", "fold"])
     return row.id
 
 
@@ -794,7 +856,11 @@ def _check_bundle_rows(bundle: RunBundle) -> None:
         | PositionRow
         | FundingRow
         | RiskEventRow
+        | DailyEquityRow
+        | RunMeasuresRow
     ] = [
+        *bundle.daily_equity,
+        *([] if bundle.measures is None else [bundle.measures]),
         *bundle.results,
         *bundle.fill_stats,
         *bundle.decisions,
@@ -808,6 +874,12 @@ def _check_bundle_rows(bundle: RunBundle) -> None:
     foreign = sorted({(str(row.run_id), str(row.env)) for row in children} - {(str(run.id), str(run.env))})
     if foreign:
         raise ForeignRunError(f"run bundle {run.id} ({run.env}) carries rows of other (run, env) pairs: {foreign}")
+    study_run = bundle.study_run
+    if study_run is not None:
+        if study_run.run_id != run.id or bundle.study is None or study_run.study_id != bundle.study.id:
+            raise ForeignRunError(f"run bundle {run.id}: its study_runs row names another run or study")
+        if study_run.status != run.status:
+            raise ForeignRunError(f"run bundle {run.id}: study run status {study_run.status} differs from {run.status}")
 
 
 def _insert_all(session: Session, model: type[Base], rows: Sequence[dict[str, object]]) -> None:
@@ -847,8 +919,194 @@ def write_run_bundle(session: Session, bundle: RunBundle) -> UUID:
             session, models.Fill, [column_values(f) | {"order_id": order_ids[f.client_order_id]} for f in bundle.fills]
         )
         _insert_all(session, models.FundingPayment, [column_values(f) for f in bundle.funding])
+        _insert_all(session, models.RunDailyEquity, [column_values(d) for d in bundle.daily_equity])
+        if bundle.measures is not None:
+            _insert_all(session, models.RunMeasures, [column_values(bundle.measures)])
+        if bundle.study is not None:
+            record_study(session, bundle.study)
+        if bundle.study_run is not None:
+            _insert_all(session, models.StudyRun, [column_values(bundle.study_run)])
         session.commit()
     except BaseException:
         session.rollback()
         raise
     return run.id
+
+
+# Studies (spec 0015) ------------------------------------------------------------------------
+
+
+def record_study(session: Session, row: StudyRow) -> UUID:
+    """Insert a study by name, or compare with the stored one; returns the stored study's id.
+
+    A study name reused with another plan (or anything else) raises ``RecordConflictError`` (AC-2).
+    A resumed study arrives with a fresh id; the stored id wins and is returned.
+    """
+    _insert_or_compare(session, models.Study, column_values(row), ["name"])
+    stored: UUID = session.execute(select(models.Study.id).where(models.Study.name == row.name)).scalar_one()
+    return stored
+
+
+def study_by_name(session: Session, name: str) -> models.Study | None:
+    """The study called ``name``, or None."""
+    return session.execute(select(models.Study).where(models.Study.name == name)).scalar_one_or_none()
+
+
+def study_runs(session: Session, study_id: UUID, role: StudyRole | None = None) -> list[models.StudyRun]:
+    """A study's runs (of one role, when given), by grid point then creation."""
+    query = select(models.StudyRun).where(models.StudyRun.study_id == study_id)
+    if role is not None:
+        query = query.where(models.StudyRun.role == role)
+    return list(session.execute(query.order_by(models.StudyRun.grid_point, models.StudyRun.created_at)).scalars().all())
+
+
+def completed_grid_points(session: Session, study_id: UUID) -> dict[int, models.StudyRun]:
+    """Each grid point's first completed development run (spec 0015 AC-3, the resume rule)."""
+    found: dict[int, models.StudyRun] = {}
+    for run in study_runs(session, study_id, StudyRole.DEVELOPMENT):
+        if run.status == RunStatus.COMPLETED and run.grid_point is not None:
+            found.setdefault(run.grid_point, run)
+    return found
+
+
+def final_grid_point(session: Session, study_id: UUID) -> int | None:
+    """The grid point with the best development ``risk_adjusted_ratio`` (NULL last), ties to the lowest index (AC-5)."""
+    rows = session.execute(
+        select(models.StudyRun.grid_point, models.RunResult.risk_adjusted_ratio)
+        .join(models.RunResult, models.RunResult.run_id == models.StudyRun.run_id)
+        .where(
+            models.StudyRun.study_id == study_id,
+            models.StudyRun.role == StudyRole.DEVELOPMENT,
+            models.StudyRun.status == RunStatus.COMPLETED,
+            models.RunResult.sample == Sample.FULL,
+        )
+    ).all()
+    ranked = sorted(
+        ((point, ratio) for point, ratio in rows if point is not None),
+        key=lambda r: (r[1] is None, -(r[1] or Decimal(0)), r[0]),
+    )
+    return ranked[0][0] if ranked else None
+
+
+def holdout_spent(session: Session, frozen_hash: str) -> bool:
+    """True when a completed holdout run of ``frozen_hash`` exists in any study (AC-5)."""
+    return (
+        session.execute(
+            select(models.StudyRun.run_id).where(
+                models.StudyRun.frozen_hash == frozen_hash,
+                models.StudyRun.role == StudyRole.HOLDOUT,
+                models.StudyRun.status == RunStatus.COMPLETED,
+            )
+        ).first()
+        is not None
+    )
+
+
+def study_lock_key(study_id: UUID) -> int:
+    """The advisory lock key of a study: its id's first 8 bytes as a signed 64 bit integer."""
+    return int.from_bytes(study_id.bytes[:8], "big", signed=True)
+
+
+@contextmanager
+def study_lock(engine: Engine, study_id: UUID) -> Iterator[None]:
+    """Hold the study's session level advisory lock (spec 0015 AC-5, AC-8) on a connection of its own."""
+    key = study_lock_key(study_id)
+    with engine.connect() as conn:
+        conn.execute(text("SELECT pg_advisory_lock(:key)"), {"key": key})
+        conn.commit()
+        try:
+            yield
+        finally:
+            conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": key})
+            conn.commit()
+
+
+def strategy_version_row(session: Session, version_id: UUID) -> StrategyVersionRow:
+    """A stored version as a bundle carries it; ``MissingParentError`` when it does not exist."""
+    version = session.get(models.StrategyVersion, version_id)
+    if version is None:
+        raise MissingParentError(f"strategy version {version_id} not found")
+    return StrategyVersionRow(
+        id=version.id,
+        strategy_id=version.strategy_id,
+        git_commit=version.git_commit,
+        config=version.config,  # type: ignore[arg-type]  # JSONB holds a JSON object here
+        version_hash=version.version_hash,
+        code_hash=version.code_hash,
+        frozen_hash=version.frozen_hash,
+    )
+
+
+def _ensure_strategy(session: Session, name: str, kind: StrategyKind) -> UUID:
+    strategies = table_of(models.Strategy)
+    session.execute(
+        insert(strategies).values(id=uuid.uuid7(), name=name, kind=kind).on_conflict_do_nothing(index_elements=["name"])
+    )
+    strategy = session.execute(select(models.Strategy).where(models.Strategy.name == name)).scalar_one()
+    if strategy.kind != kind:
+        raise RecordConflictError(strategies.name, {"name": name}, {"kind": strategy.kind}, {"kind": kind})
+    return strategy.id
+
+
+def import_run_bundle(session: Session, bundle: RunBundle) -> bool:
+    """Write a lab bundle on the VPS (spec 0015 AC-7) in the caller's transaction; returns True when its run is new.
+
+    Every row goes through ``_insert_or_compare``, so importing the same file again adds nothing, and a
+    stored row with other content raises ``RecordConflictError``. The laptop's strategy ids are mapped to
+    the VPS strategy of the same name; the version keeps the laptop's id and ``git_commit``. Validation of
+    env, mode, and trader is the caller's (``gate import``); this raises ``InvalidModeError`` for a paper or
+    live run, ``ForeignRunError`` for a foreign row, and ``MissingParentError`` when the bundle lacks its
+    strategy, version, or instrument.
+    """
+    run = bundle.run
+    if run.mode not in SIM_MODES:
+        raise InvalidModeError(f"run bundles are for backtest and replay runs, not {run.mode}")
+    _check_bundle_rows(bundle)
+    if bundle.strategy_name is None or bundle.strategy_kind is None or bundle.version is None:
+        raise MissingParentError(f"run bundle {run.id} carries no strategy version")
+    if bundle.instrument is None:
+        raise MissingParentError(f"run bundle {run.id} carries no instrument")
+    if bundle.version.id != run.strategy_version_id:
+        raise ForeignRunError(f"run bundle {run.id}: its version {bundle.version.id} is not the run's")
+    order_ids = _bundle_order_ids(
+        bundle, [e.client_order_id for e in bundle.order_events] + [f.client_order_id for f in bundle.fills]
+    )
+    upsert_instrument(session, bundle.instrument)
+    strategy_id = _ensure_strategy(session, bundle.strategy_name, bundle.strategy_kind)
+    _insert_or_compare(
+        session, models.StrategyVersion, column_values(bundle.version) | {"strategy_id": strategy_id}, ["id"]
+    )
+    new = _insert_or_compare(session, models.StrategyRun, column_values(run), ["id"])
+    for result in bundle.results:
+        _insert_or_compare(session, models.RunResult, column_values(result), ["run_id", "sample"])
+    for stats in bundle.fill_stats:
+        _insert_or_compare(session, models.RunFillStats, column_values(stats), ["run_id", "liquidity"])
+    for decision in bundle.decisions:
+        _insert_or_compare(session, models.Decision, column_values(decision), ["id"])
+    for order in bundle.orders:
+        _insert_or_compare(session, models.Order, column_values(order), ["run_id", "client_order_id"])
+    for event in bundle.risk_events:
+        _insert_or_compare(session, models.RiskEvent, column_values(event), ["env", "event_key"])
+    for order_event in bundle.order_events:
+        values = column_values(order_event) | {"order_id": order_ids[order_event.client_order_id]}
+        _insert_or_compare(session, models.OrderEvent, values, ["order_id", "event_id"])
+    for position in bundle.positions:
+        _insert_or_compare(session, models.Position, column_values(position), ["run_id", "position_ref", "opened_ns"])
+    for fill in bundle.fills:
+        values = column_values(fill) | {"order_id": order_ids[fill.client_order_id]}
+        _insert_or_compare(session, models.Fill, values, ["run_id", "trade_id"])
+    for payment in bundle.funding:
+        key, where = _FUNDING_KEYS[payment.source]
+        _insert_or_compare(session, models.FundingPayment, column_values(payment), key, where)
+    for day in bundle.daily_equity:
+        _insert_or_compare(session, models.RunDailyEquity, column_values(day), ["run_id", "day"])
+    if bundle.measures is not None:
+        _insert_or_compare(session, models.RunMeasures, column_values(bundle.measures), ["run_id"])
+    if bundle.study is not None:
+        if bundle.study_strategy_name is None or bundle.study_strategy_kind is None:
+            raise MissingParentError(f"run bundle {run.id} carries a study but not its strategy")
+        study_strategy = _ensure_strategy(session, bundle.study_strategy_name, bundle.study_strategy_kind)
+        record_study(session, replace(bundle.study, strategy_id=study_strategy))
+    if bundle.study_run is not None:
+        _insert_or_compare(session, models.StudyRun, column_values(bundle.study_run), ["study_id", "run_id"])
+    return new

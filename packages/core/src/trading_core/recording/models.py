@@ -1,4 +1,5 @@
-"""The 18 Postgres tables of spec 0002, ``run_fill_stats`` (spec 0008), and ``alerts`` (spec 0013).
+"""The 18 Postgres tables of spec 0002, ``run_fill_stats`` (spec 0008), ``alerts`` (spec 0013), and the
+gate's ``studies``, ``study_runs``, ``run_daily_equity``, ``run_measures``, and ``promotion_folds`` (spec 0015).
 
 All live on ``trading_core.db.Base``.
 
@@ -26,16 +27,19 @@ from sqlalchemy import (
     func,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from trading_core.alerts.model import Delivery, Tier
 from trading_core.db import Base
 from trading_core.recording.enums import (
     CLOSED_ORDER_STATUSES,
+    TERMINAL_RUN_STATUSES,
     ControlCmd,
     ControlOutcome,
     DecidedBy,
     Env,
+    EquityBasis,
     FundingSource,
     Granularity,
     InstrumentKind,
@@ -56,6 +60,8 @@ from trading_core.recording.enums import (
     Severity,
     Stage,
     StrategyKind,
+    StudyLab,
+    StudyRole,
     TimeInForce,
     Verdict,
 )
@@ -135,18 +141,22 @@ class StrategyVersion(Base):
     """One exact strategy: commit plus config, keyed by ``version_hash``."""
 
     __tablename__ = "strategy_versions"
-    __table_args__ = (UniqueConstraint("version_hash"),)
+    __table_args__ = (UniqueConstraint("version_hash"), _ix("strategy_versions", "frozen_hash"))
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
     strategy_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("strategies.id"), index=True)
     git_commit: Mapped[str]
     config: Mapped[dict[str, object]]
     version_hash: Mapped[str]
+    # Spec 0015 AC-1: the strategy's own code closure, and that plus config and Nautilus version.
+    # NULL on rows from before migration 0009.
+    code_hash: Mapped[str | None]
+    frozen_hash: Mapped[str | None]
     created_at: Mapped[datetime] = _created()
 
 
 class Promotion(Base):
-    """A promotion decision for a version between two stages."""
+    """A promotion decision for a version between two stages; append only (spec 0015)."""
 
     __tablename__ = "promotions"
     __table_args__ = (
@@ -154,6 +164,9 @@ class Promotion(Base):
         CheckConstraint(f"to_stage IN ({_quoted(Stage)})", name="to_stage_valid"),
         _one_of("verdict", Verdict),
         _one_of("decided_by", DecidedBy),
+        CheckConstraint("decided_by = 'gate' OR to_stage <> 'live'", name="no_manual_live"),
+        CheckConstraint("decided_by = 'manual' OR frozen_hash IS NOT NULL", name="gate_has_frozen_hash"),
+        _ix("promotions", "frozen_hash", "to_stage", "decided_at"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
@@ -165,6 +178,74 @@ class Promotion(Base):
     decided_by: Mapped[str]
     notes: Mapped[str | None]
     decided_at: Mapped[datetime]
+    frozen_hash: Mapped[str | None]
+    study_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("studies.id"))
+    thresholds_hash: Mapped[str | None]
+    reasons: Mapped[list[object]] = mapped_column(JSONB, server_default=text("'[]'::jsonb"))
+    metrics: Mapped[dict[str, object]] = mapped_column(server_default=text("'{}'::jsonb"))
+    gate_commit: Mapped[str | None]
+    created_at: Mapped[datetime] = _created()
+
+
+class Study(Base):
+    """One strategy tested under a plan written before its result is seen (spec 0015 AC-2); immutable."""
+
+    __tablename__ = "studies"
+    __table_args__ = (UniqueConstraint("name"), _one_of("lab", StudyLab))
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    strategy_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("strategies.id"), index=True)
+    name: Mapped[str]
+    lab: Mapped[str]
+    code_hash: Mapped[str]
+    plan: Mapped[dict[str, object]]
+    plan_hash: Mapped[str]
+    thresholds: Mapped[dict[str, object]]
+    thresholds_hash: Mapped[str]
+    created_at: Mapped[datetime] = _created()
+
+
+class StudyRun(Base):
+    """A run's role in its study (spec 0015 AC-3, AC-5); a failed run counts as a trial too. Immutable."""
+
+    __tablename__ = "study_runs"
+    __table_args__ = (
+        PrimaryKeyConstraint("study_id", "run_id"),
+        UniqueConstraint("run_id"),
+        _one_of("role", StudyRole),
+        CheckConstraint(f"status IN ({_quoted(TERMINAL_RUN_STATUSES)})", name="status_valid"),
+        CheckConstraint("(role = 'benchmark') = (grid_point IS NULL)", name="grid_point_iff_not_benchmark"),
+        # At most one completed holdout per frozen version, in any study (AC-5).
+        _ix("study_runs", "frozen_hash", where="role = 'holdout' AND status = 'completed'", unique=True),
+    )
+
+    study_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("studies.id"))
+    run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("strategy_runs.id"))
+    role: Mapped[str]
+    grid_point: Mapped[int | None]
+    frozen_hash: Mapped[str]
+    status: Mapped[str]
+    created_at: Mapped[datetime] = _created()
+
+
+class PromotionFold(Base):
+    """One walk forward fold an evaluation scored (spec 0015 AC-9); immutable."""
+
+    __tablename__ = "promotion_folds"
+    __table_args__ = (PrimaryKeyConstraint("promotion_id", "fold"),)
+
+    promotion_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("promotions.id"))
+    fold: Mapped[int]
+    is_start: Mapped[date]
+    is_end: Mapped[date]
+    oos_start: Mapped[date]
+    oos_end: Mapped[date]
+    chosen_grid_point: Mapped[int]
+    is_sharpe: Mapped[Decimal | None]
+    oos_sharpe: Mapped[Decimal | None]
+    oos_return: Mapped[Decimal]
+    oos_trades: Mapped[int]
+    oos_net_pnl: Mapped[Decimal]
     created_at: Mapped[datetime] = _created()
 
 
@@ -283,6 +364,61 @@ class RunFillStats(Base):
     markout_5s_bps: Mapped[Decimal | None]
     markout_30s_bps: Mapped[Decimal | None]
     computed_at: Mapped[datetime]
+
+
+class RunDailyEquity(Base):
+    """Equity at each UTC day's close of a backtest or replay run (spec 0015 AC-6); immutable."""
+
+    __tablename__ = "run_daily_equity"
+    __table_args__ = (
+        PrimaryKeyConstraint("run_id", "day"),
+        _env_fk("run_id", "strategy_runs"),
+        _env_check(),
+        _one_of("basis", EquityBasis),
+        CheckConstraint("trades_closed >= 0", name="trades_closed_nonnegative"),
+    )
+
+    run_id: Mapped[uuid.UUID]
+    env: Mapped[str]
+    day: Mapped[date]
+    equity_close: Mapped[Decimal]
+    basis: Mapped[str]
+    trades_closed: Mapped[int]
+    fees: Mapped[Decimal]
+    funding: Mapped[Decimal]
+    currency: Mapped[str]
+
+
+class RunMeasures(Base):
+    """A run's drawdown, splits, concentration, and cost per trade (spec 0015); immutable.
+
+    ``avg_gross_edge`` and ``avg_round_trip_cost`` are NULL for a run with no closed trade.
+    """
+
+    __tablename__ = "run_measures"
+    __table_args__ = (
+        _env_fk("run_id", "strategy_runs"),
+        _env_check(),
+        CheckConstraint(f"drawdown_basis IN ({_quoted(EquityBasis)})", name="drawdown_basis_valid"),
+        CheckConstraint("long_trades >= 0 AND short_trades >= 0", name="trades_nonnegative"),
+    )
+
+    run_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    env: Mapped[str]
+    drawdown_basis: Mapped[str]
+    marked_max_drawdown: Mapped[Decimal | None]
+    longest_drawdown_hours: Mapped[int | None]
+    exposure: Mapped[Decimal | None]
+    long_trades: Mapped[int]
+    long_net_pnl: Mapped[Decimal]
+    short_trades: Mapped[int]
+    short_net_pnl: Mapped[Decimal]
+    profit_factor: Mapped[Decimal | None]
+    expectancy: Mapped[Decimal | None]
+    top_trades_profit_share: Mapped[Decimal | None]
+    avg_gross_edge: Mapped[Decimal | None]
+    avg_round_trip_cost: Mapped[Decimal | None]
+    currency: Mapped[str]
 
 
 class Decision(Base):

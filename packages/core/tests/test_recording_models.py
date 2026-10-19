@@ -28,6 +28,12 @@ EXPECTED_TABLES = {
     "control_commands",
     "run_fill_stats",
     "alerts",
+    # Spec 0015.
+    "studies",
+    "study_runs",
+    "run_daily_equity",
+    "run_measures",
+    "promotion_folds",
 }
 
 

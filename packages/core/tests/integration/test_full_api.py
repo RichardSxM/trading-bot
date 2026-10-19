@@ -7,7 +7,7 @@ from decimal import Decimal
 from uuid import uuid7
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, insert, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -34,6 +34,7 @@ from trading_core.recording.errors import (
     ForeignRunError,
     InvalidModeError,
     InvalidTransitionError,
+    ManualLivePromotionError,
     MissingEvidenceError,
     MissingParentError,
     PromotionRequiredError,
@@ -52,10 +53,11 @@ from trading_core.recording.rows import (
     RunFillStatsRow,
     RunResultRow,
     RunRow,
+    column_values,
 )
 from trading_core.settings import get_settings
 
-from .conftest import INSTRUMENT, World
+from .conftest import INSTRUMENT, WORLD_FROZEN, World
 
 
 def _count(session: Session, model, **where) -> int:
@@ -444,15 +446,18 @@ def test_a_paper_or_live_bundle_is_refused(session: Session, world: World, mode)
         repository.write_run_bundle(session, RunBundle(run=replace(_sim_run(world), mode=mode)))
 
 
-def _promotion(version_id, verdict: Verdict, day: int) -> PromotionRow:
+def _promotion(
+    version_id, verdict: Verdict, day: int, frozen: str = WORLD_FROZEN.frozen_hash, by: DecidedBy = DecidedBy.GATE
+) -> PromotionRow:
     return PromotionRow(
         strategy_version_id=version_id,
         from_stage=Stage.PAPER,
         to_stage=Stage.LIVE,
         verdict=verdict,
         thresholds={"min_trades": 30},
-        decided_by=DecidedBy.GATE,
+        decided_by=by,
         decided_at=datetime(2026, 10, day, tzinfo=UTC),
+        frozen_hash=frozen,
     )
 
 
@@ -462,7 +467,7 @@ def test_a_promotion_needs_evidence_of_the_same_version(session: Session, world:
     with pytest.raises(MissingEvidenceError):
         repository.record_promotion(session, _promotion(world.version_id, Verdict.PASS, 1), [])
     with pytest.raises(MissingEvidenceError):
-        repository.record_promotion(session, _promotion(other, Verdict.PASS, 1), [world.run_id])
+        repository.record_promotion(session, _promotion(other, Verdict.PASS, 1, frozen="0" * 64), [world.run_id])
     with pytest.raises(MissingEvidenceError):
         repository.record_promotion(session, _promotion(world.version_id, Verdict.PASS, 1), [uuid7()])
 
@@ -502,6 +507,39 @@ def test_a_live_run_needs_a_known_commit_and_a_latest_pass(session: Session, wor
     repository.record_promotion(session, _promotion(world.version_id, Verdict.PASS, 3), [world.run_id])
     run_id = _start_live(session, world.version_id)
     assert session.get(models.StrategyRun, run_id) is not None
+
+
+def test_a_live_run_matches_on_the_frozen_hash_not_the_version(session: Session, world: World, live_process):
+    """covers: spec 0015 AC-17 (a redeploy of the same code on another commit keeps its live pass)."""
+    repository.record_promotion(session, _promotion(world.version_id, Verdict.PASS, 4), [world.run_id])
+    redeployed = repository.ensure_strategy_version(
+        session,
+        "tracer",
+        StrategyKind.SCALPING,
+        "fedcba9876543210",
+        {"size": Decimal("0.001"), "window": 20},
+        WORLD_FROZEN,
+    )
+
+    assert session.get(models.StrategyRun, _start_live(session, redeployed)) is not None
+
+
+def test_a_version_without_a_frozen_hash_never_goes_live(session: Session, world: World, live_process):
+    unfrozen = repository.ensure_strategy_version(session, "tracer", StrategyKind.SCALPING, "abcdef", {"w": 2})
+
+    with pytest.raises(PromotionRequiredError):
+        _start_live(session, unfrozen)
+
+
+def test_only_the_gate_can_promote_to_live(session: Session, world: World):
+    """covers: spec 0015 AC-15 (ManualLivePromotionError) and the CHECK behind it."""
+    with pytest.raises(ManualLivePromotionError):
+        repository.record_promotion(
+            session, _promotion(world.version_id, Verdict.PASS, 5, by=DecidedBy.MANUAL), [world.run_id]
+        )
+    row = _promotion(world.version_id, Verdict.PASS, 5, by=DecidedBy.MANUAL)
+    with pytest.raises(IntegrityError, match="ck_promotions_no_manual_live"):
+        session.execute(insert(models.Promotion).values(column_values(row)))
 
 
 def test_a_live_run_refuses_an_unknown_commit(session: Session, world: World, live_process):

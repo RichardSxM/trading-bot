@@ -33,6 +33,9 @@ REDIS_PASSWORD: Final = "redis_password"
 # The lab role's password as the migrate service mounts it (spec 0008); laptop only. The lab
 # service itself mounts it under POSTGRES_PASSWORD.
 POSTGRES_LAB_PASSWORD: Final = "postgres_lab_password"
+# The gate role's password as the migrate service mounts it (spec 0015); optional on the laptop.
+# The gate service itself mounts it under POSTGRES_PASSWORD.
+POSTGRES_GATE_PASSWORD: Final = "postgres_gate_password"
 KRAKEN_API_KEY: Final = "kraken_api_key"
 KRAKEN_API_SECRET: Final = "kraken_api_secret"
 # The dashboard login (spec 0004), mounted into the dashboard only.

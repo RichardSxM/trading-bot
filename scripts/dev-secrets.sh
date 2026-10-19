@@ -21,6 +21,7 @@ postgres_dashboard_password
 postgres_backup_password
 postgres_lab_password
 postgres_alerter_password
+postgres_gate_password
 redis_trader_password
 redis_dashboard_password
 redis_alerter_password
