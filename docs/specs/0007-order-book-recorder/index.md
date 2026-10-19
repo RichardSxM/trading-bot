@@ -473,7 +473,7 @@ Tracer Bullet again: one hole goes from the recorder's counter to a `sequence` g
 - [ ] Feature 12: alert on `catalog_disk_full`, `catalog_retention_blocked`, `catalog_late_rows`, `recorder_queue_full`, `recorder_stop_queue_full`, `compactor_pass_failed`, `backup_failed step=catalog`, and long `book_gap`. Consider a daily count of `catalog_hour_reordered` and `recorder_queue_high`.
 - [ ] Feature 15 (simulator): read `gaps/` and skip or split replays at gaps, and treat an `incomplete` hour the same way.
 - [ ] A Nautilus upgrade from 1.231.0: check whether `ThrottledEnqueuer` still lets newer messages overtake pending puts, and whether `data_qsize()` still exists.
-- [ ] Feature 20 (market context): add its types to `include_types` and to the compactor's type list.
+- [x] Feature 20 (market context): add its types to `include_types` and to the compactor's type list. Done in spec 0009 (AC-1, AC-2): `RECORDED_TYPES` lists all five context types.
 - [ ] Spec 0005: after this ships, run the soak sequence (kfs-soak smoke run, deploy during an open position, 72 h soak).
 - [ ] Revisit the 30 GB cap once the measured size per day is known: aim for at least 7 days of local hours.
 - [ ] Feature 15 (simulator): a converter from free Tardis days (`incremental_book_L2`, `trades` CSV, downloaded with the `tardis-dev` client) to hourly catalog files, since a whole day (about 45M rows) does not fit in memory at once. A trial on 2026-10-08 loaded and replayed 2M rows of 2026-10-01 with `TardisCSVDataLoader`.

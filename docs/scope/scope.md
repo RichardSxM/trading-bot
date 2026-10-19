@@ -19,7 +19,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 6 | Core paper trading loop | Slice 1 | done |
 | 7 | Always on cloud deployment | Slice 2 | done |
 | 8 | Order book recorder | Slice 3 | done |
-| 20 | Market context feed | Slice 3 | in-progress |
+| 20 | Market context feed | Slice 3 | done |
 | 21 | Recorder buffered writer | Slice 3 | done |
 | 9 | Kill switch & loss limits | Slice 4 | done |
 | 10 | Leverage & liquidation guard | Slice 4 | done |
@@ -157,7 +157,7 @@ spec [0007](../specs/0007-order-book-recorder/index.md)
 - [x] Review it (fresh model): `/check review order book recorder`
 - [x] Document it: `/document order book recorder`
 
-### 20. Market context feed · in-progress
+### 20. Market context feed · done
 Record the perp market's own context next to prices: funding rate, open interest, mark versus index basis, and liquidations. Strategies can then use them as inputs and regime filters, in backtests and live alike. Much of this history cannot be downloaded later, so recording starts early.
 **Done when:** the context values are recorded continuously with gaps logged, a backtest can read them at the time each one was known (no look ahead), and a strategy can read the same values live.
 **Carried over from research (2026-10-04):** the idea came from the `tracking-crypto-derivatives` skill (ideas only, nothing installed). Optional extras for the design to weigh: a news or event blackout filter, the Fear & Greed index as a regime tag, and later Deribit options implied volatility and put/call ratio.
@@ -173,10 +173,10 @@ code in [packages/core/src/trading_core/marketdata/context.py](../../packages/co
   - [x] Raw client: `websockets` actor for open interest and liquidations, parsers, dedupe, reconnect and idle watchdog, outages file and `reconnect` gaps, liquidation window (AC-3 to AC-8, AC-10, AC-11, AC-13)
   - [x] Live read, Tardis history, deploy: trader actor, Tardis mark, index, open interest and the `--context` backfill, retention and boundary checks, the VPS 24 h check (AC-12, AC-15, AC-16, AC-17); the 24 h check passed on its rerun over 2026-10-17 16:26 to 2026-10-18 16:26 UTC
   - [x] Holes at a run's tail and a starved loop (amended 2026-10-16 from verify.md step 5): the open outage line, tail silence and tail `reconnect` through `done.json`, the `context_feed_lagging` warning, deploy after spec 0012's AC-8 check, verify.md step 12 (AC-6, AC-7, AC-17, AC-18); deployed 2026-10-18 16:36 UTC (2065fe9), step 12 passed
-- [ ] Verify it: `/check verify market context feed`
+- [x] Verify it: `/check verify market context feed`
 - [x] Test it: `/test market context feed`
 - [x] Review it (fresh model): `/check review market context feed`
-- [ ] Document it: `/document market context feed`
+- [x] Document it: `/document market context feed`
 
 ### 21. Recorder buffered writer · done
 The recorder falls over at BTC's busiest hours because the Nautilus feather writer saves every message on its own, which caps it near 1,850 messages a second (found by `/debug` on 2026-10-15). Replace it with a writer that saves each stream once a second, with the same files on disk, so the compactor and everything after it stay unchanged. From spec 0007.

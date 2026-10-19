@@ -1,7 +1,7 @@
 # 0009. Record funding, mark, index, open interest, and liquidations in the recorder, and read them the same way live and in replay
 
 **Date**: 2026-10-11 (amended 2026-10-16: holes at a run's tail and a starved event loop, AC-6, AC-7, AC-17, AC-18, Milestone 5)
-**Status**: In Progress
+**Status**: Accepted
 
 ## Summary
 
@@ -225,7 +225,7 @@ Tracer Bullet: Milestone 1 pushes one stream (funding) through every layer, reco
 
 ## Follow-up
 
-- [ ] Closes spec 0007's "Feature 20: add its types to `include_types` and the compactor's type list" and spec 0008's "Feature 20 adds funding to own recorder days"; update both on build.
+- [x] Closes spec 0007's "Feature 20: add its types to `include_types` and the compactor's type list" and spec 0008's "Feature 20 adds funding to own recorder days"; update both on build. Both closed 2026-10-19.
 - [ ] Feature 12 (alerts): alert on a `context_feed_down` longer than 5 minutes, on `context_feed_lagging`, and on an hour missing a context file.
 - [ ] Nautilus: report upstream that `LiveDataEngine._run_data_queue` (1.231.0) never yields while its queue holds items, which starves every other task on the loop; drop AC-18's reason to exist if a release fixes it.
 - [ ] The 2026-10-15 hole (13:58:56 to 15:05:36 UTC) has no gap row, since the rules came later. Optionally add the `silence` and `reconnect` rows by hand, or leave it noted in verify.md step 5.
