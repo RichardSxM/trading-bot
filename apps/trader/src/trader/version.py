@@ -7,17 +7,15 @@ hand (``gate promote --manual``) before its deploy. Exit 78 on bad config.
 
 import json
 import sys
-from typing import Final, NoReturn
+from typing import NoReturn
 
 from pydantic import ValidationError
 
-from trader.main import TraderSettings
+from trader.main import EXIT_CONFIG, TraderSettings
 from trading_core import versioning
 from trading_core.node.placeholder import STRATEGY_NAME, PlaceholderTimed
 from trading_core.recording.enums import StrategyKind
 from trading_core.recording.rows import JsonObject, normalize_json
-
-EXIT_CONFIG: Final = 78
 
 
 def describe(settings: TraderSettings) -> JsonObject:

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from dataclasses import replace
 from datetime import date
 from decimal import Decimal
@@ -10,6 +11,7 @@ from pydantic import SecretStr
 from trader.main import TraderSettings, build_config
 from trading_core.boot import Boot
 from trading_core.naming import NodeIdMismatch
+from trading_core.recording.errors import PromotionRequiredError
 from trading_core.settings import TradingEnv
 
 SECRETS = {
@@ -222,6 +224,24 @@ def test_main_refuses_to_start_when_redis_is_unreachable(fake_main, monkeypatch)
         fake_main.main()
 
     assert exit_info.value.code == 1
+    assert _FakeNode.instances == []
+
+
+def test_main_exits_78_without_a_paper_promotion(fake_main, monkeypatch, caplog):
+    """covers: spec 0015 AC-14 (paper_promotion_required at critical, exit 78, no node built)."""
+
+    def refused(settings, secrets, trader_id):
+        raise PromotionRequiredError("latest candidate → paper promotion is missing")
+
+    monkeypatch.setattr(fake_main, "redis_reachable", lambda host, port: True)
+    monkeypatch.setattr(fake_main, "start_paper_loop", refused)
+
+    with caplog.at_level(logging.CRITICAL, logger="trader"), pytest.raises(SystemExit) as exit_info:
+        fake_main.main()
+
+    assert exit_info.value.code == 78
+    critical = [getattr(r, "fields", {}).get("code") for r in caplog.records if r.levelno == logging.CRITICAL]
+    assert critical == ["paper_promotion_required"]
     assert _FakeNode.instances == []
 
 
