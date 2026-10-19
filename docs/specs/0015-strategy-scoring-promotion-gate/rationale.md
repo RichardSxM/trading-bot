@@ -52,6 +52,14 @@ The sub decisions, each with its runner up:
 - **The paper guard has no exemptions.** The placeholder gets a logged manual promotion before the guard ships, so the code that touches order placing has no special path.
 - **Benchmarks are real candle runs** (`buy_and_hold`, `macd_baseline`) tagged `benchmark`. Rather than adding a special `run_results` sample, they reuse the lab and get the same costs.
 
+### Amendments after the first verify (2026-10-19)
+
+The first `/check verify` found three gaps, each decided with you on 2026-10-19:
+
+- **A stopped benchmark could never be rerun.** `lab holdout` stopped after the holdout run completed but during `buy_and_hold` left the study stuck on `missing_benchmark`, because the rerun hit the "holdout spent" exit first and no other command runs benchmarks. Chosen: `lab holdout` itself resumes, running only missing benchmarks when this study already holds the completed holdout. Benchmarks don't depend on the studied strategy, so this is not peeking. Runner up: a separate `lab benchmarks <study>` command, clearer by name but one more command for a one line change.
+- **Benchmarks counted as trials.** N and the dashboard trial count took every `study_runs` row, so a 2 point study showed 3 trials and the deflated Sharpe got stricter for no reason. Chosen: count only `development` and `holdout` rows. Runner up: keep counting and document it, which would penalise every study by one or two phantom trials.
+- **A baseline was judged against itself.** In a study of `macd_baseline`, its own benchmark equals the default grid point, so `beats_macd_baseline` could never pass. Chosen: skip the self benchmark run and mark that check not applicable. Runner up: baselines stay reference only and never promote, which is stricter but would make the happy path study in the test scenarios unable to pass by design.
+
 ### Threshold provenance (v1, fixed 2026-10-19 before any candidate result)
 
 | Threshold | Value | Why |

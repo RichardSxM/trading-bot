@@ -341,6 +341,7 @@ code in `packages/core/src/trading_core/gate`, `packages/core/src/trading_core/v
   - [ ] Replay studies: taker and maker studies, replay day selection, benchmark day limiting, the `random_taker` loser study (AC-2 to AC-4, AC-10)
   - [ ] Paper and live guards: `trader.version`, manual promotion, the placeholder transition, the paper guard, the live guard on `frozen_hash`, paper to live evaluation (AC-14 to AC-17)
   - [ ] Dashboard depth and proof: study detail, promotion log, paper progress, permission and boundary tests, `verify.md` (AC-19 to AC-23)
+  - [ ] Fixes from the first verify: `lab holdout` resumes missing benchmarks, no self benchmark, benchmarks left out of the trial count (AC-4, AC-5, AC-10, AC-11, AC-19)
 - [ ] Verify it: `/check verify strategy scoring & promotion gate`
 - [ ] Test it: `/test strategy scoring & promotion gate`
 - [ ] Review it (fresh model): `/check review strategy scoring & promotion gate`
