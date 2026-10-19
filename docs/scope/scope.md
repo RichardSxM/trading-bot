@@ -27,7 +27,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 12 | Phone alerts & health checks | Slice 5 | done |
 | 13 | Candle backtest lab | Slice 6 | done |
 | 14 | Scalping simulator | Slice 6 | done |
-| 15 | Strategy scoring & promotion gate | Slice 6 | planned |
+| 15 | Strategy scoring & promotion gate | Slice 6 | in-progress |
 | 16 | Scalping strategy candidates | Slice 7 | planned |
 | 17 | Hour level strategy candidates | Slice 7 | planned |
 | 18 | Trade journal export | Slice 8 | planned |
@@ -314,7 +314,7 @@ code in `apps/lab`, `packages/core/src/trading_core/lab`
 - [x] Review it (fresh model): `/check review scalping simulator`
 - [x] Document it: `/document scalping simulator`
 
-### 15. Strategy scoring & promotion gate · needs a decision
+### 15. Strategy scoring & promotion gate · in-progress
 Score every strategy on return after costs, max drawdown, and a risk adjusted ratio (win rate shown, never ranked on), with out of sample testing to catch overfitting. Only strategies that pass move to paper, and only paper winners can go live.
 **Done when:** the dashboard ranks strategies on those metrics, the gate blocks any strategy that fails out of sample or paper thresholds, and promotions are logged.
 **Carried over from research (2026-10-04), for the design to weigh:**
@@ -332,7 +332,19 @@ Score every strategy on return after costs, max drawdown, and a risk adjusted ra
 - **Breakdowns:** long and short, market regime, time of day, and walk forward fold, where the sample allows. Fail a candidate when one period, one direction, or a few outsized trades explain most of the profit.
 - **Baselines:** compare with doing nothing and with a simple strategy over the same dates (buy and hold and the MACD baseline from spec 0014), and make extra layers earn their added parameters.
 - **Frozen versions:** once paper starts, a strategy version is frozen by its hash; a material change makes a new version that goes back to research.
-- [ ] Design it (spec): `/architect strategy scoring & promotion gate`
+spec [0015](../specs/0015-strategy-scoring-promotion-gate/index.md)
+code in `packages/core/src/trading_core/gate`, `packages/core/src/trading_core/versioning.py`, `packages/core/src/trading_core/recording`, `apps/gate`, `apps/lab`, `apps/trader`, `apps/dashboard`
+- [x] Design it (spec): `/architect strategy scoring & promotion gate`
+- [ ] Build it: `/develop strategy scoring & promotion gate`
+  - [x] Thin thread: migration `0009` and `gate_app`, code and frozen hashes, thresholds file, daily equity and measures in the bundles, `lab study` and `lab holdout` for candles, `gate import` and `push-bundles.sh`, `gate evaluate`, the ranking table (AC-1 to AC-8, AC-18, AC-22, AC-23)
+  - [x] Full candidate gate: folds, bootstrap, PBO, deflated Sharpe, every check and missing data reason, `lab gate --dry-run`, determinism (AC-8 to AC-13)
+  - [ ] Replay studies: taker and maker studies, replay day selection, benchmark day limiting, the `random_taker` loser study (AC-2 to AC-4, AC-10)
+  - [ ] Paper and live guards: `trader.version`, manual promotion, the placeholder transition, the paper guard, the live guard on `frozen_hash`, paper to live evaluation (AC-14 to AC-17)
+  - [ ] Dashboard depth and proof: study detail, promotion log, paper progress, permission and boundary tests, `verify.md` (AC-19 to AC-23)
+- [ ] Verify it: `/check verify strategy scoring & promotion gate`
+- [ ] Test it: `/test strategy scoring & promotion gate`
+- [ ] Review it (fresh model): `/check review strategy scoring & promotion gate`
+- [ ] Document it: `/document strategy scoring & promotion gate`
 
 ## Slice 7: First strategies
 
