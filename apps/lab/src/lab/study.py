@@ -446,7 +446,10 @@ def _run_benchmarks(
     start: date,
     end: date,
 ) -> int:
-    """Each named benchmark once over ``start``..``end`` as a candle run (AC-4); stops at the first failure."""
+    """Each named benchmark once over ``start``..``end`` as a candle run (AC-4); stops at the first failure.
+
+    Any failed benchmark exits 1 (AC-5), whatever the backtest's own code (2 for missing candles, for example).
+    """
     for name in names:
         bench = _benchmark_run(BENCHMARK_FILES[name], base, start, end)
         bench_entry = registry_entry(name)
@@ -463,5 +466,5 @@ def _run_benchmarks(
         )
         code = backtest(settings, bench, store, variants=[bench_variant], study=context)
         if code != EXIT_OK:
-            return code
+            return EXIT_FAILED
     return EXIT_OK

@@ -7,6 +7,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import create_engine, func, select
 
+from lab.candle_backtest import EXIT_MISSING
 from lab.runfile import RunFileError
 from lab.study import EXIT_FAILED, EXIT_OK, EXIT_USAGE, StudyStore, load_study, run_holdout, run_study
 from trading_core.gate.verdict import evaluate_candidate
@@ -151,7 +152,7 @@ def test_a_candle_study_runs_resumes_and_spends_its_holdout_once(tmp_path, monke
 
         # The catalog end moves on. A benchmark failing during the resume exits 1 and reruns no holdout.
         synthetic_month(catalog, month=Month(2025, 11), days=12)
-        monkeypatch.setattr("lab.study.backtest", lambda *args, **kwargs: EXIT_FAILED)
+        monkeypatch.setattr("lab.study.backtest", lambda *args, **kwargs: EXIT_MISSING)
         assert run_holdout(settings, name, store) == EXIT_FAILED
         monkeypatch.undo()
 
