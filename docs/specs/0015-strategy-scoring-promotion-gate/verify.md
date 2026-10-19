@@ -7,12 +7,12 @@ _Steps derived from spec 0015 acceptance criteria. `/check verify` runs these; `
 - [x] Rerun the same `lab study` after it completes → every grid point skipped, no new runs → AC-3
 - [x] Edit the grid and rerun under the same study name → exit 64, nothing run → AC-2
 - [x] Kill the container during one grid point → that run is `aborted` with a `study_runs` row; the trial count includes it → AC-3, AC-11
-- [ ] `lab holdout macd_baseline` → one holdout run of the best development grid point plus a `buy_and_hold` `benchmark` run over the holdout range, and no `macd_baseline` benchmark (the study is of `macd_baseline` itself); run it again → exit 64 before any data is read → AC-4, AC-5
-- [ ] Stop `lab holdout` on a fresh study after its holdout run completes but during a benchmark, then rerun → no new holdout run, only the missing benchmarks run, over the holdout run's `data_end_at`; run it once more → exit 64 → AC-4, AC-5
+- [x] `lab holdout macd_baseline` → one holdout run of the best development grid point plus a `buy_and_hold` `benchmark` run over the holdout range, and no `macd_baseline` benchmark (the study is of `macd_baseline` itself); run it again → exit 64 before any data is read → AC-4, AC-5
+- [x] Stop `lab holdout` on a fresh study after its holdout run completes but during a benchmark, then rerun → no new holdout run, only the missing benchmarks run, over the holdout run's `data_end_at`; run it once more → exit 64 → AC-4, AC-5
 - [ ] On a study whose holdout landed without its benchmarks, make the resumed benchmark fail (for example, move the catalog away) → exit 1, no new holdout run, and the next good rerun still runs only the missing benchmark → AC-5
-- [ ] `gate evaluate macd_baseline` → no `beats_macd_baseline` reason, metric `beats_macd_baseline_applicable` = `false`; `/strategies/<study_id>` for a 2 point study shows "2 trials", and the promotion's N is 2 → AC-10, AC-11, AC-19
+- [x] `gate evaluate macd_baseline` → no `beats_macd_baseline` reason, metric `beats_macd_baseline_applicable` = `false`; `/strategies/<study_id>` for a 2 point study shows "2 trials", and the promotion's N counts the distinct non benchmark `frozen_hash` values across every study of the strategy (2 on a clean DB), with benchmarks left out → AC-10, AC-11, AC-19
 - [x] On a study with one `aborted` development run, `lab holdout` → exit 64 listing that grid point → AC-5
-- [ ] Kill the first holdout attempt on a fresh study, then rerun → allowed, and one completed holdout results → AC-5
+- [x] Kill the first holdout attempt on a fresh study, then rerun → allowed, and one completed holdout results → AC-5
 
 ## Transport
 - [ ] `scripts/push-bundles.sh lab-reports/<batch>` → files in `/var/lib/kfs/bundles/`, import summary with every file loaded; run it again → 0 new rows → AC-7
