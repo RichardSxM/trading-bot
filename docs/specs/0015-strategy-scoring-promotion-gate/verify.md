@@ -15,7 +15,7 @@ _Steps derived from spec 0015 acceptance criteria. `/check verify` runs these; `
 - [x] Kill the first holdout attempt on a fresh study, then rerun → allowed, and one completed holdout results → AC-5
 
 ## Transport
-- [ ] `scripts/push-bundles.sh lab-reports/<batch>` → files in `/var/lib/kfs/bundles/`, import summary with every file loaded; run it again → 0 new rows → AC-7
+- [x] `scripts/push-bundles.sh lab-reports/<batch>` → files in `/var/lib/kfs/bundles/`, import summary with every file loaded; run it again → 0 new rows → AC-7
 - [x] Hand edit a bundle's run to mode `paper` → that file is refused, the others load, exit 1 → AC-7
 
 ## Gate
@@ -25,8 +25,8 @@ _Steps derived from spec 0015 acceptance criteria. `/check verify` runs these; `
 - [x] A study missing its holdout → `insufficient` with `missing_run` (check `holdout`); set one run's fees to zero in a scratch DB → `insufficient` with `missing_cost` → AC-12
 
 ## Paper and live
-- [ ] Laptop stack: the trader with no `candidate → paper` promotion for its `frozen_hash` → critical `paper_promotion_required`, exit 78 → AC-14 _(waits on build plan task 15, the paper guard; run task 14 on the VPS first)_
-- [ ] `gate promote --manual --step candidate-paper --version <id> --note test` with `-T` → refused; with a TTY and the wrong name → refused; correct → a pass row, and the trader starts → AC-15
+- [x] Laptop stack: the trader with no `candidate → paper` promotion for its `frozen_hash` → critical `paper_promotion_required`, exit 78 → AC-14
+- [x] `gate promote --manual --step candidate-paper --version <id> --note test` with `-T` → refused; with a TTY and the wrong name → refused; correct → a pass row, and the trader starts → AC-15
 - [x] Try a manual promotion to live → `ManualLivePromotionError`; an SQL insert as owner → CHECK violation → AC-15, AC-17
 - [ ] `gate evaluate --step paper-live --frozen-hash <h>` with under 30 days of paper → `insufficient` with `paper_duration` → AC-16
 
