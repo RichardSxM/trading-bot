@@ -366,7 +366,7 @@ Tracer Bullet: Milestone 2 pushes one real hour through every layer (run file, e
 
 - [ ] Feature 15 decides how laptop replay results reach the VPS dashboard (load the `.bundle.json` files, or another path).
 - [ ] Feature 19's live canary measures real insert and cancel latency, and should replace the 25 ms default in the run files.
-- [ ] Feature 20 adds funding to own recorder days, after which own runs can drop the "before funding" label.
+- [x] Feature 20 adds funding to own recorder days, after which own runs can drop the "before funding" label. Done in spec 0009 (AC-14): an own replay charges funding when its recorded rates cover every funding hour, and the label shows only when `funding_source` is `none`.
 - [ ] If the Milestone 1 gate shows the pessimistic queue far from reality on fills seen live later, consider a queue model that credits cancels ahead (a new spec).
 - [ ] If throughput is still too slow for feature 15's day counts, consider a depth band filter in the hour stream (send the engine only levels near the top); it needs its own fidelity proof (identical fills against the full book).
 - [ ] `/sync`: in `packages/core/AGENTS.md`, replace "Only `node/` may import NautilusTrader" with the Code placement core boundary rule (`node/` and `catalog/` carry the `node` extra; only `catalog/` imports `pyarrow` or `numpy`), say that `redis`, `sqlalchemy`, and `psycopg` are allowed in the existing I/O adapters, and add `catalog/` and `marketdata/` rows to its Key files table. Root `AGENTS.md` "no I/O" should name the pure feature folders instead of all of core.
