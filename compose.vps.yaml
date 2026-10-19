@@ -16,6 +16,7 @@ services:
       - postgres_dashboard_password
       - postgres_backup_password
       - postgres_alerter_password
+      - postgres_gate_password
 
   # No default here: a missing ALERTS_DELIVERY line in /etc/kfs/kfs.env refuses the deploy
   # instead of silently running the VPS alerter dry (spec 0013).
@@ -29,6 +30,16 @@ services:
       - type: bind
         source: /var/log/kfs
         target: /host/kfs-log
+        read_only: true
+        bind:
+          create_host_path: true
+
+  # The bundle files scripts/push-bundles.sh copies over Tailscale SSH (spec 0015 AC-7).
+  gate:
+    volumes: !override
+      - type: bind
+        source: /var/lib/kfs/bundles
+        target: /bundles
         read_only: true
         bind:
           create_host_path: true

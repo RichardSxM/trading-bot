@@ -1,0 +1,28 @@
+[project]
+name = "gate"
+version = "0.1.0"
+description = "The promotion gate (spec 0015): imports lab bundles on the VPS and appends promotions. Core only, never imports NautilusTrader."
+requires-python = ">=3.14,<3.15"
+dependencies = [
+    "trading-core",
+]
+
+[project.scripts]
+gate = "gate.main:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+# Tests that need Postgres are opt in (a later -m overrides this one).
+addopts = "-m 'not postgres'"
+markers = [
+    "postgres: needs the Compose Postgres and the gate_app password (run with -m postgres)",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gate"]

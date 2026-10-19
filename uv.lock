@@ -12,6 +12,7 @@ supported-markers = [
 members = [
     "alerter",
     "dashboard",
+    "gate",
     "kraken-futures-scalper",
     "lab",
     "recorder",
@@ -590,6 +591,25 @@ sdist = { url = "https://files.pythonhosted.org/packages/51/7c/f60c259dcbf4f0c47
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e6/ab/fb21f4c939bb440104cc2b396d3be1d9b7a9fd3c6c2a53d98c45b3d7c954/fsspec-2026.2.0-py3-none-any.whl", hash = "sha256:98de475b5cb3bd66bedd5c4679e87b4fdfe1a3bf4d707b151b3c07e58c9a2437", size = 202505, upload-time = "2026-02-05T21:50:51.819Z" },
 ]
+
+[[package]]
+name = "gate"
+version = "0.1.0"
+source = { editable = "apps/gate" }
+dependencies = [
+    { name = "trading-core" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "trading-core", editable = "packages/core" }]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=8" }]
 
 [[package]]
 name = "h11"
