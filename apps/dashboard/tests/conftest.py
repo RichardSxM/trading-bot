@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 from dashboard.data.pnl import PnlFigures
+from dashboard.data.strategies import StrategiesView
 from dashboard.data.trades import TradesView
 from dashboard.settings import DashboardSettings
 from dashboard.web.app import create_app
@@ -134,6 +135,9 @@ def make_app(
     read_pnl=lambda: ZERO_PNL,
     read_trades=lambda page, fills_page: NO_TRADES,
     read_alerts=lambda: (),
+    read_strategies=lambda: StrategiesView(()),
+    read_study=lambda study_id: None,
+    read_promotions=lambda page: (),
     **settings,
 ):
     settings.setdefault("dashboard_cookie_secure", False)
@@ -146,6 +150,9 @@ def make_app(
         read_pnl=read_pnl,
         read_trades=read_trades,
         read_alerts=read_alerts,
+        read_strategies=read_strategies,
+        read_study=read_study,
+        read_promotions=read_promotions,
     )
 
 

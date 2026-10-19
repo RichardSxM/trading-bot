@@ -8,17 +8,20 @@ import logging
 import time
 from collections.abc import AsyncIterator, Callable, Mapping
 from typing import Annotated, Final
+from uuid import UUID
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
 from markupsafe import Markup
 from sqlalchemy.exc import SQLAlchemyError
 
 from dashboard.auth.next_path import referer_page
 from dashboard.auth.session import Session
+from dashboard.data.strategies import StrategiesView
 from dashboard.live.poller import Event, Poller
 from dashboard.web.context import AppContext, app_context
 from dashboard.web.session import SessionDep, session_end_cue
+from dashboard.web.strategies import detail_context, log_context, strategies_context
 from dashboard.web.styleguide import styleguide_context
 from dashboard.web.trades import trades_context
 
@@ -158,10 +161,70 @@ async def trades(
     return await render_page(request, context, session, *PAGES["/trades"], data=data)
 
 
+def _read_failed(what: str, exc: SQLAlchemyError) -> None:
+    log.warning(f"{what} read failed", extra={"fields": {"code": f"{what}_read_failed", "error": type(exc).__name__}})
+
+
+async def strategies_data(context: AppContext) -> Mapping[str, object]:
+    """The ranking and paper progress, or ``strategies_error`` when Postgres cannot be read (logged)."""
+    try:
+        view = await context.read_strategies()
+    except SQLAlchemyError as exc:
+        _read_failed("strategies", exc)
+        return {"strategies_error": True, **strategies_context(StrategiesView(()))}
+    return strategies_context(view)
+
+
 @router.get("/strategies")
 async def strategies(request: Request, session: SessionDep) -> Response:
+    """Every study ranked by walk forward Sharpe (spec 0015 AC-18) and paper progress (AC-21), read when requested."""
     context = app_context(request)
-    return await render_page(request, context, session, *PAGES["/strategies"])
+    data = await strategies_data(context)
+    return await render_page(request, context, session, *PAGES["/strategies"], data=data)
+
+
+@router.get("/strategies/log")
+async def promotion_log_page(request: Request, session: SessionDep, page: Annotated[int, Query(ge=1)] = 1) -> Response:
+    """Every promotion, newest first, 50 per page (spec 0015 AC-20); 422 below 1 or not an integer."""
+    context = app_context(request)
+    try:
+        lines = await context.read_promotions(page)
+    except SQLAlchemyError as exc:
+        _read_failed("promotions", exc)
+        return await render_page(
+            request,
+            context,
+            session,
+            *PAGES["/strategies"],
+            data={"strategies_error": True, **strategies_context(StrategiesView(()))},
+        )
+    return await render_page(
+        request,
+        context,
+        session,
+        "pages/promotion_log.html",
+        "Promotion log",
+        path="/strategies",
+        data=log_context(lines, page),
+    )
+
+
+@router.get("/strategies/{study_id}")
+async def strategy_detail(request: Request, session: SessionDep, study_id: UUID) -> Response:
+    """One study in depth (spec 0015 AC-19): folds, bounds, benchmarks, trials, every attempt; 404 when unknown."""
+    context = app_context(request)
+    detail = await context.read_study(study_id)
+    if detail is None:
+        raise HTTPException(status_code=404)
+    return await render_page(
+        request,
+        context,
+        session,
+        "pages/strategy_detail.html",
+        detail.ranking.study,
+        path="/strategies",
+        data=detail_context(detail),
+    )
 
 
 @router.get("/system")
