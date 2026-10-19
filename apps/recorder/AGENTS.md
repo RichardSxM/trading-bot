@@ -2,7 +2,7 @@
 
 ## Overview
 
-A separate Nautilus node with data clients only. It records L2 book deltas and trades for the BTC perp (`RECORDER_INSTRUMENTS`, BTC only since 2026-10-08, spec 0007) through Nautilus's streaming (feather) writer, converted to the Parquet catalog once per closed hour by the `compactor` service. Kept apart from the trader so a disk problem never touches trading.
+A separate Nautilus node with data clients only. It records L2 book deltas and trades for the BTC perp (`RECORDER_INSTRUMENTS`, BTC only since 2026-10-08, spec 0007) through its own buffered feather writer (spec 0012; it writes the same run folder as Nautilus's `StreamingFeatherWriter`), converted to the Parquet catalog once per closed hour by the `compactor` service. Kept apart from the trader so a disk problem never touches trading.
 
 ## Stack
 
@@ -15,6 +15,8 @@ A separate Nautilus node with data clients only. It records L2 book deltas and t
 | File | Owns |
 |---|---|
 | `src/recorder/actor.py` | `RecordingActor` (subscriptions, the sequence watch on its 60 s timer) and `DiskGuardActor` |
+| `src/recorder/writer.py` | `BufferedFeatherWriter`: holds each stream's messages and writes them as one batch on the flush tick, the cap, rotation, stop, and close; fails closed (`WriterFailed`, exit 75) and logs `recorder_writer_stats` once a minute |
+| `src/recorder/bench_writer.py` | The writer benchmark (spec 0012 AC-7, at least 10,000 messages a second); writes only to a temp folder |
 | `src/recorder/sequence_holes.py` | `SequenceWatch` and `HolesFile`: writes `live/<run>/sequence_holes.jsonl` (AC-15); a failed write stops the recorder with exit 75 |
 | `src/recorder/health.py`, `disk.py`, `live_files.py`, `settings.py` | The health check (heartbeat, a delta file under 60 s old, free space), the hard disk floor, and the current run rule; standard library only, so the 10 s health check never imports Nautilus or pyarrow |
 | `src/recorder/queue_depth.py` | Data engine queue depth warnings (`recorder_queue_high`, AC-13) |
@@ -29,6 +31,7 @@ A separate Nautilus node with data clients only. It records L2 book deltas and t
 ```bash
 docker compose build recorder
 docker compose run --rm --no-deps -T recorder pytest -q
+docker compose run --rm --no-deps -T recorder python -m recorder.bench_writer   # writer benchmark, about a minute
 docker compose logs -f compactor                  # pass results: compactor_pass_failed, catalog_hour_mismatch, book_gap
 scripts/fetch-catalog.sh                          # laptop: pull catalog days from B2 (read only key)
 ```
@@ -40,6 +43,7 @@ scripts/fetch-catalog.sh                          # laptop: pull catalog days fr
 - The compactor fails closed: a feather file that fails to read before its end raises `FeatherUnreadable` and fails the pass (only a torn tail at the end is accepted), and an unreadable holes line becomes a fail safe hole logged as `sequence_file_bad_lines`. Catalog files are written only through `trading_core.catalog.sink`'s `atomic_write` or `HourSink`, never a bare rename.
 - Pure rules (gaps, hours, sequence, retention, queue depth) live in `trading_core.marketdata`; the shared hour writer and book carry in `trading_core.catalog`. Keep new logic there and the recorder files thin.
 - Gotcha: `RecorderSettings.recorder_instruments` still defaults to BTC and ETH in code; Compose and `.env` set `PF_XBTUSD.KRAKEN` only. Set it explicitly whenever you run the recorder outside Compose.
+- The writer's run folder (paths, names, schemas, metadata, rows) must match what Nautilus 1.231.0 writes, so the compactor reads it unchanged; `tests/test_writer_parity.py` pins this. Rerun it after any writer change or Nautilus bump.
 - Reruns must give identical files: the reorder window state and gaps are stored in `done.json`, so a pass killed anywhere reruns to the same bytes (AC-11). Tests for any compactor change compare a rerun against one pass.
 
 _Drafted by /audit from the repo, worth a quick human pass. Edit freely: once a line stops matching this draft, later runs treat it as curated and will flag rather than overwrite it._
