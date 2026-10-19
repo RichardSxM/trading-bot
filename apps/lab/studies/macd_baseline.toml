@@ -1,0 +1,37 @@
+# A candle study of the MACD baseline (spec 0015 AC-2): the run file of runs/macd_baseline.toml, plus
+# [study]. `lab study studies/macd_baseline.toml` runs both grid points over the development range
+# (`from` to the day before the thresholds' holdout_start, 2025-10-19); `lab holdout macd_baseline`
+# then runs the better one once over the holdout. Fetch the candles first (`lab fetch-candles
+# 2023-01 <this month>`) and import funding (`lab import-funding`) for months before the API window.
+# The plan is frozen by name: change anything here and give the study a new name.
+instrument_id = "PF_XBTUSD.KRAKEN"
+from = 2023-01-01                    # UTC day, inclusive: the development range starts here
+to = 2025-10-18                      # the day before holdout_start; the plan sets the ranges
+seed = 7
+stale_quote_s = 300
+maker_fee = "0.0002"                 # strings, parsed as Decimal (Kraken base tier)
+taker_fee = "0.0005"
+slippage_bps = "2"                   # per side, built into the synthetic quote's spread
+starting_balance_usd = "10000"
+leverage = "2"
+
+[risk]
+max_order_notional = "20000"
+max_leverage = "2"
+
+[strategy]
+name = "macd_baseline"
+[strategy.config]
+notional_usd = "10000"
+bar_spec = "1-HOUR-LAST"
+slow = 26
+signal = 9
+trend_ema = 50
+stop_pct = "3"
+[strategy.grid]                      # at most 16 combinations; every point is a trial
+fast = [8, 12]
+
+[study]
+name = "macd_baseline"
+lab = "candle"                       # candle folds: 12 months in sample first, then 6 month steps
+seed = 42                            # the bootstrap's seed

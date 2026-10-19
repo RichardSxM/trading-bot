@@ -128,7 +128,7 @@ class MemoryStore:
         # One version id per distinct config, as ``ensure_strategy_version`` gives.
         self.versions: dict[str, object] = {}
 
-    def prepare(self, instrument, strategy, kind, git_commit, config):
+    def prepare(self, instrument, strategy, kind, git_commit, config, frozen=None):
         key = json.dumps({"strategy": strategy, "config": config}, sort_keys=True, default=str)
         return self.versions.setdefault(key, uuid4())
 

@@ -13,11 +13,16 @@ strategy in memory and compares it with the paper decisions (AC-15). ``fetch-can
 and ``backtest`` runs an hour level strategy over it (2 missing candles or funding; ``--lookahead-check``
 reruns the first variant cut at three hours, AC-19). ``candle-parity`` runs one strategy over own
 days through both the order book and the candle path and compares their entries (1 under 0.95, 2
-missing data or nothing to compare, AC-21). Only ``replay`` and ``backtest`` connect to Postgres,
-so the other commands run with ``--no-deps``.
+missing data or nothing to compare, AC-21). ``study`` and ``holdout`` run a strategy under a plan
+fixed in advance (spec 0015: 64 a bad study file, a reused name with another plan, missing grid
+points, or a spent holdout); ``gate <study> --dry-run`` previews the promotion gate's verdict and
+writes nothing (64 an unknown study). Only ``replay``, ``backtest``, ``study``, ``holdout``, and
+``gate`` connect to Postgres, so the other commands run with ``--no-deps``.
 """
 
 import argparse
+import dataclasses
+import json
 import logging
 import os
 import sys
@@ -27,7 +32,7 @@ from pathlib import Path
 from typing import Final, NoReturn
 
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
 from lab.candle_backtest import backtest
 from lab.candle_fetch import fetch_candles
@@ -39,14 +44,18 @@ from lab.replay import PostgresStore, replay
 from lab.runfile import Overrides, RunFileError, load_candle_run, load_run
 from lab.settings import LabSettings, ProbeSwitch
 from lab.strategies import registry_entry
+from lab.study import StudyStore, load_study, run_holdout, run_study
 from lab.tardis_import import import_context, import_tardis, prune
 from trading_core.boot import boot
+from trading_core.gate.thresholds import ThresholdsError
+from trading_core.gate.verdict import evaluate_candidate
 from trading_core.lab.candles import fetch_months
 from trading_core.lab.errors import CandleInputError
 from trading_core.lab.parity import ParityInputError
 from trading_core.lab.tardis_days import import_days
 from trading_core.lab.variants import VariantError, VariantSpec, expand_candle_variants, expand_variants
 from trading_core.logs import configure_logging
+from trading_core.recording.gate_queries import UnknownStudyError, study_evidence
 from trading_core.secrets import POSTGRES_PASSWORD
 
 log = logging.getLogger(__name__)
@@ -117,6 +126,13 @@ def parser() -> argparse.ArgumentParser:
     candles.add_argument("--refetch", action="store_true", help="fetch complete months again too")
     funding = commands.add_parser("import-funding", help="merge Kraken's funding export ZIP or CSV (spec 0014)")
     funding.add_argument("file", type=Path, help="the export ZIP, or its PF_XBTUSD.csv")
+    study = commands.add_parser("study", help="run every grid point of a study file over its development range")
+    study.add_argument("studyfile", type=Path)
+    holdout = commands.add_parser("holdout", help="run a study's final grid point once over the holdout")
+    holdout.add_argument("study", help="the study's name")
+    preview = commands.add_parser("gate", help="preview the promotion gate's verdict on a study (writes nothing)")
+    preview.add_argument("study", help="the study's name")
+    preview.add_argument("--dry-run", action="store_true", required=True, help="required: the lab only previews")
     drop = commands.add_parser("prune", help="delete a source tree of the lab catalog")
     drop.add_argument("--source", choices=("tardis", "own"), help="the tree to delete (both without it)")
     return root
@@ -264,6 +280,82 @@ def _backtest(args: argparse.Namespace) -> int:
         engine.dispose()
 
 
+def _study_store() -> tuple[LabSettings, StudyStore] | int:
+    """Boot as ``lab_app`` with a commit, or the exit code to stop with."""
+    started = boot("worker", settings_cls=LabSettings, secrets=(POSTGRES_PASSWORD,))
+    logging.getLogger("trading_core.node.recording").setLevel(logging.WARNING)
+    settings = started.settings
+    if _unknown_commit(settings):
+        return EXIT_CONFIG
+    engine = create_engine(settings.database_url(started.secrets[POSTGRES_PASSWORD]), pool_size=2, pool_pre_ping=True)
+    return settings, StudyStore(engine)
+
+
+def _study(args: argparse.Namespace) -> int:
+    configure_logging(process=PROCESS, env=os.environ.get("TRADING_ENV", ""))
+    try:
+        loaded = load_study(args.studyfile, test_strategies=ProbeSwitch().lab_test_strategies)
+    except (RunFileError, VariantError, ThresholdsError) as exc:
+        problems = exc.problems if isinstance(exc, RunFileError) else [str(exc)]
+        for problem in problems:
+            print(f"lab study: {problem}", file=sys.stderr)
+        log.error("lab_bad_input", extra={"fields": {"problems": problems}})
+        return EXIT_USAGE
+    ready = _study_store()
+    if isinstance(ready, int):
+        return ready
+    settings, store = ready
+    try:
+        return run_study(settings, loaded, store)
+    finally:
+        store.engine.dispose()
+
+
+def _holdout(args: argparse.Namespace) -> int:
+    configure_logging(process=PROCESS, env=os.environ.get("TRADING_ENV", ""))
+    ready = _study_store()
+    if isinstance(ready, int):
+        return ready
+    settings, store = ready
+    try:
+        return run_holdout(settings, args.study, store)
+    finally:
+        store.engine.dispose()
+
+
+def _gate_preview(args: argparse.Namespace) -> int:
+    """``lab gate <study> --dry-run`` (spec 0015 AC-13): the same pure gate over the laptop Postgres; writes nothing."""
+    configure_logging(process=PROCESS, env=os.environ.get("TRADING_ENV", ""))
+    started = boot("worker", settings_cls=LabSettings, secrets=(POSTGRES_PASSWORD,))
+    engine = create_engine(
+        started.settings.database_url(started.secrets[POSTGRES_PASSWORD]), pool_size=1, pool_pre_ping=True
+    )
+    try:
+        with Session(engine) as session:
+            evidence = study_evidence(session, args.study)
+            session.rollback()
+    except UnknownStudyError:
+        print(f"lab gate: no study called {args.study!r}", file=sys.stderr)
+        return EXIT_USAGE
+    finally:
+        engine.dispose()
+    result = evaluate_candidate(evidence.inputs)
+    print(
+        json.dumps(
+            {
+                "study": args.study,
+                "verdict": result.verdict.value,
+                "reasons": [r.to_json() for r in result.reasons],
+                "metrics": result.metrics,
+                "folds": [dataclasses.asdict(f) for f in result.folds],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
 def _candle_parity(args: argparse.Namespace) -> int:
     configure_logging(process=PROCESS, env=os.environ.get("TRADING_ENV", ""))
     try:
@@ -330,6 +422,12 @@ def main(argv: list[str] | None = None) -> NoReturn:
         sys.exit(_fetch_candles(args))
     if args.command == "import-funding":
         sys.exit(_import_funding(args))
+    if args.command == "study":
+        sys.exit(_study(args))
+    if args.command == "holdout":
+        sys.exit(_holdout(args))
+    if args.command == "gate":
+        sys.exit(_gate_preview(args))
     if args.command == "prune":
         sys.exit(_prune(args))
     sys.exit(EXIT_USAGE)  # unreachable: the subparser is required

@@ -46,7 +46,9 @@ from lab.report import (
 from lab.runfile import LoadedRun
 from lab.settings import LabSettings
 from lab.strategies import ConfigValue, registry_entry
+from lab.study_rows import RATIO_KIND, daily_equity_rows, daily_sharpe, measures_row
 from lab.units import TRADER_ID, UnitPlan, UnitResult, run_unit
+from trading_core.lab.daily import ClosedPosition, day_of, realized_daily, trade_measures
 from trading_core.lab.errors import ReplayInterruptedError, UnitFailedError
 from trading_core.lab.fill_stats import EntryFill, EntryOrder, SideStats, fill_stats
 from trading_core.lab.funding import (
@@ -65,6 +67,7 @@ from trading_core.node.recording import instrument_row
 from trading_core.recording import repository
 from trading_core.recording.enums import (
     Env,
+    EquityBasis,
     FundingSource,
     Intent,
     Liquidity,
@@ -93,6 +96,8 @@ from trading_core.recording.rows import (
     RunRow,
     ns_to_utc,
 )
+from trading_core.thresholds_file import packaged_thresholds
+from trading_core.versioning import FrozenHashes
 
 if TYPE_CHECKING:
     from _typeshed import DataclassInstance
@@ -113,7 +118,13 @@ class Store(Protocol):
     """Where a replay keeps its rows: the laptop Postgres as ``lab_app`` (AC-11), or memory in tests."""
 
     def prepare(
-        self, instrument: InstrumentRow, strategy: str, kind: StrategyKind, git_commit: str | None, config: JsonObject
+        self,
+        instrument: InstrumentRow,
+        strategy: str,
+        kind: StrategyKind,
+        git_commit: str | None,
+        config: JsonObject,
+        frozen: FrozenHashes | None = None,
     ) -> UUID:
         """Ensure the instrument and strategy version rows (the strategy of ``kind``); return the version id."""
         ...
@@ -130,12 +141,18 @@ class PostgresStore:
         self._sessions = sessions
 
     def prepare(
-        self, instrument: InstrumentRow, strategy: str, kind: StrategyKind, git_commit: str | None, config: JsonObject
+        self,
+        instrument: InstrumentRow,
+        strategy: str,
+        kind: StrategyKind,
+        git_commit: str | None,
+        config: JsonObject,
+        frozen: FrozenHashes | None = None,
     ) -> UUID:
-        """Upsert the instrument and ensure the strategy version, in one commit."""
+        """Upsert the instrument and ensure the version with its frozen hashes (spec 0015 AC-1), in one commit."""
         with self._sessions() as session:
             repository.upsert_instrument(session, instrument)
-            version_id = repository.ensure_strategy_version(session, strategy, kind, git_commit, config)
+            version_id = repository.ensure_strategy_version(session, strategy, kind, git_commit, config, frozen)
             session.commit()
         return version_id
 
@@ -342,6 +359,11 @@ def _unit_plans(batch: Batch, variant: VariantSpec) -> list[UnitPlan]:
     )
 
 
+def _replayed_days(segments: Sequence[Segment]) -> list[date]:
+    """Every UTC day the run replayed (a segment sits inside one day)."""
+    return sorted({day_of(segment.start_ns) for segment in segments})
+
+
 def build_bundle(
     batch: Batch, variant: VariantSpec, units: Sequence[UnitResult], *, started_at: datetime, ended_at: datetime
 ) -> tuple[RunBundle, Results, BandReport | None]:
@@ -366,6 +388,28 @@ def build_bundle(
         sum((f.fee for f in fills), Decimal(0)),
     )
     segments = batch.plan.segments
+    # A closed position's row side is FLAT, so a trade's direction comes from its first fill.
+    opening: dict[UUID, bool] = {}
+    for f in sorted(fills, key=lambda f: f.filled_ns):
+        if f.position_id is not None:
+            opening.setdefault(f.position_id, f.side == OrderSide.BUY)
+    closed_positions = [
+        ClosedPosition(
+            opening.get(p.id, p.side == PositionSide.LONG),
+            p.last_event_ns,
+            p.realized_pnl,
+            p.fees_total,
+            p.funding_total,
+        )
+        for p in closed
+    ]
+    # Replay has no marked curve across its gaps, so its daily record is realized only (spec 0015).
+    daily = realized_daily(
+        _replayed_days(segments),
+        run.starting_balance_usd,
+        closed_positions,
+        [FundingCash(paid_ns=f.paid_ns, amount=f.amount) for f in funding],
+    )
     config = _run_config(batch, variant, segment_end_partial=any(u.segment_end_partial for u in units))
     run_row = RunRow(
         id=run_id,
@@ -386,6 +430,8 @@ def build_bundle(
         sample=Sample.FULL,
         return_after_costs=metrics.return_after_costs,
         max_drawdown=metrics.max_drawdown,
+        risk_adjusted_ratio=daily_sharpe(daily, run.starting_balance_usd, chained=False),
+        ratio_kind=RATIO_KIND,
         win_rate=metrics.win_rate,
         trade_count=metrics.trade_count,
         fees_total=metrics.fees_total,
@@ -421,6 +467,10 @@ def build_bundle(
         funding=funding,
         risk_events=risk_events,
         fill_stats=stats_rows,
+        daily_equity=daily_equity_rows(run_id, daily, EquityBasis.REALIZED),
+        measures=measures_row(
+            run_id, EquityBasis.REALIZED, trade_measures(closed_positions, packaged_thresholds().top_trades_quantile)
+        ),
     )
     results = Results(
         net_pnl=metrics.net_pnl,
@@ -769,12 +819,14 @@ def replay(
         },
     )
 
+    entry = registry_entry(run.strategy.name, test_strategies=settings.lab_test_strategies)
     version_id = store.prepare(
         instrument_row(pinned_instrument(run.instrument_id)),
         run.strategy.name,
-        registry_entry(run.strategy.name, test_strategies=settings.lab_test_strategies).kind,
+        entry.kind,
         settings.git_commit,
         run.version_config(),
+        entry.frozen(run.version_config()),
     )
     rates, funding_source, funding_skipped_ns = run_funding(tree, run.source, days, plan)
     batch_id = uuid.uuid7()

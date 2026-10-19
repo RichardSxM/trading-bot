@@ -25,12 +25,22 @@ from lab.replay import Batch, PostgresStore, _report, _unit_plans, build_bundle,
 from lab.report import index_markdown
 from lab.runfile import LoadedRun, Overrides, load_run
 from lab.stream import SegmentStream
+from lab.study_rows import RATIO_KIND
 from lab.units import UNIT_RUN_ID, UnitResult, run_unit, settle_at_mid
 from trading_core.lab.errors import FundingRateMissingError
 from trading_core.lab.funding import FundingRate, FundingSample, PositionKey
 from trading_core.lab.variants import BASE, VariantSpec, expand_variants
 from trading_core.recording import models
-from trading_core.recording.enums import Env, FundingSource, Intent, Liquidity, OrderSide, PositionSide, PositionStatus
+from trading_core.recording.enums import (
+    Env,
+    EquityBasis,
+    FundingSource,
+    Intent,
+    Liquidity,
+    OrderSide,
+    PositionSide,
+    PositionStatus,
+)
 from trading_core.recording.mappers import decision_id
 from trading_core.recording.rows import PositionRow
 from trading_core.secrets import POSTGRES_PASSWORD, read_secret
@@ -168,6 +178,13 @@ def test_the_bundle_stamps_one_run_id_and_scores_the_variant(batch, unit):
         if o.client_order_id == f.client_order_id and o.decision_id in ends
     }
     assert band.trades_used == len(closed) - len(ended)  # a segment end close is left out of the band
+    # Spec 0015 AC-3: a realized daily record over the replayed days, and the run's measures.
+    assert {row.basis for row in bundle.daily_equity} == {EquityBasis.REALIZED}
+    assert sum(row.trades_closed for row in bundle.daily_equity) == len(closed)
+    assert bundle.measures is not None
+    assert bundle.measures.drawdown_basis == EquityBasis.REALIZED
+    assert bundle.measures.long_trades + bundle.measures.short_trades == len(closed)
+    assert bundle.results[0].ratio_kind == RATIO_KIND
     for order in bundle.orders:
         assert decision_id([f"decision:{order.decision_id}"]) == order.decision_id
 
