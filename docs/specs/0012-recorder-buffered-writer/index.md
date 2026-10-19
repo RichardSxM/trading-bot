@@ -1,7 +1,7 @@
 # 0012. Write the recorder's feather files through our own buffered writer
 
 **Date**: 2026-10-15
-**Status**: In Progress
+**Status**: Accepted
 
 ## Summary
 
@@ -174,15 +174,15 @@ Tracer Bullet: book deltas first go all the way from the new writer through the 
 
 **Neutral**:
 - Measured before this spec (py-spy, 2026-10-15, 30 s on the VPS): 87.6% of the recorder's main thread was in `StreamingFeatherWriter.write`; `serialize_batch([obj])` 36.6%, `serialized.nbytes` 23.4%, `write_table` 13.2%; the sequence watch was 0.2%.
-- The VPS benchmark result goes here after build task 8.
+- Measured on the VPS after the deploy (2026-10-15, 4d55abd, `python -m recorder.bench_writer` beside the live recorder): 600,000 messages at 57,975 msg/s, against the 10,000 AC-7 asks for and the old writer's ceiling near 1,850. The first live `recorder_writer_stats` (18:41 UTC, a quiet hour) showed `busy_pct` 2, `max_queue_depth` 0, `dropped` 0.
 - The lock in `SequenceWatch` costs one uncontended acquire per `OrderBookDeltas` message, well under 1 µs, against the 0.2% the whole watch took in the profile. A tick holds it for its holes file write and fsync (a few ms once a minute), and deltas wait that long.
 
 ## Follow-up
 
 - [x] Spec 0007: AC-1, the Decision, and the "Recorder headroom" follow up point here.
-- [ ] Feature 12: alert on `recorder_write_failed`, `recorder_writer_busy`, and `recorder_flush_slow`.
+- [x] Feature 12: alert on `recorder_write_failed`, `recorder_writer_busy`, and `recorder_flush_slow` (spec 0013, `trading_core/alerts/promises.py`).
 - [ ] ETH: once AC-8 passes, read a week of `recorder_writer_stats` and decide whether ETH fits on the 2 CPU VPS (disk at about 3.2 GB/h of feather, compactor time, the 30 GB catalog cap). That is a new `/architect` decision.
-- [ ] Spec 0009's VPS 24 h checks (steps 5 and 7) expect restarts at peaks until this ships; run them again after AC-8 passes.
+- [x] Spec 0009's VPS 24 h checks (steps 5 and 7) expect restarts at peaks until this ships; run them again after AC-8 passes. Step 5 passed on its rerun over the AC-8 window (2026-10-18).
 - [ ] A Nautilus upgrade from 1.231.0: run the parity test, and check whether `trader.subscribe("*", …)` and `kernel.instance_id` still behave the same.
 - [ ] `/sync` updates `apps/recorder/AGENTS.md` (it still says the recorder writes through Nautilus's streaming writer).
 

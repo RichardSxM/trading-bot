@@ -17,10 +17,10 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 4 | API keys & secrets | Foundation | done |
 | 5 | Design system & dashboard shell | Foundation | done |
 | 6 | Core paper trading loop | Slice 1 | done |
-| 7 | Always on cloud deployment | Slice 2 | in-progress |
+| 7 | Always on cloud deployment | Slice 2 | done |
 | 8 | Order book recorder | Slice 3 | done |
-| 20 | Market context feed | Slice 3 | in-progress |
-| 21 | Recorder buffered writer | Slice 3 | in-progress |
+| 20 | Market context feed | Slice 3 | done |
+| 21 | Recorder buffered writer | Slice 3 | done |
 | 9 | Kill switch & loss limits | Slice 4 | done |
 | 10 | Leverage & liquidation guard | Slice 4 | done |
 | 11 | Restart & outage safety | Slice 4 | planned |
@@ -118,7 +118,7 @@ spec [0006](../specs/0006-core-paper-trading-loop/index.md)
 
 ## Slice 2: Always on
 
-### 7. Always on cloud deployment · in-progress
+### 7. Always on cloud deployment · done
 Run the bot 24/7 on a hosted server near Kraken, with automatic restart, logs, and a safe way to deploy updates.
 **Done when:** the paper loop runs unattended for 72 hours, survives a forced restart, and a deploy never leaves an order unmanaged.
 **Carried over from feature 5:** once the VPS and Tailscale are up, run spec 0004 verify steps [1, 6, and 12](../specs/0004-design-system-dashboard-shell/verify.md) on the real hardware: add the QR to your authenticator app, write the dashboard files with `sudo scripts/dashboard-credentials.sh --write` (then `chown 10001`, `chmod 0400`), and on a real phone over Tailscale check the stop button and airplane mode. The laptop run on 2026-10-03 already proved the behavior behind each one. (Now spec 0005 AC-23; `place-secrets.sh` writes the files.)
@@ -157,7 +157,7 @@ spec [0007](../specs/0007-order-book-recorder/index.md)
 - [x] Review it (fresh model): `/check review order book recorder`
 - [x] Document it: `/document order book recorder`
 
-### 20. Market context feed · in-progress
+### 20. Market context feed · done
 Record the perp market's own context next to prices: funding rate, open interest, mark versus index basis, and liquidations. Strategies can then use them as inputs and regime filters, in backtests and live alike. Much of this history cannot be downloaded later, so recording starts early.
 **Done when:** the context values are recorded continuously with gaps logged, a backtest can read them at the time each one was known (no look ahead), and a strategy can read the same values live.
 **Carried over from research (2026-10-04):** the idea came from the `tracking-crypto-derivatives` skill (ideas only, nothing installed). Optional extras for the design to weigh: a news or event blackout filter, the Fear & Greed index as a regime tag, and later Deribit options implied volatility and put/call ratio.
@@ -166,30 +166,30 @@ Record the perp market's own context next to prices: funding rate, open interest
 spec [0009](../specs/0009-market-context-feed/index.md)
 code in [packages/core/src/trading_core/marketdata/context.py](../../packages/core/src/trading_core/marketdata/context.py), [packages/core/src/trading_core/node/context_feed.py](../../packages/core/src/trading_core/node/context_feed.py), [apps/recorder/src/recorder/compactor/](../../apps/recorder/src/recorder/compactor/), [apps/lab/src/lab/stream.py](../../apps/lab/src/lab/stream.py)
 - [x] Design it (spec): `/architect market context feed`
-- [ ] Build it: `/develop market context feed`
+- [x] Build it: `/develop market context feed`
   - [x] Gate: funding rate meaning and period, stream cadence and precision, Kraken's `ticker` and `trade` fields and fixtures, custom types through the feather writer and the engine, size per day (AC-1, AC-2, AC-3, AC-5, AC-9, AC-13, AC-14, AC-17)
   - [x] Thin thread, funding end to end: `ContextSettings`, recorder and compactor funding, pure `ContextBook`, `KfsStrategy` context hook and the placeholder log, own replay funding all or nothing, gap `stream` column (AC-1, AC-2, AC-7, AC-8, AC-9, AC-11, AC-14, AC-16)
   - [x] Mark, index, basis: recording with silence gaps, basis on read, lab hour stream with warmup and the look ahead test (AC-1, AC-2, AC-7, AC-8, AC-11, AC-13)
   - [x] Raw client: `websockets` actor for open interest and liquidations, parsers, dedupe, reconnect and idle watchdog, outages file and `reconnect` gaps, liquidation window (AC-3 to AC-8, AC-10, AC-11, AC-13)
-  - [ ] Live read, Tardis history, deploy: trader actor, Tardis mark, index, open interest and the `--context` backfill, retention and boundary checks, the VPS 24 h check (AC-12, AC-15, AC-16, AC-17)
-  - [ ] Holes at a run's tail and a starved loop (amended 2026-10-16 from verify.md step 5): the open outage line, tail silence and tail `reconnect` through `done.json`, the `context_feed_lagging` warning, deploy after spec 0012's AC-8 check, verify.md step 12 (AC-6, AC-7, AC-17, AC-18)
-- [ ] Verify it: `/check verify market context feed`
+  - [x] Live read, Tardis history, deploy: trader actor, Tardis mark, index, open interest and the `--context` backfill, retention and boundary checks, the VPS 24 h check (AC-12, AC-15, AC-16, AC-17); the 24 h check passed on its rerun over 2026-10-17 16:26 to 2026-10-18 16:26 UTC
+  - [x] Holes at a run's tail and a starved loop (amended 2026-10-16 from verify.md step 5): the open outage line, tail silence and tail `reconnect` through `done.json`, the `context_feed_lagging` warning, deploy after spec 0012's AC-8 check, verify.md step 12 (AC-6, AC-7, AC-17, AC-18); deployed 2026-10-18 16:36 UTC (2065fe9), step 12 passed
+- [x] Verify it: `/check verify market context feed`
 - [x] Test it: `/test market context feed`
 - [x] Review it (fresh model): `/check review market context feed`
-- [ ] Document it: `/document market context feed`
+- [x] Document it: `/document market context feed`
 
-### 21. Recorder buffered writer · in-progress
+### 21. Recorder buffered writer · done
 The recorder falls over at BTC's busiest hours because the Nautilus feather writer saves every message on its own, which caps it near 1,850 messages a second (found by `/debug` on 2026-10-15). Replace it with a writer that saves each stream once a second, with the same files on disk, so the compactor and everything after it stay unchanged. From spec 0007.
 **Done when:** the recorder runs 24 h on the VPS through both daily peaks with no full queue, no restart, and no sequence hole outside Kraken maintenance, and reports its own headroom every minute.
 spec [0012](../specs/0012-recorder-buffered-writer/index.md) · code in [apps/recorder/src/recorder/writer.py](../../apps/recorder/src/recorder/writer.py), [apps/recorder/src/recorder/main.py](../../apps/recorder/src/recorder/main.py), [packages/core/src/trading_core/marketdata/writer.py](../../packages/core/src/trading_core/marketdata/writer.py)
 - [x] Design it (spec): `/architect order book recorder`
-- [ ] Build it: `/develop recorder buffered writer`
+- [x] Build it: `/develop recorder buffered writer`
   - [x] Thin thread: core flush and boundary rules, the writer for book deltas with hold, tick, cap, and rotation, through the compactor (AC-2, AC-3, AC-9)
   - [x] All types and parity: the full routing, the shared instrument file, the serialize and parity tests, wired into `main.py` with the flush actor and settings (AC-1, AC-2, AC-3, AC-5, AC-9)
   - [x] Failure and stats: fail closed, the drop paths, shutdown, the 60 s stats with queue depth and tick lag, the benchmark (AC-4, AC-5, AC-6, AC-7)
   - [x] Thread safety: the sequence watch lock, since timer callbacks run off the event loop thread (AC-10)
-  - [ ] VPS: deploy, the VPS benchmark, the 24 h check (AC-7, AC-8)
-- [ ] Verify it: `/check verify recorder buffered writer`
+  - [x] VPS: deploy, the VPS benchmark, the 24 h check (AC-7, AC-8). Deployed 2026-10-15 18:40 UTC (4d55abd), benchmark 57,975 msg/s; the 24 h check passed over 2026-10-17 16:26 to 2026-10-18 16:26 UTC (busy_pct at most 6, no restart, no hole)
+- [x] Verify it: `/check verify recorder buffered writer`
 - [x] Test it: `/test recorder buffered writer`
 - [x] Review it (fresh model): `/check review recorder buffered writer`
 - [x] Document it: `/document recorder buffered writer`
