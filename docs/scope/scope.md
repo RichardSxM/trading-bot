@@ -25,7 +25,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 10 | Leverage & liquidation guard | Slice 4 | done |
 | 11 | Restart & outage safety | Slice 4 | planned |
 | 12 | Phone alerts & health checks | Slice 5 | done |
-| 13 | Candle backtest lab | Slice 6 | in-progress |
+| 13 | Candle backtest lab | Slice 6 | done |
 | 14 | Scalping simulator | Slice 6 | done |
 | 15 | Strategy scoring & promotion gate | Slice 6 | planned |
 | 16 | Scalping strategy candidates | Slice 7 | planned |
@@ -277,21 +277,21 @@ spec [0013](../specs/0013-phone-alerts-health-checks/index.md) · code in `apps/
 
 ## Slice 6: The strategy lab
 
-### 13. Candle backtest lab · in-progress
+### 13. Candle backtest lab · done
 Test hour level strategies on Kraken candle history with realistic fees, funding, and slippage.
 **Done when:** a strategy can be backtested over any date range, results include fees and funding, and the same strategy code runs unchanged in the backtest and the paper loop.
 **Carried over from research (2026-10-04):** guard against look ahead. A swing high or low is only known some bars after it happens (it needs the bars that follow it), so a signal must fire on the bar where the swing is confirmed, never on the swing bar itself. Public price action scripts often get this wrong, and it makes a backtest look far better than live.
 spec [0014](../specs/0014-candle-backtest-lab/index.md)
 code in `apps/lab`, `packages/core/src/trading_core/lab`, `packages/core/src/trading_core/strategy`, `packages/core/src/trading_core/catalog`
 - [x] Design it (spec): `/architect candle backtest lab`
-- [ ] Build it: `/develop candle backtest lab`
+- [x] Build it: `/develop candle backtest lab`
   - [x] Gate: Kraken candle paging and history precision, funding rate meaning and timestamps, engine fills with the trade then quote path, internal hour bars, the position flag lag (AC-1, AC-2, AC-3, AC-4, AC-8, AC-9, AC-10, AC-11, AC-15)
   - [x] Thin thread: one month fetched, candle stream, candle unit and venue, `buy_and_hold`, `lab backtest` with funding, bundle, and report (AC-1, AC-2, AC-6, AC-8, AC-9, AC-10, AC-11, AC-12, AC-14, AC-15, AC-16, AC-17, AC-22)
   - [x] Data you can trust: row checks, gaps, retries, catalog cap, refetch, the full history fetched and timed (AC-1, AC-3, AC-4, AC-5, AC-23)
   - [x] A real strategy: indicators, `SwingTracker`, `macd_baseline`, liquidation guard and ruin, grid and slippage sweep (AC-7, AC-13, AC-14, AC-20)
-  - [ ] Proof: look ahead check, candle versus order book parity, determinism, failure isolation, full history timing (AC-17, AC-18, AC-19, AC-21, AC-22, AC-23)
-- [ ] Verify it: `/check verify candle backtest lab`
-- [ ] Test it: `/test candle backtest lab`
+  - [x] Proof: look ahead check, candle versus order book parity, determinism, failure isolation, full history timing (AC-17, AC-18, AC-19, AC-21, AC-22, AC-23)
+- [x] Verify it: `/check verify candle backtest lab`
+- [x] Test it: `/test candle backtest lab`
 - [ ] Review it (fresh model): `/check review candle backtest lab`
 - [ ] Document it: `/document candle backtest lab`
 
