@@ -15,7 +15,8 @@ reruns the first variant cut at three hours, AC-19). ``candle-parity`` runs one 
 days through both the order book and the candle path and compares their entries (1 under 0.95, 2
 missing data or nothing to compare, AC-21). ``study`` and ``holdout`` run a strategy under a plan
 fixed in advance (spec 0015: 64 a bad study file, a reused name with another plan, missing grid
-points, or a spent holdout); ``gate <study> --dry-run`` previews the promotion gate's verdict and
+points, or a spent holdout; 2 a replay study day with no manifest, every one listed with the
+``import-tardis`` command that fetches them); ``gate <study> --dry-run`` previews the promotion gate's verdict and
 writes nothing (64 an unknown study). Only ``replay``, ``backtest``, ``study``, ``holdout``, and
 ``gate`` connect to Postgres, so the other commands run with ``--no-deps``.
 """
@@ -27,7 +28,7 @@ import logging
 import os
 import sys
 import time
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Final, NoReturn
 
@@ -44,13 +45,13 @@ from lab.replay import PostgresStore, replay
 from lab.runfile import Overrides, RunFileError, load_candle_run, load_run
 from lab.settings import LabSettings, ProbeSwitch
 from lab.strategies import registry_entry
-from lab.study import StudyStore, load_study, run_holdout, run_study
+from lab.study import StudyStore, load_study, missing_days_exit, run_holdout, run_study
 from lab.tardis_import import import_context, import_tardis, prune
 from trading_core.boot import boot
 from trading_core.gate.thresholds import ThresholdsError
 from trading_core.gate.verdict import evaluate_candidate
 from trading_core.lab.candles import fetch_months
-from trading_core.lab.errors import CandleInputError
+from trading_core.lab.errors import CandleInputError, MissingDaysError
 from trading_core.lab.parity import ParityInputError
 from trading_core.lab.tardis_days import import_days
 from trading_core.lab.variants import VariantError, VariantSpec, expand_candle_variants, expand_variants
@@ -293,19 +294,24 @@ def _study_store() -> tuple[LabSettings, StudyStore] | int:
 
 def _study(args: argparse.Namespace) -> int:
     configure_logging(process=PROCESS, env=os.environ.get("TRADING_ENV", ""))
-    try:
-        loaded = load_study(args.studyfile, test_strategies=ProbeSwitch().lab_test_strategies)
-    except (RunFileError, VariantError, ThresholdsError) as exc:
-        problems = exc.problems if isinstance(exc, RunFileError) else [str(exc)]
-        for problem in problems:
-            print(f"lab study: {problem}", file=sys.stderr)
-        log.error("lab_bad_input", extra={"fields": {"problems": problems}})
-        return EXIT_USAGE
+    # Booted first: a replay study checks its days in the settings' catalog before anything is written.
     ready = _study_store()
     if isinstance(ready, int):
         return ready
     settings, store = ready
     try:
+        try:
+            loaded = load_study(
+                args.studyfile, catalog_dir=settings.lab_catalog_dir, test_strategies=settings.lab_test_strategies
+            )
+        except MissingDaysError as exc:
+            return missing_days_exit("study", exc.days)
+        except (RunFileError, VariantError, ThresholdsError) as exc:
+            problems = exc.problems if isinstance(exc, RunFileError) else [str(exc)]
+            for problem in problems:
+                print(f"lab study: {problem}", file=sys.stderr)
+            log.error("lab_bad_input", extra={"fields": {"problems": problems}})
+            return EXIT_USAGE
         return run_study(settings, loaded, store)
     finally:
         store.engine.dispose()
@@ -318,7 +324,7 @@ def _holdout(args: argparse.Namespace) -> int:
         return ready
     settings, store = ready
     try:
-        return run_holdout(settings, args.study, store)
+        return run_holdout(settings, args.study, store, today=datetime.now(UTC).date())
     finally:
         store.engine.dispose()
 

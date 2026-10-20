@@ -11,6 +11,10 @@ started in plan order, ``base`` first. A variant is written (bundle, then report
 variant before it is written, so bundles and reports keep the variant order whatever order the
 units finish in. A unit that fails fails only its variant (AC-13). SIGINT or SIGTERM stops every
 unit; variants not complete get an ``interrupted`` report and no bundle, and the exit is 130.
+
+In a study (``lab study`` and ``lab holdout``, spec 0015) each bundle also carries its study and
+``study_runs`` row, and a variant that fails or is interrupted still writes its run and ``study_runs``
+rows (status ``failed`` or ``aborted``), so it counts as a trial.
 """
 
 import logging
@@ -46,7 +50,7 @@ from lab.report import (
 from lab.runfile import LoadedRun
 from lab.settings import LabSettings
 from lab.strategies import ConfigValue, registry_entry
-from lab.study_rows import RATIO_KIND, daily_equity_rows, daily_sharpe, measures_row
+from lab.study_rows import RATIO_KIND, StudyContext, daily_equity_rows, daily_sharpe, measures_row
 from lab.units import TRADER_ID, UnitPlan, UnitResult, run_unit
 from trading_core.lab.daily import ClosedPosition, day_of, realized_daily, trade_measures
 from trading_core.lab.errors import ReplayInterruptedError, UnitFailedError
@@ -281,10 +285,16 @@ class Batch:
     funding_source: FundingSourceName = "none"
     # The first boundary an ``own`` run's rates did not cover, so it applies none (AC-14).
     funding_skipped_ns: int | None = None
+    # Spec 0015: the batch's study context, and the planned days dropped for gaps in every hour.
+    study: StudyContext | None = None
+    dropped_days: tuple[date, ...] = ()
 
 
 def _run_config(batch: Batch, variant: VariantSpec, *, segment_end_partial: bool = False) -> dict[str, JsonValue]:
     run = batch.loaded.run
+    study: dict[str, JsonValue] = {}
+    if batch.study is not None:
+        study["dropped_days"] = [d.isoformat() for d in batch.dropped_days]
     return {
         "batch_id": str(batch.batch_id),
         "variant": variant.name,
@@ -312,6 +322,7 @@ def _run_config(batch: Batch, variant: VariantSpec, *, segment_end_partial: bool
         "segment_end_partial": segment_end_partial,
         "nautilus_version": version("nautilus_trader"),
         "git_commit": batch.settings.git_commit,
+        **study,
     }
 
 
@@ -472,6 +483,8 @@ def build_bundle(
             run_id, EquityBasis.REALIZED, trade_measures(closed_positions, packaged_thresholds().top_trades_quantile)
         ),
     )
+    if batch.study is not None:
+        bundle = batch.study.attach(bundle, variant.name)
     results = Results(
         net_pnl=metrics.net_pnl,
         return_after_costs=metrics.return_after_costs,
@@ -610,13 +623,45 @@ def error_info(error: Exception) -> ErrorInfo:
     return ErrorInfo(type=type(error).__name__, message=str(error))
 
 
-def _failed(batch: Batch, variant: VariantSpec, error: Exception, *, started_at: datetime) -> LabReport:
+def trial_bundle(
+    batch: Batch, variant: VariantSpec, status: RunStatus, *, started_at: datetime, ended_at: datetime
+) -> RunBundle | None:
+    """In a study, the run row and ``study_runs`` row of a variant that did not complete, so it still
+    counts as a trial (spec 0015 AC-3); no results, daily equity, or measures. None outside a study."""
+    if batch.study is None:
+        return None
+    segments = batch.plan.segments
+    run = RunRow(
+        env=Env.DEMO,
+        mode=RunMode.REPLAY,
+        status=status,
+        strategy_version_id=batch.version_id,
+        trader_id=TRADER_ID,
+        run_config=_run_config(batch, variant),
+        data_start_at=ns_to_utc(segments[0].start_ns) if segments else None,
+        data_end_at=ns_to_utc(segments[-1].end_ns) if segments else None,
+        started_at=started_at,
+        ended_at=ended_at,
+    )
+    return batch.study.attach(RunBundle(run=run), variant.name)
+
+
+def _write_trial(
+    batch: Batch, variant: VariantSpec, store: Store, status: RunStatus, started_at: datetime
+) -> RunBundle | None:
+    bundle = trial_bundle(batch, variant, status, started_at=started_at, ended_at=datetime.now(UTC))
+    if bundle is not None:
+        store.write_bundle(bundle)
+    return bundle
+
+
+def _failed(batch: Batch, variant: VariantSpec, error: Exception, *, started_at: datetime, store: Store) -> LabReport:
     log.error(
         "lab_variant_failed",
         extra={"fields": {"variant": variant.name, "error": f"{error_info(error).type}: {error}"}},
     )
     report = _report(batch, variant, started_at=started_at, ended_at=datetime.now(UTC), error=error)
-    write_variant(batch.folder, report, None)
+    write_variant(batch.folder, report, _write_trial(batch, variant, store, RunStatus.FAILED, started_at))
     return report
 
 
@@ -634,7 +679,7 @@ def finish_variant(
         bundle, results, band = build_bundle(batch, variant, units, started_at=started_at, ended_at=ended_at)
         store.write_bundle(bundle)
     except Exception as exc:
-        return _failed(batch, variant, exc, started_at=started_at)
+        return _failed(batch, variant, exc, started_at=started_at, store=store)
     report = _report(
         batch, variant, started_at=started_at, ended_at=ended_at, bundle=bundle, results=results, band=band
     )
@@ -735,7 +780,7 @@ def run_batch(
             state = states[variants[len(reports)].name]
             with interrupts.shield():
                 if state.error is not None:
-                    reports.append(_failed(batch, state.spec, state.error, started_at=started_at))
+                    reports.append(_failed(batch, state.spec, state.error, started_at=started_at, store=store))
                 else:
                     reports.append(
                         finish_variant(
@@ -774,7 +819,7 @@ def run_batch(
         now = datetime.now(UTC)
         for v in variants[len(reports) :]:
             report = _report(batch, v, started_at=started_at, ended_at=now, interrupted=True)
-            write_variant(batch.folder, report, None)
+            write_variant(batch.folder, report, _write_trial(batch, v, store, RunStatus.ABORTED, started_at))
             reports.append(report)
     return reports, interrupted
 
@@ -786,10 +831,14 @@ def replay(
     *,
     variants: Sequence[VariantSpec] = (),
     target: Target = run_unit,
+    study: Callable[[Mapping[str, UUID]], StudyContext] | None = None,
+    dropped_days: Sequence[date] = (),
 ) -> int:
     """Run ``lab replay`` after validation; returns the exit code.
 
     ``variants`` come from ``expand_variants`` (AC-6), ``base`` first; none means ``base`` alone.
+    ``study`` builds the batch's study context from the variants' version ids, and ``dropped_days``
+    are the planned days with gaps in every hour, stored in ``run_config`` (spec 0015 AC-24).
     """
     run = loaded.run
     if not variants:
@@ -831,6 +880,8 @@ def replay(
     rates, funding_source, funding_skipped_ns = run_funding(tree, run.source, days, plan)
     batch_id = uuid.uuid7()
     batch = Batch(
+        study=None if study is None else study(dict.fromkeys((v.name for v in variants), version_id)),
+        dropped_days=tuple(dropped_days),
         funding_rates=rates,
         funding_source=funding_source,
         funding_skipped_ns=funding_skipped_ns,

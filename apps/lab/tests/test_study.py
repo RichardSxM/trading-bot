@@ -1,6 +1,7 @@
 """covers: spec 0015 AC-2 (study file and plan), AC-3 (development runs and resume), AC-4 (benchmarks),
 AC-5 (holdout once)."""
 
+from datetime import date
 from pathlib import Path
 from uuid import uuid4
 
@@ -21,6 +22,9 @@ from trading_core.settings import Settings
 
 from .candle_fixtures import synthetic_month
 from .conftest import lab_settings
+
+# Candle holdouts end at the catalog, not at this date; replay holdouts end before it (AC-24).
+TODAY = date(2026, 10, 20)
 
 STUDY = """
 instrument_id = "PF_XBTUSD.KRAKEN"
@@ -86,7 +90,6 @@ def test_a_comment_does_not_change_the_plan_but_a_value_does(tmp_path):
     ("change", "message"),
     [
         (lambda t: t.replace('[study]\nname = "NAME"\nlab = "candle"\nseed = 42\n', ""), r"\[study\] is missing"),
-        (lambda t: t.replace('lab = "candle"', 'lab = "replay"\nentry_mode = "taker"'), "replay studies"),
         (lambda t: t.replace('lab = "candle"', 'lab = "candle"\nentry_mode = "maker"'), "no entry_mode"),
         (lambda t: t.replace("to = 2025-10-18", "to = 2025-10-19"), "reaches into the holdout"),
         (
@@ -146,19 +149,19 @@ def test_a_candle_study_runs_resumes_and_spends_its_holdout_once(tmp_path, monke
 
         # Stopped before its benchmarks: the holdout lands, no benchmark does.
         monkeypatch.setattr("lab.study.benchmark_names", lambda kind, studied: ())
-        assert run_holdout(settings, name, store) == EXIT_OK
+        assert run_holdout(settings, name, store, today=TODAY) == EXIT_OK
         monkeypatch.undo()
         assert sorted(_study_run(b).role for b in _bundles(reports)) == ["development", "development", "holdout"]
 
         # The catalog end moves on. A benchmark failing during the resume exits 1 and reruns no holdout.
         synthetic_month(catalog, month=Month(2025, 11), days=12)
         monkeypatch.setattr("lab.study.backtest", lambda *args, **kwargs: EXIT_MISSING)
-        assert run_holdout(settings, name, store) == EXIT_FAILED
+        assert run_holdout(settings, name, store, today=TODAY) == EXIT_FAILED
         monkeypatch.undo()
 
         # The resume runs only the missing benchmark, over the stored holdout range; a study of
         # macd_baseline never runs a macd_baseline benchmark (AC-4).
-        assert run_holdout(settings, name, store) == EXIT_OK
+        assert run_holdout(settings, name, store, today=TODAY) == EXIT_OK
         roles = sorted((_study_run(b).role, b.strategy_name or "") for b in _bundles(reports))
         assert roles == [
             ("benchmark", "buy_and_hold"),
@@ -192,7 +195,7 @@ def test_a_candle_study_runs_resumes_and_spends_its_holdout_once(tmp_path, monke
         assert detail is not None
         assert detail.trials == 2
 
-        assert run_holdout(settings, name, store) == EXIT_USAGE
+        assert run_holdout(settings, name, store, today=TODAY) == EXIT_USAGE
         with store.session() as session:
             spent = session.execute(
                 select(func.count())
@@ -212,7 +215,7 @@ def test_holdout_of_an_unknown_study_is_refused(tmp_path):
     store = StudyStore(create_engine(base.database_url(read_secret(POSTGRES_PASSWORD)), pool_size=1))
     try:
         settings = lab_settings(tmp_path, tmp_path).model_copy(update={"git_commit": "f" * 40})
-        assert run_holdout(settings, f"nope-{uuid4().hex[:6]}", store) == EXIT_USAGE
+        assert run_holdout(settings, f"nope-{uuid4().hex[:6]}", store, today=TODAY) == EXIT_USAGE
     finally:
         store.engine.dispose()
 

@@ -1,5 +1,7 @@
 """Typed errors of the replay lab (spec 0008). Each one fails the variant it happens in (AC-13)."""
 
+from datetime import date
+
 
 class LabError(Exception):
     """Base of every lab error."""
@@ -65,6 +67,24 @@ class LookaheadMismatchError(LabError):
 
     The strategy saw data the engine had not fed yet, so its variant fails.
     """
+
+
+class StudyDaysError(LabError):
+    """A replay study's ``from`` is not a whole Tardis day (spec 0015 AC-24).
+
+    It must be a 1st of the month on or after 2022-04-01, the first whole Tardis day of PF_XBTUSD.
+    """
+
+
+class MissingDaysError(LabError):
+    """Planned replay study days have no manifest in the Tardis catalog (spec 0015 AC-24, exit 2).
+
+    A missing day is never skipped; ``days`` lists every one, oldest first.
+    """
+
+    def __init__(self, days: list[date]) -> None:
+        super().__init__(f"{len(days)} planned days have no manifest: {', '.join(d.isoformat() for d in days)}")
+        self.days = days
 
 
 class ReplayInterruptedError(LabError):
