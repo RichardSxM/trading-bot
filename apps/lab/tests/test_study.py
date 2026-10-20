@@ -124,7 +124,9 @@ def test_a_candle_study_runs_resumes_and_spends_its_holdout_once(tmp_path, monke
     """Runs in the lab service: ``docker compose --profile lab run --rm -T --entrypoint pytest lab -q -m postgres``."""
     catalog, reports = tmp_path / "catalog", tmp_path / "reports"
     _catalog(catalog)
-    settings = lab_settings(catalog, reports).model_copy(update={"git_commit": "f" * 40})
+    # This database persists, and a benchmark's config never changes: a fresh commit each run, so an
+    # older run's benchmark version (same commit, older code hash) never conflicts.
+    settings = lab_settings(catalog, reports).model_copy(update={"git_commit": uuid4().hex + uuid4().hex[:8]})
     name = f"study-{uuid4().hex[:8]}"
     # A frozen version spends its holdout forever, and this database persists: a fresh config each run.
     notional = str(9000 + uuid4().int % 1000)
