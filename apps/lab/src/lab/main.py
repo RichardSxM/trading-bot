@@ -17,8 +17,10 @@ missing data or nothing to compare, AC-21). ``study`` and ``holdout`` run a stra
 fixed in advance (spec 0015: 64 a bad study file, a reused name with another plan, missing grid
 points, or a spent holdout; 2 a replay study day with no manifest, every one listed with the
 ``import-tardis`` command that fetches them); ``gate <study> --dry-run`` previews the promotion gate's verdict and
-writes nothing (64 an unknown study). Only ``replay``, ``backtest``, ``study``, ``holdout``, and
-``gate`` connect to Postgres, so the other commands run with ``--no-deps``.
+writes nothing (64 an unknown study). ``audit`` measures the Tardis development days' spreads, moves,
+and order flow into report files (spec 0017 AC-1: 64 a range reaching the holdout, 2 a missing day).
+Only ``replay``, ``backtest``, ``study``, ``holdout``, and ``gate`` connect to Postgres, so the other
+commands run with ``--no-deps``.
 """
 
 import argparse
@@ -35,6 +37,7 @@ from typing import Final, NoReturn
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from lab.audit import AuditRangeError, audit_days, run_audit
 from lab.candle_backtest import backtest
 from lab.candle_fetch import fetch_candles
 from lab.candle_parity import candle_parity
@@ -58,6 +61,7 @@ from trading_core.lab.variants import VariantError, VariantSpec, expand_candle_v
 from trading_core.logs import configure_logging
 from trading_core.recording.gate_queries import UnknownStudyError, study_evidence
 from trading_core.secrets import POSTGRES_PASSWORD
+from trading_core.thresholds_file import packaged_thresholds
 
 log = logging.getLogger(__name__)
 
@@ -134,6 +138,9 @@ def parser() -> argparse.ArgumentParser:
     preview = commands.add_parser("gate", help="preview the promotion gate's verdict on a study (writes nothing)")
     preview.add_argument("study", help="the study's name")
     preview.add_argument("--dry-run", action="store_true", required=True, help="required: the lab only previews")
+    audit = commands.add_parser("audit", help="measure spreads, moves, and order flow of the Tardis development days")
+    audit.add_argument("--from", dest="from_", type=_day, help="first UTC day (default 2022-04-01)")
+    audit.add_argument("--to", type=_day, help="last UTC day (default the day before the holdout)")
     drop = commands.add_parser("prune", help="delete a source tree of the lab catalog")
     drop.add_argument("--source", choices=("tardis", "own"), help="the tree to delete (both without it)")
     return root
@@ -398,6 +405,22 @@ def _import_funding(args: argparse.Namespace) -> int:
     return import_funding(started.settings, args.file)
 
 
+def _audit(args: argparse.Namespace) -> int:
+    """``lab audit`` (spec 0017 AC-1): files only, no database."""
+    configure_logging(process=PROCESS, env=os.environ.get("TRADING_ENV", ""))
+    thresholds = packaged_thresholds()
+    try:
+        days = audit_days(args.from_, args.to, thresholds.holdout_start)
+    except AuditRangeError as exc:
+        for problem in exc.problems:
+            print(f"lab audit: {problem}", file=sys.stderr)
+        log.error("lab_bad_input", extra={"fields": {"problems": exc.problems}})
+        return EXIT_USAGE
+    started = boot("worker", settings_cls=LabSettings)
+    logging.getLogger("trading_core.node.recording").setLevel(logging.WARNING)
+    return run_audit(started.settings, days, thresholds.fee_hurdle_k, datetime.now(UTC))
+
+
 def _prune(args: argparse.Namespace) -> int:
     started = boot("worker", settings_cls=LabSettings)
     try:
@@ -434,6 +457,8 @@ def main(argv: list[str] | None = None) -> NoReturn:
         sys.exit(_holdout(args))
     if args.command == "gate":
         sys.exit(_gate_preview(args))
+    if args.command == "audit":
+        sys.exit(_audit(args))
     if args.command == "prune":
         sys.exit(_prune(args))
     sys.exit(EXIT_USAGE)  # unreachable: the subparser is required
