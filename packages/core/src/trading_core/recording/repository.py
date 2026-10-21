@@ -358,9 +358,13 @@ def _require_live_gate(session: Session, version_id: UUID) -> None:
         )
 
 
-def _require_paper_promotion(session: Session, version_id: UUID) -> None:
+def require_paper_promotion(session: Session, version_id: UUID) -> None:
     """A paper run needs a latest ``candidate → paper`` pass for its frozen hash, by the gate or by hand
-    (spec 0015 AC-14), so a later non pass takes the version out of paper at its next start."""
+    (spec 0015 AC-14), so a later non pass takes the version out of paper at its next start.
+
+    ``start_run`` applies it to every paper run, and ``gate check-version`` before a deploy (AC-26).
+    Raises ``MissingParentError`` for an unknown version and ``PromotionRequiredError`` otherwise.
+    """
     version = session.get(models.StrategyVersion, version_id)
     if version is None:
         raise MissingParentError(f"strategy version {version_id} not found")
@@ -395,7 +399,7 @@ def start_run(
     """
     check_env(env)
     if mode == RunMode.PAPER:
-        _require_paper_promotion(session, version_id)
+        require_paper_promotion(session, version_id)
     if mode == RunMode.LIVE:
         _require_live_gate(session, version_id)
     row = RunRow(

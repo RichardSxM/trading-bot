@@ -4,7 +4,9 @@
 one ``candidate → paper`` promotion and prints its verdict, reasons, and metrics (64 for an unknown
 study or one with nothing to evaluate). ``promote --manual --step candidate-paper`` appends a manual
 pass after you type the strategy's name (64 without a terminal, an empty note, a wrong name, or the
-live step); ``versions`` lists every version with its frozen hash and stage.
+live step); ``versions`` lists every version with its frozen hash and stage; ``check-version`` reads
+``trader.version`` JSON on stdin and exits 0 when that version holds its paper pass, 3 when not, and 1 on
+any error (``kfs-deploy`` runs it before the drain, AC-26).
 
 Runs as ``gate_app`` in either ``TRADING_ENV``; everything it
 imports is demo.
@@ -23,6 +25,7 @@ from uuid import UUID
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from gate.check_version import CheckVersionRefused, check_version
 from gate.evaluate import NothingToEvaluateError, evaluate_candidate_step, evaluate_paper_step
 from gate.importer import import_folder
 from gate.manual import ManualPromotionRefused, promote_manual, versions
@@ -38,6 +41,7 @@ PROCESS: Final = "gate"
 EXIT_OK: Final = 0
 EXIT_REFUSED: Final = 1
 EXIT_USAGE: Final = 64
+EXIT_NOT_PROMOTED: Final = 3
 
 
 class _Parser(argparse.ArgumentParser):
@@ -66,6 +70,7 @@ def parser() -> argparse.ArgumentParser:
     promote.add_argument("--note", required=True, help="why, kept on the promotion")
     listing = commands.add_parser("versions", help="list strategy versions with their frozen hash and stage")
     listing.add_argument("--strategy", help="only this strategy")
+    commands.add_parser("check-version", help="read trader.version JSON on stdin; exit 0 when it holds its paper pass")
     return root
 
 
@@ -180,6 +185,23 @@ def _versions(engine_url: str, strategy: str | None) -> int:
     return EXIT_OK
 
 
+def _check_version(settings: GateSettings, engine_url: str, text: str) -> int:
+    engine = create_engine(engine_url, pool_size=1)
+    try:
+        with Session(engine) as session:
+            checked = check_version(session, text, settings.trading_env)
+            session.commit()
+    except CheckVersionRefused as exc:
+        print(f"gate check-version: {exc}", file=sys.stderr)
+        log.error("gate_check_version_refused", extra={"fields": {"why": str(exc)}})
+        return EXIT_REFUSED
+    finally:
+        engine.dispose()
+    print(json.dumps(checked.to_json(), sort_keys=True))
+    log.info("gate_check_version", extra={"fields": checked.to_json()})
+    return EXIT_OK if checked.passed else EXIT_NOT_PROMOTED
+
+
 def main(argv: list[str] | None = None) -> NoReturn:
     """Entry point of the ``gate`` console script."""
     args = parser().parse_args(argv)
@@ -195,4 +217,6 @@ def main(argv: list[str] | None = None) -> NoReturn:
         sys.exit(_promote(url, args))
     if args.command == "versions":
         sys.exit(_versions(url, args.strategy))
+    if args.command == "check-version":
+        sys.exit(_check_version(settings, url, sys.stdin.read()))
     sys.exit(EXIT_USAGE)  # unreachable: the subparser is required

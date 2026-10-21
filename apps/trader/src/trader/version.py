@@ -1,8 +1,9 @@
 """``python -m trader.version`` (spec 0015 AC-15): the strategy version this image would start, as JSON.
 
-Prints ``{strategy, kind, config, code_hash, frozen_hash}`` from the trader's own settings and the
+Prints ``{strategy, kind, config, code_hash, frozen_hash, git_commit}`` from the trader's own settings and the
 installed source, without starting the node or touching a database, so a version can be promoted by
-hand (``gate promote --manual``) before its deploy. Exit 78 on bad config.
+hand (``gate promote --manual``) before its deploy, and ``kfs-deploy`` feeds it to ``gate check-version``
+(AC-26). Exit 78 on bad config.
 """
 
 import json
@@ -19,7 +20,7 @@ from trading_core.recording.rows import JsonObject, normalize_json
 
 
 def describe(settings: TraderSettings) -> JsonObject:
-    """The version the trader records at start: its strategy, kind, config, and both hashes."""
+    """The version the trader records at start: its strategy, kind, config, both hashes, and the image's commit."""
     config = settings.strategy_config()
     frozen = versioning.freeze(PlaceholderTimed.__module__, config)
     return {
@@ -28,6 +29,7 @@ def describe(settings: TraderSettings) -> JsonObject:
         "config": normalize_json(config),
         "code_hash": frozen.code_hash,
         "frozen_hash": frozen.frozen_hash,
+        "git_commit": settings.git_commit,
     }
 
 

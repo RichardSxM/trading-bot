@@ -253,6 +253,64 @@ check "kfs-deploy: a deploy killed halfway records interrupted" "143 preflight_r
 check "kfs-deploy: and logs a CRITICAL line saying so" "CRITICAL" \
     "$(grep 'deploy ended without an outcome' "$work/dlog/host.jsonl" | jq -r .level)"
 
+# --- kfs-deploy run: the promotion check before the drain (spec 0015 AC-26) --------------------
+# A running release (so the check applies), images that exist, and a stub trader and gate: the
+# gate's exit code comes from $work/gate_rc, and it prints a log line before its result, as the
+# real one does on stdout.
+prev=2222222222222222222222222222222222222222
+mkdir -p "$droot/releases/$prev/deploy" "$work/plog"
+cp -R /host "$droot/releases/$prev/deploy/host"
+touch "$droot/releases/$prev/compose.yaml" "$droot/releases/$prev/compose.vps.yaml"
+ln -sfn "releases/$prev" "$droot/current"
+rm -f "$work/hang"
+cat >"$work/bin/docker" <<STUB
+#!/bin/sh
+case "\$*" in
+    *"config --images"*) echo "ghcr.io/x/kfs-trader:$sha" ;;
+    "manifest inspect"*) exit 0 ;;
+    *"exec -T backup"*) exit 1 ;;
+    *"pull --quiet"*) exit 0 ;;
+    *"run --rm --no-deps -T trader python -m trader.version"*)
+        printf '{\n  "frozen_hash": "f1",\n  "git_commit": "%s"\n}\n' "$sha" ;;
+    *"run --rm --no-deps -T gate check-version"*)
+        cat >"$work/gate_stdin"
+        rc=\$(cat "$work/gate_rc")
+        echo '{"msg": "gate_check_version", "stage_needed": "paper", "version_id": "log-line"}'
+        [ "\$rc" -le 3 ] && printf '{"frozen_hash": "f1", "stage_needed": "paper", "verdict": "%s", "version_id": "v-1"}\n' \
+            "\$( [ "\$rc" -eq 0 ] && echo pass || echo missing)"
+        exit "\$rc" ;;
+    *) exit 1 ;;
+esac
+STUB
+chmod +x "$work/bin/docker"
+pdeploy() {
+    KFS_ROOT=$droot KFS_LOG_DIR=$work/plog KFS_SECRETS_DIR=$work/dsecrets KFS_ENV_FILE=$work/denv \
+        "$droot/releases/$sha/deploy/host/kfs-deploy" run "$sha" >"$work/pout" 2>&1
+}
+echo 3 >"$work/gate_rc"
+pdeploy; rc=$?
+check "kfs-deploy: a version without its paper pass is refused before the drain" "4 preflight_refused" \
+    "$rc $(jq -r .outcome "$work/plog/deploys.jsonl" | paste -sd, -)"
+check "kfs-deploy: the refusal names the version and verdict" "promotion check: version v-1 has no candidate to paper pass (verdict missing)" \
+    "$(grep 'preflight refused' "$work/plog/host.jsonl" | jq -r .reason)"
+check "kfs-deploy: and prints the promote command for it" "1" \
+    "$(grep -c 'gate promote --manual --step candidate-paper --version v-1 ' "$work/pout")"
+check "kfs-deploy: the gate reads the new trader's version on stdin" "f1 $sha" \
+    "$(jq -r '"\(.frozen_hash) \(.git_commit)"' "$work/gate_stdin")"
+check "kfs-deploy: nothing is paused" "0" "$(grep -c 'pause' "$work/plog/host.jsonl")"
+echo 1 >"$work/gate_rc"
+: >"$work/plog/deploys.jsonl"
+pdeploy; rc=$?
+check "kfs-deploy: a gate error refuses too" "4 promotion check: gate check-version failed (exit 1)" \
+    "$rc $(grep 'preflight refused' "$work/plog/host.jsonl" | tail -n 1 | jq -r .reason)"
+echo 0 >"$work/gate_rc"
+: >"$work/plog/deploys.jsonl"
+pdeploy; rc=$?
+check "kfs-deploy: a version with its pass goes on to the drain" "v-1" \
+    "$(grep 'promotion check passed' "$work/plog/host.jsonl" | jq -r .version_id)"
+check "kfs-deploy: past the check, not refused" "no" \
+    "$(jq -r .outcome "$work/plog/deploys.jsonl" | grep -qx preflight_refused && echo refused || echo no)"
+
 rm -rf "$work"
 if [ "$fails" -eq 0 ]; then echo PASS; else echo "FAIL: $fails checks"; exit 1; fi
 EOF

@@ -1,4 +1,5 @@
-"""covers: spec 0015 AC-15 (``python -m trader.version`` prints the version the trader would record)."""
+"""covers: spec 0015 AC-15 (``python -m trader.version`` prints the version the trader would record),
+AC-26 (and the image's commit)."""
 
 import json
 
@@ -23,6 +24,7 @@ def test_the_printed_version_is_the_one_the_trader_records(monkeypatch, capsys):
     assert printed["strategy"] == STRATEGY_NAME
     assert printed["kind"] == "scalping"
     assert (printed["code_hash"], printed["frozen_hash"]) == (expected.code_hash, expected.frozen_hash)
+    assert printed["git_commit"] == settings.git_commit
 
 
 def test_bad_config_exits_78_and_prints_nothing_to_stdout(monkeypatch, capsys):
