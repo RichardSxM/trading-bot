@@ -28,7 +28,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 13 | Candle backtest lab | Slice 6 | done |
 | 14 | Scalping simulator | Slice 6 | done |
 | 15 | Strategy scoring & promotion gate | Slice 6 | in-progress |
-| 16 | Scalping strategy candidates | Slice 7 | planned |
+| 16 | Scalping strategy candidates | Slice 7 | in-progress |
 | 17 | Hour level strategy candidates | Slice 7 | planned |
 | 18 | Trade journal export | Slice 8 | planned |
 | 19 | Go live with small capital | Slice 9 | planned |
@@ -350,7 +350,7 @@ code in `packages/core/src/trading_core/gate`, `packages/core/src/trading_core/v
 
 ## Slice 7: First strategies
 
-### 16. Scalping strategy candidates · needs a decision
+### 16. Scalping strategy candidates · in-progress
 A small set of well known scalping ideas (for example order book imbalance, short term mean reversion) run through the simulator and the gate.
 **Done when:** each candidate has a scored result on recorded data, and the gate's verdict is recorded, pass or fail.
 **Carried over from an article (2026-10-04), for the design to weigh:** a regime gate. Scalping and mean reversion tend to work in calm, rangebound markets and get run over in strong trends. Consider pausing new entries when volatility or trend strength (from feature 20's context or the candles) crosses a level, added as one more reason in `entries_blocked` (spec 0006) so the dashboard shows it. Score each candidate with and without the gate. A standard measure of trend strength is ADX(14) (the average directional index): above about 25 is the common reading for a trending market, the case the gate would block. Treat 25 as a starting point to tune on recorded data, not a fixed rule.
@@ -373,7 +373,18 @@ A small set of well known scalping ideas (for example order book imbalance, shor
 - **Written hypothesis per candidate:** why the behavior might persist, when it should work and when it should fail, its inputs, entries, exits, stops, timeouts, cooldown, and no trade conditions.
 - **One candidate at a time,** changing one design dimension at a time, with a recorded verdict (pass, fail, or insufficient evidence) kept even when it fails.
 - **Order (decided 2026-10-17):** hour level candidates (feature 17) run alongside these, not after a scalping verdict, because the fee hurdle favors longer holds.
-- [ ] Design it (spec): `/architect scalping strategy candidates`
+spec [0017](../specs/0017-scalping-strategy-candidates/index.md) (children: `bollinger_rsi`, `vwap_retest`, `delta_divergence`)
+code in `packages/core/src/trading_core/strategy`, `packages/core/src/trading_core/node`, `packages/core/src/trading_core/lab`, `apps/lab`, `apps/gate`
+- [x] Design it (spec): `/architect scalping strategy candidates`
+- [ ] Build it: `/develop scalping strategy candidates` (prerequisites, spec 0015 tasks 20 and 21 and spec 0016's off tick guard, shipped in PR #86)
+  - [ ] Data audit: `lab audit` over the development days, recorded with the spread cap and run order (AC-1 to AC-3)
+  - [ ] Thin thread: shared indicators and `ScalpStrategy` base, `bollinger_rsi` through both labs, candle screen admission, `lab screen` (AC-4, AC-5, AC-7 to AC-9, AC-13, AC-16)
+  - [ ] Regime gate and the other two: `REGIME` block reason (deployed before any study), `vwap_retest`, `delta_divergence` (AC-4, AC-6, AC-7, AC-14 to AC-16)
+  - [ ] Studies and verdicts: study files, candle screens, delta pre check, replay studies in audit order to recorded gate verdicts, at most one revision each (AC-10 to AC-12, AC-17)
+- [ ] Verify it: `/check verify scalping strategy candidates`
+- [ ] Test it: `/test scalping strategy candidates`
+- [ ] Review it (fresh model): `/check review scalping strategy candidates`
+- [ ] Document it: `/document scalping strategy candidates`
 
 ### 17. Hour level strategy candidates · needs a decision
 The fallback set: trend following and mean reversion on 1h to 4h candles, tested in the candle lab.
@@ -449,6 +460,7 @@ Out of scope for the current build pass, kept so the plan stays honest.
 - **Automatic maintenance mute** (from spec 0013): open a warning mute by itself from Kraken's scheduled maintenance windows (status.kraken.com) instead of muting by hand · needs a decision
 - **ETH candles** (from spec 0014): a pinned `PF_ETHUSD` instrument and a candle fetch, if feature 17 wants a second market · needs a decision
 - **More than one strategy in the paper trader** (from spec 0014): the trader runs one hard wired strategy, so running `macd_baseline` or any candidate in paper needs multi strategy support (before or within feature 19) · needs a decision
+- **Paper trade a passing scalping candidate** (from spec 0017): wire a candidate that passes the gate into the trader in place of the placeholder (one strategy at a time), with its manual or gate promotion · needs a decision
 
 ## Legend
 

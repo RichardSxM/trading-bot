@@ -1,0 +1,48 @@
+# 0001. `bollinger_rsi`: fade a 1 minute close back inside the Bollinger band, in flat bands, gated by ADX
+
+## Summary
+
+When price closes outside its 2 standard deviation band with RSI at an extreme, then closes back inside while the bands are flat, this candidate bets on a return to the 20 minute average. It enters with a post only order at the touch, exits at the middle band, a stop past the excursion, or after 15 minutes. It is screened in the candle lab with and without the ADX gate, and the gated version goes to replay.
+
+## Hypothesis
+
+- **Why it might persist**: in a quiet market a close beyond 2σ is often a short burst of market orders eating the nearby depth, not new information. Market makers quote again and price drifts back toward its recent mean.
+- **When it should work**: range bound hours with low ADX, flat bands, and normal spreads.
+- **When it should fail**: trending moves and news, where the band edge is the start of a move, not its end; a widening of volatility, where the bands chase price. The ADX gate and the flat band test exist for these.
+- **Entry mode**: maker. The fade buys where sellers just pushed price, so a resting bid at the touch is on the natural side.
+
+## Rules
+
+All on `1-MINUTE-LAST` bars, evaluated on bar close `t` while flat (base rules of AC-5 apply).
+
+- **Indicators**: `Bollinger(bb_n, bb_k)` on closes, `Rsi(rsi_n)` on closes, `Atr(atr_n)`.
+- **Flat bands**: `|middle[t] − middle[t − bb_n]| ≤ flat_band_frac × (upper[t] − middle[t])`, and `upper[t] > middle[t]` (a zero band width is never flat). Needs `bb_n` bars of middle history.
+- **Long**: `close[t − 1] < lower[t − 1]`, `rsi[t − 1] ≤ rsi_low`, `close[t] ≥ lower[t]`, and flat bands.
+- **Short**: `close[t − 1] > upper[t − 1]`, `rsi[t − 1] ≥ 100 − rsi_low`, `close[t] ≤ upper[t]`, and flat bands.
+- **Stop**: long, the lowest low of the run of consecutive bars that closed below the lower band (ending at `t − 1`, at least one bar, at most the last `bb_n` bars) and bar `t`, minus `stop_atr_buffer × atr[t]`. Short, the mirror (highest high plus the buffer).
+- **Target**: `middle[t]`, fixed at the signal.
+- **Time stop**: `time_stop_min`.
+- **No trade**: unwarm indicators, the base's blocks, spread cap, reward floor, and `regime` when gated.
+- **`ScalpSignal.inputs`**: `close`, `lower`, `middle`, `upper`, `rsi_prev`, `atr`, `band_drift` (the flat band left side).
+
+## Config and grid
+
+Fixed: `bb_n = 20`, `rsi_n = 14`, `atr_n = 14`, `flat_band_frac = "0.5"`, `stop_atr_buffer = "0.25"`, `time_stop_min = 15`, `entry_mode = "maker"`, `entry_timeout_s = 30`, `min_target_bps = "10.5"`.
+
+Grid (4 points, sorted key expansion): `bb_k = ["2.0", "2.5"]`, `rsi_low = [30, 25]`.
+
+Warmup: exactly 40 one minute bars (`2 × bb_n`: the first band at bar 20, then 20 bars of middle history), which also covers RSI and ATR; the first signal can come on the 41st bar close. With the gate, 28 five minute bars of ADX (140 minutes), whichever is later.
+
+## Study files
+
+| File | Lab | Differs by |
+|---|---|---|
+| `apps/lab/studies/bollinger_rsi_screen.toml` | candle | no regime gate, `max_spread_bps` unset |
+| `apps/lab/studies/bollinger_rsi_screen_adx.toml` | candle | `regime_adx_max = "25"`, `max_spread_bps` unset |
+| `apps/lab/studies/bollinger_rsi.toml` | replay | `regime_adx_max = "25"`, `max_spread_bps` = the audit p95 (index AC-3) |
+
+All other fields per index AC-10. Scratch run files for index AC-16 (not baked into the image): `lab-reports/scratch/bollinger_rsi.toml` (2025-09-01) and `lab-reports/scratch/bollinger_rsi_candle.toml` (2025-06), both with `min_target_bps` and `regime_adx_max` unset.
+
+## Rationale (short)
+
+Picked as the first bar idea because it has the fewest free settings of the scope's bar ideas, its exit (the middle band) comes from the idea itself, and it directly tests the scope's range regime question twice (flat bands, ADX). The gated version goes to replay because the hypothesis says it fails in trends. Runner up: the EMA pullback, left in the scope because it overlaps the VWAP candidate.
