@@ -29,7 +29,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 14 | Scalping simulator | Slice 6 | done |
 | 15 | Strategy scoring & promotion gate | Slice 6 | in-progress |
 | 16 | Scalping strategy candidates | Slice 7 | planned |
-| 17 | Hour level strategy candidates | Slice 7 | planned |
+| 17 | Hour level strategy candidates | Slice 7 | in-progress |
 | 18 | Trade journal export | Slice 8 | planned |
 | 19 | Go live with small capital | Slice 9 | planned |
 
@@ -375,7 +375,7 @@ A small set of well known scalping ideas (for example order book imbalance, shor
 - **Order (decided 2026-10-17):** hour level candidates (feature 17) run alongside these, not after a scalping verdict, because the fee hurdle favors longer holds.
 - [ ] Design it (spec): `/architect scalping strategy candidates`
 
-### 17. Hour level strategy candidates · needs a decision
+### 17. Hour level strategy candidates · in-progress
 The fallback set: trend following and mean reversion on 1h to 4h candles, tested in the candle lab.
 **Done when:** each candidate has a scored result over several years of candles, and the gate's verdict is recorded.
 **Carried over from research (2026-10-04), a candidate to weigh:** Al Brooks style price action on 1h candles.
@@ -410,7 +410,19 @@ Two cautions. RSI and MACD are both built from recent price momentum, so they of
 - **Failed breakout reversal:** when a breakout fails and price comes back through the level, reverse (a stop and reverse at the far side of the breakout bar). This is the same idea as the liquidity sweep candidate above, so test them as one candidate.
 - **Volatility contraction:** an NR4 bar (narrower range than the three before it) or an inside bar, then enter on a break of its high or low. Few settings and fully rule based, so a good early candidate, and a possible 15 minute variant for feature 16.
 - **Skip single candle patterns:** the source rates the hammer, hanging man, harami and doji at average or below, often breaking either way at random.
-- [ ] Design it (spec): `/architect hour level strategy candidates`
+spec [0018](../specs/0018-hour-level-strategy-candidates/index.md)
+
+- [x] Design it (spec): `/architect hour level strategy candidates`
+- [ ] Build it: `/develop hour level strategy candidates`
+  - [ ] Shared base and family trials: `bar_indicators`, `bar_rule` (pure and node, `macd_baseline` lifecycle, frozen after the first study), config checks, trial count and variance by kind and lab on the VPS (AC-1 to AC-8, AC-19)
+  - [ ] Thin thread: `connors_rsi` rule, study, holdout, push, evaluate, verdict with N0 in its spec file (AC-9, AC-15, AC-16, AC-17)
+  - [ ] Mean reversion and breakouts: `bollinger_rsi_1h`, `nr4_breakout`, `failed_breakout`, each to a recorded verdict (AC-10, AC-11, AC-12, AC-15 to AC-17)
+  - [ ] Your layered plan: `trend_rsi_pullback`, then `trend_rsi_macd` with layer 1's holdout settings and the layer comparison (AC-13, AC-14, AC-15 to AC-17, AC-20)
+  - [ ] Revisions and close out: at most one revision per failed candidate, evaluate every study again with the final family N, scope tick (AC-18, AC-21)
+- [ ] Verify it: `/check verify hour level strategy candidates`
+- [ ] Test it: `/test hour level strategy candidates`
+- [ ] Review it (fresh model): `/check review hour level strategy candidates`
+- [ ] Document it: `/document hour level strategy candidates`
 
 ## Slice 8: Records
 
@@ -448,6 +460,7 @@ Out of scope for the current build pass, kept so the plan stays honest.
 - **Market context extras** (from spec 0009): a Fear & Greed regime tag, a news or event blackout filter, Deribit options implied volatility and put/call · needs a decision
 - **Automatic maintenance mute** (from spec 0013): open a warning mute by itself from Kraken's scheduled maintenance windows (status.kraken.com) instead of muting by hand · needs a decision
 - **ETH candles** (from spec 0014): a pinned `PF_ETHUSD` instrument and a candle fetch, if feature 17 wants a second market · needs a decision
+- **Hour level candidates, round 2** (from spec 0018): Brooks H2/L2 and the three push wedge, rule detected chart patterns, divergence, layered RSI, and regime gated versions of the first six · needs a decision
 - **More than one strategy in the paper trader** (from spec 0014): the trader runs one hard wired strategy, so running `macd_baseline` or any candidate in paper needs multi strategy support (before or within feature 19) · needs a decision
 
 ## Legend
