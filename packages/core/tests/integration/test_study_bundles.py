@@ -13,8 +13,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from trading_core.recording import models, repository
+from trading_core.recording.bundle_codec import BundleFile, bundle_json
 from trading_core.recording.enums import RunStatus, StudyRole
-from trading_core.recording.errors import RecordConflictError
+from trading_core.recording.errors import ForeignRunError, MissingParentError, RecordConflictError
 
 
 def study_bundle(*args, **kwargs):
@@ -56,6 +57,55 @@ def test_importing_a_bundle_twice_adds_nothing_the_second_time(session: Session)
     assert session.execute(select(models.Study.strategy_id).where(models.Study.id == the_study.id)).scalar_one() == (
         strategy.id
     )
+
+
+def _in_parts(tmp_path, bundle):
+    path = tmp_path / "run.bundle.json"
+    path.write_text(bundle_json(bundle))
+    file = BundleFile(path)
+    return file.head(), file
+
+
+def test_a_bundle_streamed_from_its_file_writes_the_same_rows(session: Session, tmp_path):
+    the_study, the_version = _fresh(f"stream-{uuid4().hex[:8]}")
+    bundle = study_bundle(the_study, the_version)
+    head, file = _in_parts(tmp_path, bundle)
+
+    assert repository.import_run_bundle(session, head, file) is True
+    assert repository.import_run_bundle(session, bundle) is False
+
+    for model, count in (
+        (models.RunResult, 1),
+        (models.Decision, 1),
+        (models.Order, 1),
+        (models.Fill, 1),
+        (models.Position, 1),
+        (models.FundingPayment, 1),
+        (models.RunDailyEquity, 3),
+        (models.RunMeasures, 1),
+        (models.StudyRun, 1),
+    ):
+        assert _count(session, model, run_id=bundle.run.id) == count, model
+    order_id = session.execute(select(models.Order.id).where(models.Order.run_id == bundle.run.id)).scalar_one()
+    assert _count(session, models.OrderEvent, order_id=order_id) == 1  # an event has no run id, only its order
+
+
+def test_a_streamed_fill_of_an_order_the_file_lacks_is_refused(session: Session, tmp_path):
+    the_study, the_version = _fresh(f"orphan-{uuid4().hex[:8]}")
+    bundle = study_bundle(the_study, the_version)
+    head, file = _in_parts(tmp_path, replace(bundle, fills=[replace(bundle.fills[0], client_order_id="O-9")]))
+
+    with pytest.raises(MissingParentError, match="O-9"):
+        repository.import_run_bundle(session, head, file)
+
+
+def test_a_streamed_row_of_another_run_is_refused(session: Session, tmp_path):
+    the_study, the_version = _fresh(f"foreign-{uuid4().hex[:8]}")
+    bundle = study_bundle(the_study, the_version)
+    head, file = _in_parts(tmp_path, replace(bundle, fills=[replace(bundle.fills[0], run_id=uuid7())]))
+
+    with pytest.raises(ForeignRunError, match="fills row"):
+        repository.import_run_bundle(session, head, file)
 
 
 def test_a_changed_row_under_the_same_key_is_a_conflict(session: Session):

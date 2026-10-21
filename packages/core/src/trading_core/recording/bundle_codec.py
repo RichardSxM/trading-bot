@@ -4,19 +4,24 @@ The lab writes the exact bundle it wrote into its own Postgres; ``gate import`` 
 into the same ``RunBundle``. Decimals are fixed notation strings, ids strings, times ISO, enums their
 values, keys sorted. Parsing rebuilds every row through its dataclass, so the row checks run again
 (no float, UTC times only), and an ``_at`` field derived from its ``_ns`` sibling is derived again,
-never read. Older bundles without the spec 0015 parts still parse.
+never read. Older bundles without the spec 0015 parts still parse. ``BundleFile`` reads a file in
+parts for ``gate import``, so a large bundle is never held whole.
 """
 
 import dataclasses
+import functools
 import json
 import types
 import typing
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
+from pathlib import Path
 from typing import Final, TypeAliasType, cast
 from uuid import UUID
+
+import ijson
 
 from trading_core.recording.rows import RunBundle
 
@@ -89,19 +94,27 @@ def _decode(kind: object, value: object, where: str) -> object:
     raise BundleFormatError(f"{where}: unsupported type {kind!r}")
 
 
+@functools.cache
+def _fields(cls: type) -> tuple[tuple[str, object, bool], ...]:
+    """Each init field of a row class: its name, annotation, and whether it must be present."""
+    hints = typing.get_type_hints(cls)
+    return tuple(
+        (f.name, hints[f.name], f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING)
+        for f in dataclasses.fields(cls)
+        if f.init  # a derived field (an ``_at`` from its ``_ns``) is never read
+    )
+
+
 def _row[T](cls: type[T], value: object, where: str) -> T:
     if not isinstance(value, Mapping):
         raise BundleFormatError(f"{where} must be an object")
-    hints = typing.get_type_hints(cls)
     values: dict[str, object] = {}
-    for f in dataclasses.fields(cls):  # type: ignore[arg-type]  # cls is a dataclass here
-        if not f.init:
-            continue  # derived (an ``_at`` from its ``_ns``)
-        if f.name not in value:
-            if f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING:
-                raise BundleFormatError(f"{where}.{f.name} is missing")
+    for name, kind, required in _fields(cls):
+        if name not in value:
+            if required:
+                raise BundleFormatError(f"{where}.{name} is missing")
             continue
-        values[f.name] = _decode(hints[f.name], value[f.name], f"{where}.{f.name}")
+        values[name] = _decode(kind, value[name], f"{where}.{name}")
     try:
         return cls(**values)
     except (TypeError, ValueError) as exc:
@@ -115,3 +128,66 @@ def parse_bundle(text: str) -> RunBundle:
     except json.JSONDecodeError as exc:
         raise BundleFormatError(f"not JSON: {exc}") from exc
     return _row(RunBundle, data, "bundle")
+
+
+def _row_lists() -> dict[str, type]:
+    """The bundle's row list parts, each with its row class."""
+    hints = typing.get_type_hints(RunBundle)
+    return {
+        f.name: typing.get_args(hints[f.name])[0]
+        for f in dataclasses.fields(RunBundle)
+        if typing.get_origin(hints[f.name]) is Sequence
+    }
+
+
+_ROW_LISTS: Final = _row_lists()
+
+
+class BundleFile:
+    """A ``.bundle.json`` file read in parts, so a large replay bundle never sits in memory whole.
+
+    A replay study's bundle can be hundreds of MB; ``parse_bundle`` on it needs several GB, more than
+    the gate's container has. ``head`` returns every part but the row lists (left empty), and ``rows``
+    streams one row list a row at a time. Each call reads the file again from the start. Numbers parse
+    as ``json.loads`` parses them, so the rows see the same values ``parse_bundle`` gives.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def head(self) -> RunBundle:
+        """The bundle without its row lists; raises ``BundleFormatError`` for a malformed file."""
+        parts: dict[str, object] = {}
+        key: str | None = None
+        builder: ijson.common.ObjectBuilder | None = None
+        try:
+            with self.path.open("rb") as f:
+                for prefix, event, value in ijson.parse(f, use_float=True):
+                    if prefix == "":
+                        if builder is not None and key is not None:
+                            parts[key] = builder.value
+                        builder = None
+                        if event == "map_key":
+                            key = value
+                            if key not in _ROW_LISTS:
+                                builder = ijson.common.ObjectBuilder()
+                        elif event not in ("start_map", "end_map"):
+                            raise BundleFormatError("bundle must be an object")
+                    elif builder is not None:
+                        builder.event(event, value)
+                    elif prefix == key and event not in ("start_array", "end_array"):
+                        raise BundleFormatError(f"bundle.{key} must be a list")
+        except ijson.JSONError as exc:
+            raise BundleFormatError(f"not JSON: {exc}") from exc
+        return _row(RunBundle, parts, "bundle")
+
+    def rows[T](self, part: str, cls: type[T]) -> Iterator[T]:
+        """Each row of the ``part`` list as a ``cls``; raises ``BundleFormatError`` for a malformed row."""
+        if _ROW_LISTS.get(part) is not cls:
+            raise ValueError(f"bundle part {part} does not hold {cls.__name__} rows")
+        try:
+            with self.path.open("rb") as f:
+                for i, value in enumerate(ijson.items(f, f"{part}.item", use_float=True)):
+                    yield _row(cls, value, f"bundle.{part}[{i}]")
+        except ijson.JSONError as exc:
+            raise BundleFormatError(f"not JSON: {exc}") from exc

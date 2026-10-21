@@ -8,6 +8,8 @@ dependencies = [
     "sqlalchemy>=2.0.36",
     "alembic>=1.14",
     "psycopg[binary]>=3.2",
+    # Streams a large lab bundle in parts for `gate import` (spec 0015 AC-7), C backend wheels.
+    "ijson==3.5.1",
 ]
 
 [dependency-groups]
