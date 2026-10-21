@@ -117,7 +117,7 @@ PK `(run_id, liquidity)`. The composite FK index covers `run_id`. No UPDATE path
 
 `catalog-lab/` and `lab-reports/` are added to `.gitignore`. Tardis days and own days live in separate trees, because a first of month day can exist in both.
 
-**Pinned instrument**: `apps/lab/src/lab/instruments/PF_XBTUSD.KRAKEN.json` holds the `CryptoPerpetual` definition, copied once from the newest `crypto_perpetual` row of the own catalog, with `maker_fee` 0.0002 and `taker_fee` 0.0005 written in by hand (the recorded row has 0, because Kraken publishes zero fees on the instrument; a `_note` key in the file says so and the loader ignores it). The import refuses (exit 1, `lab_tick_mismatch`) a Tardis day whose prices are not multiples of its `price_increment`, or whose sizes are not multiples of its `size_increment`, rather than rounding.
+**Pinned instrument**: `apps/lab/src/lab/instruments/PF_XBTUSD.KRAKEN.json` holds the `CryptoPerpetual` definition, copied once from the newest `crypto_perpetual` row of the own catalog, with `maker_fee` 0.0002 and `taker_fee` 0.0005 written in by hand (the recorded row has 0, because Kraken publishes zero fees on the instrument; a `_note` key in the file says so and the loader ignores it). The import refuses (exit 1, `lab_tick_mismatch`) a Tardis day whose prices are not multiples of its `price_increment`, or whose sizes are not multiples of its `size_increment`, rather than rounding. Amended by [spec 0016](../0016-tardis-off-tick-trades.md) (2026-10-21): trade rows priced off the tick are dropped instead, unless they are more than 5% of the day's trades; book prices and all sizes still refuse.
 
 ### Run file (TOML, `apps/lab/runs/*.toml`)
 

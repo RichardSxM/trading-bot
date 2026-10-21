@@ -332,7 +332,7 @@ Score every strategy on return after costs, max drawdown, and a risk adjusted ra
 - **Breakdowns:** long and short, market regime, time of day, and walk forward fold, where the sample allows. Fail a candidate when one period, one direction, or a few outsized trades explain most of the profit.
 - **Baselines:** compare with doing nothing and with a simple strategy over the same dates (buy and hold and the MACD baseline from spec 0014), and make extra layers earn their added parameters.
 - **Frozen versions:** once paper starts, a strategy version is frozen by its hash; a material change makes a new version that goes back to research.
-spec [0015](../specs/0015-strategy-scoring-promotion-gate/index.md)
+spec [0015](../specs/0015-strategy-scoring-promotion-gate/index.md), with [0016](../specs/0016-tardis-off-tick-trades.md) for Tardis trades off the tick
 code in `packages/core/src/trading_core/gate`, `packages/core/src/trading_core/versioning.py`, `packages/core/src/trading_core/recording`, `apps/gate`, `apps/lab`, `apps/trader`, `apps/dashboard`
 - [x] Design it (spec): `/architect strategy scoring & promotion gate`
 - [ ] Build it: `/develop strategy scoring & promotion gate`
@@ -342,6 +342,7 @@ code in `packages/core/src/trading_core/gate`, `packages/core/src/trading_core/v
   - [ ] Paper and live guards: `trader.version`, manual promotion, the placeholder transition, the paper guard, the live guard on `frozen_hash`, paper to live evaluation (AC-14 to AC-17)
   - [ ] Dashboard depth and proof: study detail, promotion log, paper progress, permission and boundary tests, `verify.md` (AC-19 to AC-23)
   - [x] Fixes from the first verify: `lab holdout` resumes missing benchmarks, no self benchmark, benchmarks left out of the trial count (AC-4, AC-5, AC-10, AC-11, AC-19)
+  - [ ] Amendments of 2026-10-21: entry mode in the frozen hash, the deploy promotion check, and the Tardis 5% off tick guard (AC-25, AC-26, spec 0016 AC-3, AC-4)
 - [ ] Verify it: `/check verify strategy scoring & promotion gate`
 - [ ] Test it: `/test strategy scoring & promotion gate`
 - [ ] Review it (fresh model): `/check review strategy scoring & promotion gate`

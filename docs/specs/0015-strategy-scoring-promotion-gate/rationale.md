@@ -72,6 +72,13 @@ Building task 12 hit three gaps. AC-2 said a study is its run file verbatim, but
 - **A day with no clean hour is dropped by rule, at plan time (chosen after the cross check).** Its gap file is known before any run, so dropping it can't be steered by results. Refusing would block a study forever over one dead Tardis day. Letting it vanish silently mid run would quietly lose a fold. The dropped days are recorded in the plan.
 - **Base variant only.** Latency sweeps, queue bounds, and paired entries stay as `lab replay` probes. In a study they would multiply runtime for numbers the gate never reads.
 
+### Entry mode in the hash and the deploy check (2026-10-21 amendment)
+
+Task 12 showed that `[study].entry_mode` never reached the version config, because AC-2 moved it out of `[strategy.config]`. The variant still injects it into the live strategy config, so a taker and a maker study of one strategy ran different code paths under one `frozen_hash`, and the second holdout was refused as spent. The first guarded deploys (4b8e04d) showed the other gap: a change to `recording/`, inside the placeholder's import closure, gave a new hash, the paper guard stopped the trader (exit 78), and the deploy rolled back until a manual promotion.
+
+- **Entry mode joins the version config (chosen, AC-25).** AC-1 already says any config value that changes behavior changes the hash, and entry mode changes every fill. Runner up: key the holdout spent check on hash plus mode. It is smaller, but the paper and live guards match on `frozen_hash` alone, so they could not tell a promoted taker version from an unpromoted maker one. Rejected: one entry mode per strategy, which throws away the maker versus taker comparison that replay studies exist for.
+- **Deploy checks the promotion before any change (chosen, AC-26).** The guard stays strict and manual promotion stays a deliberate typed step, but a missing promotion becomes an exit 4 refusal with the exact command, instead of a pause, a failed health gate, and a 460 s rollback. Runner up: keep it manual and documented, which works but costs a rollback on every closure change. Rejected: shrinking the closure (leaving `recording/` out), because a change there can change what gets recorded and so what evidence the gate sees, which is exactly what the hash is meant to catch.
+
 ### Threshold provenance (v1, fixed 2026-10-19 before any candidate result)
 
 | Threshold | Value | Why |
