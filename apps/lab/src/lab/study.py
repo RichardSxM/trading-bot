@@ -10,11 +10,15 @@ completed; a different plan under the same name exits 64 before any run.
 (best development daily Sharpe, ties to the lowest index), and runs it once from ``holdout_start`` to
 the last complete UTC day of the catalog, unless that frozen version already spent its holdout. Then
 the benchmarks (``buy_and_hold``, plus ``macd_baseline`` for an hour level study, minus the studied
-strategy itself) run over the same range. When this study already ran its holdout, a rerun only fills
-in the benchmarks still missing, over the stored holdout range. Every run writes its bundle beside its
-report, for ``scripts/push-bundles.sh``.
+strategy itself) run over the same range as candle runs. When this study already ran its holdout, a
+rerun only fills in the benchmarks still missing, over the stored holdout range. Every run writes its
+bundle beside its report, for ``scripts/push-bundles.sh``.
 
-Only candle studies are built so far; a replay study is refused (exit 64) until Slice 3.
+A replay study (AC-24) replays free Tardis days only: every 1st of the month from ``from`` to the day
+before ``holdout_start`` for development, and every 1st from ``holdout_start`` to the latest one before
+the current UTC day for the holdout. A planned day without a manifest exits 2 before anything is
+written; a day gapped in every hour is dropped when the plan is made. Each grid point runs as its own
+``replay()`` call with one ``base`` variant, so each gets its own strategy version and frozen hash.
 """
 
 import hashlib
@@ -26,6 +30,7 @@ from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Final, Literal, Self
 
@@ -35,16 +40,36 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from lab.candle_backtest import backtest
 from lab.candle_fetch import candle_tree
+from lab.catalog import SourceTree
 from lab.instruments import pinned_instrument
-from lab.replay import PostgresStore
-from lab.runfile import LoadedCandleRun, Overrides, RunFileError, candle_run_from_raw, read_toml
+from lab.replay import PostgresStore, plan_days, replay
+from lab.runfile import (
+    LoadedCandleRun,
+    LoadedRun,
+    Overrides,
+    RunFileError,
+    candle_run_from_raw,
+    read_toml,
+    replay_run_from_raw,
+)
 from lab.settings import LabSettings
-from lab.strategies import registry_entry
+from lab.strategies import StrategyEntry, registry_entry
 from lab.study_rows import StudyContext
 from trading_core.gate.checks import benchmark_names
 from trading_core.gate.thresholds import Thresholds
 from trading_core.lab.candles import Month
-from trading_core.lab.variants import CandleVariantSpec, expand_candle_variants
+from trading_core.lab.errors import MissingDaysError, StudyDaysError
+from trading_core.lab.study_days import development_days, dropped_days, holdout_days, import_command
+from trading_core.lab.variants import (
+    BASE,
+    MAX_REPLAY_GRID_VARIANTS,
+    TAKER,
+    CandleVariantSpec,
+    GridValue,
+    VariantSpec,
+    expand_candle_variants,
+    expand_grid,
+)
 from trading_core.node.recording import instrument_row
 from trading_core.recording import models, repository
 from trading_core.recording.enums import StrategyKind, StudyLab, StudyRole
@@ -55,9 +80,17 @@ log = logging.getLogger(__name__)
 
 EXIT_OK: Final = 0
 EXIT_FAILED: Final = 1
+EXIT_MISSING_DAYS: Final = 2
 EXIT_USAGE: Final = 64
 BENCHMARK_FILES: Final = {"buy_and_hold": "runs/buy_and_hold.toml", "macd_baseline": "runs/macd_baseline.toml"}
 _DAY_NS: Final = 86_400 * 1_000_000_000
+# Where a replay study looks for its days when the caller names no catalog (the settings default).
+CATALOG_DIR: Final[Path] = LabSettings.model_fields["lab_catalog_dir"].default
+
+# A grid point: its name (``base``, or ``grid-1``, ``grid-2``, …) and the settings it adds.
+type GridPoint = tuple[str, dict[str, GridValue]]
+# What a benchmark run takes from the study's run file, whichever lab: instrument, maker fee, taker fee.
+type Market = tuple[str, Decimal, Decimal]
 
 
 class StudySection(BaseModel):
@@ -99,14 +132,20 @@ class StudySection(BaseModel):
 
 @dataclass(frozen=True)
 class LoadedStudy:
-    """A validated study file: its ``[study]`` table, its run file, and the resolved plan."""
+    """A validated study file: its ``[study]`` table, its run file, its grid points, and the resolved plan.
+
+    ``variants`` are a candle study's batch variants (empty for replay); ``dropped`` are a replay
+    study's development days gapped in every hour.
+    """
 
     section: StudySection
     run_file: Mapping[str, object]
-    loaded: LoadedCandleRun
-    variants: tuple[CandleVariantSpec, ...]
+    loaded: LoadedCandleRun | LoadedRun
+    points: tuple[GridPoint, ...]
     thresholds: Thresholds
     plan: dict[str, JsonValue]
+    variants: tuple[CandleVariantSpec, ...] = ()
+    dropped: tuple[date, ...] = ()
 
     @property
     def plan_hash(self) -> str:
@@ -136,8 +175,12 @@ def development_range(start: date, thresholds: Thresholds) -> tuple[date, date]:
     return start, thresholds.holdout_start - timedelta(days=1)
 
 
-def load_study(path: Path, *, test_strategies: bool = False) -> LoadedStudy:
-    """Read and validate a study file; ``RunFileError`` lists every problem (exit 64)."""
+def load_study(path: Path, *, catalog_dir: Path = CATALOG_DIR, test_strategies: bool = False) -> LoadedStudy:
+    """Read and validate a study file; ``RunFileError`` lists every problem (exit 64).
+
+    A replay study also checks its days in ``catalog_dir``: ``MissingDaysError`` (exit 2) when a
+    planned day has no manifest, so nothing is written.
+    """
     data, raw = read_toml(path)
     table = raw.get("study")
     run_file = {k: v for k, v in raw.items() if k != "study"}
@@ -149,9 +192,9 @@ def load_study(path: Path, *, test_strategies: bool = False) -> LoadedStudy:
         raise RunFileError(
             [f"study.{'.'.join(map(str, e['loc'])) or 'study'}: {e['msg']}" for e in exc.errors(include_url=False)]
         ) from None
-    if section.lab != "candle":
-        raise RunFileError(["study.lab: replay studies are not built yet; only candle studies run so far"])
     thresholds = packaged_thresholds()
+    if section.lab == "replay":
+        return _load_replay_study(str(path), data, section, run_file, thresholds, catalog_dir, test_strategies)
     loaded = candle_run_from_raw(str(path), data, run_file, Overrides(), test_strategies=test_strategies)
     start, end = development_range(loaded.run.from_, thresholds)
     if start > end:
@@ -161,19 +204,129 @@ def load_study(path: Path, *, test_strategies: bool = False) -> LoadedStudy:
             [f"to {loaded.run.to} reaches into the holdout (from {thresholds.holdout_start}); the plan sets the ranges"]
         )
     variants = tuple(expand_candle_variants(loaded.run.slippage_bps, loaded.run.strategy.grid))
+    points = tuple((v.name, dict(v.grid_point)) for v in variants)
+    return LoadedStudy(
+        section,
+        run_file,
+        replace(loaded, run=loaded.run.model_copy(update={"to": end})),
+        points,
+        thresholds,
+        _plan(section, run_file, points, (start, end), thresholds),
+        variants=variants,
+    )
+
+
+def _plan(
+    section: StudySection,
+    run_file: Mapping[str, object],
+    points: tuple[GridPoint, ...],
+    development: tuple[date, date],
+    thresholds: Thresholds,
+    days: dict[str, JsonValue] | None = None,
+) -> dict[str, JsonValue]:
+    """The resolved plan ``plan_hash`` covers; ``days`` is a replay study's ``development`` and ``dropped`` lists."""
     plan: dict[str, JsonValue] = {
         "study": _plain(section.model_dump(exclude_none=True)),
         "run_file": _plain(run_file),
-        "grid": [_plain(dict(v.grid_point)) for v in variants],
+        "grid": [_plain(point) for _, point in points],
         "ranges": {
-            "development": [start.isoformat(), end.isoformat()],
+            "development": [development[0].isoformat(), development[1].isoformat()],
             "holdout_start": thresholds.holdout_start.isoformat(),
         },
         "folds": dict(section.folds(thresholds)),
     }
+    if days is not None:
+        plan["days"] = days
+    return plan
+
+
+def replay_points(loaded: LoadedRun) -> tuple[GridPoint, ...]:
+    """A replay study's grid points: ``base`` alone without a grid, else the grid capped at 4 (AC-2)."""
+    grid = loaded.run.strategy.grid
+    return tuple(expand_grid(grid, MAX_REPLAY_GRID_VARIANTS)) if grid else ((BASE, {}),)
+
+
+def _replay_problems(loaded: LoadedRun, entry: StrategyEntry, section: StudySection) -> list[str]:
+    """The replay study rules of AC-2: Tardis only, and ``[study]`` alone sets the entry mode."""
+    run = loaded.run
+    problems: list[str] = []
+    if run.source != "tardis":
+        problems.append('source: a replay study uses free Tardis days only; set source = "tardis"')
+    problems += [
+        f"{table}: entry_mode is set by [study] entry_mode, not here"
+        for table, values in (("strategy.config", run.strategy.config), ("strategy.grid", run.strategy.grid))
+        if "entry_mode" in values
+    ]
+    if entry.default_entry_mode is None and section.entry_mode != TAKER:
+        problems.append(f'study.entry_mode: {run.strategy.name} has no entry_mode setting, so only "taker" is allowed')
+    return problems
+
+
+def _load_replay_study(
+    path: str,
+    data: bytes,
+    section: StudySection,
+    run_file: Mapping[str, object],
+    thresholds: Thresholds,
+    catalog_dir: Path,
+    test_strategies: bool,
+) -> LoadedStudy:
+    """A replay study: the AC-2 and AC-24 checks, then its days in the Tardis catalog, before any write."""
+    loaded = replay_run_from_raw(path, data, run_file, Overrides(), test_strategies=test_strategies, grid_allowed=True)
+    run = loaded.run
+    entry = registry_entry(run.strategy.name, test_strategies=test_strategies)
+    holdout_start = thresholds.holdout_start
+    folds = section.folds(thresholds)
+    needed = folds["first_in_sample_days"] + folds["step_days"]
+    problems = _replay_problems(loaded, entry, section)
+    if run.to >= holdout_start:
+        problems.append(f"to {run.to} reaches into the holdout (from {holdout_start}); the plan sets the ranges")
+    days: list[date] = []
+    try:
+        days = development_days(run.from_, holdout_start)
+    except StudyDaysError as exc:
+        problems.append(str(exc))
+    else:
+        if len(days) < needed:
+            problems.append(f"from {run.from_} gives {len(days)} development days; the folds need at least {needed}")
+    if problems:
+        raise RunFileError(problems)
+    tree = SourceTree(catalog_dir / "tardis", run.instrument_id)
+    missing = tree.missing_manifests(days)
+    if missing:
+        raise MissingDaysError(missing)
+    dropped = dropped_days(days, plan_days(tree, days).skipped)
+    if len(days) - len(dropped) < needed:
+        raise RunFileError(
+            [
+                f"{len(dropped)} development days have gaps in every hour ({', '.join(map(str, dropped))}), "
+                f"which leaves {len(days) - len(dropped)}; the folds need at least {needed}"
+            ]
+        )
+    end = holdout_start - timedelta(days=1)
+    points = replay_points(loaded)
+    day_lists: dict[str, JsonValue] = {
+        "development": [d.isoformat() for d in days],
+        "dropped": [d.isoformat() for d in dropped],
+    }
     return LoadedStudy(
-        section, run_file, replace(loaded, run=loaded.run.model_copy(update={"to": end})), variants, thresholds, plan
+        section,
+        run_file,
+        replace(loaded, run=loaded.run.model_copy(update={"to": end})),
+        points,
+        thresholds,
+        _plan(section, run_file, points, (run.from_, end), thresholds, day_lists),
+        dropped=tuple(dropped),
     )
+
+
+def missing_days_exit(command: str, days: list[date]) -> int:
+    """Print every missing day and the import command that fetches them (AC-24); returns exit 2."""
+    for day in days:
+        print(f"lab {command}: no manifest for {day} in catalog-lab/tardis", file=sys.stderr)
+    print(f"lab {command}: fetch them with: {import_command(days)}", file=sys.stderr)
+    log.error("lab_days_missing", extra={"fields": {"days": [d.isoformat() for d in days]}})
+    return EXIT_MISSING_DAYS
 
 
 class StudyStore(PostgresStore):
@@ -260,7 +413,7 @@ def run_study(settings: LabSettings, study: LoadedStudy, store: StudyStore) -> i
     """``lab study`` after validation: store the study, then run every grid point not yet completed (AC-2, AC-3)."""
     run = study.loaded.run
     entry = registry_entry(run.strategy.name, test_strategies=settings.lab_test_strategies)
-    configs = {v.name: {**run.strategy.config, **v.grid_point} for v in study.variants}
+    configs = {name: {**run.strategy.config, **point} for name, point in study.points}
     frozen = {name: entry.frozen(config) for name, config in configs.items()}
     if any(f is None for f in frozen.values()):
         return _refuse("study", [f"{run.strategy.name} has no trading_core.node module, so it cannot be studied"])
@@ -297,17 +450,69 @@ def run_study(settings: LabSettings, study: LoadedStudy, store: StudyStore) -> i
         stored = _load_study(session, study.section.name)
         assert stored is not None
         done = repository.completed_grid_points(session, stored.id)
-    points = {v.name: i for i, v in enumerate(study.variants)}
-    remaining = [v for v in study.variants if points[v.name] not in done]
+    points = {name: i for i, (name, _) in enumerate(study.points)}
+    remaining = [(name, point) for name, point in study.points if points[name] not in done]
     log.info(
         "lab_study_planned",
-        extra={"fields": {"study": stored.name, "grid_points": len(points), "remaining": [v.name for v in remaining]}},
+        extra={"fields": {"study": stored.name, "grid_points": len(points), "remaining": [n for n, _ in remaining]}},
     )
     if not remaining:
         print(f"lab study: every grid point of {stored.name!r} has completed; run lab holdout {stored.name}")
         return EXIT_OK
+    if isinstance(study.loaded, LoadedRun):
+        assert study.section.entry_mode is not None  # StudySection requires it for replay
+        return _replay_points(
+            settings,
+            study.loaded,
+            stored,
+            store,
+            entry,
+            study.section.entry_mode,
+            [(points[name], point) for name, point in remaining],
+            StudyRole.DEVELOPMENT,
+            study.dropped,
+        )
     context = _context(store, stored, StudyRole.DEVELOPMENT, run.strategy.name, entry.kind, run.instrument_id, points)
-    return backtest(settings, study.loaded, store, variants=remaining, study=context)
+    variants = [v for v in study.variants if points[v.name] not in done]
+    return backtest(settings, study.loaded, store, variants=variants, study=context)
+
+
+def _with_point(loaded: LoadedRun, point: Mapping[str, GridValue]) -> LoadedRun:
+    """The replay run of one grid point: ``[strategy.config]`` plus the point, and no grid (AC-2)."""
+    strategy = loaded.run.strategy.model_copy(update={"config": {**loaded.run.strategy.config, **point}, "grid": {}})
+    return replace(loaded, run=loaded.run.model_copy(update={"strategy": strategy}))
+
+
+def _replay_points(
+    settings: LabSettings,
+    loaded: LoadedRun,
+    stored: StudyRow,
+    store: StudyStore,
+    entry: StrategyEntry,
+    entry_mode: str,
+    points: list[tuple[int, dict[str, GridValue]]],
+    role: StudyRole,
+    dropped: tuple[date, ...],
+) -> int:
+    """Each grid point as its own ``replay()`` call with one ``base`` variant (AC-2, AC-3).
+
+    The study's entry mode becomes the variant's, and stays unset for a strategy with no
+    ``entry_mode`` setting. A failed point fails only itself (exit 1 at the end); an interrupt or
+    missing data stops at once with the replay's own exit code.
+    """
+    run = loaded.run
+    variant = VariantSpec(BASE, run.latency_ms, True, None if entry.default_entry_mode is None else entry_mode)
+    failed = False
+    for index, point in points:
+        context = _context(store, stored, role, run.strategy.name, entry.kind, run.instrument_id, {BASE: index})
+        code = replay(
+            settings, _with_point(loaded, point), store, variants=[variant], study=context, dropped_days=dropped
+        )
+        if code == EXIT_FAILED:
+            failed = True
+        elif code != EXIT_OK:
+            return code
+    return EXIT_FAILED if failed else EXIT_OK
 
 
 def last_complete_day(settings: LabSettings, start: date) -> date | None:
@@ -323,40 +528,55 @@ def last_complete_day(settings: LabSettings, start: date) -> date | None:
     return None
 
 
-def _benchmark_run(path: str, base: LoadedCandleRun, start: date, end: date) -> LoadedCandleRun:
-    """A committed benchmark run file with the study's fees and instrument, over ``start``..``end`` (AC-4)."""
+def _benchmark_run(path: str, market: Market, start: date, end: date) -> LoadedCandleRun:
+    """A committed benchmark run file with the study's instrument and fees, over ``start``..``end`` (AC-4)."""
+    instrument_id, maker_fee, taker_fee = market
     data, raw = read_toml(Path(path))
     merged = dict(raw) | {
-        "instrument_id": base.run.instrument_id,
-        "maker_fee": format(base.run.maker_fee, "f"),
-        "taker_fee": format(base.run.taker_fee, "f"),
+        "instrument_id": instrument_id,
+        "maker_fee": format(maker_fee, "f"),
+        "taker_fee": format(taker_fee, "f"),
     }
     return candle_run_from_raw(path, data, merged, Overrides(from_=start, to=end))
 
 
-def run_holdout(settings: LabSettings, name: str, store: StudyStore) -> int:
-    """``lab holdout`` (AC-4, AC-5): the final grid point once over the holdout, then the benchmarks."""
+def run_holdout(settings: LabSettings, name: str, store: StudyStore, *, today: date) -> int:
+    """``lab holdout`` (AC-4, AC-5): the final grid point once over the holdout, then the benchmarks.
+
+    ``today`` is the current UTC date (the CLI passes it); a replay study's holdout days end before it (AC-24).
+    """
     with store.session() as session:
         stored = _load_study(session, name)
     if stored is None:
         return _refuse("holdout", [f"no study called {name!r}"])
     with store.lock(stored.id):
-        return _holdout_locked(settings, stored, store)
+        return _holdout_locked(settings, stored, store, today)
 
 
-def _holdout_locked(settings: LabSettings, stored: StudyRow, store: StudyStore) -> int:
+def _holdout_locked(settings: LabSettings, stored: StudyRow, store: StudyStore, today: date) -> int:
     plan: Mapping[str, object] = stored.plan
     run_file = plan["run_file"]
     grid = plan["grid"]
     assert isinstance(run_file, Mapping)
     assert isinstance(grid, list)
     thresholds = Thresholds.from_json(stored.thresholds)
-    base = candle_run_from_raw(f"study:{stored.name}", canonical_json(run_file).encode(), run_file, Overrides())
-    variants = expand_candle_variants(base.run.slippage_bps, base.run.strategy.grid)
+    source, data = f"study:{stored.name}", canonical_json(run_file).encode()
+    base: LoadedCandleRun | LoadedRun
+    if stored.lab == StudyLab.REPLAY:
+        base = replay_run_from_raw(
+            source, data, run_file, Overrides(), test_strategies=settings.lab_test_strategies, grid_allowed=True
+        )
+        points = list(replay_points(base))
+        variants: list[CandleVariantSpec] = []
+    else:
+        base = candle_run_from_raw(source, data, run_file, Overrides())
+        variants = expand_candle_variants(base.run.slippage_bps, base.run.strategy.grid)
+        points = [(v.name, dict(v.grid_point)) for v in variants]
+    market: Market = (base.run.instrument_id, base.run.maker_fee, base.run.taker_fee)
     entry = registry_entry(base.run.strategy.name, test_strategies=settings.lab_test_strategies)
     with store.session() as session:
         done = repository.completed_grid_points(session, stored.id)
-        missing = [v.name for i, v in enumerate(variants) if i not in done]
+        missing = [name for i, (name, _) in enumerate(points) if i not in done]
         if missing:
             return _refuse("holdout", [f"grid points without a completed development run: {', '.join(missing)}"])
         final = repository.final_grid_point(session, stored.id)
@@ -365,18 +585,24 @@ def _holdout_locked(settings: LabSettings, stored: StudyRow, store: StudyStore) 
         own = repository.study_holdout(session, stored.id)
         spent = own is None and repository.holdout_spent(session, final_hash)
         have = repository.completed_benchmarks(session, stored.id)
-    todo = [n for n in benchmark_names(entry.kind, base.run.strategy.name) if n not in have]
+    studied = base.run.strategy.name
+    todo = [n for n in benchmark_names(entry.kind, studied) if n not in have]
     start = thresholds.holdout_start
     if own is not None:
-        return _resume_benchmarks(settings, stored, store, base, entry.kind, final_hash, own, todo)
+        return _resume_benchmarks(settings, stored, store, market, studied, entry.kind, final_hash, own, todo)
     if spent:
         return _refuse("holdout", [f"frozen version {final_hash[:12]} already spent its holdout"])
-    variant = variants[final]
-    frozen = entry.frozen({**base.run.strategy.config, **variant.grid_point})
+    point = points[final][1]
+    frozen = entry.frozen({**base.run.strategy.config, **point})
     if frozen is None or frozen.frozen_hash != final_hash:
         return _refuse(
             "holdout", ["the strategy's code or engine changed since its development runs; start a new study"]
         )
+    if isinstance(base, LoadedRun):
+        section = StudySection.model_validate(plan["study"])
+        assert section.entry_mode is not None  # StudySection requires it for replay
+        return _replay_holdout(settings, stored, store, base, entry, section.entry_mode, final, point, todo, today)
+    variant = variants[final]
     end = last_complete_day(settings, thresholds.holdout_start)
     if end is None or end < thresholds.holdout_start:
         return _refuse(
@@ -399,14 +625,63 @@ def _holdout_locked(settings: LabSettings, stored: StudyRow, store: StudyStore) 
     code = backtest(settings, holdout, store, variants=[variant], study=context)
     if code != EXIT_OK:
         return code
-    return _run_benchmarks(settings, stored, store, base, entry.kind, todo, start, end)
+    return _run_benchmarks(settings, stored, store, market, studied, entry.kind, todo, start, end)
+
+
+def _replay_holdout(
+    settings: LabSettings,
+    stored: StudyRow,
+    store: StudyStore,
+    base: LoadedRun,
+    entry: StrategyEntry,
+    entry_mode: str,
+    final: int,
+    point: dict[str, GridValue],
+    todo: list[str],
+    today: date,
+) -> int:
+    """A replay study's holdout (AC-24): the final grid point once over the holdout days, then the benchmarks.
+
+    The holdout days are every 1st of the month from ``holdout_start`` to the latest one before
+    ``today``; a missing one exits 2 before any run, and one gapped in every hour is dropped. The
+    benchmarks run as candle runs over ``holdout_start``..the last holdout day.
+    """
+    start = Thresholds.from_json(stored.thresholds).holdout_start
+    days = holdout_days(start, today)
+    if not days:
+        return _refuse("holdout", [f"no holdout day yet: the first is the 1st of the month after {start}"])
+    tree = SourceTree(settings.lab_catalog_dir / "tardis", base.run.instrument_id)
+    missing = tree.missing_manifests(days)
+    if missing:
+        return missing_days_exit("holdout", missing)
+    dropped = tuple(dropped_days(days, plan_days(tree, days).skipped))
+    holdout = replace(base, run=base.run.model_copy(update={"from_": start, "to": days[-1]}))
+    log.info(
+        "lab_holdout_planned",
+        extra={
+            "fields": {
+                "study": stored.name,
+                "grid_point": final,
+                "days": [d.isoformat() for d in days],
+                "dropped": [d.isoformat() for d in dropped],
+            }
+        },
+    )
+    code = _replay_points(
+        settings, holdout, stored, store, entry, entry_mode, [(final, point)], StudyRole.HOLDOUT, dropped
+    )
+    if code != EXIT_OK:
+        return code
+    market: Market = (base.run.instrument_id, base.run.maker_fee, base.run.taker_fee)
+    return _run_benchmarks(settings, stored, store, market, base.run.strategy.name, entry.kind, todo, start, days[-1])
 
 
 def _resume_benchmarks(
     settings: LabSettings,
     stored: StudyRow,
     store: StudyStore,
-    base: LoadedCandleRun,
+    market: Market,
+    studied: str,
     kind: StrategyKind,
     final_hash: str,
     own: tuple[str, datetime | None],
@@ -433,14 +708,15 @@ def _resume_benchmarks(
         "lab_holdout_resumed",
         extra={"fields": {"study": stored.name, "benchmarks": todo, "range": [str(start), str(end)]}},
     )
-    return _run_benchmarks(settings, stored, store, base, kind, todo, start, end)
+    return _run_benchmarks(settings, stored, store, market, studied, kind, todo, start, end)
 
 
 def _run_benchmarks(
     settings: LabSettings,
     stored: StudyRow,
     store: StudyStore,
-    base: LoadedCandleRun,
+    market: Market,
+    studied: str,
     kind: StrategyKind,
     names: list[str],
     start: date,
@@ -451,7 +727,7 @@ def _run_benchmarks(
     Any failed benchmark exits 1 (AC-5), whatever the backtest's own code (2 for missing candles, for example).
     """
     for name in names:
-        bench = _benchmark_run(BENCHMARK_FILES[name], base, start, end)
+        bench = _benchmark_run(BENCHMARK_FILES[name], market, start, end)
         bench_entry = registry_entry(name)
         bench_variant = CandleVariantSpec("base", bench.run.slippage_bps)
         context = _context(
@@ -462,7 +738,7 @@ def _run_benchmarks(
             bench_entry.kind,
             bench.run.instrument_id,
             {bench_variant.name: None},
-            studied=(base.run.strategy.name, kind),
+            studied=(studied, kind),
         )
         code = backtest(settings, bench, store, variants=[bench_variant], study=context)
         if code != EXIT_OK:

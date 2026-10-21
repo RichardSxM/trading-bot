@@ -1,4 +1,4 @@
-"""covers: spec 0008 AC-1 (Tardis day import) and AC-2 (catalog cap, prune).
+"""covers: spec 0008 AC-1 (Tardis day import) and AC-2 (catalog cap, prune), spec 0016 (off tick trades).
 
 The CSV files are tiny synthetic days in Tardis's real column layout, so every row is known: a
 first snapshot block near the end of hour 00, a second block 80 ms after an update in hour 01
@@ -82,7 +82,7 @@ def _csv(path, header, rows):
             fh.write(",".join(str(v) for v in row) + "\n")
 
 
-def write_day(raw_dir, *, price_text=None):
+def write_day(raw_dir, *, price_text=None, trade_price_text=None, trade_size_text=None):
     """The three CSV files of the synthetic day in ``raw_dir``."""
     book = []
     for local, snapshot, levels in BOOK:
@@ -100,6 +100,16 @@ def write_day(raw_dir, *, price_text=None):
         [
             (*VENUE, us(0, 59, 52) - 5000, us(0, 59, 52), "t1", "buy", 101, "0.1"),
             (*VENUE, us(1, 0, 5) - 5000, us(1, 0, 5), "t2", "sell", 100, "0.2"),
+            *(
+                [(*VENUE, us(1, 0, 6) - 5000, us(1, 0, 6), "t3", "buy", trade_price_text, "0.0004")]
+                if trade_price_text is not None
+                else []
+            ),
+            *(
+                [(*VENUE, us(1, 0, 7) - 5000, us(1, 0, 7), "t4", "buy", 100, trade_size_text)]
+                if trade_size_text is not None
+                else []
+            ),
         ],
     )
     funding = 1_788_224_400_000_000  # 01:00
@@ -235,6 +245,37 @@ def test_a_day_killed_before_its_manifest_converts_again_to_the_same_bytes(tmp_p
 
 def test_a_price_off_the_tick_refuses_the_day(tmp_path, caplog):
     assert import_tardis(settings(tmp_path), [DAY], download=Downloads(price_text="99.5")) == EXIT_FAILED
+
+    assert not tree(tmp_path).manifest_file(DAY).exists()
+    assert "lab_tick_mismatch" in [r.getMessage() for r in caplog.records]
+
+
+def test_a_trade_price_off_the_tick_drops_only_that_trade(tmp_path, caplog):
+    caplog.set_level(logging.INFO)
+    downloads = Downloads(trade_price_text="27567.42278253538")
+
+    assert import_tardis(settings(tmp_path), [DAY], download=downloads) == EXIT_OK
+
+    t = tree(tmp_path)
+    assert t.manifest_file(DAY).is_file()
+    assert [pq.read_table(t.hour_file(TRADES_TABLE, hour)).num_rows for hour in (H00, H01)] == [1, 1]
+    warned = next(r for r in caplog.records if r.getMessage() == "lab_off_tick_trades_dropped")
+    assert (warned.fields["rows"], warned.fields["prices"]) == (1, ["27567.42278253538"])
+    done = next(r for r in caplog.records if r.getMessage() == "lab_import_day_done")
+    assert done.fields["off_tick_trades"] == 1
+
+
+def test_a_clean_day_drops_no_trade(tmp_path, caplog):
+    caplog.set_level(logging.INFO)
+    import_tardis(settings(tmp_path), [DAY], download=Downloads())
+
+    assert "lab_off_tick_trades_dropped" not in [r.getMessage() for r in caplog.records]
+    done = next(r for r in caplog.records if r.getMessage() == "lab_import_day_done")
+    assert done.fields["off_tick_trades"] == 0
+
+
+def test_a_trade_size_off_the_lot_still_refuses_the_day(tmp_path, caplog):
+    assert import_tardis(settings(tmp_path), [DAY], download=Downloads(trade_size_text="0.00005")) == EXIT_FAILED
 
     assert not tree(tmp_path).manifest_file(DAY).exists()
     assert "lab_tick_mismatch" in [r.getMessage() for r in caplog.records]

@@ -60,6 +60,18 @@ The first `/check verify` found three gaps, each decided with you on 2026-10-19:
 - **Benchmarks counted as trials.** N and the dashboard trial count took every `study_runs` row, so a 2 point study showed 3 trials and the deflated Sharpe got stricter for no reason. Chosen: count only `development` and `holdout` rows. Runner up: keep counting and document it, which would penalise every study by one or two phantom trials.
 - **A baseline was judged against itself.** In a study of `macd_baseline`, its own benchmark equals the default grid point, so `beats_macd_baseline` could never pass. Chosen: skip the self benchmark run and mark that check not applicable. Runner up: baselines stay reference only and never promote, which is stricter but would make the happy path study in the test scenarios unable to pass by design.
 
+### Replay studies (2026-10-20 amendment, task 12)
+
+Building task 12 hit three gaps. AC-2 said a study is its run file verbatim, but replay run files have no grid. A replay run reads one `source`, but the plan picked days from "Tardis and recorder days". And the laptop held no replay day before `holdout_start`. Free Tardis data is only the 1st of each month (PF_XBTUSD since 2022-03-22), so there are at most 43 development days and 12 holdout days so far. A replay costs about 28 minutes per day per grid point.
+
+- **Days: every 1st of the month from 2022-04-01 (chosen).** That is 43 days, exactly 15 + 4 × 7, so the default folds give 4 walk forward steps with nothing dropped, and they span the 2022 bear market and the 2024 bull market. Runner up: the last 29 days (from 2023-06-01, 2 folds, about 7 h per grid point). It is cheaper, but 2 folds can't tell a stable strategy from a lucky one. The last 22 days give only 1 fold, which makes walk forward meaningless. A study may still start later through its own `from`, down to one fold (22 days).
+- **One source, Tardis only (chosen).** Development can only be Tardis, because the recorder started in October 2026. Adding recorder days to the holdout alone would judge the final version on a different feed (our own capture, with liquidations) from the one it was chosen on, so a gap between lab and holdout could come from the feed rather than the strategy. Runner up: a holdout of Tardis days plus recorder days, which gives far more holdout days but breaks like for like. Recorder days stay for paper parity, where they matter most.
+- **Grid capped at 4 for replay (chosen).** It is the same `[strategy.grid]` as candle, so AC-2's "verbatim" holds, but at 10 h per grid point, 16 points would take a week of laptop time. Fewer points also keep the deflated Sharpe trial count low. Runner up: no replay grid at all (one config per study). That is simpler, but every variation becomes a new study and still counts as a trial.
+- **Missing days are refused, never skipped (chosen).** The day set is a rule fixed before any result, so what happens to be downloaded can't shape a study. Skipping would quietly let it.
+- **Holdout ends at the latest 1st of the month before today (chosen),** not at the newest day in the catalog, for the same reason: forgetting an import should stop the run, not shorten the holdout.
+- **A day with no clean hour is dropped by rule, at plan time (chosen after the cross check).** Its gap file is known before any run, so dropping it can't be steered by results. Refusing would block a study forever over one dead Tardis day. Letting it vanish silently mid run would quietly lose a fold. The dropped days are recorded in the plan.
+- **Base variant only.** Latency sweeps, queue bounds, and paired entries stay as `lab replay` probes. In a study they would multiply runtime for numbers the gate never reads.
+
 ### Threshold provenance (v1, fixed 2026-10-19 before any candidate result)
 
 | Threshold | Value | Why |
@@ -71,6 +83,6 @@ The first `/check verify` found three gaps, each decided with you on 2026-10-19:
 | Trade floor | 200 replay, 60 candle | Scalpers reach 200 cheaply; hour level makes about 50 to 150 a year |
 | Concentration | 60% | Allows one sided strength, catches one month or a few lucky trades |
 | Paper | 30 days, 100 or 20 trades, fill rate ±25%, slippage +2 bps | A few regimes and a maintenance window; drift bounds loose enough for a 30 day sample |
-| Holdout | 12 months from 2025-10-19; replay: those Tardis days plus every recorder day | One full year of regimes and funding; recorder days are closest to live |
+| Holdout | 12 months from 2025-10-19; replay: the Tardis 1st of the month days only (amended 2026-10-20, recorder days dropped) | One full year of regimes and funding; one feed for development and holdout (see the 2026-10-20 amendment) |
 | CSCV blocks | 10 | 252 splits; replay blocks are still about 4 days |
 | Bootstrap | Politis and White mean block (at least 5 days), 10,000 resamples, seeded | Trades and days cluster, so treating them as independent overstates confidence |

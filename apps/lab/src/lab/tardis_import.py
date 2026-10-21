@@ -17,6 +17,7 @@ The manifest is written last, as the day's commit point; then the CSV files go. 
 manifest is converted again from scratch, to the same bytes.
 """
 
+import gzip
 import json
 import logging
 import shutil
@@ -279,6 +280,12 @@ def import_day(tree: SourceTree, day: date, *, download: Downloader = download_d
         raw_dir.mkdir(parents=True)
         download(day, raw_dir)
     check_ticks(instrument, raw_file(raw_dir, BOOK_CSV, day), raw_file(raw_dir, TRADES_CSV, day))
+    dropped = drop_off_tick_trades(instrument, raw_file(raw_dir, TRADES_CSV, day))
+    if dropped:
+        log.warning(
+            "lab_off_tick_trades_dropped",
+            extra={"fields": {"day": day.isoformat(), "rows": dropped.rows, "prices": dropped.prices[:3]}},
+        )
     loader = TardisCSVDataLoader(
         price_precision=instrument.price_precision,
         size_precision=instrument.size_precision,
@@ -304,6 +311,7 @@ def import_day(tree: SourceTree, day: date, *, download: Downloader = download_d
                 "gaps": len(counts.gaps),
                 "snapshot_diffs": counts.snapshot_diffs,
                 "late_rows": sum(n for hours in counts.incomplete.values() for n in hours.values()),
+                "off_tick_trades": dropped.rows,
             }
         },
     )
@@ -325,19 +333,62 @@ def _remove_hours(tree: SourceTree, day: date, tables: Iterable[str]) -> None:
 
 
 def check_ticks(instrument: CryptoPerpetual, book_csv: Path, trades_csv: Path) -> None:
-    """Refuse a day whose prices or sizes are not multiples of the pinned increments (no rounding).
+    """Refuse a day whose book prices, or any sizes, are not multiples of the pinned increments (no rounding).
 
     The loader would round them to the instrument's precision silently, so the raw CSV text is
-    checked first.
+    checked first. A trade price off the tick is not refused here: ``drop_off_tick_trades`` removes
+    those rows (spec 0016, assumed).
     """
     price_step = instrument.price_increment.as_decimal()
     size_step = instrument.size_increment.as_decimal()
     for path in (book_csv, trades_csv):
-        prices, sizes = _distinct(path, "price"), _distinct(path, "amount")
-        bad = [f"price {p}" for p in sorted(prices) if Decimal(p) % price_step]
-        bad += [f"size {s}" for s in sorted(sizes) if Decimal(s) % size_step]
+        bad = [f"price {p}" for p in _off_step(_distinct(path, "price"), price_step)] if path == book_csv else []
+        bad += [f"size {s}" for s in _off_step(_distinct(path, "amount"), size_step)]
         if bad:
             raise TickMismatchError(f"{path.name}: {len(bad)} values off the tick, such as {', '.join(bad[:3])}")
+
+
+@dataclass(frozen=True)
+class DroppedTrades:
+    """The trade rows ``drop_off_tick_trades`` removed: how many, and their distinct prices."""
+
+    rows: int = 0
+    prices: list[str] = field(default_factory=list)
+
+    def __bool__(self) -> bool:
+        return self.rows > 0
+
+
+def drop_off_tick_trades(instrument: CryptoPerpetual, trades_csv: Path) -> DroppedTrades:
+    """Remove the trade rows whose price is off the pinned tick, rewriting the CSV in place (spec 0016, assumed).
+
+    From 2023-10 Kraken's trade feed carries a few bursts a day of tiny fills at one computed price
+    (such as 27567.42278253538), never a price the book could show. Rounding would invent a price,
+    so the rows go; every other value is kept as its original text. The rewrite goes through a
+    temporary name, so a killed run leaves the original or the filtered file, never half of one.
+    """
+    off = _off_step(_distinct(trades_csv, "price"), instrument.price_increment.as_decimal())
+    if not off:
+        return DroppedTrades()
+    with pa.input_stream(trades_csv, compression="gzip") as source:
+        table = pacsv.read_csv(source, convert_options=pacsv.ConvertOptions(column_types=_all_text(trades_csv)))
+    keep = pc.invert(pc.is_in(table.column("price"), value_set=pa.array(off, pa.string())))
+    kept = table.filter(keep)
+    tmp = trades_csv.with_name(trades_csv.name + TMP_SUFFIX)
+    with pa.output_stream(tmp, compression="gzip") as sink:
+        pacsv.write_csv(kept, sink, write_options=pacsv.WriteOptions(quoting_style="none"))
+    tmp.replace(trades_csv)
+    return DroppedTrades(table.num_rows - kept.num_rows, off)
+
+
+def _off_step(values: set[str], step: Decimal) -> list[str]:
+    return [v for v in sorted(values) if Decimal(v) % step]
+
+
+def _all_text(path: Path) -> dict[str, pa.DataType]:
+    with gzip.open(path, "rt") as source:
+        header = source.readline().strip().split(",")
+    return dict.fromkeys(header, pa.string())
 
 
 def _distinct(path: Path, column: str) -> set[str]:

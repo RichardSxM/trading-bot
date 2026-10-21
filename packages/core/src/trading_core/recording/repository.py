@@ -10,12 +10,12 @@ calls ``report_conflict`` with a fresh session, and fails closed.
 import hashlib
 import time
 import uuid
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Final
+from typing import Final, Protocol, cast
 from uuid import UUID
 
 from sqlalchemy import ColumnElement, Engine, Table, and_, func, select, text, update
@@ -1099,15 +1099,43 @@ def _ensure_strategy(session: Session, name: str, kind: StrategyKind) -> UUID:
     return strategy.id
 
 
-def import_run_bundle(session: Session, bundle: RunBundle) -> bool:
+class BundleRows(Protocol):
+    """A bundle's row lists, one part at a time (``bundle_codec.BundleFile`` streams them from a file)."""
+
+    def rows[T](self, part: str, cls: type[T]) -> Iterable[T]:
+        """Each row of the bundle's ``part`` list."""
+        ...
+
+
+@dataclass(frozen=True)
+class _HeldRows:
+    """The row lists of a bundle already in memory."""
+
+    bundle: RunBundle
+
+    def rows[T](self, part: str, cls: type[T]) -> Iterable[T]:
+        return cast(Sequence[T], getattr(self.bundle, part))
+
+
+class _RunChild(Protocol):
+    @property
+    def run_id(self) -> UUID | None: ...
+    @property
+    def env(self) -> Env: ...
+
+
+def import_run_bundle(session: Session, bundle: RunBundle, rows: BundleRows | None = None) -> bool:
     """Write a lab bundle on the VPS (spec 0015 AC-7) in the caller's transaction; returns True when its run is new.
 
-    Every row goes through ``_insert_or_compare``, so importing the same file again adds nothing, and a
-    stored row with other content raises ``RecordConflictError``. The laptop's strategy ids are mapped to
-    the VPS strategy of the same name; the version keeps the laptop's id and ``git_commit``. Validation of
-    env, mode, and trader is the caller's (``gate import``); this raises ``InvalidModeError`` for a paper or
-    live run, ``ForeignRunError`` for a foreign row, and ``MissingParentError`` when the bundle lacks its
-    strategy, version, or instrument.
+    ``rows`` streams the row lists when ``bundle`` holds only the rest (a large file read by
+    ``BundleFile``); without it the lists come from ``bundle``. Rows are checked as they are written, so
+    on any error the caller rolls the transaction back. Every row goes through ``_insert_or_compare``, so
+    importing the same file again adds nothing, and a stored row with other content raises
+    ``RecordConflictError``. The laptop's strategy ids are mapped to the VPS strategy of the same name;
+    the version keeps the laptop's id and ``git_commit``. Validation of env, mode, and trader is the
+    caller's (``gate import``); this raises ``InvalidModeError`` for a paper or live run,
+    ``ForeignRunError`` for a foreign row, and ``MissingParentError`` when the bundle lacks its strategy,
+    version, or instrument, or carries fills or events for orders it does not carry.
     """
     run = bundle.run
     if run.mode not in SIM_MODES:
@@ -1119,37 +1147,52 @@ def import_run_bundle(session: Session, bundle: RunBundle) -> bool:
         raise MissingParentError(f"run bundle {run.id} carries no instrument")
     if bundle.version.id != run.strategy_version_id:
         raise ForeignRunError(f"run bundle {run.id}: its version {bundle.version.id} is not the run's")
-    order_ids = _bundle_order_ids(
-        bundle, [e.client_order_id for e in bundle.order_events] + [f.client_order_id for f in bundle.fills]
-    )
+    source: BundleRows = _HeldRows(bundle) if rows is None else rows
+
+    def each[R: _RunChild](part: str, cls: type[R]) -> Iterator[R]:
+        for row in source.rows(part, cls):
+            if (row.run_id, row.env) != (run.id, run.env):
+                raise ForeignRunError(
+                    f"run bundle {run.id} ({run.env}) carries a {part} row of {row.run_id} ({row.env})"
+                )
+            yield row
+
+    order_ids: dict[str, UUID] = {}
+
+    def order_id(client_order_id: str) -> UUID:
+        if client_order_id not in order_ids:
+            raise MissingParentError(f"run bundle has fills or events for orders it does not carry: {client_order_id}")
+        return order_ids[client_order_id]
+
     upsert_instrument(session, bundle.instrument)
     strategy_id = _ensure_strategy(session, bundle.strategy_name, bundle.strategy_kind)
     _insert_or_compare(
         session, models.StrategyVersion, column_values(bundle.version) | {"strategy_id": strategy_id}, ["id"]
     )
     new = _insert_or_compare(session, models.StrategyRun, column_values(run), ["id"])
-    for result in bundle.results:
+    for result in each("results", RunResultRow):
         _insert_or_compare(session, models.RunResult, column_values(result), ["run_id", "sample"])
-    for stats in bundle.fill_stats:
+    for stats in each("fill_stats", RunFillStatsRow):
         _insert_or_compare(session, models.RunFillStats, column_values(stats), ["run_id", "liquidity"])
-    for decision in bundle.decisions:
+    for decision in each("decisions", DecisionRow):
         _insert_or_compare(session, models.Decision, column_values(decision), ["id"])
-    for order in bundle.orders:
+    for order in each("orders", OrderRow):
         _insert_or_compare(session, models.Order, column_values(order), ["run_id", "client_order_id"])
-    for event in bundle.risk_events:
+        order_ids[order.client_order_id] = order.id
+    for event in each("risk_events", RiskEventRow):
         _insert_or_compare(session, models.RiskEvent, column_values(event), ["env", "event_key"])
-    for order_event in bundle.order_events:
-        values = column_values(order_event) | {"order_id": order_ids[order_event.client_order_id]}
+    for order_event in each("order_events", OrderEventRow):
+        values = column_values(order_event) | {"order_id": order_id(order_event.client_order_id)}
         _insert_or_compare(session, models.OrderEvent, values, ["order_id", "event_id"])
-    for position in bundle.positions:
+    for position in each("positions", PositionRow):
         _insert_or_compare(session, models.Position, column_values(position), ["run_id", "position_ref", "opened_ns"])
-    for fill in bundle.fills:
-        values = column_values(fill) | {"order_id": order_ids[fill.client_order_id]}
+    for fill in each("fills", FillRow):
+        values = column_values(fill) | {"order_id": order_id(fill.client_order_id)}
         _insert_or_compare(session, models.Fill, values, ["run_id", "trade_id"])
-    for payment in bundle.funding:
+    for payment in each("funding", FundingRow):
         key, where = _FUNDING_KEYS[payment.source]
         _insert_or_compare(session, models.FundingPayment, column_values(payment), key, where)
-    for day in bundle.daily_equity:
+    for day in each("daily_equity", DailyEquityRow):
         _insert_or_compare(session, models.RunDailyEquity, column_values(day), ["run_id", "day"])
     if bundle.measures is not None:
         _insert_or_compare(session, models.RunMeasures, column_values(bundle.measures), ["run_id"])

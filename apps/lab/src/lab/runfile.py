@@ -6,7 +6,7 @@ problem is collected so a bad file is fixed in one pass (exit 64, AC-3).
 
 import hashlib
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
@@ -24,7 +24,7 @@ from lab.strategies import (
 )
 from trading_core.lab.candles import CANDLE_RANGE_FLOOR
 from trading_core.lab.parity import PaperStrategy, ParityInputError, paper_config
-from trading_core.lab.variants import MAX_GRID_VARIANTS, expand_candle_variants, grid_size
+from trading_core.lab.variants import MAX_GRID_VARIANTS, MAX_REPLAY_GRID_VARIANTS, expand_grid, grid_size
 from trading_core.node.placeholder import STRATEGY_NAME as PLACEHOLDER
 from trading_core.recording.enums import StrategyKind
 from trading_core.risk.check import RiskLimits
@@ -120,10 +120,14 @@ class ContextSection(_Section):
 
 
 class StrategySection(_Section):
-    """Which registered strategy to run, and its own settings."""
+    """Which registered strategy to run, its own settings, and an optional grid of them.
+
+    A grid runs only in ``lab backtest`` (spec 0014 AC-7) and ``lab study`` (spec 0015 AC-2).
+    """
 
     name: str
     config: dict[str, ConfigValue] = Field(default_factory=dict)
+    grid: dict[str, list[ConfigValue]] = Field(default_factory=dict)
 
 
 class RunFile(_Section):
@@ -164,8 +168,8 @@ class RunFile(_Section):
             return self
         if self.strategy.name != PLACEHOLDER:
             raise ValueError(f'[paper] is only for strategy.name = "{PLACEHOLDER}"')
-        if self.risk is not None or self.strategy.config:
-            raise ValueError("[paper] replaces [risk] and [strategy.config]; remove them")
+        if self.risk is not None or self.strategy.config or self.strategy.grid:
+            raise ValueError("[paper] replaces [risk], [strategy.config], and [strategy.grid]; remove them")
         return self
 
     def paper_strategy(self) -> PaperStrategy | None:
@@ -248,22 +252,35 @@ def _location(loc: tuple[int | str, ...]) -> str:
 def load_run(path: Path, overrides: Overrides, *, test_strategies: bool = False) -> LoadedRun:
     """Read, override, and validate a run file, including its strategy's own config.
 
-    ``test_strategies`` also accepts the test only strategies (``LAB_TEST_STRATEGIES=1``).
-    Raises ``RunFileError`` listing every problem found.
+    ``test_strategies`` also accepts the test only strategies (``LAB_TEST_STRATEGIES=1``). A grid is
+    refused, because it runs only in ``lab study`` (spec 0015 AC-2). Raises ``RunFileError`` listing
+    every problem found.
+    """
+    data, raw = read_toml(path)
+    return replay_run_from_raw(str(path), data, raw, overrides, test_strategies=test_strategies)
+
+
+def replay_run_from_raw(
+    path: str,
+    data: bytes,
+    raw: Mapping[str, object],
+    overrides: Overrides,
+    *,
+    test_strategies: bool = False,
+    grid_allowed: bool = False,
+) -> LoadedRun:
+    """Validate parsed replay run file tables (``load_run`` after reading, or a study's run file).
+
+    ``grid_allowed`` is set only by ``lab study``, which checks the grid against the replay cap of
+    ``MAX_REPLAY_GRID_VARIANTS`` (spec 0015 AC-2). Raises ``RunFileError`` listing every problem found.
     """
     try:
-        data = path.read_bytes()
-    except OSError as exc:
-        raise RunFileError([f"{path}: cannot read ({exc.strerror})"]) from None
-    try:
-        raw = tomllib.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
-        raise RunFileError([f"{path}: not valid TOML ({exc})"]) from None
-    try:
-        run = RunFile.model_validate(_apply(raw, overrides))
+        run = RunFile.model_validate(_apply(dict(raw), overrides))
     except ValidationError as exc:
         problems = [f"{_location(e['loc'])}: {e['msg']}" for e in exc.errors(include_url=False, include_input=False)]
         raise RunFileError(problems) from None
+    if run.strategy.grid and not grid_allowed:
+        raise RunFileError(["strategy.grid: a grid runs only in `lab study`"])
     try:
         entry = registry_entry(run.strategy.name, test_strategies=test_strategies)
     except StrategyConfigError as exc:
@@ -276,7 +293,10 @@ def load_run(path: Path, overrides: Overrides, *, test_strategies: bool = False)
         entry.check_config(values)
     except StrategyConfigError as exc:
         raise RunFileError([f"strategy.config: {p}" for p in exc.problems]) from None
-    return LoadedRun(path=str(path), sha256=hashlib.sha256(data).hexdigest(), run=run, overrides=overrides.as_dict())
+    problems = _grid_problems(entry, run.strategy, MAX_REPLAY_GRID_VARIANTS)
+    if problems:
+        raise RunFileError(problems)
+    return LoadedRun(path=path, sha256=hashlib.sha256(data).hexdigest(), run=run, overrides=overrides.as_dict())
 
 
 # The candle lab's run file (spec 0014, *Run file*) ---------------------------------------------
@@ -286,12 +306,6 @@ class CandleContextSection(ContextSection):
     """``[context]`` of a candle run: a funding rate stays fresh for one 4 h period plus 1 h (spec 0014 AC-13)."""
 
     max_age_funding_s: int = Field(default=18_000, ge=1)
-
-
-class CandleStrategySection(StrategySection):
-    """The strategy, its own settings, and an optional grid of them (spec 0014 AC-7)."""
-
-    grid: dict[str, list[ConfigValue]] = Field(default_factory=dict)
 
 
 class ParitySection(_Section):
@@ -317,7 +331,7 @@ class CandleRunFile(_Section):
     leverage: DecimalStr = Field(gt=0)
     risk: RiskSection
     context: CandleContextSection = Field(default_factory=CandleContextSection)
-    strategy: CandleStrategySection
+    strategy: StrategySection
     parity: ParitySection | None = None
 
     @model_validator(mode="after")
@@ -352,9 +366,15 @@ class LoadedCandleRun:
     overrides: Mapping[str, str | int] = field(default_factory=dict)
 
 
-def _grid_problems(entry: StrategyEntry, strategy: CandleStrategySection) -> list[str]:
-    # AC-7: grid keys are the strategy's own settings not also in [strategy.config], every list has
-    # a value, at most MAX_GRID_VARIANTS points, and each point builds the strategy with a valid bar_spec.
+def _grid_problems(
+    entry: StrategyEntry,
+    strategy: StrategySection,
+    cap: int,
+    point_problem: Callable[[dict[str, ConfigValue]], str | None] | None = None,
+) -> list[str]:
+    # Spec 0014 AC-7, spec 0015 AC-2: grid keys are the strategy's own settings not also in
+    # [strategy.config], every list has a value, at most ``cap`` points, and each point builds the
+    # strategy (and passes ``point_problem``, the candle lab's bar_spec check).
     grid = strategy.grid
     allowed = entry.user_fields()
     problems = [
@@ -369,20 +389,20 @@ def _grid_problems(entry: StrategyEntry, strategy: CandleStrategySection) -> lis
     ]
     problems += [f"strategy.grid: {key} must list at least one value" for key in sorted(grid) if not grid[key]]
     size = grid_size(grid)
-    if size > MAX_GRID_VARIANTS:
-        problems.append(f"strategy.grid: gives {size} variants, at most {MAX_GRID_VARIANTS} are allowed")
+    if size > cap:
+        problems.append(f"strategy.grid: gives {size} variants, at most {cap} are allowed")
     if problems or not grid:
         return problems
-    for variant in expand_candle_variants(Decimal(0), grid):
-        point = {**strategy.config, **variant.grid_point}
+    for name, grid_point in expand_grid(grid, cap):
+        point = {**strategy.config, **grid_point}
         try:
             entry.check_strategy(point)
-            bar_problem = bar_spec_problem(entry.config_value(point, "bar_spec"))
+            problem = None if point_problem is None else point_problem(point)
         except StrategyConfigError as exc:
-            problems += [f"strategy.grid {variant.name} {dict(variant.grid_point)}: {p}" for p in exc.problems]
+            problems += [f"strategy.grid {name} {grid_point}: {p}" for p in exc.problems]
             continue
-        if bar_problem is not None:
-            problems.append(f"strategy.grid {variant.name} {dict(variant.grid_point)}: {bar_problem}")
+        if problem is not None:
+            problems.append(f"strategy.grid {name} {grid_point}: {problem}")
     return problems
 
 
@@ -431,7 +451,12 @@ def candle_run_from_raw(
     bar_problem = bar_spec_problem(bar_spec)
     if bar_problem is not None:
         issues.append(f"strategy.config: {bar_problem}")
-    issues += _grid_problems(entry, run.strategy)
+    issues += _grid_problems(
+        entry,
+        run.strategy,
+        MAX_GRID_VARIANTS,
+        lambda point: bar_spec_problem(entry.config_value(point, "bar_spec")),
+    )
     if issues:
         raise RunFileError(issues)
     return LoadedCandleRun(

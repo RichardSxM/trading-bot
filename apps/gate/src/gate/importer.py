@@ -3,7 +3,8 @@
 A file is refused whole unless every run in it is a demo ``backtest`` or ``replay`` run by
 ``BACKTESTER-LAB`` whose version carries both frozen hashes, so a lab file can never create a paper or
 live row. A refused file is reported and the others still load. Importing the same files again adds
-nothing; a row stored with other content refuses that file (``RecordConflictError``).
+nothing; a row stored with other content refuses that file (``RecordConflictError``). A file is read
+in parts (``BundleFile``), so a replay study's bundle of hundreds of MB fits the gate's memory.
 """
 
 import logging
@@ -16,7 +17,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from trading_core.recording import repository
-from trading_core.recording.bundle_codec import BundleFormatError, parse_bundle
+from trading_core.recording.bundle_codec import BundleFile, BundleFormatError
 from trading_core.recording.enums import SIM_MODES, Env
 from trading_core.recording.errors import RecordingError
 from trading_core.recording.rows import RunBundle
@@ -65,11 +66,12 @@ def import_folder(sessions: Callable[[], Session], folder: Path) -> ImportSummar
     for path in bundle_files(folder):
         name = str(path.relative_to(folder))
         try:
-            bundle = parse_bundle(path.read_text(encoding="utf-8"))
+            file = BundleFile(path)
+            bundle = file.head()
             check_bundle(bundle)
             with sessions() as session:
                 try:
-                    new = repository.import_run_bundle(session, bundle)
+                    new = repository.import_run_bundle(session, bundle, file)
                     session.commit()
                 except BaseException:
                     session.rollback()

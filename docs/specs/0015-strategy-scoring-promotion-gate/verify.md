@@ -16,12 +16,16 @@ _Steps derived from spec 0015 acceptance criteria. `/check verify` runs these; `
 
 ## Transport
 - [x] `scripts/push-bundles.sh lab-reports/<batch>` → files in `/var/lib/kfs/bundles/`, import summary with every file loaded; run it again → 0 new rows → AC-7
+- [ ] `scripts/push-bundles.sh` with the `random_taker` replay study batches (bundles of 150 MB and 480 MB) → every file loaded, then `gate evaluate random_taker` on the VPS → `fail` → AC-7 _(open 2026-10-21: `gate import` is killed for memory, exit 137, under the gate's `mem_limit: 512m`, because it parses each whole file at once)_
 - [x] Hand edit a bundle's run to mode `paper` → that file is refused, the others load, exit 1 → AC-7
 
 ## Gate
 - [x] `gate evaluate macd_baseline` → one promotion (`candidate → paper`), evidence on every study run, fold rows, reason codes with values; evaluate again → identical `metrics` → AC-8, AC-9, AC-10, AC-11
 - [x] `lab gate macd_baseline --dry-run` on the laptop → the same verdict and metrics, no new rows → AC-13
-- [ ] A replay `random_taker` study (taker) → `fail` with `fee_hurdle` and `holdout_sharpe` → AC-10 _(waits on build plan task 12, replay studies)_
+- [x] A replay `random_taker` study (taker, 1 grid point, so `pbo` is not applicable) → `fail` with `fee_hurdle` and `holdout_sharpe` → AC-10 _(proved 2026-10-21 with `lab gate random_taker --dry-run`, which AC-13 makes the same verdict; the VPS import of these bundles is the open row below)_
+- [x] `lab study studies/random_taker.toml` → the `studies` row's `plan.days.development` lists the 43 days 2022-04-01..2025-10-01 (less any in `plan.days.dropped`); `lab holdout random_taker` on 2026-10-20 runs the 12 days 2025-11-01..2026-10-01, and its `data_end_at` falls on 2026-10-01 or 2026-10-02 at midnight → AC-24
+- [x] Move one planned day's manifest out of `catalog-lab/tardis/manifests` under a new study name → `lab study` exits 2 naming that day and the `lab import-tardis` command, and writes no `studies` row and no run → AC-24
+- [x] A scratch replay study with 5 grid points, or `source = "own"`, or `entry_mode` in `[strategy.config]`, or `from = 2024-02-01` → exit 64; `from = 2024-01-01` → accepted; `lab replay` on a run file with a grid → exit 64 → AC-2, AC-24
 - [x] A study missing its holdout → `insufficient` with `missing_run` (check `holdout`); set one run's fees to zero in a scratch DB → `insufficient` with `missing_cost` → AC-12
 
 ## Paper and live
