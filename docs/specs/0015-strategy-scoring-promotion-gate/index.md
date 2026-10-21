@@ -1,7 +1,7 @@
 # 0015. Strategy scoring and promotion gate
 
 **Date**: 2026-10-19 (amended 2026-10-19 after the first `/check verify`: benchmark resume, trial count, self benchmark; amended 2026-10-20 for task 12: replay days, one data source, replay grid; amended 2026-10-21: entry mode in the hash, deploy promotion check, off tick trades per spec 0016)
-**Status**: In Progress
+**Status**: Accepted
 
 ## Summary
 
