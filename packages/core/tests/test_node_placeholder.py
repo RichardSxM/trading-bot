@@ -1131,6 +1131,19 @@ def test_a_losing_close_starts_the_cooldown_and_counts_one_trade():
     assert [(e.kind, e.severity) for e in trade_cap] == [(RiskEventKind.LIMIT_HIT, Severity.WARNING)]
 
 
+@pytest.mark.parametrize(("noted", "written"), [(False, 1), (True, 0)])
+def test_a_restart_at_the_trade_cap_writes_the_day_s_event_only_when_none_is_stored(noted, written):
+    """covers: spec 0010 AC-11 (one trade_cap event a day: a same day restart does not write it again)"""
+    seed = _empty_seed(opened_today_keys=frozenset([("P-earlier", 1)]), trade_cap_noted_today=noted)
+    build, _ = _loss_actor(lambda *_: seed, _limits(max_trades_per_day=1), seeded_at_start=seed)
+
+    _, strategy, rows = _run(Prices(5, lambda t: 85000), add_actor=build)
+
+    assert BlockReason.TRADE_CAP in strategy._blocks.active()
+    trade_cap = [e for e in _risk_events(rows) if e.event_key == f"trade_cap:{START.date().isoformat()}"]
+    assert len(trade_cap) == written
+
+
 def test_a_close_after_midnight_before_the_next_tick_counts_in_the_new_day():
     """covers: spec 0010 AC-9, AC-11 (the day rolls before an event is folded, not only on the 1 s tick)"""
     from nautilus_trader.model.events import PositionClosed

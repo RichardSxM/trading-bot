@@ -7,7 +7,8 @@ each ``PositionOpened`` and ``PositionClosed`` at once, and each booked funding 
 (``FUNDING_BOOKED_TOPIC``, spec 0011 AC-16) as realized, once per key. It evaluates on every position event and on
 a 1 s timer that runs flat or not: the timer reads the latest quote for the unrealized part, rolls
 the day at UTC midnight, and clears blocks whose time is up. A trip asks the ``KillSwitch`` to
-halt; ``trade_cap`` writes one ``limit_hit`` event a day.
+halt; ``trade_cap`` writes one ``limit_hit`` event a day, and none after a same day restart when the
+seed says it is already stored.
 """
 
 import asyncio
@@ -27,7 +28,7 @@ from trading_core.control.messages import format_utc
 from trading_core.node.control import KillSwitch, Record
 from trading_core.node.funding import FUNDING_BOOKED_TOPIC, FundingBooked
 from trading_core.recording.enums import Env, RiskEventKind, Severity
-from trading_core.recording.queries import LossSeed
+from trading_core.recording.queries import LossSeed, trade_cap_event_key
 from trading_core.recording.rows import JsonObject, RiskEventRow
 from trading_core.recording.spool import WriteCall, WriteItem
 from trading_core.risk.limits import (
@@ -201,6 +202,9 @@ class LossLimitActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
                 tally = self._fold(tally, event)
             self._buffer.clear()
             self._tally = tally
+            if seed.trade_cap_noted_today and tally.day == utc_day(now):
+                # A restart the same day: the stored event stands, writing it again would contradict it.
+                self._trade_cap_noted = tally.day.isoformat()
         self._blocks.clear(BlockReason.LOSS_UNKNOWN)
         log.info(
             "loss figures seeded",
@@ -297,7 +301,7 @@ class LossLimitActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
         if BlockReason.TRADE_CAP in verdict.blocks and self._trade_cap_noted != day:
             self._trade_cap_noted = day
             self._event(
-                f"trade_cap:{day}",
+                trade_cap_event_key(tally.day),
                 RiskEventKind.LIMIT_HIT,
                 Severity.WARNING,
                 f"trade cap of {self._limits.max_trades_per_day} reached; entries blocked until midnight UTC",

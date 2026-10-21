@@ -93,6 +93,32 @@ def test_a_daily_halt_event_today_is_seen_and_other_reasons_are_not(session: Ses
     assert _seed(session).daily_halt_today
 
 
+def test_today_s_trade_cap_event_is_seen_and_yesterday_s_is_not(session: Session, world: World):
+    """covers: spec 0010 AC-11 (a same day restart knows the day's trade_cap event is stored)"""
+
+    def trade_cap(day: datetime) -> None:
+        repository.record_risk_event(
+            session,
+            RiskEventRow(
+                env=Env.DEMO,
+                event_key=f"trade_cap:{day.date().isoformat()}",
+                kind=RiskEventKind.LIMIT_HIT,
+                severity=Severity.WARNING,
+                message="trade cap reached",
+                details={"trades_today": 50, "max_trades_per_day": 50},
+                run_id=world.run_id,
+                occurred_ns=_ns(day + timedelta(hours=20)),
+            ),
+        )
+
+    trade_cap(DAY - timedelta(days=1))
+    assert not _seed(session).trade_cap_noted_today
+
+    trade_cap(DAY)
+    assert _seed(session).trade_cap_noted_today
+    assert not _seed(session, env=Env.LIVE).trade_cap_noted_today
+
+
 def test_a_position_closed_as_abandoned_at_a_restart_counts_with_its_marked_loss(session: Session, world: World):
     """covers: spec 0010 AC-8 (positions closed as abandoned at a demo restart count, with the marked loss)"""
     opened = DAY + timedelta(hours=1)

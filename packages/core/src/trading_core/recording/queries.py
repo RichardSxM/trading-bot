@@ -8,7 +8,7 @@ Trades page lists (spec 0006 AC-19), paper runs only.
 
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import MAX_EMAX, MAX_PREC, MIN_EMIN, Context, Decimal
 from enum import StrEnum
 from typing import Final
@@ -371,6 +371,9 @@ class LossSeed:
 
     ``funding_today`` and ``funding_total`` sum the booked funding payments by ``paid_at``
     (spec 0011 AC-16); ``funding_keys`` are their ``(instrument_id, paid_ns, position_id)``.
+
+    ``trade_cap_noted_today`` is True when today's ``trade_cap`` event is already stored, so a
+    restart the same day does not write it again (its ``run_id`` would contradict the stored row).
     """
 
     realized_today: Decimal
@@ -382,11 +385,18 @@ class LossSeed:
     funding_keys: frozenset[tuple[str, int, UUID]] = frozenset()
     last_loss_closed_at: datetime | None
     daily_halt_today: bool
+    trade_cap_noted_today: bool = False
+
+
+def trade_cap_event_key(day: date) -> str:
+    """The ``risk_events.event_key`` of the one ``trade_cap`` event of a UTC day (spec 0010 AC-11)."""
+    return f"trade_cap:{day.isoformat()}"
 
 
 def loss_seed(session: Session, env: Env, mode: RunMode, day_start: datetime, total_since: datetime) -> LossSeed:
     """The loss figures of ``env``'s ``mode`` runs: realized today and since ``total_since``, today's
-    opened positions, the newest losing close, and whether a ``daily_loss_limit`` halt was recorded today.
+    opened positions, the newest losing close, whether a ``daily_loss_limit`` halt was recorded today,
+    and whether today's ``trade_cap`` event is stored.
 
     ``day_start`` (UTC midnight) and ``total_since`` are aware UTC datetimes.
     """
@@ -441,6 +451,9 @@ def loss_seed(session: Session, env: Env, mode: RunMode, day_start: datetime, to
         )
         .limit(1)
     ).first()
+    trade_cap = session.execute(
+        select(event.id).where(event.env == env, event.event_key == trade_cap_event_key(day_start.date()))
+    ).first()
     payment = models.FundingPayment
     payments = session.execute(
         select(payment.instrument_id, payment.paid_ns, payment.position_id, payment.paid_at, payment.amount)
@@ -468,6 +481,7 @@ def loss_seed(session: Session, env: Env, mode: RunMode, day_start: datetime, to
         funding_keys=frozenset(funding_keys),
         last_loss_closed_at=last_loss,
         daily_halt_today=daily_halt is not None,
+        trade_cap_noted_today=trade_cap is not None,
     )
 
 
