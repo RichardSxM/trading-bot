@@ -1,12 +1,15 @@
 """covers: spec 0018 AC-7 (each candidate registered as hour_level with its own module), AC-8 (a bad setting is
-refused at the startup check, before any run), AC-9 (connors_rsi trades through the candle lab)."""
+refused at the startup check, before any run), AC-9 (connors_rsi trades through the candle lab), AC-15 (the
+committed study file passes the lab's own check)."""
 
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
 from lab.candle_units import CandleUnitPlan, run_candle_unit
 from lab.strategies import MarketContextValues, StrategyConfigError, registry_entry
+from lab.study import load_study
 from trading_core.recording.enums import Intent, StrategyKind
 from trading_core.risk.check import RiskLimits
 
@@ -49,9 +52,12 @@ def test_a_bad_connors_setting_is_refused_by_the_startup_check(change, problem):
         registry_entry("connors_rsi").check_strategy({**CONNORS, **change})
 
 
-def test_the_grid_settings_have_no_default():
-    with pytest.raises(StrategyConfigError, match="rsi_lower"):
-        registry_entry("connors_rsi").check_strategy({"rsi_period": 2})
+def test_the_committed_connors_study_file_is_valid():
+    study = load_study(Path(__file__).resolve().parents[1] / "studies" / "connors_rsi.toml")
+
+    assert study.section.name == "connors_rsi"
+    assert study.section.lab == "candle"
+    assert len(study.points) == 6
 
 
 def test_connors_rsi_trades_with_floored_risk_sized_stops_through_the_candle_lab(tmp_path):

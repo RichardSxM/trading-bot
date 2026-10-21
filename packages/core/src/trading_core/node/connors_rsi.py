@@ -19,11 +19,12 @@ STRATEGY_NAME: Final = "connors_rsi"
 class ConnorsRsiConfig(BarRuleConfig, frozen=True, kw_only=True):
     """``connors_rsi``'s ``[strategy.config]`` settings (spec 0018.1 *Settings*) on top of the base's.
 
-    The grid settings (``rsi_period``, ``rsi_lower``) have no default: every run names them.
+    The grid settings (``rsi_period``, ``rsi_lower``) default to the grid's first point, because the lab
+    checks ``[strategy.config]`` alone before it adds a point; every study run sets them from its point.
     """
 
-    rsi_period: int
-    rsi_lower: int
+    rsi_period: int = 2
+    rsi_lower: int = 5
     time_stop_bars: int = 10
     trend_sma: int = 200
     exit_sma: int = 5
