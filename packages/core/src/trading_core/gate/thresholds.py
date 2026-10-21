@@ -47,6 +47,10 @@ class PaperThresholds:
     fill_rate_tolerance: Decimal
     slippage_tolerance_bps: Decimal
 
+    def trade_floor(self, strategy_kind: str) -> int:
+        """The paper trade floor for this kind of strategy: hour level or scalping."""
+        return self.min_trades_hour_level if strategy_kind == "hour_level" else self.min_trades_scalping
+
 
 @dataclass(frozen=True)
 class Thresholds:

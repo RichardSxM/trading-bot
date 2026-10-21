@@ -126,7 +126,7 @@ def evaluate_paper(inputs: PaperInputs) -> GateResult:
     if days < t.min_days:
         out.reason(TOO_FEW_DAYS, "paper_duration", Decimal(repr(days)).quantize(Decimal("0.01")), t.min_days)
     record = paper_record(inputs.starting_balance, inputs.events)
-    floor = t.min_trades_hour_level if inputs.strategy_kind == "hour_level" else t.min_trades_scalping
+    floor = t.trade_floor(inputs.strategy_kind)
     out.metric("paper_trades", record.trades)
     if record.trades < floor:
         out.reason(TOO_FEW_TRADES, "paper_trade_floor", record.trades, floor)

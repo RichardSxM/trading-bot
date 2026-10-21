@@ -568,6 +568,8 @@ class PaperProgress:
     strategy: str
     metrics: Mapping[str, object]
     reasons: Sequence[Mapping[str, object]]
+    min_days: int | None = None
+    trade_floor: int | None = None
 
 
 def paper_progress(session: Session, now: datetime) -> list[PaperProgress]:
@@ -588,5 +590,15 @@ def paper_progress(session: Session, now: datetime) -> list[PaperProgress]:
             .join(models.StrategyVersion, models.StrategyVersion.strategy_id == models.Strategy.id)
             .where(models.StrategyVersion.id == evidence.version_id)
         ).scalar_one()
-        found.append(PaperProgress(frozen, strategy, result.metrics, [r.to_json() for r in result.reasons]))
+        t = evidence.inputs.thresholds
+        found.append(
+            PaperProgress(
+                frozen,
+                strategy,
+                result.metrics,
+                [r.to_json() for r in result.reasons],
+                min_days=None if t is None else t.paper.min_days,
+                trade_floor=None if t is None else t.paper.trade_floor(evidence.inputs.strategy_kind),
+            )
+        )
     return found

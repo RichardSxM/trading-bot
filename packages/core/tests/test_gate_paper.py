@@ -63,6 +63,11 @@ def test_twenty_nine_days_is_insufficient():
     assert result.verdict == GateVerdict.INSUFFICIENT
 
 
+def test_the_trade_floor_depends_on_the_strategy_kind():
+    assert THRESHOLDS.paper.trade_floor("scalping") == 100
+    assert THRESHOLDS.paper.trade_floor("hour_level") == 20
+
+
 def test_a_paper_mean_below_the_lab_bound_fails():
     result = evaluate_paper(_inputs(holdout_trade_bound=Decimal("0.01")))
 
