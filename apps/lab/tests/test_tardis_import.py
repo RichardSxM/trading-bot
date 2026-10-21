@@ -1,4 +1,5 @@
-"""covers: spec 0008 AC-1 (Tardis day import) and AC-2 (catalog cap, prune), spec 0016 (off tick trades).
+"""covers: spec 0008 AC-1 (Tardis day import) and AC-2 (catalog cap, prune), spec 0016 AC-1 to AC-4 (off tick
+trades: dropped, the 5% cap, the raw CSV never changed).
 
 The CSV files are tiny synthetic days in Tardis's real column layout, so every row is known: a
 first snapshot block near the end of hour 00, a second block 80 ms after an update in hour 01
@@ -18,6 +19,7 @@ from nautilus_trader.core import nautilus_pyo3 as p3
 from nautilus_trader.model.data import OrderBookDelta
 from nautilus_trader.serialization.arrow.serializer import ArrowSerializer
 
+from lab import tardis_import
 from lab.catalog import DELTAS_TABLE, INSTRUMENTS_TABLE, TRADES_TABLE, SourceTree
 from lab.main import main
 from lab.settings import LabSettings
@@ -27,6 +29,7 @@ from lab.tardis_import import (
     EXIT_CATALOG_FULL,
     EXIT_FAILED,
     EXIT_OK,
+    KEPT_SUFFIX,
     TICKER_CSV,
     TRADES_CSV,
     import_tardis,
@@ -82,8 +85,15 @@ def _csv(path, header, rows):
             fh.write(",".join(str(v) for v in row) + "\n")
 
 
-def write_day(raw_dir, *, price_text=None, trade_price_text=None, trade_size_text=None):
-    """The three CSV files of the synthetic day in ``raw_dir``."""
+def write_day(
+    raw_dir, *, price_text=None, trade_price_text=None, trade_size_text=None, off_trades=1, filler=0, no_trades=False
+):
+    """The three CSV files of the synthetic day in ``raw_dir``.
+
+    ``trade_price_text`` adds ``off_trades`` trades at that price, and ``filler`` adds trades on the tick,
+    all in the second after 01:00:05, so the shares off the tick come out exact. ``no_trades`` writes
+    only the header.
+    """
     book = []
     for local, snapshot, levels in BOOK:
         for side, price, amount in levels:
@@ -97,11 +107,20 @@ def write_day(raw_dir, *, price_text=None, trade_price_text=None, trade_size_tex
     _csv(
         raw_file(raw_dir, TRADES_CSV, DAY),
         "exchange,symbol,timestamp,local_timestamp,id,side,price,amount",
-        [
+        []
+        if no_trades
+        else [
             (*VENUE, us(0, 59, 52) - 5000, us(0, 59, 52), "t1", "buy", 101, "0.1"),
             (*VENUE, us(1, 0, 5) - 5000, us(1, 0, 5), "t2", "sell", 100, "0.2"),
             *(
-                [(*VENUE, us(1, 0, 6) - 5000, us(1, 0, 6), "t3", "buy", trade_price_text, "0.0004")]
+                (*VENUE, us(1, 0, 5, 1 + i) - 5000, us(1, 0, 5, 1 + i), f"f{i}", "buy", 100, "0.1")
+                for i in range(filler)
+            ),
+            *(
+                [
+                    (*VENUE, us(1, 0, 6, i) - 5000, us(1, 0, 6, i), f"t3{i}", "buy", trade_price_text, "0.0004")
+                    for i in range(off_trades)
+                ]
                 if trade_price_text is not None
                 else []
             ),
@@ -252,17 +271,82 @@ def test_a_price_off_the_tick_refuses_the_day(tmp_path, caplog):
 
 def test_a_trade_price_off_the_tick_drops_only_that_trade(tmp_path, caplog):
     caplog.set_level(logging.INFO)
-    downloads = Downloads(trade_price_text="27567.42278253538")
+    downloads = Downloads(trade_price_text="27567.42278253538", filler=18)  # 1 of 21 rows
 
     assert import_tardis(settings(tmp_path), [DAY], download=downloads) == EXIT_OK
 
     t = tree(tmp_path)
     assert t.manifest_file(DAY).is_file()
-    assert [pq.read_table(t.hour_file(TRADES_TABLE, hour)).num_rows for hour in (H00, H01)] == [1, 1]
+    assert [pq.read_table(t.hour_file(TRADES_TABLE, hour)).num_rows for hour in (H00, H01)] == [1, 19]
     warned = next(r for r in caplog.records if r.getMessage() == "lab_off_tick_trades_dropped")
     assert (warned.fields["rows"], warned.fields["prices"]) == (1, ["27567.42278253538"])
     done = next(r for r in caplog.records if r.getMessage() == "lab_import_day_done")
     assert done.fields["off_tick_trades"] == 1
+
+
+def test_exactly_5_percent_off_the_tick_imports(tmp_path, caplog):
+    caplog.set_level(logging.INFO)
+    downloads = Downloads(trade_price_text="27567.42278253538", off_trades=5, filler=93)  # 5 of 100
+
+    assert import_tardis(settings(tmp_path), [DAY], download=downloads) == EXIT_OK
+
+    t = tree(tmp_path)
+    assert sum(pq.read_table(t.hour_file(TRADES_TABLE, hour)).num_rows for hour in (H00, H01)) == 95
+    done = next(r for r in caplog.records if r.getMessage() == "lab_import_day_done")
+    assert done.fields["off_tick_trades"] == 5
+
+
+def test_more_than_5_percent_off_the_tick_refuses_the_day_and_drops_nothing(tmp_path, caplog):
+    downloads = Downloads(trade_price_text="27567.42278253538", off_trades=6, filler=92)  # 6 of 100
+    raw = tmp_path / "catalog" / "tardis" / ".raw" / DAY.isoformat()
+
+    assert import_tardis(settings(tmp_path), [DAY], download=downloads) == EXIT_FAILED
+
+    assert not tree(tmp_path).manifest_file(DAY).exists()
+    refused = next(r for r in caplog.records if r.getMessage() == "lab_off_tick_trades_excess")
+    assert refused.levelname == "ERROR"
+    assert (refused.fields["day"], refused.fields["rows"], refused.fields["total"]) == ("2026-09-01", 6, 100)
+    assert refused.fields["prices"] == ["27567.42278253538"]
+    assert "lab_off_tick_trades_dropped" not in [r.getMessage() for r in caplog.records]
+    # Nothing dropped: no filtered copy, and the raw CSV still holds every row.
+    assert not list(raw.glob(f"*{KEPT_SUFFIX}*"))
+    with gzip.open(raw_file(raw, TRADES_CSV, DAY), "rt") as fh:
+        assert len(fh.read().splitlines()) == 101
+
+
+def test_a_day_with_no_trade_rows_imports(tmp_path, caplog):
+    caplog.set_level(logging.INFO)
+
+    assert import_tardis(settings(tmp_path), [DAY], download=Downloads(no_trades=True)) == EXIT_OK
+
+    done = next(r for r in caplog.records if r.getMessage() == "lab_import_day_done")
+    assert done.fields["off_tick_trades"] == 0
+
+
+def test_a_rerun_of_a_killed_day_counts_the_same_off_tick_trades(tmp_path, caplog, monkeypatch):
+    caplog.set_level(logging.INFO)
+    downloads = Downloads(trade_price_text="27567.42278253538", off_trades=2, filler=96)  # 2 of 100
+    raw = tmp_path / "catalog" / "tardis" / ".raw" / DAY.isoformat()
+
+    def killed(*args):
+        raise RuntimeError("killed")
+
+    monkeypatch.setattr(tardis_import, "convert_trades", killed)
+    with pytest.raises(RuntimeError, match="killed"):
+        import_tardis(settings(tmp_path), [DAY], download=downloads)
+    # The kept rows went to the copy; the raw CSV still holds all 100 trade rows.
+    assert len(list(raw.glob(f"*{KEPT_SUFFIX}"))) == 1
+    with gzip.open(raw_file(raw, TRADES_CSV, DAY), "rt") as fh:
+        assert len(fh.read().splitlines()) == 101
+    monkeypatch.undo()
+    caplog.clear()
+
+    assert import_tardis(settings(tmp_path), [DAY], download=downloads) == EXIT_OK
+
+    assert downloads.calls == 1  # the raw files were still there
+    warned = next(r for r in caplog.records if r.getMessage() == "lab_off_tick_trades_dropped")
+    assert warned.fields["rows"] == 2
+    assert not raw.exists()  # both files go with the raw folder once the manifest exists
 
 
 def test_a_clean_day_drops_no_trade(tmp_path, caplog):

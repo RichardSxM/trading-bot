@@ -53,7 +53,7 @@ from lab.runfile import (
     replay_run_from_raw,
 )
 from lab.settings import LabSettings
-from lab.strategies import StrategyEntry, registry_entry
+from lab.strategies import ConfigValue, StrategyEntry, registry_entry
 from lab.study_rows import StudyContext
 from trading_core.gate.checks import benchmark_names
 from trading_core.gate.thresholds import Thresholds
@@ -413,7 +413,10 @@ def run_study(settings: LabSettings, study: LoadedStudy, store: StudyStore) -> i
     """``lab study`` after validation: store the study, then run every grid point not yet completed (AC-2, AC-3)."""
     run = study.loaded.run
     entry = registry_entry(run.strategy.name, test_strategies=settings.lab_test_strategies)
-    configs = {name: {**run.strategy.config, **point} for name, point in study.points}
+    configs = {
+        name: _version_config(entry, {**run.strategy.config, **point}, study.section.entry_mode)
+        for name, point in study.points
+    }
     frozen = {name: entry.frozen(config) for name, config in configs.items()}
     if any(f is None for f in frozen.values()):
         return _refuse("study", [f"{run.strategy.name} has no trading_core.node module, so it cannot be studied"])
@@ -475,6 +478,18 @@ def run_study(settings: LabSettings, study: LoadedStudy, store: StudyStore) -> i
     context = _context(store, stored, StudyRole.DEVELOPMENT, run.strategy.name, entry.kind, run.instrument_id, points)
     variants = [v for v in study.variants if points[v.name] not in done]
     return backtest(settings, study.loaded, store, variants=variants, study=context)
+
+
+def _version_config(
+    entry: StrategyEntry, config: dict[str, ConfigValue], entry_mode: str | None
+) -> dict[str, ConfigValue]:
+    """A grid point's version config, as ``replay()`` records it for the point's runs (spec 0015 AC-25).
+
+    It takes the study's entry mode when the strategy has the setting; a candle study has none.
+    """
+    if entry_mode is None or entry.default_entry_mode is None:
+        return config
+    return {**config, "entry_mode": entry_mode}
 
 
 def _with_point(loaded: LoadedRun, point: Mapping[str, GridValue]) -> LoadedRun:
@@ -593,7 +608,8 @@ def _holdout_locked(settings: LabSettings, stored: StudyRow, store: StudyStore, 
     if spent:
         return _refuse("holdout", [f"frozen version {final_hash[:12]} already spent its holdout"])
     point = points[final][1]
-    frozen = entry.frozen({**base.run.strategy.config, **point})
+    mode = StudySection.model_validate(plan["study"]).entry_mode if isinstance(base, LoadedRun) else None
+    frozen = entry.frozen(_version_config(entry, {**base.run.strategy.config, **point}, mode))
     if frozen is None or frozen.frozen_hash != final_hash:
         return _refuse(
             "holdout", ["the strategy's code or engine changed since its development runs; start a new study"]

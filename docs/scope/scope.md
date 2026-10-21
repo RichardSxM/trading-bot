@@ -342,7 +342,7 @@ code in `packages/core/src/trading_core/gate`, `packages/core/src/trading_core/v
   - [ ] Paper and live guards: `trader.version`, manual promotion, the placeholder transition, the paper guard, the live guard on `frozen_hash`, paper to live evaluation (AC-14 to AC-17)
   - [ ] Dashboard depth and proof: study detail, promotion log, paper progress, permission and boundary tests, `verify.md` (AC-19 to AC-23)
   - [x] Fixes from the first verify: `lab holdout` resumes missing benchmarks, no self benchmark, benchmarks left out of the trial count (AC-4, AC-5, AC-10, AC-11, AC-19)
-  - [ ] Amendments of 2026-10-21: entry mode in the frozen hash, the deploy promotion check, and the Tardis 5% off tick guard (AC-25, AC-26, spec 0016 AC-3, AC-4)
+  - [x] Amendments of 2026-10-21: entry mode in the frozen hash, the deploy promotion check, and the Tardis 5% off tick guard (AC-25, AC-26, spec 0016 AC-3, AC-4)
 - [ ] Verify it: `/check verify strategy scoring & promotion gate`
 - [ ] Test it: `/test strategy scoring & promotion gate`
 - [ ] Review it (fresh model): `/check review strategy scoring & promotion gate`

@@ -10,7 +10,7 @@
 #
 # Exit codes of `run`: 0 deployed, 1 rolled back or rollback failed, 2 aborted with nothing
 # switched (not flat, pause lifted, pause failed, no trader_state), 3 another deploy holds the
-# lock, 4 refused before anything changed (preflight or pull).
+# lock, 4 refused before anything changed (preflight, pull, or the promotion check).
 #
 # --wait sets how long to wait for flat (90s, 15m, 1h; default 15m). --now sends the pause but
 # skips the wait, and goes on when the trader cannot confirm it (an old release, say); the
@@ -123,6 +123,31 @@ preflight() {
         docker manifest inspect "$img" >/dev/null 2>&1 || refuse "image $img missing, or ghcr.io login failed"
     done
     kfs_log INFO "preflight passed" sha "$SHA" images "$(echo "$images" | wc -l | tr -d ' ')"
+}
+
+# The new trader's strategy version must hold its candidate → paper pass, or the paper guard
+# would stop the trader after the switch (spec 0015 AC-26). Runs the new images with --no-deps:
+# Postgres is up from the running release, and the new release's migrate must not run yet. There is
+# no flag to skip it; promote the version (the command below), then deploy again.
+promotion_check() {
+    local version checked rc=0 version_id verdict
+    version=$(compose_new run --rm --no-deps -T trader python -m trader.version) ||
+        refuse "promotion check: trader.version failed in the new image (exit $?)"
+    checked=$(printf '%s\n' "$version" | compose_new run --rm --no-deps -T gate check-version) || rc=$?
+    # The gate's JSON log lines share stdout; the result is the object without a `msg`.
+    checked=$(jq -cR 'fromjson? | select(type == "object" and has("stage_needed") and (has("msg") | not))' \
+        <<<"$checked" | tail -n 1)
+    version_id=$(jq -r '.version_id // "unknown"' <<<"${checked:-null}")
+    verdict=$(jq -r '.verdict // "unknown"' <<<"${checked:-null}")
+    case $rc in
+        0) kfs_log INFO "promotion check passed" sha "$SHA" version_id "$version_id" ;;
+        3)
+            printf 'promote it, then deploy again:\n  sudo kfs-compose run --rm gate promote --manual --step candidate-paper --version %s --note '"'"'...'"'"'\n' \
+                "$version_id"
+            refuse "promotion check: version $version_id has no candidate to paper pass (verdict $verdict)"
+            ;;
+        *) refuse "promotion check: gate check-version failed (exit $rc)" ;;
+    esac
 }
 
 abort() {
@@ -303,6 +328,10 @@ run() {
         refuse "image pull failed"
     fi
     kfs_log INFO "images pulled" sha "$SHA"
+    # The first deploy has no running Postgres to check against; its trader's own guard still applies.
+    if [ -n "$PREVIOUS_SHA" ]; then
+        promotion_check
+    fi
 
     # Every deploy recreates the trader, so it drains first. The first deploy has no trader yet.
     if [ -n "$PREVIOUS_SHA" ]; then
