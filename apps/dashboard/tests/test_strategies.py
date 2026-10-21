@@ -178,3 +178,37 @@ def test_paper_progress_shows_each_figure_against_its_bound(redis, clock):
     assert "0.03 % vs 0.01 %" in page
     assert "12.50 of 30" in page
     assert "40 of 100" in page
+
+
+def test_paper_progress_without_frozen_thresholds_shows_bare_figures(redis, clock):
+    # covers: AC-21 (no thresholds behind the evidence, so no floor to show)
+    progress = PaperProgress(
+        frozen_hash="ef" * 32,
+        strategy="placeholder_timed",
+        metrics={"paper_days": "3.25", "paper_trades": 7},
+        reasons=[],
+    )
+    with _logged_in(redis, clock, lambda: StrategiesView([], [progress])) as client:
+        page = client.get("/strategies").text
+
+    assert ">3.25<" in page
+    assert ">7<" in page
+    assert "3.25 of" not in page
+    assert "7 of" not in page
+
+
+def test_paper_progress_with_no_trades_yet_shows_a_dash_against_the_floor(redis, clock):
+    # covers: AC-21
+    progress = PaperProgress(
+        frozen_hash="ab" * 32,
+        strategy="placeholder_timed",
+        metrics={"paper_days": "0.50"},
+        reasons=[],
+        min_days=30,
+        trade_floor=20,
+    )
+    with _logged_in(redis, clock, lambda: StrategiesView([], [progress])) as client:
+        page = client.get("/strategies").text
+
+    assert "0.50 of 30" in page
+    assert f"{DASH} of 20" in page

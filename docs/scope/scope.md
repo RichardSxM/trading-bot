@@ -344,7 +344,7 @@ code in `packages/core/src/trading_core/gate`, `packages/core/src/trading_core/v
   - [x] Fixes from the first verify: `lab holdout` resumes missing benchmarks, no self benchmark, benchmarks left out of the trial count (AC-4, AC-5, AC-10, AC-11, AC-19)
   - [x] Amendments of 2026-10-21: entry mode in the frozen hash, the deploy promotion check, and the Tardis 5% off tick guard (AC-25, AC-26, spec 0016 AC-3, AC-4)
 - [ ] Verify it: `/check verify strategy scoring & promotion gate`
-- [ ] Test it: `/test strategy scoring & promotion gate`
+- [x] Test it: `/test strategy scoring & promotion gate`
 - [ ] Review it (fresh model): `/check review strategy scoring & promotion gate`
 - [ ] Document it: `/document strategy scoring & promotion gate`
 
