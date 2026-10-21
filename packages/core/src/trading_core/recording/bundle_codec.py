@@ -9,7 +9,6 @@ parts for ``gate import``, so a large bundle is never held whole.
 """
 
 import dataclasses
-import functools
 import json
 import types
 import typing
@@ -94,15 +93,23 @@ def _decode(kind: object, value: object, where: str) -> object:
     raise BundleFormatError(f"{where}: unsupported type {kind!r}")
 
 
-@functools.cache
+_FIELDS: Final[dict[type, tuple[tuple[str, object, bool], ...]]] = {}
+
+
 def _fields(cls: type) -> tuple[tuple[str, object, bool], ...]:
-    """Each init field of a row class: its name, annotation, and whether it must be present."""
+    """Each init field of a row class: its name, annotation, and whether it must be present.
+
+    Kept per class: ``get_type_hints`` on every row was a third of a large import's time.
+    """
+    if (known := _FIELDS.get(cls)) is not None:
+        return known
     hints = typing.get_type_hints(cls)
-    return tuple(
+    _FIELDS[cls] = tuple(
         (f.name, hints[f.name], f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING)
         for f in dataclasses.fields(cls)
         if f.init  # a derived field (an ``_at`` from its ``_ns``) is never read
     )
+    return _FIELDS[cls]
 
 
 def _row[T](cls: type[T], value: object, where: str) -> T:

@@ -58,3 +58,8 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = ["pyarrow", "pyarrow.*"]
 ignore_missing_imports = true
+
+# ijson ships no type information (spec 0015's gate import streams large lab bundles with it).
+[[tool.mypy.overrides]]
+module = ["ijson", "ijson.*"]
+ignore_missing_imports = true

@@ -4,6 +4,7 @@ large file is read in parts, never whole)."""
 import json
 import tracemalloc
 from dataclasses import fields, replace
+from typing import Any
 from uuid import uuid7
 
 import pytest
@@ -72,7 +73,7 @@ def _file(tmp_path, text: str) -> BundleFile:
 
 def _read_in_parts(file: BundleFile) -> RunBundle:
     head = file.head()
-    lists = {
+    lists: dict[str, Any] = {
         f.name: tuple(file.rows(f.name, type(rows[0])))
         for f in fields(head)
         if isinstance(rows := getattr(BIG, f.name), list | tuple) and rows
