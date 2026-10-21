@@ -18,9 +18,10 @@ fixed in advance (spec 0015: 64 a bad study file, a reused name with another pla
 points, or a spent holdout; 2 a replay study day with no manifest, every one listed with the
 ``import-tardis`` command that fetches them); ``gate <study> --dry-run`` previews the promotion gate's verdict and
 writes nothing (64 an unknown study). ``audit`` measures the Tardis development days' spreads, moves,
-and order flow into report files (spec 0017 AC-1: 64 a range reaching the holdout, 2 a missing day).
-Only ``replay``, ``backtest``, ``study``, ``holdout``, and ``gate`` connect to Postgres, so the other
-commands run with ``--no-deps``.
+and order flow into report files (spec 0017 AC-1: 64 a range reaching the holdout, 2 a missing day);
+``screen <study>`` judges a scalping candidate's candle screen (AC-9: 3 a fail, 64 not a complete screen).
+Only ``replay``, ``backtest``, ``study``, ``holdout``, ``gate``, and ``screen`` connect to Postgres, so the
+other commands run with ``--no-deps``.
 """
 
 import argparse
@@ -46,6 +47,7 @@ from lab.paper_csv import read_paper_csv
 from lab.parity import parity
 from lab.replay import PostgresStore, replay
 from lab.runfile import Overrides, RunFileError, load_candle_run, load_run
+from lab.screen import run_screen
 from lab.settings import LabSettings, ProbeSwitch
 from lab.strategies import registry_entry
 from lab.study import StudyStore, load_study, missing_days_exit, run_holdout, run_study
@@ -141,6 +143,8 @@ def parser() -> argparse.ArgumentParser:
     audit = commands.add_parser("audit", help="measure spreads, moves, and order flow of the Tardis development days")
     audit.add_argument("--from", dest="from_", type=_day, help="first UTC day (default 2022-04-01)")
     audit.add_argument("--to", type=_day, help="last UTC day (default the day before the holdout)")
+    screen = commands.add_parser("screen", help="judge a scalping candidate's candle screen study (spec 0017)")
+    screen.add_argument("study", help="the candle study's name")
     drop = commands.add_parser("prune", help="delete a source tree of the lab catalog")
     drop.add_argument("--source", choices=("tardis", "own"), help="the tree to delete (both without it)")
     return root
@@ -421,6 +425,19 @@ def _audit(args: argparse.Namespace) -> int:
     return run_audit(started.settings, days, thresholds.fee_hurdle_k, datetime.now(UTC))
 
 
+def _screen(args: argparse.Namespace) -> int:
+    """``lab screen <study>`` (spec 0017 AC-9): reads Postgres as ``lab_app``, writes the screen report."""
+    configure_logging(process=PROCESS, env=os.environ.get("TRADING_ENV", ""))
+    started = boot("worker", settings_cls=LabSettings, secrets=(POSTGRES_PASSWORD,))
+    engine = create_engine(
+        started.settings.database_url(started.secrets[POSTGRES_PASSWORD]), pool_size=1, pool_pre_ping=True
+    )
+    try:
+        return run_screen(started.settings, args.study, engine)
+    finally:
+        engine.dispose()
+
+
 def _prune(args: argparse.Namespace) -> int:
     started = boot("worker", settings_cls=LabSettings)
     try:
@@ -457,6 +474,8 @@ def main(argv: list[str] | None = None) -> NoReturn:
         sys.exit(_holdout(args))
     if args.command == "gate":
         sys.exit(_gate_preview(args))
+    if args.command == "screen":
+        sys.exit(_screen(args))
     if args.command == "audit":
         sys.exit(_audit(args))
     if args.command == "prune":

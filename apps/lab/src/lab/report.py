@@ -17,6 +17,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from trading_core.recording.bundle_codec import bundle_json
+from trading_core.recording.enums import Intent, RiskVerdict
 from trading_core.recording.rows import JsonValue, RunBundle, ns_to_utc
 
 Status = Literal["completed", "failed", "interrupted"]
@@ -119,6 +120,44 @@ class CandleReport(_Model):
     zero_volume_bars: int
 
 
+class EntryDecisionCount(_Model):
+    """How many ``enter`` decisions one UTC day had with one outcome: ``approved`` or the rejection reason."""
+
+    day: str
+    outcome: str
+    count: int
+
+
+def entry_decision_counts(bundle: RunBundle | None) -> list[EntryDecisionCount]:
+    """The ``enter`` decisions per UTC day and outcome (spec 0017 AC-5), so the signal rate shows apart from fills."""
+    counts: dict[tuple[str, str], int] = {}
+    for decision in () if bundle is None else bundle.decisions:
+        if decision.intent != Intent.ENTER:
+            continue
+        outcome = "approved" if decision.risk_verdict == RiskVerdict.APPROVED else decision.risk_reason or "rejected"
+        key = (ns_to_utc(decision.decided_ns).date().isoformat(), outcome)
+        counts[key] = counts.get(key, 0) + 1
+    return [EntryDecisionCount(day=day, outcome=outcome, count=n) for (day, outcome), n in sorted(counts.items())]
+
+
+def _entry_decision_lines(report: LabReport) -> list[str]:
+    if not report.entry_decisions:
+        return []
+    outcomes = sorted({c.outcome for c in report.entry_decisions}, key=lambda o: (o != "approved", o))
+    days = sorted({c.day for c in report.entry_decisions})
+    table = {(c.day, c.outcome): c.count for c in report.entry_decisions}
+    lines = [
+        "## Entry decisions",
+        "",
+        "| Day | " + " | ".join(outcomes) + " |",
+        "|---|" + "---|" * len(outcomes),
+    ]
+    for day in days:
+        lines.append(f"| {day} | " + " | ".join(str(table.get((day, o), 0)) for o in outcomes) + " |")
+    totals = " | ".join(str(sum(table.get((d, o), 0) for d in days)) for o in outcomes)
+    return [*lines, f"| all | {totals} |", ""]
+
+
 class LabReport(_Model):
     """One variant's report."""
 
@@ -140,6 +179,8 @@ class LabReport(_Model):
     funding_skipped_ns: int | None = None
     # Set on a candle backtest's completed variant (spec 0014).
     candle: CandleReport | None = None
+    # The enter decisions per UTC day and outcome (spec 0017 AC-5).
+    entry_decisions: list[EntryDecisionCount] = []
 
 
 def report_json(report: LabReport) -> str:
@@ -238,6 +279,7 @@ def report_markdown(report: LabReport) -> str:
             f"- Result: **{'pass' if band.passed else 'fail'}**",
             "",
         ]
+    lines += _entry_decision_lines(report)
     if report.skipped_hours:
         reasons: dict[str, int] = {}
         for _, reason in report.skipped_hours:
@@ -303,6 +345,7 @@ def candle_report_markdown(report: LabReport) -> str:
             for m in candle.months
         ]
         lines.append("")
+    lines += _entry_decision_lines(report)
     return "\n".join(lines)
 
 

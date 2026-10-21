@@ -53,7 +53,7 @@ from lab.runfile import (
     replay_run_from_raw,
 )
 from lab.settings import LabSettings
-from lab.strategies import ConfigValue, StrategyEntry, registry_entry
+from lab.strategies import ConfigValue, StrategyConfigError, StrategyEntry, registry_entry
 from lab.study_rows import StudyContext
 from trading_core.gate.checks import benchmark_names
 from trading_core.gate.thresholds import Thresholds
@@ -564,8 +564,21 @@ def run_holdout(settings: LabSettings, name: str, store: StudyStore, *, today: d
         stored = _load_study(session, name)
     if stored is None:
         return _refuse("holdout", [f"no study called {name!r}"])
+    if stored.lab == StudyLab.CANDLE and _studied_kind(stored, settings) == StrategyKind.SCALPING:
+        return _refuse("holdout", ["a candle screen never holds out"])
     with store.lock(stored.id):
         return _holdout_locked(settings, stored, store, today)
+
+
+def _studied_kind(stored: StudyRow, settings: LabSettings) -> StrategyKind | None:
+    """The registry kind of the study's strategy, read from its stored plan (None when not registered)."""
+    run_file = stored.plan.get("run_file")
+    strategy = run_file.get("strategy") if isinstance(run_file, Mapping) else None
+    name = strategy.get("name") if isinstance(strategy, Mapping) else None
+    try:
+        return registry_entry(str(name), test_strategies=settings.lab_test_strategies).kind
+    except StrategyConfigError:
+        return None
 
 
 def _holdout_locked(settings: LabSettings, stored: StudyRow, store: StudyStore, today: date) -> int:

@@ -1,7 +1,7 @@
 # 0017. Test three scalping candidates, chosen and ordered by a data audit, through a cheap candle screen and the replay gate
 
 **Date**: 2026-10-21
-**Status**: Proposed
+**Status**: In Progress
 
 ## Summary
 

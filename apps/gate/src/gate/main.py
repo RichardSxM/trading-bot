@@ -26,7 +26,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from gate.check_version import CheckVersionRefused, check_version
-from gate.evaluate import NothingToEvaluateError, evaluate_candidate_step, evaluate_paper_step
+from gate.evaluate import CandleScreenError, NothingToEvaluateError, evaluate_candidate_step, evaluate_paper_step
 from gate.importer import import_folder
 from gate.manual import ManualPromotionRefused, promote_manual, versions
 from gate.settings import GateSettings
@@ -99,7 +99,7 @@ def _evaluate(settings: GateSettings, engine_url: str, args: argparse.Namespace)
             done = evaluate_paper_step(engine, target, gate_commit=settings.git_commit, now=now)
         else:
             done = evaluate_candidate_step(engine, target, gate_commit=settings.git_commit, now=now)
-    except (UnknownStudyError, NothingToEvaluateError, UnknownFrozenHashError) as exc:
+    except (UnknownStudyError, NothingToEvaluateError, UnknownFrozenHashError, CandleScreenError) as exc:
         if isinstance(exc, UnknownStudyError):
             message = f"no study called {target!r}"
         elif isinstance(exc, UnknownFrozenHashError):

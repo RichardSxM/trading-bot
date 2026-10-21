@@ -17,13 +17,17 @@ from trading_core.gate.checks import MetricValue
 from trading_core.gate.paper import evaluate_paper
 from trading_core.gate.verdict import GateResult, evaluate_candidate
 from trading_core.recording import models, repository
-from trading_core.recording.enums import DecidedBy, Stage, Verdict
+from trading_core.recording.enums import DecidedBy, Stage, StrategyKind, StudyLab, Verdict
 from trading_core.recording.gate_queries import UnknownStudyError, paper_evidence, study_evidence
 from trading_core.recording.rows import JsonValue, PromotionFoldRow, PromotionRow
 
 
 class NothingToEvaluateError(Exception):
     """The study has no run of a frozen version of its strategy, so there is no version to decide on."""
+
+
+class CandleScreenError(Exception):
+    """The study is a candle screen of a scalping strategy (spec 0017 AC-8): a filter, never a gate study."""
 
 
 @dataclass(frozen=True)
@@ -43,12 +47,19 @@ def _decimal(value: str | None) -> Decimal | None:
 
 
 def evaluate_candidate_step(engine: Engine, name: str, *, gate_commit: str, now: datetime) -> Evaluation:
-    """Evaluate the study called ``name`` and append its promotion; raises ``UnknownStudyError`` or
-    ``NothingToEvaluateError``."""
+    """Evaluate the study called ``name`` and append its promotion; raises ``UnknownStudyError``,
+    ``CandleScreenError``, or ``NothingToEvaluateError``."""
     with Session(engine) as session:
-        study_id = session.execute(select(models.Study.id).where(models.Study.name == name)).scalar_one_or_none()
-    if study_id is None:
+        found = session.execute(
+            select(models.Study.id, models.Study.lab, models.Strategy.kind)
+            .join(models.Strategy, models.Strategy.id == models.Study.strategy_id)
+            .where(models.Study.name == name)
+        ).one_or_none()
+    if found is None:
         raise UnknownStudyError(name)
+    study_id, lab, kind = found
+    if lab == StudyLab.CANDLE and kind == StrategyKind.SCALPING:
+        raise CandleScreenError("a candle screen is not a gate study")
     with repository.study_lock(engine, study_id), Session(engine) as session:
         evidence = study_evidence(session, name)
         if evidence.final_version_id is None or evidence.final_frozen_hash is None:

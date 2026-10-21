@@ -17,11 +17,11 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.orm import Session, sessionmaker
 
-from gate.evaluate import evaluate_candidate_step
+from gate.evaluate import CandleScreenError, evaluate_candidate_step
 from gate.importer import BundleRefused, check_bundle, import_folder
 from trading_core.recording import models
 from trading_core.recording.bundle_codec import bundle_json
-from trading_core.recording.enums import Env, RunMode, StudyRole
+from trading_core.recording.enums import Env, RunMode, StrategyKind, StudyRole
 from trading_core.recording.gate_queries import UnknownStudyError
 
 NOW = datetime(2026, 10, 19, 15, tzinfo=UTC)
@@ -135,3 +135,28 @@ def test_evaluate_appends_one_promotion_with_evidence_and_the_same_metrics_each_
 def test_evaluate_refuses_an_unknown_study(gate_engine):
     with pytest.raises(UnknownStudyError):
         evaluate_candidate_step(gate_engine, f"none-{uuid4().hex[:8]}", gate_commit="g", now=NOW)
+
+
+@pytest.mark.postgres
+def test_evaluate_refuses_a_candle_screen_and_writes_nothing(tmp_path, gate_engine):
+    # covers: spec 0017 AC-8 (the gate reads studies.lab and strategies.kind from Postgres)
+    name = f"screen-{uuid4().hex[:8]}"
+    strategy = f"scalp_test_{uuid4().hex[:8]}"
+    the_study, the_version = _fresh(name)
+    bundle = study_bundle(the_study, the_version, strategy=strategy)
+    bundle = replace(
+        bundle,
+        strategy_kind=StrategyKind.SCALPING,
+        study_strategy_name=strategy,
+        study_strategy_kind=StrategyKind.SCALPING,
+    )
+    _write(tmp_path, "screen", bundle)
+    assert not import_folder(sessionmaker(gate_engine), tmp_path).refused
+
+    with pytest.raises(CandleScreenError, match="not a gate study"):
+        evaluate_candidate_step(gate_engine, name, gate_commit="g" * 40, now=NOW)
+    with Session(gate_engine) as session:
+        promotions = session.execute(
+            select(func.count()).select_from(models.Promotion).where(models.Promotion.study_id == the_study.id)
+        ).scalar_one()
+    assert promotions == 0

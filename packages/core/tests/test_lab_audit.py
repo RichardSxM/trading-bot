@@ -1,5 +1,6 @@
 """covers: spec 0017 AC-2 (the audit's per second samples, moves, order flow, funding, reachable, nearest rank)."""
 
+import json
 from datetime import date
 from decimal import Decimal
 
@@ -142,8 +143,9 @@ def test_audit_json_pools_days_and_is_stable():
 
     days = [day(date(2022, 4, 1), "100.5"), day(date(2022, 5, 1), "101")]
 
-    first = audit_json(days, D("1.5"), "a")
-    again = audit_json(days, D("1.5"), "b")
+    # Read back as plain JSON, as a reader of audit.json sees it.
+    first = json.loads(json.dumps(audit_json(days, D("1.5"), "a")))
+    again = json.loads(json.dumps(audit_json(days, D("1.5"), "b")))
 
     assert {k: v for k, v in first.items() if k != "generated_at"} == {
         k: v for k, v in again.items() if k != "generated_at"
