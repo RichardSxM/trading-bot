@@ -199,9 +199,19 @@ class RunFile(_Section):
             "stop_accept_timeout_s": str(STOP_ACCEPT_TIMEOUT_S),
         }
 
-    def version_config(self) -> dict[str, ConfigValue]:
-        """The replay's strategy version config: ``[paper]`` as the trader stores it, else ``[strategy.config]``."""
-        return dict(self.strategy.config if self.paper is None else self.paper)
+    def version_config(self, entry_mode: str | None = None) -> dict[str, ConfigValue]:
+        """The replay's strategy version config: ``[paper]`` as the trader stores it, else ``[strategy.config]``.
+
+        ``entry_mode`` is the variant's effective entry mode (spec 0015 AC-25), so a taker and a maker
+        run of one strategy get different version hashes; None (parity, a strategy without the
+        setting) leaves the config as it is, and a ``[paper]`` run never takes it.
+        """
+        if self.paper is not None:
+            return dict(self.paper)
+        config = dict(self.strategy.config)
+        if entry_mode is not None:
+            config["entry_mode"] = entry_mode
+        return config
 
 
 @dataclass(frozen=True)

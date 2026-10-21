@@ -6,6 +6,7 @@ payments), AC-10 (fill stats in the bundle), AC-11 (bundle and reports), AC-14 (
 The fixture is 17:55 to 18:05 UTC of real own recorder data (see fixtures/make_fixtures.py).
 """
 
+from collections import defaultdict
 from dataclasses import replace
 from datetime import UTC, date, datetime
 from decimal import ROUND_HALF_EVEN, Decimal
@@ -78,7 +79,7 @@ def batch(loaded, tmp_path_factory) -> Batch:
         loaded=loaded,
         settings=settings,
         plan=plan,
-        version_id=uuid7(),
+        version_ids=defaultdict(uuid7),
         folder=settings.lab_reports_dir / "batch",
     )
 

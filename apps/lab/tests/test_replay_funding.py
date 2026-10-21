@@ -1,5 +1,6 @@
 """covers: spec 0009 AC-14 (own replays apply their recorded funding, all or nothing)."""
 
+from collections import defaultdict
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -83,7 +84,7 @@ def batch(tmp_path):
         loaded=loaded,
         settings=settings,
         plan=PLAN,
-        version_id=uuid7(),
+        version_ids=defaultdict(uuid7),
         folder=tmp_path / "reports" / "batch",
     )
 

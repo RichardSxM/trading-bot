@@ -49,7 +49,7 @@ from lab.report import (
 )
 from lab.runfile import LoadedRun
 from lab.settings import LabSettings
-from lab.strategies import ConfigValue, registry_entry
+from lab.strategies import ConfigValue, StrategyEntry, registry_entry
 from lab.study_rows import RATIO_KIND, StudyContext, daily_equity_rows, daily_sharpe, measures_row
 from lab.units import TRADER_ID, UnitPlan, UnitResult, run_unit
 from trading_core.lab.daily import ClosedPosition, day_of, realized_daily, trade_measures
@@ -277,7 +277,8 @@ class Batch:
     loaded: LoadedRun
     settings: LabSettings
     plan: SegmentPlan
-    version_id: UUID
+    # Each variant's strategy version, by variant name: one per effective entry mode (spec 0015 AC-25).
+    version_ids: Mapping[str, UUID]
     folder: Path
     # The run's funding_rate_update rows, by time (spec 0008 AC-9). An ``own`` run has them only
     # when they cover every boundary (spec 0009 AC-14); ``funding_source`` says which applies.
@@ -324,6 +325,17 @@ def _run_config(batch: Batch, variant: VariantSpec, *, segment_end_partial: bool
         "git_commit": batch.settings.git_commit,
         **study,
     }
+
+
+def effective_entry_mode(loaded: LoadedRun, entry: StrategyEntry, variant: VariantSpec) -> str | None:
+    """The entry mode ``_strategy_config`` gives the running strategy, for its version (spec 0015 AC-25).
+
+    The variant's, else ``[strategy.config]``'s, else the default; None for a strategy without the setting
+    and for a ``[paper]`` run, whose version config never takes it.
+    """
+    if loaded.run.paper is not None:
+        return None
+    return entry.entry_mode(_strategy_config(loaded, variant))
 
 
 def _strategy_config(loaded: LoadedRun, variant: VariantSpec) -> dict[str, ConfigValue]:
@@ -427,7 +439,7 @@ def build_bundle(
         env=Env.DEMO,
         mode=RunMode.REPLAY,
         status=RunStatus.COMPLETED,
-        strategy_version_id=batch.version_id,
+        strategy_version_id=batch.version_ids[variant.name],
         trader_id=TRADER_ID,
         run_config=config,
         data_start_at=ns_to_utc(segments[0].start_ns) if segments else None,
@@ -635,7 +647,7 @@ def trial_bundle(
         env=Env.DEMO,
         mode=RunMode.REPLAY,
         status=status,
-        strategy_version_id=batch.version_id,
+        strategy_version_id=batch.version_ids[variant.name],
         trader_id=TRADER_ID,
         run_config=_run_config(batch, variant),
         data_start_at=ns_to_utc(segments[0].start_ns) if segments else None,
@@ -869,18 +881,21 @@ def replay(
     )
 
     entry = registry_entry(run.strategy.name, test_strategies=settings.lab_test_strategies)
-    version_id = store.prepare(
-        instrument_row(pinned_instrument(run.instrument_id)),
-        run.strategy.name,
-        entry.kind,
-        settings.git_commit,
-        run.version_config(),
-        entry.frozen(run.version_config()),
-    )
+    instrument = instrument_row(pinned_instrument(run.instrument_id))
+    by_mode: dict[str | None, UUID] = {}
+    version_ids: dict[str, UUID] = {}
+    for variant in variants:
+        mode = effective_entry_mode(loaded, entry, variant)
+        if mode not in by_mode:
+            config = run.version_config(mode)
+            by_mode[mode] = store.prepare(
+                instrument, run.strategy.name, entry.kind, settings.git_commit, config, entry.frozen(config)
+            )
+        version_ids[variant.name] = by_mode[mode]
     rates, funding_source, funding_skipped_ns = run_funding(tree, run.source, days, plan)
     batch_id = uuid.uuid7()
     batch = Batch(
-        study=None if study is None else study(dict.fromkeys((v.name for v in variants), version_id)),
+        study=None if study is None else study(version_ids),
         dropped_days=tuple(dropped_days),
         funding_rates=rates,
         funding_source=funding_source,
@@ -889,7 +904,7 @@ def replay(
         loaded=loaded,
         settings=settings,
         plan=plan,
-        version_id=version_id,
+        version_ids=version_ids,
         folder=settings.lab_reports_dir / str(batch_id),
     )
     batch.folder.mkdir(parents=True, exist_ok=True)
