@@ -14,15 +14,13 @@ from lab.runfile import Overrides, RunFileError, load_candle_run
 from lab.screen import EXIT_FAIL, EXIT_PASS, run_screen
 from lab.strategies import _CHECK_CONTEXT, registry_entry
 from lab.study import EXIT_OK, EXIT_USAGE, StudyStore, load_study, run_holdout, run_study
-from trading_core.lab.candles import Month
 from trading_core.node.bollinger_rsi import BollingerRsiConfig
 from trading_core.recording.enums import StrategyKind
 from trading_core.secrets import POSTGRES_PASSWORD, read_secret
 from trading_core.settings import Settings
 
-from .candle_fixtures import synthetic_month
 from .conftest import lab_settings
-from .test_study import TODAY
+from .test_study import TODAY, _catalog
 
 CANDLE_RUN = """
 instrument_id = "PF_XBTUSD.KRAKEN"
@@ -101,7 +99,7 @@ seed = 42
 def test_a_candle_screen_runs_its_development_but_never_holds_out(tmp_path, capsys):
     """Runs in the lab service: ``docker compose --profile lab run --rm -T --entrypoint pytest lab -q -m postgres``."""
     catalog, reports = tmp_path / "catalog", tmp_path / "reports"
-    synthetic_month(catalog, month=Month(2025, 9), days=5)
+    _catalog(catalog)  # the plan runs development up to the day before holdout_start
     settings = lab_settings(catalog, reports).model_copy(update={"git_commit": uuid4().hex + uuid4().hex[:8]})
     name = f"screen-{uuid4().hex[:8]}"
     base = Settings(trading_env="demo", postgres_user="lab_app")
@@ -114,10 +112,13 @@ def test_a_candle_screen_runs_its_development_but_never_holds_out(tmp_path, caps
         assert run_screen(settings, name, store.engine) == EXIT_USAGE  # no development run yet
         assert run_study(settings, load_study(_write(tmp_path, text, "screen")), store) == EXIT_OK
 
-        # Five synthetic days give no walk forward fold, so the screen fails on that, and writes its report.
-        assert run_screen(settings, name, store.engine) in (EXIT_PASS, EXIT_FAIL)
+        # A random walk may pass or fail; either way the screen writes its report on the final point.
+        code = run_screen(settings, name, store.engine)
+        assert code in (EXIT_PASS, EXIT_FAIL)
         report = json.loads((reports / f"screen-{name}" / "screen.json").read_text())
-        assert "missing:walk_forward_sharpe" in report["reasons"]
+        assert (report["study"], report["strategy"], report["final_grid_point"]) == (name, "bollinger_rsi", 0)
+        assert report["verdict"] == ("pass" if code == EXIT_PASS else "fail")
+        assert report["figures"]["min_trades_per_day"] == 17
         assert run_holdout(settings, name, store, today=TODAY) == EXIT_USAGE
         assert "a candle screen never holds out" in capsys.readouterr().err
     finally:
