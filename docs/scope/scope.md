@@ -27,7 +27,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 12 | Phone alerts & health checks | Slice 5 | done |
 | 13 | Candle backtest lab | Slice 6 | done |
 | 14 | Scalping simulator | Slice 6 | done |
-| 15 | Strategy scoring & promotion gate | Slice 6 | in-progress |
+| 15 | Strategy scoring & promotion gate | Slice 6 | done |
 | 16 | Scalping strategy candidates | Slice 7 | planned |
 | 17 | Hour level strategy candidates | Slice 7 | in-progress |
 | 18 | Trade journal export | Slice 8 | planned |
@@ -314,7 +314,7 @@ code in `apps/lab`, `packages/core/src/trading_core/lab`
 - [x] Review it (fresh model): `/check review scalping simulator`
 - [x] Document it: `/document scalping simulator`
 
-### 15. Strategy scoring & promotion gate · in-progress
+### 15. Strategy scoring & promotion gate · done
 Score every strategy on return after costs, max drawdown, and a risk adjusted ratio (win rate shown, never ranked on), with out of sample testing to catch overfitting. Only strategies that pass move to paper, and only paper winners can go live.
 **Done when:** the dashboard ranks strategies on those metrics, the gate blocks any strategy that fails out of sample or paper thresholds, and promotions are logged.
 **Carried over from research (2026-10-04), for the design to weigh:**
@@ -344,7 +344,7 @@ code in `packages/core/src/trading_core/gate`, `packages/core/src/trading_core/v
   - [x] Fixes from the first verify: `lab holdout` resumes missing benchmarks, no self benchmark, benchmarks left out of the trial count (AC-4, AC-5, AC-10, AC-11, AC-19)
   - [x] Amendments of 2026-10-21: entry mode in the frozen hash, the deploy promotion check, and the Tardis 5% off tick guard (AC-25, AC-26, spec 0016 AC-3, AC-4)
 - [x] Verify it: `/check verify strategy scoring & promotion gate` (passed 2026-10-21 on the VPS, 5647e6e)
-- [ ] Test it: `/test strategy scoring & promotion gate`
+- [x] Test it: `/test strategy scoring & promotion gate`
 - [ ] Review it (fresh model): `/check review strategy scoring & promotion gate`
 - [ ] Document it: `/document strategy scoring & promotion gate`
 
