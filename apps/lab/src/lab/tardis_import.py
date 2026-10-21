@@ -82,6 +82,11 @@ CONTEXT_TABLES: Final = (FUNDING_TABLE, MARK_TABLE, INDEX_TABLE, OPEN_INTEREST_T
 EXIT_OK: Final = 0
 EXIT_FAILED: Final = 1
 EXIT_CATALOG_FULL: Final = 3
+# Above this share of a day's trade rows off the tick, the file looks broken, not like a few
+# computed fills, so the day is refused (spec 0016 AC-3). Compared in whole numbers.
+MAX_OFF_TICK_TRADE_PERCENT: Final = 5
+# The kept trade rows of a day with off tick trades, beside the raw CSV, which is never changed (AC-4).
+KEPT_SUFFIX: Final = ".kept.csv.gz"
 
 # The compactor's settings: the reorder window and its row cap, and the silence threshold.
 WINDOW_NS: Final = 600 * SECOND_NS
@@ -101,6 +106,16 @@ class ImportFailedError(Exception):
 
 class TickMismatchError(ImportFailedError):
     """A Tardis price or size is not a multiple of the pinned instrument's increment."""
+
+
+class OffTickTradesExcessError(ImportFailedError):
+    """More than ``MAX_OFF_TICK_TRADE_PERCENT`` of a day's trade rows are off the tick (spec 0016 AC-3)."""
+
+    def __init__(self, rows: int, total: int, prices: list[str]) -> None:
+        super().__init__(f"{rows} of {total} trade rows off the tick, such as {', '.join(prices[:3])}")
+        self.rows = rows
+        self.total = total
+        self.prices = prices
 
 
 Downloader = Callable[[date, Path], None]
@@ -251,6 +266,14 @@ def import_tardis(settings: LabSettings, days: Iterable[date], *, download: Down
             return EXIT_CATALOG_FULL
         try:
             import_day(tree, day, download=download)
+        except OffTickTradesExcessError as exc:
+            log.error(
+                "lab_off_tick_trades_excess",
+                extra={
+                    "fields": {"day": day.isoformat(), "rows": exc.rows, "total": exc.total, "prices": exc.prices[:3]}
+                },
+            )
+            return EXIT_FAILED
         except TickMismatchError as exc:
             log.error("lab_tick_mismatch", extra={"fields": {"day": day.isoformat(), "error": str(exc)}})
             return EXIT_FAILED
@@ -281,6 +304,7 @@ def import_day(tree: SourceTree, day: date, *, download: Downloader = download_d
         download(day, raw_dir)
     check_ticks(instrument, raw_file(raw_dir, BOOK_CSV, day), raw_file(raw_dir, TRADES_CSV, day))
     dropped = drop_off_tick_trades(instrument, raw_file(raw_dir, TRADES_CSV, day))
+    trades_csv = dropped.kept or raw_file(raw_dir, TRADES_CSV, day)
     if dropped:
         log.warning(
             "lab_off_tick_trades_dropped",
@@ -293,7 +317,7 @@ def import_day(tree: SourceTree, day: date, *, download: Downloader = download_d
     )
     counts = DayCounts()
     convert_deltas(tree.layout, loader, raw_file(raw_dir, BOOK_CSV, day), counts)
-    convert_trades(tree.layout, loader, raw_file(raw_dir, TRADES_CSV, day), counts)
+    convert_trades(tree.layout, loader, trades_csv, counts)
     convert_funding(tree.layout, loader, raw_file(raw_dir, TICKER_CSV, day), counts)
     convert_ticker_context(tree.layout, instrument, raw_file(raw_dir, TICKER_CSV, day), counts)
     write_instruments(tree.layout, instrument, counts)
@@ -337,7 +361,7 @@ def check_ticks(instrument: CryptoPerpetual, book_csv: Path, trades_csv: Path) -
 
     The loader would round them to the instrument's precision silently, so the raw CSV text is
     checked first. A trade price off the tick is not refused here: ``drop_off_tick_trades`` removes
-    those rows (spec 0016, assumed).
+    those rows, or refuses the day when they are too many (spec 0016).
     """
     price_step = instrument.price_increment.as_decimal()
     size_step = instrument.size_increment.as_decimal()
@@ -350,22 +374,26 @@ def check_ticks(instrument: CryptoPerpetual, book_csv: Path, trades_csv: Path) -
 
 @dataclass(frozen=True)
 class DroppedTrades:
-    """The trade rows ``drop_off_tick_trades`` removed: how many, and their distinct prices."""
+    """The trade rows ``drop_off_tick_trades`` removed: how many, their distinct prices, and the kept rows' file."""
 
     rows: int = 0
     prices: list[str] = field(default_factory=list)
+    # The filtered copy conversion reads; None when nothing was dropped (conversion reads the raw CSV).
+    kept: Path | None = None
 
     def __bool__(self) -> bool:
         return self.rows > 0
 
 
 def drop_off_tick_trades(instrument: CryptoPerpetual, trades_csv: Path) -> DroppedTrades:
-    """Remove the trade rows whose price is off the pinned tick, rewriting the CSV in place (spec 0016, assumed).
+    """Write the trade rows whose price is on the pinned tick to a copy beside the raw CSV (spec 0016).
 
     From 2023-10 Kraken's trade feed carries a few bursts a day of tiny fills at one computed price
     (such as 27567.42278253538), never a price the book could show. Rounding would invent a price,
-    so the rows go; every other value is kept as its original text. The rewrite goes through a
-    temporary name, so a killed run leaves the original or the filtered file, never half of one.
+    so the rows go; every other value is kept as its original text. The raw CSV is never changed, so
+    a rerun of a killed day counts the same rows again (AC-4), and the copy goes through a temporary
+    name, so a killed run never leaves half of one. Raises ``OffTickTradesExcessError``, writing
+    nothing, when the off tick rows are more than ``MAX_OFF_TICK_TRADE_PERCENT`` of the data rows (AC-3).
     """
     off = _off_step(_distinct(trades_csv, "price"), instrument.price_increment.as_decimal())
     if not off:
@@ -374,11 +402,15 @@ def drop_off_tick_trades(instrument: CryptoPerpetual, trades_csv: Path) -> Dropp
         table = pacsv.read_csv(source, convert_options=pacsv.ConvertOptions(column_types=_all_text(trades_csv)))
     keep = pc.invert(pc.is_in(table.column("price"), value_set=pa.array(off, pa.string())))
     kept = table.filter(keep)
-    tmp = trades_csv.with_name(trades_csv.name + TMP_SUFFIX)
+    rows, total = table.num_rows - kept.num_rows, table.num_rows
+    if rows * 100 > total * MAX_OFF_TICK_TRADE_PERCENT:
+        raise OffTickTradesExcessError(rows, total, off)
+    copy = trades_csv.with_name(trades_csv.name.removesuffix(".csv.gz") + KEPT_SUFFIX)
+    tmp = copy.with_name(copy.name + TMP_SUFFIX)
     with pa.output_stream(tmp, compression="gzip") as sink:
         pacsv.write_csv(kept, sink, write_options=pacsv.WriteOptions(quoting_style="none"))
-    tmp.replace(trades_csv)
-    return DroppedTrades(table.num_rows - kept.num_rows, off)
+    tmp.replace(copy)
+    return DroppedTrades(rows, off, copy)
 
 
 def _off_step(values: set[str], step: Decimal) -> list[str]:
