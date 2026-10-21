@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import StrEnum
+from typing import Final
 
 from trading_core.gate.checks import (
     BENCHMARKS,
@@ -36,6 +37,9 @@ from trading_core.gate.folds import FoldRange, candle_ranges, common_days, repla
 from trading_core.gate.inputs import CandidateInputs, Lab, Role, StudyRunInput
 from trading_core.gate.series import DailySeries, annualized, sample_std, sharpe, to_decimal
 from trading_core.gate.stats import deflated_sharpe, moments, pbo_cscv, politis_white_block, stationary_bootstrap_lower
+
+# The deflated Sharpe's trials span the strategy kind and the lab (spec 0018 AC-19).
+TRIAL_SCOPE: Final = "kind+lab"
 
 
 class GateVerdict(StrEnum):
@@ -194,8 +198,13 @@ def _bootstrap(inputs: CandidateInputs, series: DailySeries, out: Outcome) -> No
 
 
 def _deflated(inputs: CandidateInputs, holdout: StudyRunInput, points: dict[int, DailySeries], out: Outcome) -> None:
-    """``deflated_sharpe``: the final version's development Sharpe deflated by every trial of the strategy."""
+    """``deflated_sharpe``: the final version's development Sharpe deflated by every trial of its family.
+
+    N and the trial variance span the strategy kind and lab (spec 0018 AC-19), not the study's own grid.
+    """
     out.metric("trial_count", inputs.trial_count)
+    out.metric("trial_scope", TRIAL_SCOPE)
+    out.metric("trial_pool", len(inputs.trial_sharpes))
     series = None if holdout.grid_point is None else points.get(holdout.grid_point)
     sr = None if series is None else sharpe(series.returns)
     if series is None or sr is None:
@@ -203,7 +212,7 @@ def _deflated(inputs: CandidateInputs, holdout: StudyRunInput, points: dict[int,
         out.reason(MISSING_METRIC, "deflated_sharpe")
         return
     skew, kurt = moments(series.returns)
-    trial_sharpes = [x for x in (sharpe(s.returns) for s in points.values()) if x is not None]
+    trial_sharpes = list(inputs.trial_sharpes)
     variance = sample_std(trial_sharpes) ** 2 if len(trial_sharpes) >= 2 else 0.0
     value = deflated_sharpe(sr, len(series), skew, kurt, inputs.trial_count, variance)
     dsr = to_decimal(value)
