@@ -335,7 +335,7 @@ Score every strategy on return after costs, max drawdown, and a risk adjusted ra
 spec [0015](../specs/0015-strategy-scoring-promotion-gate/index.md), with [0016](../specs/0016-tardis-off-tick-trades.md) for Tardis trades off the tick
 code in `packages/core/src/trading_core/gate`, `packages/core/src/trading_core/versioning.py`, `packages/core/src/trading_core/recording`, `apps/gate`, `apps/lab`, `apps/trader`, `apps/dashboard`
 - [x] Design it (spec): `/architect strategy scoring & promotion gate`
-- [ ] Build it: `/develop strategy scoring & promotion gate`
+- [x] Build it: `/develop strategy scoring & promotion gate`
   - [x] Thin thread: migration `0009` and `gate_app`, code and frozen hashes, thresholds file, daily equity and measures in the bundles, `lab study` and `lab holdout` for candles, `gate import` and `push-bundles.sh`, `gate evaluate`, the ranking table (AC-1 to AC-8, AC-18, AC-22, AC-23)
   - [x] Full candidate gate: folds, bootstrap, PBO, deflated Sharpe, every check and missing data reason, `lab gate --dry-run`, determinism (AC-8 to AC-13)
   - [x] Replay studies: a 2022 Tardis spike, taker and maker studies, Tardis only replay days (43 development, 1st of month holdout), replay grid capped at 4, benchmark day limiting, the `random_taker` loser study (AC-2 to AC-5, AC-10, AC-24)
@@ -343,7 +343,7 @@ code in `packages/core/src/trading_core/gate`, `packages/core/src/trading_core/v
   - [x] Dashboard depth and proof: study detail, promotion log, paper progress, permission and boundary tests, `verify.md` (AC-19 to AC-23)
   - [x] Fixes from the first verify: `lab holdout` resumes missing benchmarks, no self benchmark, benchmarks left out of the trial count (AC-4, AC-5, AC-10, AC-11, AC-19)
   - [x] Amendments of 2026-10-21: entry mode in the frozen hash, the deploy promotion check, and the Tardis 5% off tick guard (AC-25, AC-26, spec 0016 AC-3, AC-4)
-- [ ] Verify it: `/check verify strategy scoring & promotion gate`
+- [x] Verify it: `/check verify strategy scoring & promotion gate` (passed 2026-10-21 on the VPS, 5647e6e)
 - [ ] Test it: `/test strategy scoring & promotion gate`
 - [ ] Review it (fresh model): `/check review strategy scoring & promotion gate`
 - [ ] Document it: `/document strategy scoring & promotion gate`
