@@ -88,3 +88,5 @@ def test_a_manual_pass_counts_later_runs_but_never_reaches_live(session: Session
     assert result.verdict != GateVerdict.PASS
     progress = {p.frozen_hash: p for p in paper_progress(session, NOW + timedelta(days=1))}
     assert WORLD_FROZEN.frozen_hash in progress
+    assert progress[WORLD_FROZEN.frozen_hash].min_days == 30  # the floors the page shows (AC-21)
+    assert progress[WORLD_FROZEN.frozen_hash].trade_floor in (20, 100)

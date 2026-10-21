@@ -167,6 +167,8 @@ def test_paper_progress_shows_each_figure_against_its_bound(redis, clock):
             "lab_slippage_bps": "0.5",
         },
         reasons=[],
+        min_days=30,
+        trade_floor=100,
     )
     with _logged_in(redis, clock, lambda: StrategiesView([], [progress])) as client:
         page = client.get("/strategies").text
@@ -174,3 +176,5 @@ def test_paper_progress_shows_each_figure_against_its_bound(redis, clock):
     assert "Paper progress" in page
     assert "cdcdcdcdcdcd" in page
     assert "0.03 % vs 0.01 %" in page
+    assert "12.50 of 30" in page
+    assert "40 of 100" in page
