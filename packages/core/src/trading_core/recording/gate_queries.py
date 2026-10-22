@@ -147,7 +147,8 @@ def _run_input(session: Session, study_run: models.StudyRun, lab: StudyLab) -> S
             measures.avg_gross_edge,
             measures.avg_round_trip_cost,
         ),
-        funding_missing=_funding_missing(session, run.id),
+        # Only the holdout's costs are checked (AC-12), so only its positions are scanned.
+        funding_missing=role == Role.HOLDOUT and _funding_missing(session, run.id),
         cost_setting_missing=COST_SETTING[run_lab] not in run.run_config,
         version_frozen_hash=version_frozen_hash,
     )
@@ -268,12 +269,16 @@ def _sort_key(row: StudyRanking) -> tuple[bool, Decimal, bool, Decimal, str]:
     return (sharpe is None, -(sharpe or Decimal(0)), ret is None, -(ret or Decimal(0)), row.study)
 
 
-def study_rankings(session: Session) -> list[StudyRanking]:
-    """Every study, by walk forward Sharpe (descending, nulls last), ties by walk forward return (AC-18)."""
+def study_rankings(session: Session, study_id: UUID | None = None) -> list[StudyRanking]:
+    """Every study (or only ``study_id``), by walk forward Sharpe (descending, nulls last), ties by walk
+    forward return (AC-18)."""
     rows: list[StudyRanking] = []
-    studies = session.execute(
-        select(models.Study, models.Strategy.name).join(models.Strategy, models.Strategy.id == models.Study.strategy_id)
-    ).all()
+    query = select(models.Study, models.Strategy.name).join(
+        models.Strategy, models.Strategy.id == models.Study.strategy_id
+    )
+    if study_id is not None:
+        query = query.where(models.Study.id == study_id)
+    studies = session.execute(query).all()
     for study, strategy in studies:
         plan_study = study.plan.get("study")
         mode = plan_study.get("entry_mode") if isinstance(plan_study, Mapping) else None
@@ -394,9 +399,9 @@ def paper_evidence(session: Session, frozen_hash: str, now: datetime) -> PaperEv
         )
     run_ids = [r.id for r in runs]
     events = [
-        PaperEvent(closed_at, realized, True)
-        for closed_at, realized in session.execute(
-            select(models.Position.closed_at, models.Position.realized_pnl).where(
+        PaperEvent(closed_at, realized, True, funding)
+        for closed_at, realized, funding in session.execute(
+            select(models.Position.closed_at, models.Position.realized_pnl, models.Position.funding_total).where(
                 models.Position.run_id.in_(run_ids), models.Position.status == PositionStatus.CLOSED
             )
         )
@@ -488,7 +493,7 @@ class StudyDetail:
 
 def study_detail(session: Session, study_id: UUID) -> StudyDetail | None:
     """The study's detail (AC-19), or None for an unknown id."""
-    ranking = next((r for r in study_rankings(session) if r.study_id == study_id), None)
+    ranking = next(iter(study_rankings(session, study_id)), None)
     if ranking is None:
         return None
     promotions = (

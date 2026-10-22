@@ -44,7 +44,7 @@ def _imported(gate_engine) -> tuple[StrategyVersionRow, str]:
 def test_a_manual_promotion_is_refused_without_its_safeguards(gate_engine, tty, note, typed, message):
     the_version, _ = _imported(gate_engine)
     with Session(gate_engine) as session, pytest.raises(ManualPromotionRefused, match=message):
-        promote_manual(session, the_version.id, note, is_tty=tty, confirm=lambda _: typed, now=NOW)
+        promote_manual(session, the_version.id, note, is_tty=tty, confirm=lambda _: typed, clock=lambda: NOW)
 
 
 @pytest.mark.postgres
@@ -52,7 +52,7 @@ def test_a_confirmed_manual_promotion_puts_the_version_in_paper(gate_engine):
     the_version, name = _imported(gate_engine)
     with Session(gate_engine) as session:
         promotion_id = promote_manual(
-            session, the_version.id, "pre gate placeholder", is_tty=True, confirm=lambda _: name, now=NOW
+            session, the_version.id, "pre gate placeholder", is_tty=True, confirm=lambda _: name, clock=lambda: NOW
         )
         session.commit()
         row = session.get(models.Promotion, promotion_id)
@@ -64,9 +64,28 @@ def test_a_confirmed_manual_promotion_puts_the_version_in_paper(gate_engine):
 
 
 @pytest.mark.postgres
+def test_the_decision_time_is_read_after_the_name_is_typed(gate_engine):
+    the_version, name = _imported(gate_engine)
+    typed: list[str] = []
+
+    def clock():
+        assert typed, "the clock was read before the prompt was answered"
+        return NOW
+
+    def confirm(_):
+        typed.append(name)
+        return name
+
+    with Session(gate_engine) as session:
+        promotion_id = promote_manual(session, the_version.id, "note", is_tty=True, confirm=confirm, clock=clock)
+        session.rollback()
+    assert promotion_id is not None
+
+
+@pytest.mark.postgres
 def test_an_unknown_version_is_refused(gate_engine):
     with Session(gate_engine) as session, pytest.raises(ManualPromotionRefused, match="no strategy version"):
-        promote_manual(session, uuid7(), "note", is_tty=True, confirm=lambda _: "x", now=NOW)
+        promote_manual(session, uuid7(), "note", is_tty=True, confirm=lambda _: "x", clock=lambda: NOW)
 
 
 def test_the_live_step_is_refused_before_anything_is_read(capsys):

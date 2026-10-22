@@ -7,6 +7,9 @@
 # Reads a tar on stdin and keeps only its *.bundle.json members, unpacked into
 # /var/lib/kfs/bundles/<batch>/ (root owned, world readable, so the gate container's
 # app user can read the read only mount). Absolute paths and `..` are refused by tar.
+# The stream is capped at KFS_BUNDLES_MAX_BYTES (default 8 GiB) and needs that much free space
+# first; an archive over the cap, or one whose matching members are not regular files (a link,
+# a device), is refused whole with exit 1 before anything is unpacked.
 # Then runs `kfs-compose run --rm gate import` and exits with its status: 0 all loaded or
 # already there, 1 a file was refused (the others still loaded).
 set -euo pipefail
@@ -17,17 +20,35 @@ HOST_DIR=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 . "$HOST_DIR/lib.sh"
 
 BUNDLE_DIR="$KFS_STATE_DIR/bundles"
+MAX_BYTES=${KFS_BUNDLES_MAX_BYTES:-8589934592}
+KFS_COMPOSE=${KFS_COMPOSE:-/usr/local/sbin/kfs-compose}
+
+refuse() { echo "kfs-bundles: refused: $*" >&2; exit 1; }
+# POSIX flags only: the VPS runs the Rust coreutils.
+free_bytes() { df -Pk "$1" | awk 'NR == 2 { printf "%.0f\n", $4 * 1024 }'; }
 
 [ "$(id -u)" -eq 0 ] || { echo "kfs-bundles: run as root (sudo -n kfs-bundles)" >&2; exit 1; }
 install -d -m 0755 -o root -g root "$BUNDLE_DIR"
 tmp=$(mktemp -d "$BUNDLE_DIR/.incoming.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
-tar -x -f - -C "$tmp" --no-same-owner --no-same-permissions --wildcards '*.bundle.json'
+[ "$(free_bytes "$BUNDLE_DIR")" -ge "$MAX_BYTES" ] || refuse "less than $MAX_BYTES bytes free in $BUNDLE_DIR"
+head -c "$((MAX_BYTES + 1))" >"$tmp/in.tar"
+size=$(wc -c <"$tmp/in.tar" | tr -d " ")
+[ "$size" -le "$MAX_BYTES" ] || refuse "the archive is over $MAX_BYTES bytes"
+[ "$(free_bytes "$BUNDLE_DIR")" -ge "$size" ] || refuse "no room to unpack $size bytes in $BUNDLE_DIR"
+odd=$(tar -t -v -f "$tmp/in.tar" --wildcards '*.bundle.json' | grep -cv '^-' || true)
+[ "$odd" -eq 0 ] || refuse "$odd member(s) named *.bundle.json are not regular files"
+mkdir "$tmp/x"
+tar -x -f "$tmp/in.tar" -C "$tmp/x" --no-same-owner --no-same-permissions --wildcards '*.bundle.json'
+rm -f "$tmp/in.tar"
 count=0
 while IFS= read -r -d '' file; do
-    rel=${file#"$tmp"/}
+    rel=${file#"$tmp/x"/}
     install -D -m 0644 -o root -g root "$file" "$BUNDLE_DIR/$rel"
     count=$((count + 1))
-done < <(find "$tmp" -type f -name '*.bundle.json' -print0)
+done < <(find "$tmp/x" -type f -name '*.bundle.json' -print0)
 echo "kfs-bundles: received $count bundle file(s) into $BUNDLE_DIR"
-exec /usr/local/sbin/kfs-compose run --rm gate import
+# exec never runs the EXIT trap, so the unpacked copy goes now.
+rm -rf "$tmp"
+trap - EXIT
+exec "$KFS_COMPOSE" run --rm gate import

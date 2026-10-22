@@ -8,6 +8,7 @@ closed that day. Every row also carries the day's closed trades and fees (by clo
 """
 
 import math
+from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -70,12 +71,21 @@ def _day_start_ns(day: date) -> int:
     return int(datetime(day.year, day.month, day.day, tzinfo=UTC).timestamp()) * 1_000_000_000
 
 
-def _sums(
-    day: date, positions: Sequence[ClosedPosition], funding: Sequence[FundingCash]
-) -> tuple[int, Decimal, Decimal]:
-    closed = [p for p in positions if day_of(p.closed_ns) == day]
-    paid = sum((f.amount for f in funding if day_of(f.paid_ns) == day), Decimal(0))
-    return len(closed), sum((p.fees_total for p in closed), Decimal(0)), paid
+class _ByDay:
+    """The positions and funding of a run grouped by UTC day once, each day in input order."""
+
+    def __init__(self, positions: Sequence[ClosedPosition], funding: Sequence[FundingCash]) -> None:
+        self.closed: dict[date, list[ClosedPosition]] = defaultdict(list)
+        self.paid: dict[date, list[Decimal]] = defaultdict(list)
+        for p in positions:
+            self.closed[day_of(p.closed_ns)].append(p)
+        for f in funding:
+            self.paid[day_of(f.paid_ns)].append(f.amount)
+
+    def sums(self, day: date) -> tuple[int, Decimal, Decimal]:
+        closed = self.closed.get(day, [])
+        paid = sum(self.paid.get(day, []), Decimal(0))
+        return len(closed), sum((p.fees_total for p in closed), Decimal(0)), paid
 
 
 def marked_daily(
@@ -88,6 +98,7 @@ def marked_daily(
 ) -> list[DayClose]:
     """One row per UTC day from ``start_ns`` to ``end_ns``: the marked equity at the day's close."""
     points = sorted(curve, key=lambda p: p.ts_ns)
+    by_day = _ByDay(positions, funding)
     rows: list[DayClose] = []
     equity = starting_balance
     index = 0
@@ -97,7 +108,7 @@ def marked_daily(
         while index < len(points) and points[index].ts_ns <= close_ns:
             equity = points[index].equity
             index += 1
-        trades, fees, paid = _sums(day, positions, funding)
+        trades, fees, paid = by_day.sums(day)
         rows.append(DayClose(day, equity, trades, fees, paid))
         day += timedelta(days=1)
     return rows
@@ -110,10 +121,11 @@ def realized_daily(
     funding: Sequence[FundingCash],
 ) -> list[DayClose]:
     """One row per replayed day: the starting balance plus the net P&L of that day's closed positions."""
+    by_day = _ByDay(positions, funding)
     rows = []
     for day in sorted(set(days)):
-        net = sum((p.net_pnl for p in positions if day_of(p.closed_ns) == day), Decimal(0))
-        trades, fees, paid = _sums(day, positions, funding)
+        net = sum((p.net_pnl for p in by_day.closed.get(day, [])), Decimal(0))
+        trades, fees, paid = by_day.sums(day)
         rows.append(DayClose(day, starting_balance + net, trades, fees, paid))
     return rows
 

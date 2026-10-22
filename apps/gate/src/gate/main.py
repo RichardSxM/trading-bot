@@ -53,6 +53,10 @@ class _Parser(argparse.ArgumentParser):
         sys.exit(EXIT_USAGE)
 
 
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
 def parser() -> argparse.ArgumentParser:
     """The command line."""
     root = _Parser(prog="gate", description="The promotion gate (spec 0015).")
@@ -93,12 +97,11 @@ def _evaluate(settings: GateSettings, engine_url: str, args: argparse.Namespace)
         print("gate evaluate: give a study name, or --step paper-live --frozen-hash <h>", file=sys.stderr)
         return EXIT_USAGE
     engine = create_engine(engine_url, pool_size=2, pool_pre_ping=True)
-    now = datetime.now(UTC)
     try:
         if paper:
-            done = evaluate_paper_step(engine, target, gate_commit=settings.git_commit, now=now)
+            done = evaluate_paper_step(engine, target, gate_commit=settings.git_commit, now=datetime.now(UTC))
         else:
-            done = evaluate_candidate_step(engine, target, gate_commit=settings.git_commit, now=now)
+            done = evaluate_candidate_step(engine, target, gate_commit=settings.git_commit, clock=_now)
     except (UnknownStudyError, NothingToEvaluateError, UnknownFrozenHashError) as exc:
         if isinstance(exc, UnknownStudyError):
             message = f"no study called {target!r}"
@@ -154,7 +157,7 @@ def _promote(engine_url: str, args: argparse.Namespace) -> int:
                 args.note,
                 is_tty=sys.stdin.isatty() and sys.stdout.isatty(),
                 confirm=input,
-                now=datetime.now(UTC),
+                clock=_now,
             )
             session.commit()
     except ManualPromotionRefused as exc:

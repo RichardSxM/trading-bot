@@ -17,7 +17,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.orm import Session, sessionmaker
 
-from gate.evaluate import evaluate_candidate_step
+from gate.evaluate import NothingToEvaluateError, evaluate_candidate_step
 from gate.importer import BundleRefused, check_bundle, import_folder
 from trading_core.recording import models
 from trading_core.recording.bundle_codec import bundle_json
@@ -126,8 +126,8 @@ def test_evaluate_appends_one_promotion_with_evidence_and_the_same_metrics_each_
     _study_files(tmp_path, name)
     assert not import_folder(sessionmaker(gate_engine), tmp_path).refused
 
-    first = evaluate_candidate_step(gate_engine, name, gate_commit="g" * 40, now=NOW)
-    second = evaluate_candidate_step(gate_engine, name, gate_commit="g" * 40, now=NOW)
+    first = evaluate_candidate_step(gate_engine, name, gate_commit="g" * 40, clock=lambda: NOW)
+    second = evaluate_candidate_step(gate_engine, name, gate_commit="g" * 40, clock=lambda: NOW)
 
     assert first.promotion_id != second.promotion_id
     assert first.result.metrics == second.result.metrics
@@ -153,7 +153,7 @@ def test_evaluate_appends_one_promotion_with_evidence_and_the_same_metrics_each_
 @pytest.mark.postgres
 def test_evaluate_refuses_an_unknown_study(gate_engine):
     with pytest.raises(UnknownStudyError):
-        evaluate_candidate_step(gate_engine, f"none-{uuid4().hex[:8]}", gate_commit="g", now=NOW)
+        evaluate_candidate_step(gate_engine, f"none-{uuid4().hex[:8]}", gate_commit="g", clock=lambda: NOW)
 
 
 def _inconsistent(result) -> set[str]:
@@ -167,9 +167,26 @@ def test_evaluate_cross_checks_the_holdout_against_the_development_evidence(tmp_
     _study_files(tmp_path / "bad", bad)
     assert not import_folder(sessionmaker(gate_engine), tmp_path).refused
 
-    consistent = evaluate_candidate_step(gate_engine, good, gate_commit="g" * 40, now=NOW)
-    broken = evaluate_candidate_step(gate_engine, bad, gate_commit="g" * 40, now=NOW)
+    consistent = evaluate_candidate_step(gate_engine, good, gate_commit="g" * 40, clock=lambda: NOW)
+    broken = evaluate_candidate_step(gate_engine, bad, gate_commit="g" * 40, clock=lambda: NOW)
 
     assert _inconsistent(consistent.result) == set()
     assert _inconsistent(broken.result) == {"holdout_grid_point", "development_days"}
     assert broken.result.verdict.value != "pass"
+
+
+@pytest.mark.postgres
+def test_a_study_with_no_holdout_never_overrides_another_studys_decision(tmp_path, gate_engine):
+    strategy_id = uuid7()
+    the_version = version(strategy_id, {"fast": 12, "shared": uuid4().hex})
+    first, second = study(strategy_id, f"first-{uuid4().hex[:8]}"), study(strategy_id, f"second-{uuid4().hex[:8]}")
+    _write(tmp_path / "first", "dev", study_bundle(first, the_version))
+    _write(tmp_path / "second", "dev", study_bundle(second, the_version))
+    assert not import_folder(sessionmaker(gate_engine), tmp_path).refused
+
+    decided = evaluate_candidate_step(gate_engine, first.name, gate_commit="g" * 40, clock=lambda: NOW)
+    again = evaluate_candidate_step(gate_engine, first.name, gate_commit="g" * 40, clock=lambda: NOW)
+
+    assert decided.result.verdict.value == again.result.verdict.value == "insufficient"
+    with pytest.raises(NothingToEvaluateError, match="no completed holdout"):
+        evaluate_candidate_step(gate_engine, second.name, gate_commit="g" * 40, clock=lambda: NOW)

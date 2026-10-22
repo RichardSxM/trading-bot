@@ -29,11 +29,17 @@ _SIX = Decimal("0.000001")
 
 @dataclass(frozen=True)
 class PaperEvent:
-    """One step of the chained paper equity: a closed position's realized P&L, or a funding payment."""
+    """One step of the chained paper equity: a closed position's realized P&L, or a funding payment.
+
+    ``position_funding`` is a closed position's total funding. It moves no equity (each payment is its
+    own event at its own time), but it counts in the trade's return, as the lab's ``holdout_trades``
+    counts it, so the paper and lab trade returns mean the same thing.
+    """
 
     at: datetime
     amount: Decimal
     closes_trade: bool
+    position_funding: Decimal = Decimal(0)
 
 
 @dataclass(frozen=True)
@@ -103,7 +109,7 @@ def paper_record(starting_balance: Decimal, events: Sequence[PaperEvent]) -> Pap
     returns: list[Decimal] = []
     for event in sorted(events, key=lambda e: (e.at, not e.closes_trade)):
         if event.closes_trade:
-            returns.append(event.amount / equity if equity > 0 else Decimal(0))
+            returns.append((event.amount + event.position_funding) / equity if equity > 0 else Decimal(0))
         equity += event.amount
         peak = max(peak, equity)
         if peak > 0:

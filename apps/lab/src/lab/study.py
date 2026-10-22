@@ -423,8 +423,12 @@ def run_study(settings: LabSettings, study: LoadedStudy, store: StudyStore) -> i
     code_hashes = {f.code_hash for f in frozen.values() if f is not None}
     with store.session() as session:
         stored = _load_study(session, study.section.name)
+    thresholds = study.thresholds.to_json()
     if stored is not None and stored.plan_hash != study.plan_hash:
         return _refuse("study", [f"study {study.section.name!r} exists with another plan; give a new name"])
+    if stored is not None and stored.thresholds_hash != _sha(thresholds):  # type: ignore[arg-type]
+        why = "was planned with other thresholds; restore thresholds.toml or give a new name"
+        return _refuse("study", [f"study {study.section.name!r} {why}"])
     if stored is not None and stored.code_hash not in code_hashes:
         return _refuse("study", [f"study {study.section.name!r}: the strategy's code changed since it started"])
     instrument = instrument_row(pinned_instrument(run.instrument_id))
@@ -436,7 +440,6 @@ def run_study(settings: LabSettings, study: LoadedStudy, store: StudyStore) -> i
         next(iter(configs.values())),
         next(iter(frozen.values())),
     )
-    thresholds = study.thresholds.to_json()
     with store.session() as session:
         strategy_id = repository.strategy_version_row(session, first).strategy_id
         row = StudyRow(
@@ -595,7 +598,8 @@ def _holdout_locked(settings: LabSettings, stored: StudyRow, store: StudyStore, 
         if missing:
             return _refuse("holdout", [f"grid points without a completed development run: {', '.join(missing)}"])
         final = repository.final_grid_point(session, stored.id)
-        assert final is not None
+        if final is None:  # every point completed, so a winner exists; refuse rather than guess
+            return _refuse("holdout", [f"study {stored.name!r} has no development winner"])
         final_hash = done[final].frozen_hash
         own = repository.study_holdout(session, stored.id)
         spent = own is None and repository.holdout_spent(session, final_hash)

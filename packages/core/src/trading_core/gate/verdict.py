@@ -36,6 +36,7 @@ from trading_core.gate.checks import (
     check_holdout_sharpe,
     check_trade_floor,
     check_versions,
+    summary_of,
     text_of,
 )
 from trading_core.gate.folds import FoldRange, candle_ranges, common_days, replay_ranges, walk_forward
@@ -90,8 +91,8 @@ def decide(reasons: Sequence[Reason]) -> GateVerdict:
 
 def _cost_reasons(run: StudyRunInput, out: Outcome) -> None:
     """A missing cost on the holdout makes its numbers untrustworthy (AC-12)."""
-    assert run.summary is not None
-    if run.summary.trade_count > 0 and run.summary.fees_total == 0:
+    summary = summary_of(run)
+    if summary.trade_count > 0 and summary.fees_total == 0:
         out.reason(MISSING_COST, "costs", "fees_total=0")
     if run.funding_missing:
         out.reason(MISSING_COST, "costs", "funding")
@@ -260,12 +261,12 @@ def evaluate_candidate(inputs: CandidateInputs) -> GateResult:
             out.reason(MISSING_RUN, "holdout")
         return GateResult(decide(out.reasons), tuple(out.reasons), out.metrics)
 
-    assert holdout.summary is not None
+    summary = summary_of(holdout)
     check_holdout_evidence(inputs, holdout, out)
     series = holdout.series(inputs.lab)
     out.metric("holdout_run_id", str(holdout.run_id))
-    out.metric("holdout_return", holdout.summary.return_after_costs)
-    out.metric("holdout_win_rate", holdout.summary.win_rate)
+    out.metric("holdout_return", summary.return_after_costs)
+    out.metric("holdout_win_rate", summary.win_rate)
     out.metric("holdout_days", len(series))
     _cost_reasons(holdout, out)
     check_trade_floor(inputs, holdout, out)
