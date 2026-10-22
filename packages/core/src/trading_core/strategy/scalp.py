@@ -64,6 +64,12 @@ def round_stop(side: OrderSide, stop_px: Decimal, tick: Decimal) -> Decimal:
     return (stop_px / tick).to_integral_value(rounding) * tick
 
 
+def round_target(side: OrderSide, target_px: Decimal, tick: Decimal) -> Decimal:
+    """``target_px`` on the price grid, away from the entry: a long's up, a short's down (AC-19)."""
+    rounding = ROUND_CEILING if side == OrderSide.BUY else ROUND_FLOOR
+    return (target_px / tick).to_integral_value(rounding) * tick
+
+
 def stop_on_losing_side(side: OrderSide, stop_px: Decimal, mid: Decimal) -> bool:
     """True when a long's stop is below the mid, or a short's above it."""
     return stop_px < mid if side == OrderSide.BUY else stop_px > mid

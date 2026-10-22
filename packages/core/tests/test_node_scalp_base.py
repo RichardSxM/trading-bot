@@ -415,3 +415,121 @@ def test_without_regime_adx_max_no_regime_bars_are_subscribed():
 
     assert strategy.regime_bar_type is None
     assert "adx" not in _decisions(rows)[0].inputs
+
+
+# AC-19: maker target exits ---------------------------------------------------------------------
+
+MAKER_EXIT = {"exit_mode": "maker"}
+
+
+class _LoseTarget(_Scripted):
+    """Something other than the base cancels the resting target as soon as the venue accepts it."""
+
+    def on_order_accepted(self, event):
+        super().on_order_accepted(event)
+        if event.client_order_id == self._target_id:
+            super().cancel_order(self.cache.order(event.client_order_id))
+
+
+def _targets(engine):
+    return [o for o in _orders(engine, OrderType.LIMIT) if o.is_reduce_only]
+
+
+def test_a_maker_target_rests_after_the_stop_and_its_fill_is_the_target_exit():
+    engine, strategy, rows = _run(
+        lambda t: 85_000 + int(t * 60), 6, {1: (OrderSide.BUY, -200, 100)}, entry_mode="taker", **MAKER_EXIT
+    )
+
+    (target,) = _targets(engine)
+    assert target.is_post_only
+    assert target.status == OrderStatus.FILLED
+    (enter,) = _decisions(rows, Intent.ENTER)
+    assert target.price.as_decimal() == D(enter.inputs["target_px"])
+    (stop,) = _orders(engine, OrderType.STOP_MARKET)
+    assert stop.ts_init <= target.ts_init
+    assert stop.status == OrderStatus.CANCELED
+    (exit_decision,) = _decisions(rows, Intent.EXIT)
+    assert exit_decision.reason == "target"
+    # No market exit: only the entry went out at market.
+    assert [o for o in _orders(engine, OrderType.MARKET) if o.is_reduce_only] == []
+    assert engine.cache.orders_open() == []
+    assert strategy.phase == Phase.FLAT
+
+
+def test_a_post_only_rejected_target_exits_at_market_with_one_target_decision():
+    # A long's target at the bid would trade at once, so the venue rejects it as post only.
+    engine, strategy, rows = _run(
+        lambda t: FLAT_MARKET, 4, {1: (OrderSide.BUY, -200, -1)}, entry_mode="taker", **MAKER_EXIT
+    )
+
+    (target,) = _targets(engine)
+    assert target.status == OrderStatus.REJECTED
+    (exit_decision,) = _decisions(rows, Intent.EXIT)
+    assert exit_decision.reason == "target"
+    assert exit_decision.inputs["target_refused"].startswith("rejected")
+    (_entry, exit_order) = _orders(engine, OrderType.MARKET)
+    assert exit_order.is_reduce_only
+    assert engine.cache.positions_open() == []
+    assert engine.cache.orders_open() == []
+    assert strategy.phase == Phase.FLAT
+
+
+def test_a_target_cancelled_by_someone_else_exits_at_market():
+    engine, _strategy, rows = _run(
+        lambda t: FLAT_MARKET, 4, LONG, strategy_cls=_LoseTarget, entry_mode="taker", **MAKER_EXIT
+    )
+
+    (exit_decision,) = _decisions(rows, Intent.EXIT)
+    assert (exit_decision.reason, exit_decision.inputs["target_refused"]) == ("target", "canceled")
+    assert engine.cache.positions_open() == []
+    assert engine.cache.orders_open() == []
+
+
+@pytest.mark.parametrize(
+    ("mid", "script", "reason"),
+    [
+        (lambda t: FLAT_MARKET, LONG, "time_stop"),
+        (lambda t: 85_000 - int(t * 100), {1: (OrderSide.BUY, -100, 300)}, "stop"),
+    ],
+)
+def test_the_time_stop_and_a_stop_fill_cancel_the_target_and_leave_no_order_behind(mid, script, reason):
+    engine, strategy, rows = _run(mid, 9, script, entry_mode="taker", **MAKER_EXIT)
+
+    (exit_decision,) = _decisions(rows, Intent.EXIT)
+    assert exit_decision.reason == reason
+    (target,) = _targets(engine)
+    assert target.status == OrderStatus.CANCELED
+    assert engine.cache.orders_open() == []
+    assert engine.cache.positions_open() == []
+    assert strategy.phase == Phase.FLAT
+
+
+def test_a_partial_target_fill_shrinks_the_stop_and_records_one_target_decision():
+    # A thin touch: the maker entry fills 0.001 twice before its timeout, then price rises through the
+    # target, which fills 0.001 a quote.
+    engine, _strategy, rows = _run(
+        lambda t: 85_000 - int(t * 30) if t < 1.5 else 84_955 + int((t - 1.5) * 400),
+        5,
+        {1: (OrderSide.BUY, -1500, 50)},
+        size="0.0010",
+        consume=True,
+        entry_timeout_s=25,
+        **MAKER_EXIT,
+    )
+
+    (target,) = _targets(engine)
+    assert target.status == OrderStatus.FILLED
+    assert target.quantity == Quantity.from_str("0.0020")
+    (stop,) = _orders(engine, OrderType.STOP_MARKET)
+    assert Quantity.from_str("0.0010") in [e.quantity for e in stop.events if type(e).__name__ == "OrderUpdated"]
+    assert [d.reason for d in _decisions(rows, Intent.EXIT)] == ["target"]
+    assert engine.cache.positions_open() == []
+
+
+def test_without_exit_mode_no_target_order_rests():
+    engine, _strategy, rows = _run(
+        lambda t: 85_000 + int(t * 60), 6, {1: (OrderSide.BUY, -200, 100)}, entry_mode="taker"
+    )
+
+    assert _targets(engine) == []
+    assert [d.reason for d in _decisions(rows, Intent.EXIT)] == ["target"]

@@ -14,6 +14,7 @@ from trading_core.strategy.scalp import (
     ScalpSignal,
     pre_refusal,
     round_stop,
+    round_target,
     spread_bps,
     stop_through,
     target_hit,
@@ -164,3 +165,15 @@ def test_no_signal_before_twice_bb_n_bars():
 def test_rsi_low_must_be_under_50():
     with pytest.raises(ValueError, match="rsi_low"):
         _state(rsi_low=50)
+
+
+@pytest.mark.parametrize(
+    ("side", "px", "expected"),
+    [
+        (OrderSide.BUY, D("100.2"), D("100.5")),
+        (OrderSide.SELL, D("100.2"), D("100.0")),
+        (OrderSide.BUY, D("100.5"), D("100.5")),
+    ],
+)
+def test_round_target_rounds_away_from_the_entry(side, px, expected):
+    assert round_target(side, px, D("0.5")) == expected

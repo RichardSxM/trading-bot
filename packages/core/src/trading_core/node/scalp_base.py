@@ -15,6 +15,11 @@ market order with an ``exit`` decision (``target``, ``time_stop``, or ``stop`` f
 Before any exit, the entry's open remainder is cancelled; an entry fill that still arrives after
 that is closed at once (``late_entry_fill``). A closed position cancels whatever rests.
 
+With ``exit_mode = "maker"`` (AC-19) the target is a reduce only, post only limit at ``target_px``
+instead, placed right after the stop and following the position's quantity like it; its first fill is
+the ``target`` exit, and the quote check does not run. A post only rejection, or a cancel the base did
+not ask for, exits at market as ``target``. Every other exit cancels it first.
+
 A stop that is refused or not accepted in time blocks entries and closes the position, as in
 ``MacdBaseline`` (fail closed). A stop already through at the first fill is never submitted: a
 ``stop_through`` exit closes the position with no block (AC-18). A venue rejection is settled by
@@ -91,6 +96,7 @@ from trading_core.strategy.scalp import (
     mid_of,
     pre_refusal,
     round_stop,
+    round_target,
     spread_bps,
     stop_through,
     target_hit,
@@ -155,6 +161,7 @@ class ScalpConfig(GuardedConfig, frozen=True, kw_only=True):
     regime_adx_max: Decimal | None = None
     regime_adx_period: int = 14
     regime_bar_spec: str = "5-MINUTE-LAST"
+    exit_mode: Literal["taker", "maker"] = "taker"
     use_market_context: bool = True
 
 
@@ -197,6 +204,9 @@ class ScalpStrategy(KfsStrategy, StaleQuoteBlock):
         self._entry_id: ClientOrderId | None = None
         self._stop_id: ClientOrderId | None = None
         self._exit_id: ClientOrderId | None = None
+        # The maker target (AC-19): None again once the base cancels it or it is refused.
+        self._target_id: ClientOrderId | None = None
+        self._target_decision: UUID | None = None
         self._signal: ScalpSignal | None = None
         self._first_fill_ns: int | None = None
         self._kill_switch_tags: list[str] | None = None
@@ -250,6 +260,7 @@ class ScalpStrategy(KfsStrategy, StaleQuoteBlock):
         Idempotent: a close already sent is not sent again. The stop rests until the position closes.
         """
         self._retire_entry()
+        self._cancel_target()
         self._kill_switch_tags = [f"{ORIGIN_TAG}{OrderOrigin.KILL_SWITCH}", f"{HALT_TAG}{halt_id}"]
         if self._position() is None or self._exit_id is not None:
             return
@@ -284,9 +295,11 @@ class ScalpStrategy(KfsStrategy, StaleQuoteBlock):
             log.debug("regime calm again", extra={"fields": {"code": "regime_cleared", "adx": str(adx)}})
 
     def on_quote_tick(self, tick: QuoteTick) -> None:
-        """The verdict on a rejected stop, then the target exit: the first quote that reaches ``target_px``."""
+        """The verdict on a rejected stop, then the taker target exit: the first quote that reaches ``target_px``."""
         if self._rejected_stop is not None and tick.instrument_id == self._instrument_id:
             self._settle_rejected_stop(tick)
+        if self._cfg.exit_mode == "maker":  # the resting target exits instead
+            return
         if self.phase != Phase.HOLDING or self._signal is None or tick.instrument_id != self._instrument_id:
             return
         position = self._position()
@@ -419,9 +432,17 @@ class ScalpStrategy(KfsStrategy, StaleQuoteBlock):
             self._cancel_timer(_STOP_ACCEPT)
 
     def on_order_filled(self, event: OrderFilled) -> None:
-        """A retired entry's fill is closed at once; a stop fill is the ``stop`` exit."""
+        """A retired entry's fill is closed at once; a stop fill is the ``stop`` exit, a target's ``target``."""
         if event.client_order_id in self._retired:
             self._close_late_fill(event)
+        elif event.client_order_id == self._target_id and self._target_decision is None:
+            # Recorded once: a later partial fill of the same target adds nothing. The rest keeps resting.
+            closing = OrderSide.SELL if event.order_side == NautilusOrderSide.SELL else OrderSide.BUY
+            self._target_decision = uuid.uuid7()
+            inputs: JsonObject = {"fill_px": event.last_px.as_decimal(), "fill_qty": event.last_qty.as_decimal()}
+            now = self.clock.timestamp_ns()
+            self._record_decision(self._target_decision, Intent.EXIT, closing, inputs, True, None, now, EXIT_TARGET)
+            self._retire_entry()
         elif event.client_order_id == self._stop_id and self._exit_decision is None:
             position = self._position()
             closing = OrderSide.SELL if event.order_side == NautilusOrderSide.SELL else OrderSide.BUY
@@ -431,6 +452,7 @@ class ScalpStrategy(KfsStrategy, StaleQuoteBlock):
             self._record_decision(self._exit_decision, Intent.EXIT, closing, inputs, True, None, now, EXIT_STOP)
             self.phase = Phase.EXITING
             self._retire_entry()
+            self._cancel_target()
             if position is None:
                 self._back_to_flat()
 
@@ -444,7 +466,7 @@ class ScalpStrategy(KfsStrategy, StaleQuoteBlock):
         self._sync_stop()
 
     def on_position_changed(self, event: PositionChanged) -> None:
-        """A later entry fill: the stop follows the position's quantity."""
+        """A later entry fill or a partial target fill: the stop (and target) follow the position's quantity."""
         if event.instrument_id == self._instrument_id and self.phase == Phase.HOLDING:
             self._sync_stop()
 
@@ -460,11 +482,12 @@ class ScalpStrategy(KfsStrategy, StaleQuoteBlock):
         self._back_to_flat()
 
     def on_order_modify_rejected(self, event: OrderModifyRejected) -> None:
-        """A stop that already triggered cannot follow a late fill; logged, not retried."""
-        if event.client_order_id == self._stop_id:
+        """A stop that already triggered (or a target) cannot follow a late fill; logged, not retried."""
+        if event.client_order_id in (self._stop_id, self._target_id):
+            which = "stop" if event.client_order_id == self._stop_id else "target"
             log.info(
-                "stop quantity not modified",
-                extra={"fields": {"code": "stop_modify_rejected", "reason": str(event.reason)}},
+                f"{which} quantity not modified",
+                extra={"fields": {"code": f"{which}_modify_rejected", "reason": str(event.reason)}},
             )
 
     def on_order_denied(self, event: OrderDenied) -> None:
@@ -508,6 +531,8 @@ class ScalpStrategy(KfsStrategy, StaleQuoteBlock):
                 self._stop_rejected(f"stop {why}")
             else:
                 self._stop_failed(f"stop {why}")
+        elif client_order_id == self._target_id and position is not None and self.phase == Phase.HOLDING:
+            self._target_refused(position, why)
         elif client_order_id == self._exit_id:
             self._exit_refused(why)
 
@@ -524,6 +549,7 @@ class ScalpStrategy(KfsStrategy, StaleQuoteBlock):
             self._submit_stop(position)
         elif stop.is_open and stop.quantity != position.quantity and stop.status != NautilusOrderStatus.TRIGGERED:
             self.modify_order(stop, quantity=position.quantity)
+        self._sync_target(position)
 
     def _stop_through(self, position: Position) -> bool:
         # AC-18: a stop already in the market would be rejected and block entries until a restart,
@@ -586,6 +612,7 @@ class ScalpStrategy(KfsStrategy, StaleQuoteBlock):
         self._block_stop_not_accepted(self._stop_id, why, self.entry_decision)
         self.phase = Phase.EXITING
         self._retire_entry()
+        self._cancel_target()
         self._submit_exit()
 
     def _block_stop_not_accepted(self, stop_id: ClientOrderId | None, why: str, decision: UUID | None) -> None:
@@ -618,6 +645,7 @@ class ScalpStrategy(KfsStrategy, StaleQuoteBlock):
         self._rejected_stop = rejected
         self.phase = Phase.EXITING
         self._retire_entry()
+        self._cancel_target()
         self._submit_exit()
         quote = self.cache.quote_tick(self._instrument_id)
         if quote is not None and self._rejected_stop_through(
@@ -672,7 +700,62 @@ class ScalpStrategy(KfsStrategy, StaleQuoteBlock):
         self._exit_decision = decision
         self.phase = Phase.EXITING
         self._retire_entry()
+        self._cancel_target()  # sent with the exit, not awaited: both are reduce only
         self._submit_exit()
+
+    # The maker target (AC-19) ---------------------------------------------------------------
+
+    def _sync_target(self, position: Position) -> None:
+        # Placed once while holding, right after the stop; then its unfilled rest follows the position.
+        if self._cfg.exit_mode != "maker" or self._signal is None or self.phase != Phase.HOLDING:
+            return
+        if self._target_id is None:
+            if self._target_decision is None:
+                self._submit_target(position)
+            return
+        target = self.cache.order(self._target_id)
+        if target is None or not target.is_open or target.is_pending_cancel or target.is_pending_update:
+            return
+        if target.leaves_qty != position.quantity:
+            quantity = target.filled_qty.as_decimal() + position.quantity.as_decimal()
+            self.modify_order(target, quantity=self._instrument().make_qty(quantity))
+
+    def _submit_target(self, position: Position) -> None:
+        assert self._signal is not None  # set with the entry
+        instrument = self._instrument()
+        long = position.side == NautilusPositionSide.LONG
+        px = round_target(self._signal.side, self._signal.target_px, instrument.price_increment.as_decimal())
+        order = self.order_factory.limit(
+            self._instrument_id,
+            NautilusOrderSide.SELL if long else NautilusOrderSide.BUY,
+            position.quantity,
+            instrument.make_price(px),
+            time_in_force=TimeInForce.GTC,
+            post_only=True,
+            reduce_only=True,
+            tags=[f"{DECISION_TAG}{self.entry_decision}", f"{PARENT_TAG}{self._entry_id}"],
+        )
+        self._target_id = order.client_order_id
+        self.submit_order(order)
+
+    def _cancel_target(self) -> None:
+        # Its cancel event then matches no tracked order and is ignored.
+        target = None if self._target_id is None else self.cache.order(self._target_id)
+        self._target_id = None
+        if target is not None and target.is_open and not target.is_pending_cancel:
+            self.cancel_order(target)
+
+    def _target_refused(self, position: Position, why: str) -> None:
+        self._target_id = None
+        if why == "canceled" and (self._gate.halted or (self._gate.paused and self._gate.state is None)):
+            log.info("target cancelled by the close in progress", extra={"fields": {"code": "target_canceled_closing"}})
+            return
+        if why.startswith("rejected"):
+            # Post only: the price was already through the target, so it is reached; take it at market.
+            log.info("target rejected, exiting at market", extra={"fields": {"code": "target_rejected", "why": why}})
+        else:
+            log.warning("target lost, exiting at market", extra={"fields": {"code": "target_lost", "why": why}})
+        self._decide_exit(EXIT_TARGET, position, {"target_refused": why})
 
     def _submit_exit(self, event: object = None) -> None:
         position = self._position()
