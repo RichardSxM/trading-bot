@@ -64,6 +64,9 @@ HEARTBEAT_EVERY_S = 10.0
 OFFLINE_FAIL_CODES: Final = frozenset({"catalog_hour_mismatch", "compactor_pass_failed", "backlog_needs_space"})
 # A backlog converts in one or two passes; more means something keeps changing without finishing.
 MAX_OFFLINE_PASSES: Final = 20
+# Without the B2 copy, retention never deletes an hour written in the last day, so an hour still
+# being converted or rewritten is never touched.
+LOCAL_KEEP_NS: Final = 24 * 3600 * 1_000_000_000
 
 
 class CompactorSettings(CatalogDiskSettings, ContextSettings):
@@ -75,7 +78,11 @@ class CompactorSettings(CatalogDiskSettings, ContextSettings):
     catalog_require_marker: bool = False
     # Retention keeps the Parquet catalog (`data/`) under this size (spec 0007 AC-6).
     catalog_cap_gb: Decimal = Field(default=Decimal(30), gt=0)
-    # The backup's catalog step writes it; retention deletes only hours older than its cutoff (AC-8).
+    # True only while the backup copies the catalog to B2: then retention deletes only hours older
+    # than the cutoff in the backup state (AC-8). False since 2026-10-22, when B2's free 10 GB filled:
+    # the catalog lives on the VPS disk only, and retention keeps just the newest day.
+    catalog_needs_backup: bool = False
+    # The backup's catalog step writes it; read only when catalog_needs_backup is true.
     backup_state_path: Path = Path("/state/catalog_backup.json")
     # Parquet bytes per feather byte, for the dead run space check (spec 0007 AC-9): measured 0.0275
     # in Milestone 1, times 1.5.
@@ -482,12 +489,15 @@ class Compactor:
                 self._store.remove_run_if_empty(folder.name)
 
 
-def run_retention(store: CatalogStore, *, state_path: Path, cap_bytes: int, floor_bytes: int, now_ns: int) -> None:
-    """AC-6: delete the oldest whole hours, once backed up, while the catalog is over its cap or
-    free space under its floor. Without a valid backup state, nothing is deleted."""
-    cutoff_ns = None
+def run_retention(
+    store: CatalogStore, *, state_path: Path, needs_backup: bool, cap_bytes: int, floor_bytes: int, now_ns: int
+) -> None:
+    """AC-6: delete the oldest whole hours while the catalog is over its cap or free space under its
+    floor. With ``needs_backup``, only hours the backup state says are in B2, and nothing without a
+    valid state; without it, any hour last written before the newest ``LOCAL_KEEP_NS``."""
+    cutoff_ns = None if needs_backup else now_ns - LOCAL_KEEP_NS
     try:
-        raw = read_backup_state(state_path)
+        raw = read_backup_state(state_path) if needs_backup else None
         if raw is not None:
             cutoff_ns = parse_backup_state(raw, now_ns).cutoff_ns
     except BackupStateInvalid as exc:
@@ -626,6 +636,7 @@ def main() -> None:
             run_retention(
                 store,
                 state_path=settings.backup_state_path,
+                needs_backup=settings.catalog_needs_backup,
                 cap_bytes=int(settings.catalog_cap_gb * GB),
                 floor_bytes=int(settings.catalog_free_floor_gb * GB),
                 now_ns=time.time_ns(),

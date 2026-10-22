@@ -72,6 +72,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The trader starts in paper only when the latest candidate to paper decision for its `frozen_hash` is a pass; otherwise it exits 78. A live run needs the latest paper to live decision for that hash to be a gate pass (see spec 0015).
 - `kfs-deploy` runs the new release's `migrate` first, then checks that the new trader's version has its paper pass, before it pauses or drains anything. Without the pass it refuses with exit 4 and prints the exact `gate promote --manual` command to run.
 - `lab import-tardis` keeps a Tardis day that has bursts of tiny trades off the price tick: it drops only those trade rows, logs how many, and keeps every other row as it was. A day where they pass 5% of its trades is still refused whole, and the raw CSV is never changed (see spec 0016).
+- The nightly backup sends only the database, the env file, and the deploy log to B2. The catalog outgrew B2's free 10 GB, so it now lives on the VPS disk only, and the compactor's retention no longer waits for a B2 copy before it deletes an hour more than a day old (`CATALOG_NEEDS_BACKUP`, default `false`). `scripts/fetch-catalog.sh` finds no days until the catalog goes back to B2 (spec 0007 amendment).
 
 ### Removed
 - `PLACEHOLDER_NOTIONAL_USD`. The order notional cap covers it.
