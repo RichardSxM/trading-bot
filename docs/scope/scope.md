@@ -345,7 +345,7 @@ code in `packages/core/src/trading_core/gate`, `packages/core/src/trading_core/v
   - [x] Amendments of 2026-10-21: entry mode in the frozen hash, the deploy promotion check, and the Tardis 5% off tick guard (AC-25, AC-26, spec 0016 AC-3, AC-4)
 - [x] Verify it: `/check verify strategy scoring & promotion gate` (passed 2026-10-21 on the VPS, 5647e6e)
 - [x] Test it: `/test strategy scoring & promotion gate`
-- [ ] Review it (fresh model): `/check review strategy scoring & promotion gate`
+- [x] Review it (fresh model): `/check review strategy scoring & promotion gate`
 - [ ] Document it: `/document strategy scoring & promotion gate`
 
 ## Slice 7: First strategies
