@@ -346,7 +346,7 @@ code in `packages/core/src/trading_core/gate`, `packages/core/src/trading_core/v
 - [x] Verify it: `/check verify strategy scoring & promotion gate` (passed 2026-10-21 on the VPS, 5647e6e)
 - [x] Test it: `/test strategy scoring & promotion gate`
 - [x] Review it (fresh model): `/check review strategy scoring & promotion gate`
-- [ ] Document it: `/document strategy scoring & promotion gate`
+- [x] Document it: `/document strategy scoring & promotion gate` (CHANGELOG, 2026-10-22)
 
 ## Slice 7: First strategies
 

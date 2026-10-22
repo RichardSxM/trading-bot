@@ -93,3 +93,13 @@ You added a pure gate in `trading_core/gate`, frozen version hashes, a study and
 Core coverage is strong: unit tests exist for folds, series, stats, thresholds, verdict, paper, versioning, daily, study days, and the bundle codec, plus integration tests for roles, study bundles, paper evidence, and the gate app (import, evaluate twice, manual promotion, check-version). The lab has a full candle study run with resume and a spent holdout, and the deploy check has stub based shell tests.
 
 Gaps: no test for the replay holdout path (`_replay_holdout`, `_resume_benchmarks`, the benchmark day limit), none for `last_complete_day`, none for a bundle with a malformed UUID, date, or decimal value (finding above), none for two holdouts in one study or for mismatched `study_runs` and version hashes (the first two majors), and none for the deploy check against an old schema. The pure statistics tests are mostly hand worked cases; one test against a published deflated Sharpe or PBO example would add confidence.
+
+## Follow up (2026-10-22, PR #95)
+
+- The 3 majors are fixed in 49fc4ee (migration 0010, the `inconsistent_evidence` reasons, migrate before the deploy check).
+- The minors and nits are fixed in 0fde2fd, with three choices worth knowing:
+  - The trade bootstrap keeps its exact random draws (only its lookups moved out of the loop), so past metrics stay reproducible. It is faster, not capped.
+  - `TYPE_CHECKING` imports still count in the closure. No module uses them today, and a wider closure only fails safe; skipping them would have touched every frozen hash for no gain. The limits are now stated in `versioning.py` and spec AC-1.
+  - The 0009 downgrade was already right: 0005 never granted `lab_app` SELECT on `promotions`, so it revokes only what 0009 granted. A comment says so.
+- Still open by choice: the dashboard recomputes paper progress per request (one private user, so not worth a cache yet), and `BundleFile.rows` reads the file once per row list.
+- Found while testing: `kfs-bundles` ended with `exec`, so its EXIT trap never ran, and every push left an unpacked copy in `/var/lib/kfs/bundles/.incoming.*`. Fixed in the same commit.
