@@ -25,6 +25,7 @@ EXIT_TARGET: Final = "target"
 EXIT_TIME_STOP: Final = "time_stop"
 EXIT_STOP: Final = "stop"
 EXIT_LATE_ENTRY_FILL: Final = "late_entry_fill"
+EXIT_STOP_THROUGH: Final = "stop_through"
 
 BPS: Final = Decimal(10_000)
 MINUTE_NS: Final = 60_000_000_000
@@ -103,6 +104,17 @@ def pre_refusal(signal: ScalpSignal, gate: EntryGate) -> str | None:
 def target_hit(long: bool, bid: Decimal, ask: Decimal, target_px: Decimal) -> bool:
     """A long's target is hit when the bid is at or above it; a short's when the ask is at or below it."""
     return bid >= target_px if long else ask <= target_px
+
+
+def stop_through(long: bool, bid: Decimal, ask: Decimal, avg_px: Decimal, stop_px: Decimal) -> bool:
+    """True when a stop at ``stop_px`` is already through at the entry fill (spec 0017 AC-18).
+
+    A long's stop is through when the bid or the average fill price is at or below it; a short's
+    when the ask or the average fill price is at or above it.
+    """
+    if long:
+        return bid <= stop_px or avg_px <= stop_px
+    return ask >= stop_px or avg_px >= stop_px
 
 
 def time_stop_due(first_fill_ns: int, time_stop_min: int, now_ns: int) -> bool:

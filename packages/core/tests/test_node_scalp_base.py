@@ -1,7 +1,7 @@
 """covers: spec 0017 AC-6 (the regime block: unwarm and trending ADX block, calm clears, lifted on stop) and AC-5
 (the scalping base: maker and taker entries, the entry timeout and partial fills, the
 stop following each fill, the target, time stop, and stop exits, late entry fills, and the spread cap,
-reward floor, and stop side refusals).
+reward floor, and stop side refusals), and AC-18 (a stop already through at the fill exits with no block).
 
 Runs a scripted ``ScalpStrategy`` child in a BacktestEngine on synthetic quotes, with 1 minute MID bars
 built from them. Needs the ``node`` extra.
@@ -33,7 +33,7 @@ from trading_core.node.strategy import PauseGate
 from trading_core.recording.enums import Env, Intent, OrderSide, RiskEventKind, RiskVerdict, Severity
 from trading_core.recording.rows import DecisionRow, RiskEventRow
 from trading_core.recording.spool import WriteItem
-from trading_core.strategy.blocks import EntryBlocks
+from trading_core.strategy.blocks import BlockReason, EntryBlocks
 from trading_core.strategy.scalp import ScalpSignal
 
 D = Decimal
@@ -69,6 +69,13 @@ class _StuckCancel(_Scripted):
         if order.client_order_id == self._entry_id:
             return
         super().cancel_order(order, *args, **kwargs)
+
+
+class _NoThroughCheck(_Scripted):
+    """Skips the AC-18 check, so a stop in the market reaches the venue and is rejected."""
+
+    def _stop_through(self, position):
+        return False
 
 
 def _quotes(mid, minutes, size="5.0000", every_s=10):
@@ -244,6 +251,47 @@ def test_a_stop_fill_is_the_stop_exit_and_leaves_no_exit_order_behind():
     assert [o for o in _orders(engine, OrderType.MARKET) if o.is_reduce_only] == []
     assert engine.cache.orders_open() == []
     assert strategy.phase == Phase.FLAT
+
+
+# The bid is the mid less 1, so a long's stop 1 under the close is already through when the entry fills.
+THROUGH_THEN_LONG = {1: (OrderSide.BUY, -1, 300), 3: (OrderSide.BUY, -200, 300)}
+
+
+@pytest.mark.parametrize(
+    ("mid", "script", "entry_mode"),
+    [
+        (lambda t: FLAT_MARKET, THROUGH_THEN_LONG, "taker"),
+        (lambda t: FLAT_MARKET, {1: (OrderSide.SELL, 1, -300), 3: (OrderSide.SELL, 200, -300)}, "taker"),
+        # Falling: the resting bid fills when the market trades through it, so the bid is then below the stop.
+        (lambda t: 85_000 - int(t * 30), THROUGH_THEN_LONG, "maker"),
+    ],
+)
+def test_a_stop_already_through_at_the_fill_exits_at_once_and_blocks_nothing(mid, script, entry_mode):
+    engine, strategy, rows = _run(mid, 6, script, entry_mode=entry_mode)
+
+    first, second = _decisions(rows, Intent.ENTER)
+    assert (first.risk_verdict, second.risk_verdict) == (RiskVerdict.APPROVED, RiskVerdict.APPROVED)
+    (exit_decision, *_) = _decisions(rows, Intent.EXIT)
+    assert exit_decision.reason == "stop_through"
+    assert {"bid", "ask", "avg_px", "stop_px"} <= set(exit_decision.inputs)
+    # No stop for the first entry; the second one, with room, got its stop.
+    (stop,) = _orders(engine, OrderType.STOP_MARKET)
+    assert stop.trigger_price.as_decimal() == D(second.inputs["stop_px"])
+    assert BlockReason.STOP_NOT_ACCEPTED not in strategy._blocks.active()
+    assert not [r for r in rows if isinstance(r, RiskEventRow) and r.severity == Severity.CRITICAL]
+
+
+def test_a_stop_the_venue_rejects_still_blocks_entries():
+    # Without the AC-18 check the same stop reaches the venue, which rejects it as in the market.
+    _engine, strategy, rows = _run(
+        lambda t: FLAT_MARKET, 6, THROUGH_THEN_LONG, strategy_cls=_NoThroughCheck, entry_mode="taker"
+    )
+
+    assert BlockReason.STOP_NOT_ACCEPTED in strategy._blocks.active()
+    (event,) = [r for r in rows if isinstance(r, RiskEventRow) and r.severity == Severity.CRITICAL]
+    assert event.kind == RiskEventKind.ORDER_REJECTED
+    _first, second = _decisions(rows, Intent.ENTER)
+    assert second.risk_reason == "blocked:stop_not_accepted"
 
 
 def test_a_late_entry_fill_after_the_exit_is_closed_at_once():

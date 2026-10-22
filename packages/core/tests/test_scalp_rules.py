@@ -1,5 +1,6 @@
-"""covers: spec 0017 AC-5 (the pure refusal order, spread, reward floor, stop side, target and time stop) and
-AC-13 (``bollinger_rsi``: a long, a short, non flat bands refused, warmup)."""
+"""covers: spec 0017 AC-5 (the pure refusal order, spread, reward floor, stop side, target and time stop),
+AC-18 (the stop already through at the fill), and AC-13 (``bollinger_rsi``: a long, a short, non flat bands
+refused, warmup)."""
 
 from decimal import Decimal
 
@@ -14,6 +15,7 @@ from trading_core.strategy.scalp import (
     pre_refusal,
     round_stop,
     spread_bps,
+    stop_through,
     target_hit,
     time_stop_due,
 )
@@ -78,6 +80,17 @@ def test_the_target_is_reached_by_the_bid_for_a_long_and_the_ask_for_a_short():
     assert not target_hit(True, D("100.5"), D(101), D(101))
     assert target_hit(False, D("98.5"), D(99), D(99))
     assert not target_hit(False, D(99), D("99.5"), D(99))
+
+
+def test_a_stop_is_through_when_the_quote_or_the_fill_price_is_at_or_past_it():
+    # long(bid, ask, avg_px, stop): the bid or the fill at or below the stop.
+    assert not stop_through(True, D(100), D(101), D("100.5"), D(99))
+    assert stop_through(True, D(99), D(100), D("100.5"), D(99))
+    assert stop_through(True, D(100), D(101), D(99), D(99))
+    # A short: the ask or the fill at or above the stop.
+    assert not stop_through(False, D(99), D(100), D("99.5"), D(101))
+    assert stop_through(False, D(100), D(101), D("99.5"), D(101))
+    assert stop_through(False, D(99), D(100), D(101), D(101))
 
 
 def test_the_time_stop_is_due_at_its_minute():

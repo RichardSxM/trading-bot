@@ -69,7 +69,7 @@ from trading_core.recording.enums import (
     RiskVerdict,
     Severity,
 )
-from trading_core.recording.mappers import DECISION_TAG, HALT_TAG, ORIGIN_TAG, PARENT_TAG
+from trading_core.recording.mappers import DECISION_TAG, HALT_TAG, ORIGIN_TAG, PARENT_TAG, weighted_avg
 from trading_core.recording.rows import DecisionRow, JsonObject, RiskEventRow
 from trading_core.recording.spool import WriteCall, WriteItem
 from trading_core.risk.check import EntryRequest, InvalidRiskInput, check_entry, refusal_severity
@@ -78,6 +78,7 @@ from trading_core.strategy.blocks import BlockReason, EntryBlocks
 from trading_core.strategy.scalp import (
     EXIT_LATE_ENTRY_FILL,
     EXIT_STOP,
+    EXIT_STOP_THROUGH,
     EXIT_TARGET,
     EXIT_TIME_STOP,
     MINUTE_NS,
@@ -88,6 +89,7 @@ from trading_core.strategy.scalp import (
     pre_refusal,
     round_stop,
     spread_bps,
+    stop_through,
     target_hit,
 )
 from trading_core.strategy.scalp_indicators import Adx
@@ -490,9 +492,35 @@ class ScalpStrategy(KfsStrategy, StaleQuoteBlock):
             return
         stop = self._stop_order()
         if stop is None:
+            if self._stop_through(position):
+                return
             self._submit_stop(position)
         elif stop.is_open and stop.quantity != position.quantity and stop.status != NautilusOrderStatus.TRIGGERED:
             self.modify_order(stop, quantity=position.quantity)
+
+    def _stop_through(self, position: Position) -> bool:
+        # AC-18: a stop already in the market would be rejected and block entries until a restart,
+        # so exit at market instead, with no block.
+        assert self._signal is not None  # set with the entry
+        quote = self.cache.quote_tick(self._instrument_id)
+        entry = None if self._entry_id is None else self.cache.order(self._entry_id)
+        fills = (
+            []
+            if entry is None
+            else [(e.last_px.as_decimal(), e.last_qty.as_decimal()) for e in entry.events if isinstance(e, OrderFilled)]
+        )
+        avg_px = weighted_avg(fills)
+        if quote is None or avg_px is None:
+            return False
+        bid, ask = quote.bid_price.as_decimal(), quote.ask_price.as_decimal()
+        long = position.side == NautilusPositionSide.LONG
+        if not stop_through(long, bid, ask, avg_px, self._signal.stop_px):
+            return False
+        log.info("stop already through at the fill; exiting", extra={"fields": {"code": EXIT_STOP_THROUGH}})
+        self._decide_exit(
+            EXIT_STOP_THROUGH, position, {"bid": bid, "ask": ask, "avg_px": avg_px, "stop_px": self._signal.stop_px}
+        )
+        return True
 
     def _submit_stop(self, position: Position) -> None:
         assert self._signal is not None  # set with the entry
@@ -548,11 +576,15 @@ class ScalpStrategy(KfsStrategy, StaleQuoteBlock):
         if position is not None and self.phase == Phase.HOLDING:
             self._decide_exit(EXIT_TIME_STOP, position)
 
-    def _decide_exit(self, reason: str, position: Position) -> None:
+    def _decide_exit(self, reason: str, position: Position, extra: JsonObject | None = None) -> None:
         decision = uuid.uuid7()
         now = self.clock.timestamp_ns()
         closing = OrderSide.SELL if position.side == NautilusPositionSide.LONG else OrderSide.BUY
-        inputs: JsonObject = {"position_qty": position.quantity.as_decimal(), "first_fill_ns": self._first_fill_ns}
+        inputs: JsonObject = {
+            "position_qty": position.quantity.as_decimal(),
+            "first_fill_ns": self._first_fill_ns,
+            **(extra or {}),
+        }
         quote = self.cache.quote_tick(self._instrument_id)
         if quote is not None:
             inputs = {**inputs, "mid": mid_of(quote.bid_price.as_decimal(), quote.ask_price.as_decimal())}
