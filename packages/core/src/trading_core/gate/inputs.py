@@ -107,10 +107,12 @@ class CandidateInputs:
     """Everything ``evaluate_candidate`` reads for one study.
 
     ``code_hash`` is the final version's (None when it predates spec 0015). ``trial_count`` is N for
-    the deflated Sharpe: distinct frozen hashes over the strategy's development and holdout study
-    runs, failed ones too (benchmarks are yardsticks, not attempts). ``final_grid_point`` is the
-    development winner as the lab ranks it (``repository.final_grid_point``), the only grid point the
-    holdout may run.
+    the deflated Sharpe: distinct frozen hashes over the development and holdout study runs of every
+    strategy of the same kind in the same lab, failed ones too (benchmarks are yardsticks, not
+    attempts; spec 0018 AC-19). ``trial_sharpes`` are that family's per day Sharpes, one per frozen
+    hash with a completed development run, for the deflated Sharpe's trial variance.
+    ``final_grid_point`` is the development winner as the lab ranks it (``repository.final_grid_point``),
+    the only grid point the holdout may run.
     """
 
     study_id: UUID
@@ -123,6 +125,7 @@ class CandidateInputs:
     runs: tuple[StudyRunInput, ...]
     holdout_trades: tuple[TradeReturn, ...] = ()
     trial_count: int = 1
+    trial_sharpes: tuple[float, ...] = ()
     fold_overrides: tuple[tuple[str, int], ...] = ()
     final_grid_point: int | None = None
 

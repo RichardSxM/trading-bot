@@ -33,6 +33,9 @@ RISK = RiskLimits(
     stop_slippage_bps=D(5),
 )
 HOUR_LEVEL = sorted(name for name, entry in REGISTRY.items() if entry.kind == StrategyKind.HOUR_LEVEL)
+# Each candle strategy's settings for the synthetic days; a short trend average gives connors_rsi room to trade.
+CONFIGS = {"connors_rsi": {"rsi_period": 2, "rsi_lower": 10, "trend_sma": 20}}
+NOTIONAL = {"notional_usd": "10000"}
 RUN = """
 instrument_id = "PF_XBTUSD.KRAKEN"
 from = 2026-02-01
@@ -78,7 +81,7 @@ def _plan(catalog, name, **overrides):
         risk=RISK,
         seed=7,
         strategy_name=name,
-        strategy_config={"notional_usd": "10000"},
+        strategy_config=CONFIGS.get(name, NOTIONAL),
         stale_quote_s=D(300),
         test_strategies=True,
         market=MarketContextValues(max_age_funding_s=18_000, liquidations_available=False),
@@ -104,8 +107,8 @@ def test_every_candle_strategy_decides_the_same_before_each_of_five_cuts(month, 
     assert mismatches == []
 
 
-def test_the_registry_has_the_two_candle_strategies():
-    assert HOUR_LEVEL == ["buy_and_hold", "macd_baseline"]
+def test_the_registry_has_the_candle_strategies():
+    assert HOUR_LEVEL == ["buy_and_hold", "connors_rsi", "macd_baseline"]
 
 
 # A cut lies 1 to 59 minutes past an hour, so the cut run has the bar that closed before it but not
