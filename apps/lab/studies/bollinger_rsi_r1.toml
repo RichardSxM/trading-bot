@@ -1,0 +1,45 @@
+# bollinger_rsi's one revision (spec 0017 child 0001, ## Revision 1; index AC-19 to AC-21): the v4
+# screen's rules, config, and grid with a resting post only target (exit_mode = "maker") and the
+# reward floor that follows from it (1.5 x the 4 bps maker round trip). It is a candle gate study
+# (AC-20), so unlike a screen it holds out. Run `lab study studies/bollinger_rsi_r1.toml`, then
+# `lab screen bollinger_rsi_r1`; only after the screen passed and verify.md recorded it, run
+# `lab holdout bollinger_rsi_r1`, push the bundles, `gate import`, and `gate evaluate` on the VPS.
+# The plan is frozen by name: change anything here and give the study a new name.
+instrument_id = "PF_XBTUSD.KRAKEN"
+from = 2023-01-01                    # UTC day, inclusive: the development range starts here
+to = 2025-10-18                      # the day before holdout_start; lab holdout runs the holdout year
+seed = 7
+stale_quote_s = 300
+maker_fee = "0.0002"                 # strings, parsed as Decimal (Kraken base tier)
+taker_fee = "0.0005"
+slippage_bps = "2"                   # per side, built into the synthetic quote's spread
+starting_balance_usd = "10000"
+leverage = "2"
+
+[risk]
+max_order_notional = "2000"
+max_leverage = "2"
+
+[strategy]
+name = "bollinger_rsi"
+[strategy.config]
+bar_spec = "1-MINUTE-LAST"
+bb_n = 20
+rsi_n = 14
+atr_n = 14
+flat_band_frac = "0.5"
+stop_atr_buffer = "0.25"
+time_stop_min = 15
+entry_mode = "maker"
+entry_timeout_s = 30
+min_target_bps = "6"
+exit_mode = "maker"
+[strategy.grid]                      # 4 points; every point is a trial
+bb_k = ["2.0", "2.5"]
+rsi_low = [30, 25]
+
+[study]
+name = "bollinger_rsi_r1"
+lab = "candle"                       # candle folds: 12 months in sample first, then 6 month steps
+seed = 42                            # the bootstrap's seed
+candle_gate = true                   # judged by the gate on the candle holdout (AC-20)
