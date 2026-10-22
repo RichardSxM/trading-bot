@@ -37,7 +37,7 @@ Warmup: exactly 40 one minute bars (`2 × bb_n`: the first band at bar 20, then 
 
 | File | Lab | Differs by |
 |---|---|---|
-| `apps/lab/studies/bollinger_rsi_screen_v2.toml` | candle | no regime gate, `max_spread_bps` unset (replaces `bollinger_rsi_screen.toml`, void, see index task 12b) |
+| `apps/lab/studies/bollinger_rsi_screen_v3.toml` | candle | no regime gate, `max_spread_bps` unset (replaces `bollinger_rsi_screen.toml` and `bollinger_rsi_screen_v2.toml`, both void, see index tasks 12b and 12c) |
 | `apps/lab/studies/bollinger_rsi_screen_adx.toml` | candle | `regime_adx_max = "25"`, `max_spread_bps` unset |
 | `apps/lab/studies/bollinger_rsi.toml` | replay | `regime_adx_max = "25"`, `max_spread_bps` = the audit p95 (index AC-3) |
 

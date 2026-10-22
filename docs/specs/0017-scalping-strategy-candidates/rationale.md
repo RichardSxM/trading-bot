@@ -86,6 +86,17 @@ Options weighed with the engineer:
 
 A real rejection after the check passed still blocks, so fail closed holds for anything unexpected. The edit changes `scalp_base.py` only, so it changes the frozen hash of the three scalping strategies and no other.
 
+## Amendment 2026-10-22 (second): the rejected stop verdict (AC-18)
+
+The rerun `bollinger_rsi_screen_v2` latched the same block 4 times in its first 25 minutes, once per grid point, while the new check fired only once. The cause: Nautilus's backtest engine hands each quote to the simulated venue before the strategy. A quote that fills the maker entry also moves the venue's book past the stop, but the strategy's cached quote is still the one before it, so the fill check sees room and the venue rejects the stop (`bid=22955` against a stop of 22966). A live venue can be ahead of the strategy's quote the same way.
+
+Options weighed (the engineer asked for the work to continue on the recommendation):
+- **Let the next quote settle a rejection (chosen)**: the market exit goes out at once as before, entries stay refused, and the first quote after the rejection, the one the venue already used, decides: through means `stop_through` with no block, otherwise the spec 0006 block and critical risk event. No reason text is parsed, and the block is never off while the answer is open.
+- **Match the venue's reject reason text** ("in the market"): rejected. The text is the simulator's, Kraken's differs, and a wording change would silently turn the block back on or off.
+- **Hold the stop back until the next quote**: rejected. It leaves a live position with no stop for a moment, and with no stop at all on a stale feed.
+
+A denial, a cancel by someone else, and a stop not accepted in time still block at once, so fail closed holds for everything the quote cannot explain.
+
 ## Audit result
 
 Filled in by build task 2 in `verify.md` (batch folder, spread p95, median 5 minute move, `reachable` flags, and the resulting order), before any candidate study runs.
