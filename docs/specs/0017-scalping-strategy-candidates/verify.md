@@ -68,6 +68,23 @@ Started 11:01 UTC on `kfs/lab:s0017` (commit e6c21ac, batch `01a16348-352e-76c2-
 
 No `lab screen` ran on it, and its rows count toward N like the first. The second AC-18 amendment (the next quote settles a rejected stop, index task 12c) fixed it, and the screen reruns as `bollinger_rsi_screen_v3`.
 
+### Void: `bollinger_rsi_screen_v3` and `bollinger_rsi_screen_adx` (2026-10-22, next quote verdict only)
+
+`bollinger_rsi_screen_v3` started 13:33 UTC on `kfs/lab:s0017` (commit 8d24813, batch `01a163d2-2cd7-7424-aacf-652ba55687ef`) and finished all four grid points at 14:24 UTC. The fill check fired once. 3 stops were still rejected as in the market (all sell stops, the venue's bid below the stop, for example 2023-01-24 and 2023-02-03), and none of them was settled as through, so `STOP_NOT_ACCEPTED` blocked entries after the first rejection in each grid point. 16,246 signals were refused with `blocked:stop_not_accepted`.
+
+| Grid point | Run | Trades (2.8 years) | Net P&L (USD) |
+|---|---|---|---|
+| grid-1 | `0a8272ee-7724-4634-9bd1-2673378d69de` | 10 | 1.41 |
+| grid-2 | `9a04b97b-8b10-4ed3-a1f2-207cb3c47aae` | 9 | −37.37 |
+| grid-3 | `a51e8662-6a73-4076-b6ce-6a83a3d3ac93` | 16 | −4.58 |
+| grid-4 | `ffacd759-f201-4b78-bde2-2370f59540de` | 18 | −20.52 |
+
+`lab screen bollinger_rsi_screen_v3` ran and said fail (exit 3: `missing:walk_forward_sharpe`, `fee_hurdle`, `trades_per_day`), but that verdict is void because the block, not the strategy, set the trade count.
+
+The cause: the candle lab sends a minute's low as one quote, and the next quote is the close, back above the stop. That low fills the resting maker entry while the strategy's cache still holds the older quote, so the stop goes out. The strategy then receives the low quote, and only after it the venue's rejection. The next quote, which the second amendment waited for, was back above the stop, so the rejection looked unexplained. A node test reproduced it (one quote dip to 84700 under a stop at 84800, the venue's reason `bid=84699`, the next quote at 84999). The third AC-18 amendment (index task 12d) also checks the cached quote when the rejection arrives, and the screen reruns as `bollinger_rsi_screen_v4`.
+
+`bollinger_rsi_screen_adx` started next at 14:24 UTC on the same image (batch `01a16400-b6de-761b-af30-618dd62933b3`) and was stopped by hand at about 14:45 UTC with no grid point finished. It was already refusing signals with `blocked:stop_not_accepted`, so it is void too and reruns as `bollinger_rsi_screen_adx_v2`. The rows of both studies stay in Postgres and count toward N.
+
 ## Test notes
 
 - `apps/lab/tests/test_candle_failure.py::test_sigterm_stops_every_unit_writes_interrupted_reports_and_exits_130` fails (exit 1, not 130) when the machine is loaded, on `main` as well as this branch. It sends SIGTERM on a fixed 2 second timer, which races the backtest's setup. This branch doesn't cause it; a fix belongs in its own change.

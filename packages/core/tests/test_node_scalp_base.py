@@ -307,6 +307,26 @@ def test_a_rejected_stop_the_next_quote_shows_through_exits_and_blocks_nothing()
     assert (rejected.status, resting.status) == (OrderStatus.REJECTED, OrderStatus.ACCEPTED)
 
 
+def test_a_rejected_stop_whose_through_quote_came_first_exits_and_blocks_nothing():
+    # As in the candle lab: one quote dips through the stop and fills the resting entry, the strategy
+    # sees that quote before the rejection, and the next quote is back above the stop.
+    engine, strategy, rows = _run(
+        lambda t: 84_700 if abs(t - 2.5) < 1e-9 else FLAT_MARKET,
+        7,
+        {3: (OrderSide.BUY, -200, 300), 5: (OrderSide.BUY, -200, 300)},
+    )
+
+    (rejected,) = _orders(engine, OrderType.STOP_MARKET)
+    assert rejected.status == OrderStatus.REJECTED
+    assert BlockReason.STOP_NOT_ACCEPTED not in strategy._blocks.active()
+    assert not [r for r in rows if isinstance(r, RiskEventRow) and r.severity == Severity.CRITICAL]
+    (exit_decision,) = _decisions(rows, Intent.EXIT)
+    assert exit_decision.reason == "stop_through"
+    assert D(exit_decision.inputs["bid"]) <= D(exit_decision.inputs["stop_px"])
+    first, second = _decisions(rows, Intent.ENTER)
+    assert (first.risk_verdict, second.risk_verdict) == (RiskVerdict.APPROVED, RiskVerdict.APPROVED)
+
+
 def test_a_stop_the_venue_rejects_for_real_still_blocks_entries():
     _engine, strategy, rows = _run(
         lambda t: FLAT_MARKET, 6, THROUGH_THEN_LONG, strategy_cls=_RealReject, entry_mode="taker"

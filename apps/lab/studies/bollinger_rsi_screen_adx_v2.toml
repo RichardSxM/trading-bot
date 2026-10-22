@@ -1,6 +1,6 @@
 # A candle screen of bollinger_rsi (spec 0017 child 0001, index AC-8 to AC-10): the replay study's
-# strategy config and grid, on 1 minute candles. Run `lab study studies/bollinger_rsi_screen_adx.toml`,
-# then `lab screen bollinger_rsi_screen_adx`.
+# strategy config and grid, on 1 minute candles. Run `lab study studies/bollinger_rsi_screen_adx_v2.toml`,
+# then `lab screen bollinger_rsi_screen_adx_v2`.
 # A screen is a filter before the replay study, never a gate study: it never holds out.
 # The plan is frozen by name: change anything here and give the study a new name.
 instrument_id = "PF_XBTUSD.KRAKEN"
@@ -37,6 +37,6 @@ bb_k = ["2.0", "2.5"]
 rsi_low = [30, 25]
 
 [study]
-name = "bollinger_rsi_screen_adx"
+name = "bollinger_rsi_screen_adx_v2"
 lab = "candle"                       # candle folds: 12 months in sample first, then 6 month steps
 seed = 42                            # the bootstrap's seed

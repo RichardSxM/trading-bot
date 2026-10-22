@@ -37,8 +37,8 @@ Warmup: exactly 40 one minute bars (`2 × bb_n`: the first band at bar 20, then 
 
 | File | Lab | Differs by |
 |---|---|---|
-| `apps/lab/studies/bollinger_rsi_screen_v3.toml` | candle | no regime gate, `max_spread_bps` unset (replaces `bollinger_rsi_screen.toml` and `bollinger_rsi_screen_v2.toml`, both void, see index tasks 12b and 12c) |
-| `apps/lab/studies/bollinger_rsi_screen_adx.toml` | candle | `regime_adx_max = "25"`, `max_spread_bps` unset |
+| `apps/lab/studies/bollinger_rsi_screen_v4.toml` | candle | no regime gate, `max_spread_bps` unset (replaces `bollinger_rsi_screen.toml`, `bollinger_rsi_screen_v2.toml` and `bollinger_rsi_screen_v3.toml`, all void, see index tasks 12b, 12c and 12d) |
+| `apps/lab/studies/bollinger_rsi_screen_adx_v2.toml` | candle | `regime_adx_max = "25"`, `max_spread_bps` unset (replaces `bollinger_rsi_screen_adx.toml`, void, see index task 12d) |
 | `apps/lab/studies/bollinger_rsi.toml` | replay | `regime_adx_max = "25"`, `max_spread_bps` = the audit p95 (index AC-3) |
 
 All other fields per index AC-10. Scratch run files for index AC-16 (not baked into the image): `lab-reports/scratch/bollinger_rsi.toml` (2025-09-01) and `lab-reports/scratch/bollinger_rsi_candle.toml` (2025-06), both with `min_target_bps` and `regime_adx_max` unset.

@@ -601,21 +601,29 @@ class ScalpStrategy(KfsStrategy, StaleQuoteBlock):
 
     def _stop_rejected(self, why: str) -> None:
         # The venue may judge the stop by a quote this strategy has not seen yet (in a backtest it always
-        # sees data first), so the next quote settles it; the position closes now either way.
+        # sees data first), so the next quote settles it; the position closes now either way. The
+        # through quote may also have arrived between the fill and the rejection, so the cached quote
+        # settles it at once when it shows the stop through.
         assert self._signal is not None  # set with the entry
         assert self._stop_id is not None  # set with the stop
         position = self._position()
         self._cancel_timer(_STOP_ACCEPT)
-        self._rejected_stop = _RejectedStop(
+        rejected = _RejectedStop(
             self._stop_id,
             position is not None and position.side == NautilusPositionSide.LONG,
             self._signal.stop_px,
             why,
             self.entry_decision,
         )
+        self._rejected_stop = rejected
         self.phase = Phase.EXITING
         self._retire_entry()
         self._submit_exit()
+        quote = self.cache.quote_tick(self._instrument_id)
+        if quote is not None and self._rejected_stop_through(
+            rejected, quote.bid_price.as_decimal(), quote.ask_price.as_decimal()
+        ):
+            self._settle_rejected_stop(quote)
 
     def _settle_rejected_stop(self, tick: QuoteTick) -> None:
         rejected = self._rejected_stop
