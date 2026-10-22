@@ -129,6 +129,28 @@ Started 16:48 UTC on `kfs/lab:s0017` (commit 9492219, batch `01a16485-109d-73ca-
 
 Not a trade rate only fail: the ADX filter halves the trade count and the walk forward Sharpe turns negative. Neither `bollinger_rsi` screen passed, so **`bollinger_rsi`: not run: screen fail** (AC-11). Its replay study does not run.
 
+### `vwap_retest_screen` (2026-10-22): fail
+
+Started 19:36 UTC on `kfs/lab:s0017` (commit 9492219, batch `01a1651e-0750-75b7-9765-d852650d6d5b`) and finished all four grid points at 20:48 UTC (exit 0, 4,364 s). 3 rejected stops were settled as `stop_through` exits, and no signal was refused with `blocked:stop_not_accepted`, so the third AC-18 amendment held.
+
+| Grid point | Run | Trades (2.8 years) | Net P&L (USD) |
+|---|---|---|---|
+| grid-1 | `d95465ec-1bf9-4d71-a25c-c549357c2a6e` | 274 | −85.58 |
+| grid-2 | `fbf049af-52ed-4b00-a775-44d702f724c0` | 273 | −188.99 |
+| grid-3 | `131570f2-14a5-4509-a267-438fd6759888` | 268 | −336.25 |
+| grid-4 | `203955a5-3c1f-430f-abf0-8b81a4fbf6d3` | 268 | −465.74 |
+
+`lab screen vwap_retest_screen`: **fail** (exit 3), reasons `walk_forward_sharpe`, `fee_hurdle` and `trades_per_day`, final grid point 0 (grid-1).
+
+| Figure | Value | Needs |
+|---|---|---|
+| Walk forward Sharpe | −0.604977 | > 0 (fail) |
+| Avg gross edge (USD per trade) | 1.0830 | ≥ 1.5 × cost = 2.0961 (fail) |
+| Avg round trip cost (USD per trade) | 1.3974 | |
+| Trades per day | 0.2681 (274 over 1,022 days) | ≥ 17 (fail) |
+
+Fails all three tests: every grid point loses money, and the gross edge does not even cover one round trip's cost. `vwap_retest`'s replay study now rests on `vwap_retest_screen_adx`.
+
 ## Test notes
 
 - `apps/lab/tests/test_candle_failure.py::test_sigterm_stops_every_unit_writes_interrupted_reports_and_exits_130` fails (exit 1, not 130) when the machine is loaded, on `main` as well as this branch. It sends SIGTERM on a fixed 2 second timer, which races the backtest's setup. This branch doesn't cause it; a fix belongs in its own change.
