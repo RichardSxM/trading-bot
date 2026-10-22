@@ -107,6 +107,28 @@ Started 15:27 UTC on `kfs/lab:s0017` (commit 9492219, batch `01a1643a-7b9a-7542-
 
 Recorded as **trade rate**: the signal clears the Sharpe and the fee hurdle, but fires about 55 times too rarely. `bollinger_rsi`'s replay study does not run from this screen; its result rests on `bollinger_rsi_screen_adx_v2`.
 
+### `bollinger_rsi_screen_adx_v2` (2026-10-22): fail
+
+Started 16:48 UTC on `kfs/lab:s0017` (commit 9492219, batch `01a16485-109d-73ca-9b57-3d3acf13ab68`) and finished all four grid points at 19:35 UTC (exit 0, 10,048 s). 74 rejected stops were settled as `stop_through` exits, and no signal was refused with `blocked:stop_not_accepted`, so the third AC-18 amendment held.
+
+| Grid point | Run | Trades (2.8 years) | Net P&L (USD) |
+|---|---|---|---|
+| grid-1 | `07c775c7-ad26-4b68-b647-5153366d7e66` | 221 | 45.13 |
+| grid-2 | `ff07584b-0e12-40f4-b74f-3ad0d865773a` | 121 | 118.87 |
+| grid-3 | `c5a3930e-6506-49e3-935a-ae6a37754de2` | 206 | −62.19 |
+| grid-4 | `cd255e9e-846d-4a1c-bb6e-2b4bf5523afc` | 142 | 46.20 |
+
+`lab screen bollinger_rsi_screen_adx_v2`: **fail** (exit 3), reasons `walk_forward_sharpe` and `trades_per_day`, final grid point 1 (grid-2).
+
+| Figure | Value | Needs |
+|---|---|---|
+| Walk forward Sharpe | −0.804244 | > 0 (fail) |
+| Avg gross edge (USD per trade) | 2.3813 | ≥ 1.5 × cost = 2.0983 (pass) |
+| Avg round trip cost (USD per trade) | 1.3989 | |
+| Trades per day | 0.1184 (121 over 1,022 days) | ≥ 17 (fail) |
+
+Not a trade rate only fail: the ADX filter halves the trade count and the walk forward Sharpe turns negative. Neither `bollinger_rsi` screen passed, so **`bollinger_rsi`: not run: screen fail** (AC-11). Its replay study does not run.
+
 ## Test notes
 
 - `apps/lab/tests/test_candle_failure.py::test_sigterm_stops_every_unit_writes_interrupted_reports_and_exits_130` fails (exit 1, not 130) when the machine is loaded, on `main` as well as this branch. It sends SIGTERM on a fixed 2 second timer, which races the backtest's setup. This branch doesn't cause it; a fix belongs in its own change.
