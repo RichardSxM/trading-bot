@@ -373,7 +373,7 @@ A small set of well known scalping ideas (for example order book imbalance, shor
 - **Written hypothesis per candidate:** why the behavior might persist, when it should work and when it should fail, its inputs, entries, exits, stops, timeouts, cooldown, and no trade conditions.
 - **One candidate at a time,** changing one design dimension at a time, with a recorded verdict (pass, fail, or insufficient evidence) kept even when it fails.
 - **Order (decided 2026-10-17):** hour level candidates (feature 17) run alongside these, not after a scalping verdict, because the fee hurdle favors longer holds.
-spec [0017](../specs/0017-scalping-strategy-candidates/index.md) (children: `bollinger_rsi`, `vwap_retest`, `delta_divergence`)
+spec [0017](../specs/0017-scalping-strategy-candidates/index.md) (children: `bollinger_rsi`, `vwap_retest`, `delta_divergence`, `book_imbalance`)
 code in `packages/core/src/trading_core/strategy`, `packages/core/src/trading_core/node`, `packages/core/src/trading_core/lab`, `apps/lab`, `apps/gate`
 - [x] Design it (spec): `/architect scalping strategy candidates`
 - [ ] Build it: `/develop scalping strategy candidates` (prerequisites, spec 0015 tasks 20 and 21 and spec 0016's off tick guard, shipped in PR #86)
@@ -381,6 +381,7 @@ code in `packages/core/src/trading_core/strategy`, `packages/core/src/trading_co
   - [ ] Thin thread: shared indicators and `ScalpStrategy` base, `bollinger_rsi` through both labs, candle screen admission, `lab screen` (AC-4, AC-5, AC-7 to AC-9, AC-13, AC-16)
   - [ ] Regime gate and the other two: `REGIME` block reason (deployed before any study), `vwap_retest`, `delta_divergence` (AC-4, AC-6, AC-7, AC-14 to AC-16)
   - [ ] Studies and verdicts: study files, candle screens, delta pre check, replay studies in audit order to recorded gate verdicts, at most one revision each (AC-10 to AC-12, AC-17)
+  - [ ] Fourth amendment (2026-10-22): maker target exits, the candle gate path, `bollinger_rsi_r1` to a verdict, `book_imbalance` with its pre check (AC-19 to AC-24)
 - [ ] Verify it: `/check verify scalping strategy candidates`
 - [ ] Test it: `/test scalping strategy candidates`
 - [ ] Review it (fresh model): `/check review scalping strategy candidates`

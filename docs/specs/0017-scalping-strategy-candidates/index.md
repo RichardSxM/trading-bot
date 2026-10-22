@@ -1,6 +1,6 @@
 # 0017. Test three scalping candidates, chosen and ordered by a data audit, through a cheap candle screen and the replay gate
 
-**Date**: 2026-10-21 (amended 2026-10-22: AC-18, stop already through at the fill; amended again 2026-10-22: the rejected stop verdict; third amendment 2026-10-22: the quote already seen at the rejection)
+**Date**: 2026-10-21 (amended 2026-10-22: AC-18, stop already through at the fill; amended again 2026-10-22: the rejected stop verdict; third amendment 2026-10-22: the quote already seen at the rejection; fourth amendment 2026-10-22: maker target exits, the candle gate path for slow scalpers, `bollinger_rsi_r1`, and a fourth candidate `book_imbalance`, AC-19 to AC-24)
 **Status**: In Progress
 
 ## Summary
@@ -12,6 +12,7 @@ This feature builds three scalping strategies and gives each one a recorded verd
 - [0001-bollinger-rsi.md](0001-bollinger-rsi.md): Bollinger and RSI mean reversion on 1 minute bars, gated by ADX in replay (supports the candidate set and the regime gate decision).
 - [0002-vwap-retest.md](0002-vwap-retest.md): EMA trend plus a pullback to the day's VWAP, both directions, ungated (supports the candidate set).
 - [0003-delta-divergence.md](0003-delta-divergence.md): price moves without matching aggressive volume, faded; replay only, gated by ADX (supports the order flow candidate).
+- [0004-book-imbalance.md](0004-book-imbalance.md): a lopsided order book backed by same side trade flow, entered and exited post only; replay only (fourth amendment, supports the order book candidate).
 
 The cross child contract (the shared framework, the audit, the screen, the order rule, and how verdicts are recorded) lives here. Each child holds its written hypothesis, exact rules, grid, and study files.
 
@@ -51,6 +52,28 @@ The cross child contract (the shared framework, the audit, the screen, the order
 - **AC-14** (`vwap_retest`): the strategy implements exactly the rules of [0002-vwap-retest.md](0002-vwap-retest.md). Unit tests cover a long retest, a short retest, a touch that closes through VWAP (no signal), the anchor reset at 00:00 UTC, and the warmup after an anchor.
 - **AC-15** (`delta_divergence`): the strategy implements exactly the rules of [0003-delta-divergence.md](0003-delta-divergence.md). Unit tests cover a bearish divergence (short), a bullish one (long), a move with matching delta (no signal), `NO_AGGRESSOR` trades counting 0, a trade at a minute boundary landing in the bucket of its `ts_event` minute whatever its arrival order, and a late trade counted in `late_trades`.
 - **AC-16** (both labs, same code): a `lab replay` of each strategy over 2025-09-01, from a scratch run file under `lab-reports/scratch/` with `min_target_bps` and `regime_adx_max` unset (scratch only, so a trade is likely), completes with at least one closed trade, and a `lab backtest` of `bollinger_rsi` and `vwap_retest` over 2025-06 (same scratch rules) completes with at least one closed trade. `delta_divergence` in `lab backtest` or a candle study exits 64 (no `candle_screen`). A determinism rerun of one replay day gives the identical report JSON (spec 0008 AC-12).
+
+*Fourth amendment (2026-10-22): cheaper exits, a gate path for slow scalpers, and a fourth candidate*
+- **AC-19** (maker target exits): `ScalpConfig` gains `exit_mode` (`"taker"` | `"maker"`, default `"taker"`, so every existing study keeps its behaviour). With `"maker"`, on the entry's first fill, right after the stop is submitted (AC-18's through check passed), the base places one reduce only, post only, GTC limit order at `target_px` for the position's quantity. Later entry fills modify its quantity along with the stop. Its fill is the target exit and records an `exit` decision with reason `target`. A partial fill of it leaves the rest resting and modifies the stop's quantity down to the open position. When the venue rejects it as post only (the price is already through the target), the base sends the reduce only market exit with reason `target`, as the taker mode would. In maker mode the quote based target check of AC-5 does not run. The time stop, a stop fill, a `stop_through` exit, and `flatten` cancel the target order before their own exit goes out (AC-5's "cancel the other resting exit orders"). The stop and the time stop stay market orders. A maker exit study sets `min_target_bps = "6"`: 1.5 × a 4 bps round trip (maker entry 2 bps plus maker exit 2 bps, the run's `maker_fee` 0.0002 and `taker_fee` 0.0005 as every study charges them).
+  - **Its own order id**: the target is tracked as `_target_id`, apart from `_exit_id`, and `on_order_filled` and `_refused` route it on its own branch.
+  - **One decision**: the `exit` decision with reason `target` is recorded once, on the target's first fill, or at the post only rejection before the market exit goes out (nothing was recorded before it). A later partial fill of the same target records nothing new.
+  - **Cancelled**: a cancel the base asked for is ignored. A cancel or expiry the base did not ask for logs a warning and sends the reduce only market exit with reason `target`, so a position is never left without its target.
+  - **Every other exit** (the time stop, a stop fill, `stop_through`, a venue rejection of the stop, `flatten`) sends the target's cancel and its own market exit together, without waiting for the cancel's ack. Both labs set `use_reduce_only=True`, so a target fill racing the market exit cannot open a new position.
+  - **Late entry fills**: when the AC-18 late fill close takes quantity off, the target's quantity is modified to the open position, the same as the stop's.
+  - **Modify guard**: the target is modified only while it is open and not filled. A modify the venue refuses (for example to below a partly filled quantity) is logged, as the stop's is.
+  - **Candle lab fills**: with L1 quotes and trade execution off (`candle_units.py`), a resting target fills only when the synthetic opposite side reaches its price, which needs the mid to move past it by half the synthetic spread.
+- **AC-20** (candle gate path, amends AC-8, AC-9, and AC-11): a candle study of a `scalping` strategy may be a gate study when its study file sets `[study] candle_gate = true` (stored in `studies.plan` as `candle_gate`) and its registry entry has `candle_gate = True` (a new `StrategyEntry` field, default False, set for `bollinger_rsi` only). `lab study` refuses `candle_gate = true` in a replay study or for an entry without the flag (exit 64). Such a study runs like an `hour_level` candle study: `lab study`, then `lab screen`, then `lab holdout` (the candle holdout, `holdout_start` to the last complete UTC day, `[candle] min_holdout_trades` 60), `push-bundles.sh`, `gate import`, and `gate evaluate` on the VPS. `lab holdout` and `gate evaluate` refuse a candle scalping study only when its plan has no `candle_gate` true. The gate reads it from `studies.plan`, so it still needs no registry. `lab screen` on a candle gate study uses `CANDLE_GATE_MIN_TRADES_PER_DAY = Decimal("0.17")` (60 holdout trades over 365 days, rounded up to 2 places, a constant beside `SCREEN_MIN_TRADES_PER_DAY`) in place of 17, and its other two tests are unchanged. `lab holdout` runs on a candle gate study only after its `lab screen` passed and `verify.md` recorded it; a fail closes the candidate with the screen's reasons. Every older screen study (no `candle_gate`) behaves exactly as before.
+  - **The field**: `StudySection` gains `candle_gate: bool | None = None`. The default is `None`, never `False`: `_plan` dumps the section with `exclude_none=True`, so every older plan and its `plan_hash` stay byte identical, and `plan["study"]["candle_gate"]` exists only when a study file sets it. `_plan` needs no change.
+  - **Where each refusal lives**: the `StudySection` validator refuses `candle_gate` with `lab = "replay"` (exit 64). The registry check (an entry whose `candle_gate` is False) lives in the `lab study` command, which has the registry.
+  - **Reading it**: `lab holdout` reads `stored.plan` (not only the kind `_studied_kind` returns). `gate evaluate`'s study query adds `Study.plan` and allows a candle scalping study only when `plan["study"].get("candle_gate") is True`.
+  - **The floor**: `screen_verdict` gains a `min_trades_per_day` parameter. `lab screen` passes `CANDLE_GATE_MIN_TRADES_PER_DAY` for a candle gate study, else `SCREEN_MIN_TRADES_PER_DAY`.
+  - **The screen pass precondition is procedural**: no code checks it, because `verify.md` is not machine readable. The person running the study runs `lab holdout` only after the recorded screen pass.
+- **AC-21** (revision after both screens fail, amends AC-12): a bar idea whose screens all failed may also get its one revision. `bollinger_rsi` takes it as `bollinger_rsi_r1`, written in [0001-bollinger-rsi.md](0001-bollinger-rsi.md) under `## Revision 1`: the ungated `bollinger_rsi_screen_v4` rules and grid with maker target exits (AC-19), judged on the candle gate path (AC-20). `vwap_retest` and `delta_divergence` get no revision: `vwap_retest`'s gross edge (1.08 USD a trade) is below even one maker round trip's cost, and `delta_divergence`'s 2.75 approved entries a day would give about 33 trades in the 12 day replay holdout. Both stay closed as recorded. The `bollinger_rsi` family closes after `bollinger_rsi_r1`, whatever its verdict, and `book_imbalance` gets no revision beyond what AC-12 already allows.
+- **AC-22** (`book_imbalance`): the strategy implements exactly the rules of [0004-book-imbalance.md](0004-book-imbalance.md), with `exit_mode = "maker"`, in replay only (no `candle_screen`, no `candle_gate`). Its pure signal function's unit tests cover a long, a short, imbalance without matching flow (no signal), imbalance that does not persist for `persist_bars` closes (no signal), an empty book side (no signal), and a trade at a bucket boundary landing in the bucket of its `ts_event`, and a quiet bucket (no trades) still giving an evaluation with flow 0.
+  - **Clock, not bars**: the signal runs on a 15 second clock timer aligned to multiples of 15 s since the epoch, not on 15 second bars (a time bar aggregator may skip or carry forward a quiet bucket). The base gains an overridable hook, `_start_signal_source()`, whose default subscribes `bar_spec` bars as today; `book_imbalance` overrides it to set the timer. The firing at `k × 15 s` closes bucket `k − 1` (trades with `ts_event` in `[(k − 1) × 15 s, k × 15 s)`). Anything the base runs on a bar close runs on each firing instead.
+  - **Book**: the node calls `subscribe_order_book_deltas(instrument_id, book_type=BookType.L2_MBP)` and `subscribe_trade_ticks(instrument_id)`, and reads depth from `cache.order_book(instrument_id)`, summing the sizes of the first `levels` of `bids()` and of `asks()`. No book yet, or an empty side, gives no signal.
+- **AC-23** (`book_imbalance` pre check): before its replay study, `lab replay` runs its most permissive grid point (`imb_min = "0.3"`, `target_bps = "6"`) from a scratch run file over the AC-17 days (2022-10-01, 2023-10-01, 2024-10-01, 2025-10-01). It passes only when the approved `enter` decisions average at least 17 a day (the AC-5 report table) **and**, pooled over the 4 days' closed trades, the average gross P&L per trade is at least (≥) 1.5 × the average cost per trade. A scratch run has no `run_measures`, so both are worked out by hand from the 4 days' report JSON: gross per trade = (Σ `net_pnl` + Σ `fees_total`) ÷ Σ `trade_count`, cost per trade = Σ `fees_total` ÷ Σ `trade_count`, with funding left out (5 minute holds make it negligible). The approved entries come from the AC-5 `enter` table in the report JSON; task 19 first checks that the JSON carries it, and if it does not, counts them from the run's decision rows. Otherwise `verify.md` records `book_imbalance` as "not run" with the reason (`trade rate` or `fee hurdle`) and the figures, and its study does not run.
+- **AC-24** (order for this amendment): first `bollinger_rsi_r1` (its candle study takes hours), then `book_imbalance`'s pre check, then its replay study only if the pre check passed. Each ends in a recorded result before the next starts, as AC-11 says. The feature is done when both have a recorded result, along with the three already recorded.
 
 ### Order rule (written before any result)
 
@@ -92,7 +115,7 @@ all ideas:  lab study (replay, maker) ─► lab holdout ─► push-bundles.sh 
 - `apps/lab`: `audit` and `screen` subcommands, the registry entries and `candle_screen`, the kind checks of AC-8, run and study files.
 - `apps/gate`: the AC-8 refusal in `gate evaluate`.
 
-**`ScalpConfig` fields** (beyond `KfsStrategyConfig`): `bar_spec` (default `"1-MINUTE-LAST"`), `stale_quote_s` (default 300), `stale_check_s` (default 60), `entry_mode` (`"maker"` | `"taker"`, default `"maker"`), `entry_timeout_s` (default 30), `time_stop_min` (required), `max_spread_bps` (`Decimal | None`, default None), `min_target_bps` (`Decimal | None`, default None; every child sets `"10.5"`, 1.5 × the 7 bps maker entry round trip), `regime_adx_max` (`Decimal | None`, default None), `regime_adx_period` (default 14), `regime_bar_spec` (default `"5-MINUTE-LAST"`). Each child adds its own fields.
+**`ScalpConfig` fields** (beyond `KfsStrategyConfig`): `bar_spec` (default `"1-MINUTE-LAST"`), `stale_quote_s` (default 300), `stale_check_s` (default 60), `entry_mode` (`"maker"` | `"taker"`, default `"maker"`), `entry_timeout_s` (default 30), `time_stop_min` (required), `max_spread_bps` (`Decimal | None`, default None), `min_target_bps` (`Decimal | None`, default None; every child sets `"10.5"`, 1.5 × the 7 bps maker entry round trip), `regime_adx_max` (`Decimal | None`, default None), `regime_adx_period` (default 14), `regime_bar_spec` (default `"5-MINUTE-LAST"`), `exit_mode` (`"taker"` | `"maker"`, default `"taker"`, AC-19). Each child adds its own fields. `book_imbalance` does not use `bar_spec`: it runs on a 15 second clock timer through the base's `_start_signal_source()` hook (AC-22), replay only.
 
 **Data model sketch**: no migration. Confirmed in design.
 
@@ -141,6 +164,12 @@ all ideas:  lab study (replay, maker) ─► lab holdout ─► push-bundles.sh 
 | `lab screen` | edge, cost | the final point's `run_measures.avg_gross_edge`, `avg_round_trip_cost` |
 | `lab screen` | trades per day | final point `run_results.trade_count` ÷ its count of `run_daily_equity` rows |
 | `lab screen` | `fee_hurdle_k` | the study's frozen `thresholds` |
+| `ScalpStrategy` (maker exit) | target order price and size | the signal's `target_px`; the open position's quantity after each fill (AC-19) |
+| `lab screen` | trade rate floor | 0.17 when the study's `studies.plan` has `candle_gate` true, else 17 (AC-20) |
+| `lab holdout`, `gate evaluate` | candle gate or screen | `studies.plan` `candle_gate` (AC-20) |
+| `book_imbalance` | book sizes | the cache's order book (L2, replay only), its top `levels` bid and ask levels at the bar close |
+| `book_imbalance` | trade flow | trade ticks' `aggressor_side` and `size`, bucketed by `ts_event` per bar (child 0004) |
+| `book_imbalance` pre check | rate, edge, cost | the 4 days' report JSON: the AC-5 `enter` table and the closed trades' gross P&L and costs (AC-23) |
 | `verify.md` | verdicts | `promotions.verdict`, `reasons` of the VPS `gate evaluate` |
 
 **Key invariants**:
@@ -168,6 +197,9 @@ all ideas:  lab study (replay, maker) ─► lab holdout ─► push-bundles.sh 
 - Admission: `delta_divergence` in `lab backtest` exits 64; `macd_baseline` in a replay study still behaves as before. Verifies **AC-7**, **AC-8**, **AC-16**.
 - Per candidate rules: the AC-13, AC-14, AC-15 signal tests.
 - Both labs: AC-16's one day replays, one month backtests, and the determinism rerun.
+- Maker exits: the target order rests after the stop and follows each entry fill; its fill records `target`; a partial target fill shrinks the stop; a post only rejection exits at market as `target` with exactly one `exit` decision; an unasked cancel of the target exits at market; a time stop, stop fill, or stop rejection cancels the target and leaves no order behind; a late entry fill close shrinks the target; `exit_mode` unset behaves exactly as before. Verifies **AC-19**.
+- Candle gate path: a candle scalping study with `candle_gate = true` holds out and is evaluated; one without it still exits 64 in `lab holdout` and `gate evaluate`; `candle_gate = true` in a replay study or for `vwap_retest` exits 64; `lab screen` applies 0.17 a day only to a candle gate study. Verifies **AC-20**.
+- `book_imbalance`: the AC-22 signal tests; a one day replay completes; the pre check records "not run" with its reason when either test fails. Verifies **AC-22**, **AC-23**.
 
 ## Build plan
 
@@ -204,6 +236,13 @@ Tracer Bullet: the audit first (the scope asks for it before any candidate), the
 13. Run the four candle screens and `lab screen` on each; record them. Satisfies **AC-9**, **AC-11** (partial).
 13b. Before `delta_divergence`'s study, run its AC-17 pre check and record it. Satisfies **AC-17**.
 14. Run the replay studies in the *Order rule* order, each through holdout, push, import, and `gate evaluate`; record each verdict, plus any single revision through `/architect`. Satisfies **AC-11**, **AC-12**.
+**Slice 6: fourth amendment (cheaper exits, the candle gate path, a fourth candidate)**
+15. `exit_mode = "maker"` in `node/scalp_base.py` (target order, its partial fill, the post only rejection fallback, cancel on every other exit), with node tests. Satisfies **AC-19**.
+16. `candle_gate`: the registry field (true for `bollinger_rsi`), `[study] candle_gate` in the study section and plan, the `lab study` refusals, the `lab holdout` and `gate evaluate` checks on `studies.plan`, and the 0.17 floor in `trading_core.lab.screen` and `lab screen`, with tests. Rebuild the lab image (`kfs/lab:s0017`, `GIT_COMMIT` set). Satisfies **AC-20**.
+17. `apps/lab/studies/bollinger_rsi_r1.toml`; run `lab study` and `lab screen`, record the screen; on a pass, `lab holdout`, push, import, and `gate evaluate` on the VPS, and record the verdict. Satisfies **AC-21**, **AC-24**.
+18. `book_imbalance`: pure signal and bucket state, the base's `_start_signal_source()` hook, node (15 second clock timer, L2 order book deltas, trade ticks), registry entry, unit and node tests; one `lab replay` day for AC-16 style proof. Satisfies **AC-22**. Builds while task 17's study runs.
+19. The `book_imbalance` pre check; record it. Satisfies **AC-23**.
+20. On a pre check pass, `apps/lab/studies/book_imbalance.toml` through study, holdout, push, import, and `gate evaluate`; record the verdict. Satisfies **AC-11**, **AC-24**.
 
 ## Consequences
 
@@ -222,6 +261,10 @@ Tracer Bullet: the audit first (the scope asks for it before any candidate), the
 - All exits are taker, so every round trip pays the taker fee once.
 - A `stop_through` exit takes the loss at market, at or past the stop price, so in a fast move it can lose more than the planned risk. That is the same loss a stop would have taken, without blocking the strategy.
 - BTC only: Tardis free days cover `PF_XBTUSD` only.
+- The candle gate path was opened after the screens' results were seen. It is kept honest by four things: only one revision, the candle holdout year that no scalping run has read, the family trial count (spec 0018 AC-19) that already counts every void and screen run in the `scalping` candle family, and the unchanged gate thresholds. The family N is large (about 30 frozen hashes), so `bollinger_rsi_r1` faces a stricter deflated Sharpe than a first try would.
+- A maker target needs a trade through its price to fill in the candle lab, and it waits in the queue in replay, so some targets that a taker exit would have taken become time stops. That is the price of the cheaper exit, and both labs charge it.
+- A slow scalper (about 0.3 trades a day) needs about 330 days of paper trading to reach spec 0015's `min_trades_scalping` of 100. A pass here starts a long paper stage, not a quick go live.
+- `book_imbalance` is a long shot: book imbalance mostly predicts the next few seconds, and a 6 bps move usually takes minutes. The pre check costs about 4 hours and decides before any 40 hour study.
 
 **Neutral**:
 - No migration, no new service. Two lab subcommands, one registry field, one block reason.
@@ -230,6 +273,10 @@ Tracer Bullet: the audit first (the scope asks for it before any candidate), the
 ## Follow-up
 
 - [x] Enrolled on the scope's Deferred list: "Paper trade a passing scalping candidate" (it replaces the placeholder; one strategy at a time).
-- [ ] Possible later revision dimensions, not decided here: maker target exits (a resting reduce only limit), the scaled exit, a session filter from the audit's per hour numbers, a taker version of `delta_divergence`.
-- [ ] Order book imbalance, liquidity sweep, EMA pullback, and short period RSI stay in the scope as unchosen ideas.
+- [x] Maker target exits: taken by the fourth amendment (AC-19).
+- [ ] Possible later revision dimensions, not decided here: the scaled exit, a session filter from the audit's per hour numbers, a taker version of `delta_divergence`.
+- [ ] Liquidity sweep, EMA pullback, and short period RSI stay in the scope as unchosen ideas (order book imbalance is now child 0004).
+- [ ] `/scope`: enroll "Follow Binance" (Kraken lagging Binance's price) as its own feature; it needs a recorded Binance feed and has little free history.
+- [ ] `/scope`: enroll "Run several strategies together" (each passing strategy trades only in the regime its hypothesis names, by a rule written before testing); the trader runs one strategy at a time today, so it needs its own design once two strategies pass.
+- [ ] Spec 0015 question for `/architect` if a slow scalper passes: should a candle gate scalper's paper stage use the `hour_level` trade minimum (20) instead of 100?
 - [ ] `/sync`: `apps/lab/AGENTS.md` should list `lab audit`, `lab screen`, and the `candle_screen` rule.

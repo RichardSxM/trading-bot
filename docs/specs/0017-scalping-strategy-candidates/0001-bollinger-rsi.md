@@ -43,6 +43,21 @@ Warmup: exactly 40 one minute bars (`2 × bb_n`: the first band at bar 20, then 
 
 All other fields per index AC-10. Scratch run files for index AC-16 (not baked into the image): `lab-reports/scratch/bollinger_rsi.toml` (2025-09-01) and `lab-reports/scratch/bollinger_rsi_candle.toml` (2025-06), both with `min_target_bps` and `regime_adx_max` unset.
 
+## Revision 1: `bollinger_rsi_r1` (fourth amendment, 2026-10-22)
+
+Both screens failed (index `verify.md`). The ungated screen `bollinger_rsi_screen_v4` passed the Sharpe (0.068) and the fee hurdle (edge 2.36 USD against 1.5 × 1.39 USD) and failed only on trade rate (0.31 a day against 17). The gated screen failed on Sharpe as well, so the revision starts from the ungated rules.
+
+- **The one design change**: the exit. The target becomes a resting post only limit (index AC-19, `exit_mode = "maker"`), so a target exit pays the 2 bps maker fee instead of the 5 bps taker fee. The reward floor follows from it by the fixed rule (1.5 × the 4 bps round trip), `min_target_bps = "6"`. Every other rule, the fixed config, and the grid are exactly the v4 screen's.
+- **How it is judged**: on the candle gate path (index AC-20): `lab screen` with the 0.17 a day floor, then the candle holdout year and `gate evaluate`. The 17 a day floor came from the 12 day replay holdout, and this revision never uses it.
+- **Evidence it cites**: development screen figures only. No holdout figure exists for any scalping study.
+- **What would kill it**: a walk forward Sharpe at or below 0, or an edge under 1.5 × cost, on the revision's own screen; then the candidate is closed.
+
+| File | Lab | Differs from `bollinger_rsi_screen_v4.toml` by |
+|---|---|---|
+| `apps/lab/studies/bollinger_rsi_r1.toml` | candle | `exit_mode = "maker"`, `min_target_bps = "6"`, `[study] name = "bollinger_rsi_r1"`, `candle_gate = true`; its header comment says it holds out |
+
+Its results go in `verify.md` like the others, with the screen first, then the promotion id, verdict, reasons, the family N, and the holdout trades.
+
 ## Rationale (short)
 
 Picked as the first bar idea because it has the fewest free settings of the scope's bar ideas, its exit (the middle band) comes from the idea itself, and it directly tests the scope's range regime question twice (flat bands, ADX). The gated version goes to replay because the hypothesis says it fails in trends. Runner up: the EMA pullback, left in the scope because it overlaps the VWAP candidate.

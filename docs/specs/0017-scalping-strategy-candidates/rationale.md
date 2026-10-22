@@ -97,6 +97,26 @@ Options weighed (the engineer asked for the work to continue on the recommendati
 
 A denial, a cancel by someone else, and a stop not accepted in time still block at once, so fail closed holds for everything the quote cannot explain.
 
+## Amendment 2026-10-22 (third): the quote already seen at the rejection (AC-18)
+
+Recorded in the index (AC-18, task 12d) and in `verify.md` (the `bollinger_rsi_screen_v3` void record).
+
+## Amendment 2026-10-22 (fourth): cheaper exits, a gate path for slow scalpers, a fourth candidate (AC-19 to AC-24)
+
+What the screens showed (`verify.md`): `bollinger_rsi_screen_v4` passed the walk forward Sharpe (0.068) and the fee hurdle (edge 2.36 against 2.09 USD a trade) and failed only on trade rate (0.31 a day). The ADX version and `vwap_retest_screen` failed on Sharpe too, and `vwap_retest`'s edge (1.08) did not cover even one round trip's cost. `delta_divergence` failed its trade rate pre check (2.75 a day). The engineer asked for the candidates most likely to pass, still scalping, and for the work to go ahead on the recommendations.
+
+Two findings drove the amendment:
+- **The trade rate floor belongs to the replay holdout, not to scalping.** 17 a day is the ceiling of 200 ÷ 12: the replay holdout is only 12 free Tardis days. The candle lab's holdout is a full year with a floor of 60 trades (`thresholds.toml` `[candle]`), which `hour_level` studies already use. A scalper that trades a few times a week can be judged there with the same gate.
+- **Costs, not signals, are the main wall.** Every exit was a market order, so a round trip cost 7 bps and the reward floor sat at 10.5 bps, almost twice the typical 5 minute move. A resting target costs 2 bps, which brings the round trip to 4 bps and the floor to 6 bps.
+
+Options weighed:
+- **Maker target exits as a base option (chosen)**, over a lower fee tier (Kraken's lower tiers need far more volume than this account trades) and over a lower `fee_hurdle_k` (a gate threshold, frozen per version, never changed after a result). Default `taker`, so every recorded study keeps its meaning.
+- **The candle gate path for bar scalpers, opt in per study (chosen)**, over lowering the 17 a day floor for replay (it would let a replay study reach a 12 day holdout that cannot give 200 trades, so the gate would say `insufficient` every time) and over leaving the rule alone (it fails every bar idea for a reason the hypothesis does not cover). The candle lab is the harsher judge of fills: a resting maker order fills only when the synthetic opposite side reaches its price (L1 quotes, trade execution off), and within a minute the price path takes the extreme against the open position first. Its known optimism (a whole minute's range, a synthetic spread) is why a `pass` still goes to paper trading before any real money.
+- **`bollinger_rsi_r1` as the one revision, changing only the exit (chosen)**, over revising `vwap_retest` (its edge is below one round trip's cost, so a cheaper exit cannot rescue it) and over a new bar idea (a fresh candidate adds trials without any evidence for it). The floor change (6 bps) is not a second dimension: it is the existing 1.5 × round trip rule applied to the new cost.
+- **`book_imbalance` as the fourth candidate (chosen)**, over Binance lead lag (it needs a recorded Binance feed and has little free history, so it becomes its own feature) and over a liquidity sweep idea (more free settings, and a swing needs confirming bars). It is the only scalping idea that fires often enough for the replay holdout, and it uses the L2 books the replay already has. The first design rejected it because its edge decays within seconds. That still holds, so it gets a cheap pre check of both trade rate and edge before any 40 hour study.
+
+The honest cost: the candle gate path was opened after the results were seen. What keeps it from being a fishing trip is one revision only, a holdout year no scalping run has read, the family trial count that already includes every void and screen run, and gate thresholds that do not move. Running several strategies together under a regime rule was asked for too; it needs a trader that runs more than one strategy, so it goes to the scope as its own feature, once at least two strategies pass.
+
 ## Audit result
 
 Filled in by build task 2 in `verify.md` (batch folder, spread p95, median 5 minute move, `reachable` flags, and the resulting order), before any candidate study runs.
