@@ -247,7 +247,7 @@ def test_gate_app_can_read_a_table_a_later_migration_adds(engine: Engine):
     unreadable by the gate)."""
     with engine.connect() as conn, conn.begin() as tx:
         conn.execute(text("CREATE TABLE later_table (id int)"))
-        readable = conn.execute(
+        readable: bool = conn.execute(
             text("SELECT has_table_privilege(:role, 'later_table', 'SELECT')"), {"role": GATE_ROLE}
         ).scalar_one()
         tx.rollback()
