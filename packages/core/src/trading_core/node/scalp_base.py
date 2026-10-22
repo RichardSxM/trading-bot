@@ -16,7 +16,10 @@ Before any exit, the entry's open remainder is cancelled; an entry fill that sti
 that is closed at once (``late_entry_fill``). A closed position cancels whatever rests.
 
 A stop that is refused or not accepted in time blocks entries and closes the position, as in
-``MacdBaseline`` (fail closed).
+``MacdBaseline`` (fail closed). A stop already through at the first fill is never submitted: a
+``stop_through`` exit closes the position with no block (AC-18). A venue rejection is settled by
+the next quote, the one the venue already judged the stop by: through means ``stop_through`` with
+no block, otherwise the block. Entries stay refused until then.
 
 With ``regime_adx_max`` set, the base also feeds ``<instrument>-<regime_bar_spec>-INTERNAL`` bars to an
 ``Adx(regime_adx_period)`` (AC-6): ``regime`` blocks entries from the start until the ADX is warm and
@@ -116,6 +119,17 @@ _LOG_LEVELS: Final = {
 type Record = Callable[[WriteItem], None]
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
+class _RejectedStop:
+    """A rejected stop awaiting the next quote's verdict (AC-18)."""
+
+    stop_id: ClientOrderId
+    long: bool
+    stop_px: Decimal
+    why: str
+    entry_decision: UUID | None
+
+
 class Phase(StrEnum):
     """Where the round trip is."""
 
@@ -172,6 +186,8 @@ class ScalpStrategy(KfsStrategy, StaleQuoteBlock):
             self.regime_adx = Adx(config.regime_adx_period)
         # Entries whose remainder was cancelled for an exit: a fill of one is a late entry fill.
         self._retired: set[ClientOrderId] = set()
+        # Outlives the round trip: the verdict can land after the exit made the strategy flat.
+        self._rejected_stop: _RejectedStop | None = None
         self._reset()
 
     def _reset(self) -> None:
@@ -217,8 +233,14 @@ class ScalpStrategy(KfsStrategy, StaleQuoteBlock):
             self.subscribe_bars(self.regime_bar_type)
 
     def on_stop(self) -> None:
-        """The base's stop (pause in memory, cancel entries), then lift ``regime``."""
+        """The base's stop (pause in memory, cancel entries), then lift ``regime``.
+
+        A rejected stop no quote has settled yet is recorded as not accepted (fail closed).
+        """
         super().on_stop()
+        rejected, self._rejected_stop = self._rejected_stop, None
+        if rejected is not None:
+            self._block_stop_not_accepted(rejected.stop_id, rejected.why, rejected.entry_decision)
         if self.regime_bar_type is not None:
             self._blocks.clear(BlockReason.REGIME)
 
@@ -262,7 +284,9 @@ class ScalpStrategy(KfsStrategy, StaleQuoteBlock):
             log.debug("regime calm again", extra={"fields": {"code": "regime_cleared", "adx": str(adx)}})
 
     def on_quote_tick(self, tick: QuoteTick) -> None:
-        """The target exit: the first quote that reaches ``target_px`` while holding."""
+        """The verdict on a rejected stop, then the target exit: the first quote that reaches ``target_px``."""
+        if self._rejected_stop is not None and tick.instrument_id == self._instrument_id:
+            self._settle_rejected_stop(tick)
         if self.phase != Phase.HOLDING or self._signal is None or tick.instrument_id != self._instrument_id:
             return
         position = self._position()
@@ -300,7 +324,7 @@ class ScalpStrategy(KfsStrategy, StaleQuoteBlock):
             EntryGate(
                 halted=self._gate.halted,
                 paused=self._gate.paused,
-                blocks=[str(r) for r in self._blocks.active()],
+                blocks=self._entry_blocks(),
                 bid=bid,
                 ask=ask,
                 max_spread_bps=self._cfg.max_spread_bps,
@@ -326,7 +350,7 @@ class ScalpStrategy(KfsStrategy, StaleQuoteBlock):
                 has_position=False,
                 paused=self._gate.paused,
                 halted=self._gate.halted,
-                blocks=[str(r) for r in self._blocks.active()],
+                blocks=self._entry_blocks(),
             )
             verdict = check_entry(request, self._limits)
         except InvalidRiskInput:
@@ -480,7 +504,10 @@ class ScalpStrategy(KfsStrategy, StaleQuoteBlock):
                 log.info("stop cancelled by the close in progress", extra={"fields": {"code": "stop_canceled_closing"}})
                 self._stop_id = None
                 return
-            self._stop_failed(f"stop {why}")
+            if why.startswith("rejected"):
+                self._stop_rejected(f"stop {why}")
+            else:
+                self._stop_failed(f"stop {why}")
         elif client_order_id == self._exit_id:
             self._exit_refused(why)
 
@@ -556,18 +583,63 @@ class ScalpStrategy(KfsStrategy, StaleQuoteBlock):
 
     def _stop_failed(self, why: str) -> None:
         self._cancel_timer(_STOP_ACCEPT)
+        self._block_stop_not_accepted(self._stop_id, why, self.entry_decision)
+        self.phase = Phase.EXITING
+        self._retire_entry()
+        self._submit_exit()
+
+    def _block_stop_not_accepted(self, stop_id: ClientOrderId | None, why: str, decision: UUID | None) -> None:
         self._blocks.add(BlockReason.STOP_NOT_ACCEPTED)
         self._risk_event(
-            f"stop_not_accepted:{self._stop_id}",
+            f"stop_not_accepted:{stop_id}",
             RiskEventKind.ORDER_REJECTED,
             Severity.CRITICAL,
             f"{why}; closing the position",
+            decision,
+            {"client_order_id": str(stop_id)},
+        )
+
+    def _stop_rejected(self, why: str) -> None:
+        # The venue may judge the stop by a quote this strategy has not seen yet (in a backtest it always
+        # sees data first), so the next quote settles it; the position closes now either way.
+        assert self._signal is not None  # set with the entry
+        assert self._stop_id is not None  # set with the stop
+        position = self._position()
+        self._cancel_timer(_STOP_ACCEPT)
+        self._rejected_stop = _RejectedStop(
+            self._stop_id,
+            position is not None and position.side == NautilusPositionSide.LONG,
+            self._signal.stop_px,
+            why,
             self.entry_decision,
-            {"client_order_id": str(self._stop_id)},
         )
         self.phase = Phase.EXITING
         self._retire_entry()
         self._submit_exit()
+
+    def _settle_rejected_stop(self, tick: QuoteTick) -> None:
+        rejected = self._rejected_stop
+        assert rejected is not None  # checked by the caller
+        self._rejected_stop = None
+        bid, ask = tick.bid_price.as_decimal(), tick.ask_price.as_decimal()
+        if not self._rejected_stop_through(rejected, bid, ask):
+            self._block_stop_not_accepted(rejected.stop_id, rejected.why, rejected.entry_decision)
+            return
+        log.info("rejected stop was already through; exiting", extra={"fields": {"code": EXIT_STOP_THROUGH}})
+        inputs: JsonObject = {"bid": bid, "ask": ask, "stop_px": rejected.stop_px, "mid": mid_of(bid, ask)}
+        closing = OrderSide.SELL if rejected.long else OrderSide.BUY
+        now = self.clock.timestamp_ns()
+        self._record_decision(uuid.uuid7(), Intent.EXIT, closing, inputs, True, None, now, EXIT_STOP_THROUGH)
+
+    def _rejected_stop_through(self, rejected: _RejectedStop, bid: Decimal, ask: Decimal) -> bool:
+        # Only the quote decides here: the fill price was already checked before the stop went out.
+        return bid <= rejected.stop_px if rejected.long else ask >= rejected.stop_px
+
+    def _entry_blocks(self) -> list[str]:
+        blocks = [str(r) for r in self._blocks.active()]
+        if self._rejected_stop is not None and BlockReason.STOP_NOT_ACCEPTED not in self._blocks.active():
+            blocks.append(str(BlockReason.STOP_NOT_ACCEPTED))  # until the next quote settles it
+        return sorted(blocks)
 
     # Exit -----------------------------------------------------------------------------------
 

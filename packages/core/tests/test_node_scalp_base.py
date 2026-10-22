@@ -78,6 +78,13 @@ class _NoThroughCheck(_Scripted):
         return False
 
 
+class _RealReject(_NoThroughCheck):
+    """The next quote never shows the rejected stop through, so the rejection is a real one."""
+
+    def _rejected_stop_through(self, rejected, bid, ask):
+        return False
+
+
 def _quotes(mid, minutes, size="5.0000", every_s=10):
     """A quote every ``every_s`` seconds; ``mid(t)`` gives the mid at t minutes; the spread is 2."""
     ticks = []
@@ -281,10 +288,28 @@ def test_a_stop_already_through_at_the_fill_exits_at_once_and_blocks_nothing(mid
     assert not [r for r in rows if isinstance(r, RiskEventRow) and r.severity == Severity.CRITICAL]
 
 
-def test_a_stop_the_venue_rejects_still_blocks_entries():
-    # Without the AC-18 check the same stop reaches the venue, which rejects it as in the market.
-    _engine, strategy, rows = _run(
+def test_a_rejected_stop_the_next_quote_shows_through_exits_and_blocks_nothing():
+    # Without the fill check the stop reaches the venue, which rejects it as in the market, as when the
+    # venue judged it by a quote the strategy had not seen yet; that quote then settles it.
+    engine, strategy, rows = _run(
         lambda t: FLAT_MARKET, 6, THROUGH_THEN_LONG, strategy_cls=_NoThroughCheck, entry_mode="taker"
+    )
+
+    assert BlockReason.STOP_NOT_ACCEPTED not in strategy._blocks.active()
+    assert not [r for r in rows if isinstance(r, RiskEventRow) and r.severity == Severity.CRITICAL]
+    (exit_decision, *_) = _decisions(rows, Intent.EXIT)
+    assert exit_decision.reason == "stop_through"
+    assert {"bid", "ask", "stop_px"} <= set(exit_decision.inputs)
+    first, second = _decisions(rows, Intent.ENTER)
+    assert (first.risk_verdict, second.risk_verdict) == (RiskVerdict.APPROVED, RiskVerdict.APPROVED)
+    # The first stop was rejected; the second entry, with room, got one that rests.
+    rejected, resting = _orders(engine, OrderType.STOP_MARKET)
+    assert (rejected.status, resting.status) == (OrderStatus.REJECTED, OrderStatus.ACCEPTED)
+
+
+def test_a_stop_the_venue_rejects_for_real_still_blocks_entries():
+    _engine, strategy, rows = _run(
+        lambda t: FLAT_MARKET, 6, THROUGH_THEN_LONG, strategy_cls=_RealReject, entry_mode="taker"
     )
 
     assert BlockReason.STOP_NOT_ACCEPTED in strategy._blocks.active()
