@@ -55,8 +55,15 @@ def store(tmp_path, monkeypatch):
     return store
 
 
-def _run(store, state_path, *, cap_bytes, floor_bytes=0):
-    run_retention(store, state_path=state_path, cap_bytes=cap_bytes, floor_bytes=floor_bytes, now_ns=NOW)
+def _run(store, state_path, *, cap_bytes, floor_bytes=0, needs_backup=True, now_ns=NOW):
+    run_retention(
+        store,
+        state_path=state_path,
+        needs_backup=needs_backup,
+        cap_bytes=cap_bytes,
+        floor_bytes=floor_bytes,
+        now_ns=now_ns,
+    )
 
 
 def test_whole_hours_go_oldest_first_with_their_quarantine(store, tmp_path, caplog):
@@ -144,6 +151,30 @@ def test_settings_default_to_the_spec(monkeypatch):
     floors = (settings.catalog_cap_gb, settings.catalog_free_floor_gb, settings.catalog_hard_floor_gb)
     assert floors == (Decimal(30), Decimal(8), Decimal(2))
     assert str(settings.backup_state_path) == "/state/catalog_backup.json"
+    assert settings.catalog_needs_backup is False
+
+
+def test_without_the_backup_every_hour_but_the_newest_day_may_go(store, tmp_path, caplog):
+    """covers: the 2026-10-22 amendment of spec 0007 AC-6 (the catalog is no longer copied to B2)."""
+    first = _hour(store, H0)
+    second = _hour(store, H0 + HOUR_NS)
+    # Hour 0 was last written at 01:10 and hour 1 at 02:10; one day after 01:30 only hour 0 is old enough.
+    now = H0 + 24 * HOUR_NS + 90 * 60 * SECOND_NS
+    with caplog.at_level(logging.INFO):
+        _run(store, tmp_path / "missing.json", cap_bytes=0, needs_backup=False, now_ns=now)
+    assert not any(p.exists() for p in first)
+    assert all(p.exists() for p in second)
+    assert _codes(caplog) == [("INFO", "catalog_retention_deleted"), ("ERROR", "catalog_retention_blocked")]
+
+
+def test_without_the_backup_an_invalid_state_file_is_ignored(store, tmp_path, caplog):
+    paths = _hour(store, H0)
+    state = tmp_path / "catalog_backup.json"
+    state.write_text("not json")
+    with caplog.at_level(logging.INFO):
+        _run(store, state, cap_bytes=0, needs_backup=False, now_ns=H0 + 48 * HOUR_NS)
+    assert not any(p.exists() for p in paths)
+    assert _codes(caplog) == [("INFO", "catalog_retention_deleted")]
 
 
 def test_context_tables_go_with_their_hour(store, tmp_path):

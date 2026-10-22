@@ -82,17 +82,12 @@ services:
         bind:
           create_host_path: true
 
-  # Read only: the catalog, the env file, and the deploy log go into the nightly snapshot
-  # (spec 0005 AC-19). The two files must exist (bootstrap and the first deploy make them);
-  # Docker would otherwise create a folder in their place.
+  # Read only: the env file and the deploy log go into the nightly snapshot (spec 0005 AC-19).
+  # The two files must exist (bootstrap and the first deploy make them); Docker would otherwise
+  # create a folder in their place. The catalog is not mounted since 2026-10-22: it outgrew B2's
+  # free 10 GB, so the catalog step skips and B2 holds the database only.
   backup:
     volumes:
-      - type: bind
-        source: /srv/kfs/catalog
-        target: /data/catalog
-        read_only: true
-        bind:
-          create_host_path: true
       - type: bind
         source: /etc/kfs/kfs.env
         target: /host/kfs.env

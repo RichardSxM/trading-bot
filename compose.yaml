@@ -303,7 +303,9 @@ services:
       CLOCK_SERVERS: ""  # no network: the worker clock check only warns
       CATALOG_REQUIRE_MARKER: ${CATALOG_REQUIRE_MARKER:-false}
       CATALOG_CAP_GB: ${CATALOG_CAP_GB:-30}
-      # Written by the backup's catalog step; retention deletes only hours older than its cutoff.
+      # False: the catalog is not copied to B2, so retention keeps only the newest day safe. True
+      # makes it wait for the backup's catalog step and delete only hours older than its cutoff.
+      CATALOG_NEEDS_BACKUP: ${CATALOG_NEEDS_BACKUP:-false}
       BACKUP_STATE_PATH: /state/catalog_backup.json
       COMPACTOR_PARQUET_RATIO: ${COMPACTOR_PARQUET_RATIO:-0.042}
       COMPACTOR_GRACE_S: ${COMPACTOR_GRACE_S:-300}
