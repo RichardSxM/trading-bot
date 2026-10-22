@@ -151,6 +151,32 @@ Started 19:36 UTC on `kfs/lab:s0017` (commit 9492219, batch `01a1651e-0750-75b7-
 
 Fails all three tests: every grid point loses money, and the gross edge does not even cover one round trip's cost. `vwap_retest`'s replay study now rests on `vwap_retest_screen_adx`.
 
+### `vwap_retest_screen_adx` (2026-10-22): fail
+
+Started 20:49 UTC on `kfs/lab:s0017` (commit 9492219, batch `01a16561-1aba-77cc-95b7-69066ed2afad`) and finished all four grid points at 22:18 UTC (exit 0, 5,324 s). 3 rejected stops were settled as `stop_through` exits, and no signal was refused with `blocked:stop_not_accepted`, so the third AC-18 amendment held.
+
+| Grid point | Run | Trades (2.8 years) | Net P&L (USD) |
+|---|---|---|---|
+| grid-1 | `25fa0e75-b567-444a-b22b-c07f5a0ba140` | 173 | −117.15 |
+| grid-2 | `9c03b78f-880d-4a81-bd24-de8cd93b4776` | 173 | −235.76 |
+| grid-3 | `a75afc06-1302-45e6-a290-470b4d419c79` | 172 | −305.98 |
+| grid-4 | `a2885ffd-ae84-4ef4-9a2c-d7de71e87854` | 172 | −397.79 |
+
+`lab screen vwap_retest_screen_adx`: **fail** (exit 3), reasons `walk_forward_sharpe`, `fee_hurdle` and `trades_per_day`, final grid point 0 (grid-1).
+
+| Figure | Value | Needs |
+|---|---|---|
+| Walk forward Sharpe | −1.358916 | > 0 (fail) |
+| Avg gross edge (USD per trade) | 0.7173 | ≥ 1.5 × cost = 2.0959 (fail) |
+| Avg round trip cost (USD per trade) | 1.3973 | |
+| Trades per day | 0.1693 (173 over 1,022 days) | ≥ 17 (fail) |
+
+The ADX filter makes it worse: fewer trades and a smaller edge. Neither `vwap_retest` screen passed, so **`vwap_retest`: not run: screen fail** (AC-11). Its replay study does not run.
+
+### Task 14 (replay studies): none run
+
+All four candle screens failed, so no replay study ran (AC-11). `bollinger_rsi` continues as `bollinger_rsi_r1` on the candle gate path (AC-19 to AC-21), and `book_imbalance` takes the replay slot (AC-22 to AC-24).
+
 ## Test notes
 
 - `apps/lab/tests/test_candle_failure.py::test_sigterm_stops_every_unit_writes_interrupted_reports_and_exits_130` fails (exit 1, not 130) when the machine is loaded, on `main` as well as this branch. It sends SIGTERM on a fixed 2 second timer, which races the backtest's setup. This branch doesn't cause it; a fix belongs in its own change.
