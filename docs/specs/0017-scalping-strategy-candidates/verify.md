@@ -48,6 +48,20 @@ Approved `enter` decisions average 2.75 a day (11 over 4 days), under the 17 nee
 
 In plain words: the signal fires often enough (about 60 to 250 times a day), but the reward floor and the ADX regime filter refuse nearly all of it. That fits the audit's warning above. Changing the candidate is a job for an `/architect` amendment (one revision per candidate), not this build.
 
+## Candle screens (AC-9, task 13)
+
+### Void: `bollinger_rsi_screen` (2026-10-22, before AC-18)
+
+Started 08:53 UTC on `kfs/lab:s0017` (commit 8c7a852) and stopped by hand at about 10:15 UTC. In early February 2023 a maker entry filled while the bar's quote was already past the stop, so the stop was rejected ("in the market") and `STOP_NOT_ACCEPTED` blocked entries for the rest of the run. 17,232 later signals were refused with `blocked:stop_not_accepted`.
+
+| Grid point | Run | Trades (2.8 years) | Net P&L (USD) |
+|---|---|---|---|
+| grid-1 | `597be33c-e5d6-4bba-bbf4-a146451d3e69` | 10 | 1.41 |
+| grid-2 | `0d4eee3d-c7f4-4465-ac03-d0db5913963c` | 9 | −37.37 |
+| grid-3, grid-4 | stopped partway | | |
+
+No `lab screen` ran on it. Its rows stay in Postgres and still count toward `bollinger_rsi`'s trial count N. Spec amendment AC-18 (commit 00d5586) fixed the base in e6c21ac, and the screen reruns as `bollinger_rsi_screen_v2` (index task 12b).
+
 ## Test notes
 
 - `apps/lab/tests/test_candle_failure.py::test_sigterm_stops_every_unit_writes_interrupted_reports_and_exits_130` fails (exit 1, not 130) when the machine is loaded, on `main` as well as this branch. It sends SIGTERM on a fixed 2 second timer, which races the backtest's setup. This branch doesn't cause it; a fix belongs in its own change.
