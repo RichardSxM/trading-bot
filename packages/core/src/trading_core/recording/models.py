@@ -217,6 +217,8 @@ class StudyRun(Base):
         CheckConstraint("(role = 'benchmark') = (grid_point IS NULL)", name="grid_point_iff_not_benchmark"),
         # At most one completed holdout per frozen version, in any study (AC-5).
         _ix("study_runs", "frozen_hash", where="role = 'holdout' AND status = 'completed'", unique=True),
+        # And at most one per study, whatever its grid points' hashes (migration 0010).
+        _ix("study_runs", "study_id", where="role = 'holdout' AND status = 'completed'", unique=True),
     )
 
     study_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("studies.id"))

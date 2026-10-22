@@ -11,7 +11,15 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Final
 
-from trading_core.gate.inputs import BUY_AND_HOLD, MACD_BASELINE, CandidateInputs, Lab, StudyRunInput
+from trading_core.gate.inputs import (
+    BUY_AND_HOLD,
+    MACD_BASELINE,
+    CandidateInputs,
+    Lab,
+    Role,
+    RunSummary,
+    StudyRunInput,
+)
 from trading_core.gate.series import DailySeries, annualized, sharpe, to_decimal
 
 FAILED: Final = "failed"
@@ -25,6 +33,7 @@ MISSING_COST: Final = "missing_cost"
 MISSING_METRIC: Final = "missing_metric"
 NULL_CODE_HASH: Final = "null_code_hash"
 FOLD_WITHOUT_RUN: Final = "fold_without_run"
+INCONSISTENT_EVIDENCE: Final = "inconsistent_evidence"
 
 type MetricValue = str | int | bool | list[MetricValue] | dict[str, MetricValue] | None
 
@@ -64,7 +73,19 @@ class Outcome:
         self.metrics[name] = text_of(value) if isinstance(value, Decimal) else value
 
 
+class GateInputError(ValueError):
+    """A check was handed inputs its caller promised to rule out (a gate bug, never a verdict)."""
+
+
+def summary_of(run: StudyRunInput) -> RunSummary:
+    """The run's summary; raises ``GateInputError`` when it has none (a check runs only on a completed run)."""
+    if run.summary is None:
+        raise GateInputError(f"run {run.run_id} has no summary")
+    return run.summary
+
+
 def text_of(value: object) -> str | None:
+    """A reason or metric value as stored: None stays None, a Decimal in fixed notation, else ``str``."""
     if value is None:
         return None
     if isinstance(value, Decimal):
@@ -77,12 +98,35 @@ def sharpe_metric(series: DailySeries) -> Decimal | None:
     return to_decimal(annualized(sharpe(series.returns)))
 
 
+def check_versions(inputs: CandidateInputs, out: Outcome) -> None:
+    """``frozen_version``: every run's ``study_runs`` frozen hash must be its own version's."""
+    for run in inputs.runs:
+        if run.version_frozen_hash != run.frozen_hash:
+            out.reason(INCONSISTENT_EVIDENCE, "frozen_version", run.run_id, run.version_frozen_hash)
+
+
+def check_holdout_evidence(inputs: CandidateInputs, holdout: StudyRunInput, out: Outcome) -> None:
+    """``holdout_grid_point`` and ``holdout_days``: the holdout ran the development winner, on unseen days.
+
+    The holdout must be the lab's final grid point, every development day must fall before
+    ``holdout_start``, and every holdout day on or after it.
+    """
+    if holdout.grid_point != inputs.final_grid_point:
+        out.reason(INCONSISTENT_EVIDENCE, "holdout_grid_point", holdout.grid_point, inputs.final_grid_point)
+    start = inputs.thresholds.holdout_start
+    late = [d.day for r in inputs.by_role(Role.DEVELOPMENT) for d in r.daily if d.day >= start]
+    if late:
+        out.reason(INCONSISTENT_EVIDENCE, "development_days", max(late), start)
+    early = [d.day for d in holdout.daily if d.day < start]
+    if early:
+        out.reason(INCONSISTENT_EVIDENCE, "holdout_days", min(early), start)
+
+
 def check_trade_floor(inputs: CandidateInputs, holdout: StudyRunInput, out: Outcome) -> None:
     """``trade_floor``: below the lab's floor of holdout trades is insufficient, never a pass."""
-    assert holdout.summary is not None
     t = inputs.thresholds
     floor = t.candle.min_holdout_trades if inputs.lab == Lab.CANDLE else t.replay.min_holdout_trades
-    trades = holdout.summary.trade_count
+    trades = summary_of(holdout).trade_count
     out.metric("holdout_trades", trades)
     if trades < floor:
         out.reason(TOO_FEW_TRADES, "trade_floor", trades, floor)
@@ -163,12 +207,12 @@ def check_fee_hurdle(inputs: CandidateInputs, holdout: StudyRunInput, out: Outco
 
 def check_drawdown(inputs: CandidateInputs, holdout: StudyRunInput, out: Outcome) -> None:
     """``drawdown_budget``: marked max drawdown (candle) or realized (replay) over the budget fails."""
-    assert holdout.summary is not None
+    summary = summary_of(holdout)
     if inputs.lab == Lab.CANDLE:
         basis = "marked"
         value = None if holdout.measures is None else holdout.measures.marked_max_drawdown
     else:
-        basis, value = "realized", holdout.summary.max_drawdown
+        basis, value = "realized", summary.max_drawdown
     out.metric("holdout_max_drawdown", value)
     out.metric("drawdown_basis", basis)
     budget = inputs.thresholds.max_drawdown

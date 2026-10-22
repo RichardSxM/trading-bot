@@ -154,6 +154,19 @@ def test_the_record_chains_trades_and_funding_from_the_starting_balance():
     assert record.max_drawdown == Decimal(100) / Decimal(1100)
 
 
+def test_a_trade_return_counts_its_positions_funding_like_the_lab():
+    events = [
+        PaperEvent(START, Decimal(-20), False),
+        PaperEvent(START + timedelta(hours=1), Decimal(100), True, Decimal(-20)),
+    ]
+
+    record = paper_record(Decimal(1000), events)
+
+    # The funding moved equity when paid, and the trade's return is net of it: (100 - 20) / 980.
+    assert record.trade_returns == (Decimal(80) / Decimal(980),)
+    assert record.paper_return == Decimal("0.08")
+
+
 def test_slippage_is_signed_so_worse_for_the_trade_is_positive():
     assert entry_slippage_bps(EntryFill(True, Decimal(60006), Decimal(60000))) == Decimal(1)
     assert entry_slippage_bps(EntryFill(False, Decimal(60006), Decimal(60000))) == Decimal(-1)

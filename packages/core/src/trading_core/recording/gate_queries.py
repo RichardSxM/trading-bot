@@ -41,7 +41,7 @@ from trading_core.recording.enums import (
     StudyRole,
     Verdict,
 )
-from trading_core.recording.repository import latest_promotion
+from trading_core.recording.repository import final_grid_point, latest_promotion
 from trading_core.thresholds_file import packaged_thresholds
 
 # The run_config keys specs 0014 and 0008 write for slippage (candle) and latency (replay).
@@ -104,11 +104,11 @@ def holdout_trades(session: Session, run_id: UUID, starting_balance: Decimal) ->
 def _run_input(session: Session, study_run: models.StudyRun, lab: StudyLab) -> StudyRunInput:
     run = session.get(models.StrategyRun, study_run.run_id)
     assert run is not None  # FK
-    strategy = session.execute(
-        select(models.Strategy.name)
+    strategy, version_frozen_hash = session.execute(
+        select(models.Strategy.name, models.StrategyVersion.frozen_hash)
         .join(models.StrategyVersion, models.StrategyVersion.strategy_id == models.Strategy.id)
         .where(models.StrategyVersion.id == run.strategy_version_id)
-    ).scalar_one()
+    ).one()
     result = session.get(models.RunResult, (run.id, Sample.FULL))
     measures = session.get(models.RunMeasures, run.id)
     days = session.execute(
@@ -149,8 +149,10 @@ def _run_input(session: Session, study_run: models.StudyRun, lab: StudyLab) -> S
             measures.avg_gross_edge,
             measures.avg_round_trip_cost,
         ),
-        funding_missing=_funding_missing(session, run.id),
+        # Only the holdout's costs are checked (AC-12), so only its positions are scanned.
+        funding_missing=role == Role.HOLDOUT and _funding_missing(session, run.id),
         cost_setting_missing=COST_SETTING[run_lab] not in run.run_config,
+        version_frozen_hash=version_frozen_hash,
     )
 
 
@@ -222,7 +224,9 @@ def study_evidence(session: Session, name: str) -> StudyEvidence:
     seed = plan_study.get("seed") if isinstance(plan_study, Mapping) else None
     folds = study.plan.get("folds")
     inputs_runs = {r.run_id: r for r in runs}
-    holdout = next((r for r in runs if r.role == Role.HOLDOUT and r.completed), None)
+    # Two completed holdouts score neither (the gate says inconsistent_evidence), so none is chosen here.
+    holdouts = [r for r in runs if r.role == Role.HOLDOUT and r.completed]
+    holdout = holdouts[0] if len(holdouts) == 1 else None
     final_version_id: UUID | None = None
     final_frozen: str | None = None
     code_hash: str | None = None
@@ -252,6 +256,7 @@ def study_evidence(session: Session, name: str) -> StudyEvidence:
         fold_overrides=tuple(sorted((k, v) for k, v in folds.items() if isinstance(v, int)))
         if isinstance(folds, Mapping)
         else (),
+        final_grid_point=final_grid_point(session, study.id),
     )
     return StudyEvidence(inputs, study, final_version_id, final_frozen, tuple(inputs_runs))
 
@@ -307,12 +312,16 @@ def _sort_key(row: StudyRanking) -> tuple[bool, Decimal, bool, Decimal, str]:
     return (sharpe is None, -(sharpe or Decimal(0)), ret is None, -(ret or Decimal(0)), row.study)
 
 
-def study_rankings(session: Session) -> list[StudyRanking]:
-    """Every study, by walk forward Sharpe (descending, nulls last), ties by walk forward return (AC-18)."""
+def study_rankings(session: Session, study_id: UUID | None = None) -> list[StudyRanking]:
+    """Every study (or only ``study_id``), by walk forward Sharpe (descending, nulls last), ties by walk
+    forward return (AC-18)."""
     rows: list[StudyRanking] = []
-    studies = session.execute(
-        select(models.Study, models.Strategy.name).join(models.Strategy, models.Strategy.id == models.Study.strategy_id)
-    ).all()
+    query = select(models.Study, models.Strategy.name).join(
+        models.Strategy, models.Strategy.id == models.Study.strategy_id
+    )
+    if study_id is not None:
+        query = query.where(models.Study.id == study_id)
+    studies = session.execute(query).all()
     for study, strategy in studies:
         plan_study = study.plan.get("study")
         mode = plan_study.get("entry_mode") if isinstance(plan_study, Mapping) else None
@@ -433,9 +442,9 @@ def paper_evidence(session: Session, frozen_hash: str, now: datetime) -> PaperEv
         )
     run_ids = [r.id for r in runs]
     events = [
-        PaperEvent(closed_at, realized, True)
-        for closed_at, realized in session.execute(
-            select(models.Position.closed_at, models.Position.realized_pnl).where(
+        PaperEvent(closed_at, realized, True, funding)
+        for closed_at, realized, funding in session.execute(
+            select(models.Position.closed_at, models.Position.realized_pnl, models.Position.funding_total).where(
                 models.Position.run_id.in_(run_ids), models.Position.status == PositionStatus.CLOSED
             )
         )
@@ -527,7 +536,7 @@ class StudyDetail:
 
 def study_detail(session: Session, study_id: UUID) -> StudyDetail | None:
     """The study's detail (AC-19), or None for an unknown id."""
-    ranking = next((r for r in study_rankings(session) if r.study_id == study_id), None)
+    ranking = next(iter(study_rankings(session, study_id)), None)
     if ranking is None:
         return None
     promotions = (

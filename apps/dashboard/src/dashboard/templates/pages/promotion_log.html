@@ -1,12 +1,17 @@
 {% extends "shell.html" %}
 {% from "components/table.html" import table %}
 {% from "components/pager.html" import pager %}
+{% from "components/states.html" import error_state %}
 {% block page %}
 <div class="board">
   <section class="region region--wide" aria-labelledby="log-h">
     <header class="region__head"><h2 class="region__title" id="log-h">Promotion log</h2><span class="region__meta">every decision, newest first · times in UTC · <a href="/strategies">back to the ranking</a></span></header>
+    {% if log_error %}
+    {{ error_state("Promotion log unavailable.", " The dashboard cannot read Postgres right now. Reload in a moment.") }}
+    {% else %}
     {{ table("Promotion log", log_columns, log, "Promotions appear here once the gate or you decide one.") }}
     {{ pager("Promotion log pages", log_pager) }}
+    {% endif %}
   </section>
 </div>
 {% endblock %}

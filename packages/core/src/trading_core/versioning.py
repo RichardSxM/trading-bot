@@ -13,6 +13,12 @@ from different commits with the same closure files give the same hash. ``frozen_
 config and the NautilusTrader version, because an engine upgrade changes fills. A closure module
 that imports ``importlib`` or calls ``__import__`` would hide what it loads, so ``code_closure``
 refuses it with ``DynamicImportError``.
+
+Known limits, so a change in one of these keeps the same hash (and so a version's promotions): data
+files a closure module reads at run time, modules loaded by a name held in a string (a config path),
+and third party packages other than NautilusTrader. Keep strategy logic in ``.py`` modules imported
+by name. Imports under ``if TYPE_CHECKING:`` count like any other: a wider closure only ever changes
+the hash more often, which fails safe.
 """
 
 import ast

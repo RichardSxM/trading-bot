@@ -1,5 +1,5 @@
 """covers: spec 0015 AC-2 (a study name is bound to its plan), AC-3 (study rows in the bundle), AC-5 (one
-completed holdout per frozen hash), AC-7 (import is idempotent and refuses a contradiction)."""
+completed holdout per frozen hash and per study), AC-7 (import is idempotent and refuses a contradiction)."""
 
 from dataclasses import replace
 from decimal import Decimal
@@ -160,6 +160,29 @@ def test_a_second_completed_holdout_of_the_same_frozen_hash_is_refused(session: 
 
     with pytest.raises(IntegrityError, match="uq_study_runs_frozen_hash"):
         repository.import_run_bundle(session, second)
+
+
+def test_a_second_completed_holdout_of_the_same_study_is_refused(session: Session):
+    """Two grid points have two frozen hashes, so only the per study index stops the second (migration 0010)."""
+    name = f"holdout2-{uuid4().hex[:8]}"
+    the_study, first_version = _fresh(name)
+    other_version = version(the_study.strategy_id, {"fast": 13, "name": name})
+    repository.import_run_bundle(session, study_bundle(the_study, first_version, role=StudyRole.HOLDOUT))
+
+    with pytest.raises(IntegrityError, match="uq_study_runs_study_id"):
+        repository.import_run_bundle(
+            session, study_bundle(the_study, other_version, role=StudyRole.HOLDOUT, grid_point=1)
+        )
+
+
+def test_a_study_run_hash_that_is_not_its_versions_is_refused(session: Session):
+    the_study, the_version = _fresh(f"hash-{uuid4().hex[:8]}")
+    bundle = study_bundle(the_study, the_version)
+    assert bundle.study_run is not None
+    tampered = replace(bundle, study_run=replace(bundle.study_run, frozen_hash="f" * 64))
+
+    with pytest.raises(ForeignRunError, match="is not its version's"):
+        repository.import_run_bundle(session, tampered)
 
 
 def test_write_run_bundle_writes_the_study_parts(engine, trading_env):

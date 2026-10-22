@@ -64,11 +64,12 @@ def promote_manual(
     *,
     is_tty: bool,
     confirm: Callable[[str], str],
-    now: datetime,
+    clock: Callable[[], datetime],
 ) -> UUID:
     """Append a manual ``candidate → paper`` pass for the version; returns the promotion id.
 
-    ``confirm`` asks for the strategy's name (the prompt text is passed in). Raises
+    ``confirm`` asks for the strategy's name (the prompt text is passed in); ``clock`` is read once the
+    name is typed, so a slow answer never backdates the row. Raises
     ``ManualPromotionRefused`` without a terminal, with an empty note, for an unknown or unfrozen
     version, or when the typed name does not match.
     """
@@ -96,7 +97,7 @@ def promote_manual(
         thresholds={},
         decided_by=DecidedBy.MANUAL,
         notes=note.strip(),
-        decided_at=now,
+        decided_at=clock(),
         frozen_hash=version.frozen_hash,
     )
     repository.record_promotion(session, row, [])

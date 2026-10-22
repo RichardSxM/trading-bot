@@ -188,16 +188,10 @@ async def promotion_log_page(request: Request, session: SessionDep, page: Annota
     """Every promotion, newest first, 50 per page (spec 0015 AC-20); 422 below 1 or not an integer."""
     context = app_context(request)
     try:
-        lines = await context.read_promotions(page)
+        data = log_context(await context.read_promotions(page), page)
     except SQLAlchemyError as exc:
         _read_failed("promotions", exc)
-        return await render_page(
-            request,
-            context,
-            session,
-            *PAGES["/strategies"],
-            data={"strategies_error": True, **strategies_context(StrategiesView(()))},
-        )
+        data = {"log_error": True, **log_context([], page)}
     return await render_page(
         request,
         context,
@@ -205,7 +199,7 @@ async def promotion_log_page(request: Request, session: SessionDep, page: Annota
         "pages/promotion_log.html",
         "Promotion log",
         path="/strategies",
-        data=log_context(lines, page),
+        data=data,
     )
 
 

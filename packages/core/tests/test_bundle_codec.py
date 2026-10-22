@@ -47,6 +47,10 @@ def test_a_bundle_from_before_spec_0015_still_parses():
         (lambda d: d["results"][0].update(fees_total=0.6), "decimal string"),
         (lambda d: d["run"].pop("env"), "env is missing"),
         (lambda d: d["run"].update(started_at="2026-10-19T12:00:00"), "UTC"),
+        (lambda d: d["run"].update(id="not-a-uuid"), "run.id: 'not-a-uuid' is not a UUID"),
+        (lambda d: d["run"].update(started_at="yesterday"), "is not a datetime"),
+        (lambda d: d["daily_equity"][0].update(day="2026-13-40"), "is not a date"),
+        (lambda d: d["results"][0].update(fees_total="0.6x"), "is not a decimal"),
     ],
 )
 def test_a_malformed_bundle_is_refused(change, message, tmp_path):
