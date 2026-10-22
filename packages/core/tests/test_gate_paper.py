@@ -63,6 +63,43 @@ def test_twenty_nine_days_is_insufficient():
     assert result.verdict == GateVerdict.INSUFFICIENT
 
 
+def test_under_thirty_days_with_a_net_loss_fails_not_insufficient():
+    # covers: AC-16, AC-12 (fail outranks the paper floors, clarified 2026-10-21)
+    events = tuple(PaperEvent(START + timedelta(hours=6 * i), Decimal(-1), True) for i in range(120))
+
+    result = evaluate_paper(_inputs(events=events, evaluated_at=START + timedelta(days=29)))
+
+    assert ("paper_net_positive", "failed") in _codes(result)
+    assert ("paper_duration", "too_few_days") in _codes(result)
+    assert result.verdict == GateVerdict.FAIL
+
+
+def test_the_trade_floor_depends_on_the_strategy_kind():
+    assert THRESHOLDS.paper.trade_floor("scalping") == 100
+    assert THRESHOLDS.paper.trade_floor("hour_level") == 20
+
+
+def _trades(n: int) -> tuple[PaperEvent, ...]:
+    return tuple(
+        PaperEvent(START + timedelta(hours=6 * i), Decimal(3) if i % 3 else Decimal(-1), True) for i in range(n)
+    )
+
+
+def test_a_scalper_below_its_trade_floor_is_insufficient():
+    result = evaluate_paper(_inputs(events=_trades(99)))
+
+    assert _codes(result) == [("paper_trade_floor", "too_few_trades")]
+    assert result.verdict == GateVerdict.INSUFFICIENT
+
+
+def test_twenty_trades_clear_the_hour_level_floor_but_not_the_scalping_one():
+    hour_level = evaluate_paper(_inputs(events=_trades(20), strategy_kind="hour_level"))
+    scalping = evaluate_paper(_inputs(events=_trades(20)))
+
+    assert hour_level.verdict == GateVerdict.PASS
+    assert ("paper_trade_floor", "too_few_trades") in _codes(scalping)
+
+
 def test_a_paper_mean_below_the_lab_bound_fails():
     result = evaluate_paper(_inputs(holdout_trade_bound=Decimal("0.01")))
 

@@ -27,9 +27,9 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 12 | Phone alerts & health checks | Slice 5 | done |
 | 13 | Candle backtest lab | Slice 6 | done |
 | 14 | Scalping simulator | Slice 6 | done |
-| 15 | Strategy scoring & promotion gate | Slice 6 | in-progress |
+| 15 | Strategy scoring & promotion gate | Slice 6 | done |
 | 16 | Scalping strategy candidates | Slice 7 | in-progress |
-| 17 | Hour level strategy candidates | Slice 7 | planned |
+| 17 | Hour level strategy candidates | Slice 7 | in-progress |
 | 18 | Trade journal export | Slice 8 | planned |
 | 19 | Go live with small capital | Slice 9 | planned |
 
@@ -314,7 +314,7 @@ code in `apps/lab`, `packages/core/src/trading_core/lab`
 - [x] Review it (fresh model): `/check review scalping simulator`
 - [x] Document it: `/document scalping simulator`
 
-### 15. Strategy scoring & promotion gate · in-progress
+### 15. Strategy scoring & promotion gate · done
 Score every strategy on return after costs, max drawdown, and a risk adjusted ratio (win rate shown, never ranked on), with out of sample testing to catch overfitting. Only strategies that pass move to paper, and only paper winners can go live.
 **Done when:** the dashboard ranks strategies on those metrics, the gate blocks any strategy that fails out of sample or paper thresholds, and promotions are logged.
 **Carried over from research (2026-10-04), for the design to weigh:**
@@ -335,16 +335,16 @@ Score every strategy on return after costs, max drawdown, and a risk adjusted ra
 spec [0015](../specs/0015-strategy-scoring-promotion-gate/index.md), with [0016](../specs/0016-tardis-off-tick-trades.md) for Tardis trades off the tick
 code in `packages/core/src/trading_core/gate`, `packages/core/src/trading_core/versioning.py`, `packages/core/src/trading_core/recording`, `apps/gate`, `apps/lab`, `apps/trader`, `apps/dashboard`
 - [x] Design it (spec): `/architect strategy scoring & promotion gate`
-- [ ] Build it: `/develop strategy scoring & promotion gate`
+- [x] Build it: `/develop strategy scoring & promotion gate`
   - [x] Thin thread: migration `0009` and `gate_app`, code and frozen hashes, thresholds file, daily equity and measures in the bundles, `lab study` and `lab holdout` for candles, `gate import` and `push-bundles.sh`, `gate evaluate`, the ranking table (AC-1 to AC-8, AC-18, AC-22, AC-23)
   - [x] Full candidate gate: folds, bootstrap, PBO, deflated Sharpe, every check and missing data reason, `lab gate --dry-run`, determinism (AC-8 to AC-13)
   - [x] Replay studies: a 2022 Tardis spike, taker and maker studies, Tardis only replay days (43 development, 1st of month holdout), replay grid capped at 4, benchmark day limiting, the `random_taker` loser study (AC-2 to AC-5, AC-10, AC-24)
-  - [ ] Paper and live guards: `trader.version`, manual promotion, the placeholder transition, the paper guard, the live guard on `frozen_hash`, paper to live evaluation (AC-14 to AC-17)
-  - [ ] Dashboard depth and proof: study detail, promotion log, paper progress, permission and boundary tests, `verify.md` (AC-19 to AC-23)
+  - [x] Paper and live guards: `trader.version`, manual promotion, the placeholder transition, the paper guard, the live guard on `frozen_hash`, paper to live evaluation (AC-14 to AC-17)
+  - [x] Dashboard depth and proof: study detail, promotion log, paper progress, permission and boundary tests, `verify.md` (AC-19 to AC-23)
   - [x] Fixes from the first verify: `lab holdout` resumes missing benchmarks, no self benchmark, benchmarks left out of the trial count (AC-4, AC-5, AC-10, AC-11, AC-19)
   - [x] Amendments of 2026-10-21: entry mode in the frozen hash, the deploy promotion check, and the Tardis 5% off tick guard (AC-25, AC-26, spec 0016 AC-3, AC-4)
-- [ ] Verify it: `/check verify strategy scoring & promotion gate`
-- [ ] Test it: `/test strategy scoring & promotion gate`
+- [x] Verify it: `/check verify strategy scoring & promotion gate` (passed 2026-10-21 on the VPS, 5647e6e)
+- [x] Test it: `/test strategy scoring & promotion gate`
 - [ ] Review it (fresh model): `/check review strategy scoring & promotion gate`
 - [ ] Document it: `/document strategy scoring & promotion gate`
 
@@ -386,7 +386,7 @@ code in `packages/core/src/trading_core/strategy`, `packages/core/src/trading_co
 - [ ] Review it (fresh model): `/check review scalping strategy candidates`
 - [ ] Document it: `/document scalping strategy candidates`
 
-### 17. Hour level strategy candidates · needs a decision
+### 17. Hour level strategy candidates · in-progress
 The fallback set: trend following and mean reversion on 1h to 4h candles, tested in the candle lab.
 **Done when:** each candidate has a scored result over several years of candles, and the gate's verdict is recorded.
 **Carried over from research (2026-10-04), a candidate to weigh:** Al Brooks style price action on 1h candles.
@@ -421,7 +421,19 @@ Two cautions. RSI and MACD are both built from recent price momentum, so they of
 - **Failed breakout reversal:** when a breakout fails and price comes back through the level, reverse (a stop and reverse at the far side of the breakout bar). This is the same idea as the liquidity sweep candidate above, so test them as one candidate.
 - **Volatility contraction:** an NR4 bar (narrower range than the three before it) or an inside bar, then enter on a break of its high or low. Few settings and fully rule based, so a good early candidate, and a possible 15 minute variant for feature 16.
 - **Skip single candle patterns:** the source rates the hammer, hanging man, harami and doji at average or below, often breaking either way at random.
-- [ ] Design it (spec): `/architect hour level strategy candidates`
+spec [0018](../specs/0018-hour-level-strategy-candidates/index.md)
+
+- [x] Design it (spec): `/architect hour level strategy candidates`
+- [ ] Build it: `/develop hour level strategy candidates`
+  - [ ] Shared base and family trials: `bar_indicators`, `bar_rule` (pure and node, `macd_baseline` lifecycle, frozen after the first study), config checks, trial count and variance by kind and lab on the VPS (AC-1 to AC-8, AC-19)
+  - [ ] Thin thread: `connors_rsi` rule, study, holdout, push, evaluate, verdict with N0 in its spec file (AC-9, AC-15, AC-16, AC-17)
+  - [ ] Mean reversion and breakouts: `bollinger_rsi_1h`, `nr4_breakout`, `failed_breakout`, each to a recorded verdict (AC-10, AC-11, AC-12, AC-15 to AC-17)
+  - [ ] Your layered plan: `trend_rsi_pullback`, then `trend_rsi_macd` with layer 1's holdout settings and the layer comparison (AC-13, AC-14, AC-15 to AC-17, AC-20)
+  - [ ] Revisions and close out: at most one revision per failed candidate, evaluate every study again with the final family N, scope tick (AC-18, AC-21)
+- [ ] Verify it: `/check verify hour level strategy candidates`
+- [ ] Test it: `/test hour level strategy candidates`
+- [ ] Review it (fresh model): `/check review hour level strategy candidates`
+- [ ] Document it: `/document hour level strategy candidates`
 
 ## Slice 8: Records
 
@@ -459,6 +471,7 @@ Out of scope for the current build pass, kept so the plan stays honest.
 - **Market context extras** (from spec 0009): a Fear & Greed regime tag, a news or event blackout filter, Deribit options implied volatility and put/call · needs a decision
 - **Automatic maintenance mute** (from spec 0013): open a warning mute by itself from Kraken's scheduled maintenance windows (status.kraken.com) instead of muting by hand · needs a decision
 - **ETH candles** (from spec 0014): a pinned `PF_ETHUSD` instrument and a candle fetch, if feature 17 wants a second market · needs a decision
+- **Hour level candidates, round 2** (from spec 0018): Brooks H2/L2 and the three push wedge, rule detected chart patterns, divergence, layered RSI, and regime gated versions of the first six · needs a decision
 - **More than one strategy in the paper trader** (from spec 0014): the trader runs one hard wired strategy, so running `macd_baseline` or any candidate in paper needs multi strategy support (before or within feature 19) · needs a decision
 - **Paper trade a passing scalping candidate** (from spec 0017): wire a candidate that passes the gate into the trader in place of the placeholder (one strategy at a time), with its manual or gate promotion · needs a decision
 

@@ -1,6 +1,6 @@
 # 0016 · Tardis trades off the tick
 
-**Status**: In Progress (AC-1, AC-2 built in 3e82099; AC-3 and the AC-4 change built in 6a5c8b9)
+**Status**: Accepted (AC-1, AC-2 built in 3e82099; AC-3 and the AC-4 change built in 6a5c8b9)
 **Date**: 2026-10-20 (assumed during /develop); ratified 2026-10-21 by /architect, which added the 5% guard
 **Authorized by**: RichardSxM
 

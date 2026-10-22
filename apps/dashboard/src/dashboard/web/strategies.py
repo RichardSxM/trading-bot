@@ -51,6 +51,11 @@ def _pct(value: Decimal | None) -> str:
     return DASH if value is None else f"{num((value * 100).quantize(_HUNDREDTH))} %"
 
 
+def _of(shown: str, floor: int | None) -> str:
+    """A paper figure against its floor, such as ``12.50 of 30``."""
+    return shown if floor is None else f"{shown} of {num(Decimal(floor))}"
+
+
 def ranking_cells(row: StudyRanking, *, link: bool = True) -> list[Cell]:
     """One table row under ``RANKING_COLUMNS``, the study linked to its detail; a missing metric shows as a dash."""
     trades = row.integer("holdout_trades")
@@ -115,8 +120,8 @@ LOG_COLUMNS: Final = [
 PAPER_COLUMNS: Final = [
     ("Strategy", False),
     ("Frozen hash", False),
-    ("Paper days", True),
-    ("Trades", True),
+    ("Paper days of floor", True),
+    ("Trades of floor", True),
     ("Return", True),
     ("Max drawdown", True),
     ("Mean trade vs lab bound", True),
@@ -224,11 +229,12 @@ def paper_cells(progress: PaperProgress) -> list[Cell]:
     trades = m.get("paper_trades")
     mean, bound = dec("paper_mean_trade_return"), dec("holdout_trade_return_lower_bound")
     paper_slip, lab_slip = dec("paper_slippage_bps"), dec("lab_slippage_bps")
+    days = dec("paper_days")
     return [
         progress.strategy,
         _hash(progress.frozen_hash),
-        DASH if dec("paper_days") is None else num(dec("paper_days")),
-        DASH if not isinstance(trades, int) else num(Decimal(trades)),
+        _of(DASH if days is None else num(days), progress.min_days),
+        _of(DASH if not isinstance(trades, int) else num(Decimal(trades)), progress.trade_floor),
         _pct(dec("paper_return")),
         _pct(dec("paper_max_drawdown")),
         f"{_pct(mean)} vs {_pct(bound)}",
