@@ -3,7 +3,7 @@
 {% block page %}
 <div class="board">
   <section class="region region--wide" aria-labelledby="study-h">
-    <header class="region__head"><h2 class="region__title" id="study-h">{{ detail_title }}</h2><span class="region__meta">{{ trials }} trial{{ "" if trials == 1 else "s" }} in this study · <a href="/strategies">back to the ranking</a></span></header>
+    <header class="region__head"><h2 class="region__title" id="study-h">{{ detail_title }}</h2><span class="region__meta">{{ trials }} trial{{ "" if trials == 1 else "s" }} in this study{% if family_trials is not none %} · trials in family ({{ family_trials }}){% endif %} · <a href="/strategies">back to the ranking</a></span></header>
     {{ table("Study summary", ranking_columns, ranking, "No numbers yet.") }}
   </section>
   <section class="region region--wide" aria-labelledby="folds-h">

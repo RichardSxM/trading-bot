@@ -5,6 +5,7 @@ frozen dataclasses: every study run with its daily equity, results, and measures
 trades, the trial count, and the missing cost flags.
 """
 
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -33,6 +34,7 @@ from trading_core.recording.enums import (
     OrderOrigin,
     OrderSide,
     PositionStatus,
+    RunStatus,
     Sample,
     Stage,
     StudyLab,
@@ -152,6 +154,50 @@ def _run_input(session: Session, study_run: models.StudyRun, lab: StudyLab) -> S
     )
 
 
+_TRIAL_ROLES = (StudyRole.DEVELOPMENT, StudyRole.HOLDOUT)
+_DAYS_PER_YEAR_ROOT = math.sqrt(365)
+
+
+def family_trials(session: Session, kind: str, lab: StudyLab) -> tuple[int, tuple[float, ...]]:
+    """N and the deflated Sharpe's trial Sharpes over the study's family (spec 0018 AC-19).
+
+    The family is every study whose strategy has the same ``kind`` and whose ``lab`` is the same. N is
+    the count of distinct ``frozen_hash`` over its development and holdout runs, failed ones too
+    (benchmarks never count). The trial Sharpes are one per day Sharpe per distinct ``frozen_hash``
+    with a completed development run: that hash's earliest such run with a ratio, its
+    ``risk_adjusted_ratio ÷ √365``, ordered by hash.
+    """
+    family = (
+        select(models.StudyRun)
+        .join(models.Study, models.Study.id == models.StudyRun.study_id)
+        .join(models.Strategy, models.Strategy.id == models.Study.strategy_id)
+        .where(models.Strategy.kind == kind, models.Study.lab == lab)
+    )
+    trials = session.execute(
+        family.with_only_columns(func.count(func.distinct(models.StudyRun.frozen_hash))).where(
+            models.StudyRun.role.in_(_TRIAL_ROLES)
+        )
+    ).scalar_one()
+    rows = session.execute(
+        family.with_only_columns(models.StudyRun.frozen_hash, models.RunResult.risk_adjusted_ratio)
+        .join(
+            models.RunResult,
+            (models.RunResult.run_id == models.StudyRun.run_id) & (models.RunResult.sample == Sample.FULL),
+        )
+        .where(
+            models.StudyRun.role == StudyRole.DEVELOPMENT,
+            models.StudyRun.status == RunStatus.COMPLETED,
+            models.RunResult.risk_adjusted_ratio.is_not(None),
+        )
+        .order_by(models.StudyRun.frozen_hash, models.StudyRun.created_at, models.StudyRun.run_id)
+    ).all()
+    earliest: dict[str, Decimal] = {}
+    for frozen, ratio in rows:
+        if frozen is not None and ratio is not None:
+            earliest.setdefault(frozen, ratio)
+    return trials, tuple(float(earliest[h]) / _DAYS_PER_YEAR_ROOT for h in sorted(earliest))
+
+
 def study_evidence(session: Session, name: str) -> StudyEvidence:
     """Everything ``gate evaluate`` reads for the study called ``name``; ``UnknownStudyError`` when there is none."""
     study = session.execute(select(models.Study).where(models.Study.name == name)).scalar_one_or_none()
@@ -171,11 +217,7 @@ def study_evidence(session: Session, name: str) -> StudyEvidence:
     strategy_name, kind = session.execute(
         select(models.Strategy.name, models.Strategy.kind).where(models.Strategy.id == study.strategy_id)
     ).one()
-    trials = session.execute(
-        select(func.count(func.distinct(models.StudyRun.frozen_hash)))
-        .join(models.Study, models.Study.id == models.StudyRun.study_id)
-        .where(models.Study.strategy_id == study.strategy_id, models.StudyRun.role != StudyRole.BENCHMARK)
-    ).scalar_one()
+    trials, trial_sharpes = family_trials(session, kind, lab)
     plan_study = study.plan.get("study")
     seed = plan_study.get("seed") if isinstance(plan_study, Mapping) else None
     folds = study.plan.get("folds")
@@ -206,6 +248,7 @@ def study_evidence(session: Session, name: str) -> StudyEvidence:
         runs=runs,
         holdout_trades=trades,
         trial_count=max(1, trials),
+        trial_sharpes=trial_sharpes,
         fold_overrides=tuple(sorted((k, v) for k, v in folds.items() if isinstance(v, int)))
         if isinstance(folds, Mapping)
         else (),

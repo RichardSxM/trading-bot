@@ -23,6 +23,8 @@ from trading_core import versioning
 from trading_core.lab.candles import CANDLE_STALE_CHECK_S
 from trading_core.node.buy_and_hold import STRATEGY_NAME as BUY_AND_HOLD
 from trading_core.node.buy_and_hold import BuyAndHold, BuyAndHoldConfig
+from trading_core.node.connors_rsi import STRATEGY_NAME as CONNORS_RSI
+from trading_core.node.connors_rsi import ConnorsRsi, ConnorsRsiConfig
 from trading_core.node.macd_baseline import STRATEGY_NAME as MACD_BASELINE
 from trading_core.node.macd_baseline import MacdBaseline, MacdBaselineConfig
 from trading_core.node.maker_probe import MakerProbe, MakerProbeConfig
@@ -275,6 +277,12 @@ def _macd_baseline(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks,
     return MacdBaseline(config, gate, blocks, record)
 
 
+def _connors_rsi(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
+    if not isinstance(config, ConnorsRsiConfig):
+        raise TypeError(f"connors_rsi needs a ConnorsRsiConfig, not {type(config).__name__}")
+    return ConnorsRsi(config, gate, blocks, record)
+
+
 def _peek_probe(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
     if not isinstance(config, MacdBaselineConfig):
         raise TypeError(f"peek_probe needs a MacdBaselineConfig, not {type(config).__name__}")
@@ -325,6 +333,15 @@ REGISTRY: Final[Mapping[str, StrategyEntry]] = {
         module=MacdBaseline.__module__,
         config_cls=MacdBaselineConfig,
         factory=_macd_baseline,
+        run_fields=_candle_fields,
+        kind=StrategyKind.HOUR_LEVEL,
+    ),
+    # The hour level candidates (spec 0018) on the shared ``BarRuleStrategy`` base.
+    CONNORS_RSI: StrategyEntry(
+        name=CONNORS_RSI,
+        module=ConnorsRsi.__module__,
+        config_cls=ConnorsRsiConfig,
+        factory=_connors_rsi,
         run_fields=_candle_fields,
         kind=StrategyKind.HOUR_LEVEL,
     ),

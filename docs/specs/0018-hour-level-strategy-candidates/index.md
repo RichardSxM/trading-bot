@@ -1,7 +1,7 @@
 # 0018. Hour level strategy candidates: six rule based BTC strategies on one shared base, run one at a time through the gate
 
 **Date**: 2026-10-21 (revised the same day after a cross check by another model)
-**Status**: Proposed
+**Status**: In Progress
 
 ## Summary
 
