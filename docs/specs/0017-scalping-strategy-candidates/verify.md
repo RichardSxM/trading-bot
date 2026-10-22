@@ -62,6 +62,12 @@ Started 08:53 UTC on `kfs/lab:s0017` (commit 8c7a852) and stopped by hand at abo
 
 No `lab screen` ran on it. Its rows stay in Postgres and still count toward `bollinger_rsi`'s trial count N. Spec amendment AC-18 (commit 00d5586) fixed the base in e6c21ac, and the screen reruns as `bollinger_rsi_screen_v2` (index task 12b).
 
+### Void: `bollinger_rsi_screen_v2` (2026-10-22, fill check only)
+
+Started 11:01 UTC on `kfs/lab:s0017` (commit e6c21ac, batch `01a16348-352e-76c2-95d2-a1488dcc3388`) and stopped by hand at about 11:45 UTC, with no grid point finished. The fill check fired once, but 4 stops were still rejected as in the market, one in each grid point (for example a sell stop at 22966 with the venue's bid at 22955, 2023-02-01). The backtest engine shows each quote to the simulated venue before the strategy, so the strategy's cached quote still allowed the stop. 19,288 signals were refused with `blocked:stop_not_accepted`.
+
+No `lab screen` ran on it, and its rows count toward N like the first. The second AC-18 amendment (the next quote settles a rejected stop, index task 12c) fixed it, and the screen reruns as `bollinger_rsi_screen_v3`.
+
 ## Test notes
 
 - `apps/lab/tests/test_candle_failure.py::test_sigterm_stops_every_unit_writes_interrupted_reports_and_exits_130` fails (exit 1, not 130) when the machine is loaded, on `main` as well as this branch. It sends SIGTERM on a fixed 2 second timer, which races the backtest's setup. This branch doesn't cause it; a fix belongs in its own change.
