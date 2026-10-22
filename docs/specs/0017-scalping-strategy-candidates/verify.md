@@ -85,6 +85,28 @@ The cause: the candle lab sends a minute's low as one quote, and the next quote 
 
 `bollinger_rsi_screen_adx` started next at 14:24 UTC on the same image (batch `01a16400-b6de-761b-af30-618dd62933b3`) and was stopped by hand at about 14:45 UTC with no grid point finished. It was already refusing signals with `blocked:stop_not_accepted`, so it is void too and reruns as `bollinger_rsi_screen_adx_v2`. The rows of both studies stay in Postgres and count toward N.
 
+### `bollinger_rsi_screen_v4` (2026-10-22): fail, trade rate
+
+Started 15:27 UTC on `kfs/lab:s0017` (commit 9492219, batch `01a1643a-7b9a-7542-ac7c-a1543e78bb49`) and finished all four grid points at 16:47 UTC (exit 0, 4,779 s). 142 rejected stops were settled as `stop_through` exits, and no signal was refused with `blocked:stop_not_accepted`, so the third AC-18 amendment held.
+
+| Grid point | Run | Trades (2.8 years) | Net P&L (USD) |
+|---|---|---|---|
+| grid-1 | `2ab79d1e-aca0-4d22-962b-66192ffe294a` | 470 | −155.13 |
+| grid-2 | `bd1010a1-0047-42f8-9c21-f7a7b46101b6` | 241 | 159.63 |
+| grid-3 | `5b1904d0-2b33-4b32-b18d-5a3a4520121c` | 455 | −31.54 |
+| grid-4 | `76977975-d160-4afa-941d-21bb9d4dbd47` | 312 | 301.32 |
+
+`lab screen bollinger_rsi_screen_v4`: **fail** (exit 3), reasons `trades_per_day` only, final grid point 3 (grid-4).
+
+| Figure | Value | Needs |
+|---|---|---|
+| Walk forward Sharpe | 0.067923 | > 0 (pass) |
+| Avg gross edge (USD per trade) | 2.3601 | ≥ 1.5 × cost = 2.0915 (pass) |
+| Avg round trip cost (USD per trade) | 1.3944 | |
+| Trades per day | 0.3053 (312 over 1,022 days) | ≥ 17 (fail) |
+
+Recorded as **trade rate**: the signal clears the Sharpe and the fee hurdle, but fires about 55 times too rarely. `bollinger_rsi`'s replay study does not run from this screen; its result rests on `bollinger_rsi_screen_adx_v2`.
+
 ## Test notes
 
 - `apps/lab/tests/test_candle_failure.py::test_sigterm_stops_every_unit_writes_interrupted_reports_and_exits_130` fails (exit 1, not 130) when the machine is loaded, on `main` as well as this branch. It sends SIGTERM on a fixed 2 second timer, which races the backtest's setup. This branch doesn't cause it; a fix belongs in its own change.
