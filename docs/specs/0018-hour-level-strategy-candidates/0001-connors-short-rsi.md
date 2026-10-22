@@ -58,4 +58,36 @@ Connors' short RSI is one of the most tested pullback rules, has very few settin
 
 ## Results
 
-*No result yet.*
+- **Study:** `connors_rsi` (study id `01a15fdb-c081-732e-8d3c-c19ef136f8e2`), frozen pick grid point 2 (`rsi_period` 4, `rsi_lower` 5), holdout run `21f3ae66-8311-4b9f-8144-5879e98c5594`
+- **Promotion:** `01a1631b-5be2-7006-b2ab-49047e5ff6b9`, evaluated 2026-10-22 on the VPS (release 5fbd615)
+- **Verdict:** `fail`
+
+Reasons:
+
+| Check | Code | Value | Threshold |
+|---|---|---|---|
+| `trade_floor` | `too_few_trades` | 4 | 60 |
+| `walk_forward_sharpe` | `failed` | −0.454449 | 0 |
+| `bootstrap_lower_bound` | `failed` | −0.000001 | 0 |
+| `deflated_sharpe` | `failed` | 0.000018 | 0.95 |
+| `concentration_direction` | `failed` | 0.961015 | 0.60 |
+
+Metrics:
+
+| Metric | Value |
+|---|---|
+| Walk forward Sharpe (5 folds) | −0.454449 |
+| Holdout Sharpe | 0.956926 |
+| Buy and hold Sharpe | −0.460362 |
+| MACD baseline Sharpe | −1.377988 |
+| Holdout return after costs | 0.001964 (+0.20%) |
+| Holdout max drawdown (marked) | 0.001479 |
+| Deflated Sharpe probability | 0.000018 |
+| PBO | 0.000000 |
+| Holdout trades | 4 |
+| Trial count N | 6 |
+| Trial pool | 6 (`trial_scope` `kind+lab`) |
+
+**N0 = 6.** No other `hour_level` candle study was on the VPS, so the family N at the first evaluation is this study's own 6 grid points.
+
+The "many signals" expectation was wrong: with `rsi_lower` 5 and the 200 bar trend filter, the frozen pick traded only 4 times in 364 holdout days, far below the floor of 60. The whole grid lost money in the study, mostly to fees, and the holdout gain rests on 4 trades in nearly one direction.
