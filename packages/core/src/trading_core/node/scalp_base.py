@@ -447,7 +447,7 @@ class ScalpStrategy(KfsStrategy, StaleQuoteBlock):
             position = self._position()
             closing = OrderSide.SELL if event.order_side == NautilusOrderSide.SELL else OrderSide.BUY
             self._exit_decision = uuid.uuid7()
-            inputs: JsonObject = {"fill_px": event.last_px.as_decimal(), "fill_qty": event.last_qty.as_decimal()}
+            inputs = {"fill_px": event.last_px.as_decimal(), "fill_qty": event.last_qty.as_decimal()}
             now = self.clock.timestamp_ns()
             self._record_decision(self._exit_decision, Intent.EXIT, closing, inputs, True, None, now, EXIT_STOP)
             self.phase = Phase.EXITING

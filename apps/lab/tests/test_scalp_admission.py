@@ -136,7 +136,7 @@ def test_candle_gate_is_in_the_plan_only_when_the_study_file_sets_it(tmp_path):
     plain = load_study(_write(tmp_path, SCREEN.replace("NAME", "plain"), "plain"))
     gated = load_study(_write(tmp_path, SCREEN.replace("NAME", "gated") + "candle_gate = true\n", "gated"))
 
-    assert "candle_gate" not in plain.plan["study"]  # an older plan hashes as before
+    assert "candle_gate" not in plain.plan["study"]  # type: ignore[operator]  # an older plan hashes as before
     assert gated.plan["study"]["candle_gate"] is True  # type: ignore[index, call-overload]  # JSON object
 
 
