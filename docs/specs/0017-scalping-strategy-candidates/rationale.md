@@ -75,6 +75,17 @@ Each recommendation made while writing, with its runner up:
 - **Results in `verify.md`**, over a table: they are read by people a handful of times, and `promotions` already holds the machine readable verdicts.
 - **Screen exit codes 0 and 3**, matching `gate check-version`, so scripts can tell a fail from an error (1 or 64).
 
+## Amendment 2026-10-22: stop already through at the fill (AC-18)
+
+The first `bollinger_rsi_screen` run showed the gap. In the candle lab a maker entry fills inside a bar, and the next quote can already sit past the stop. The venue rejects a stop market order whose trigger is in the market, so spec 0006's `STOP_NOT_ACCEPTED` block fired. That block clears only on restart, and a lab run never restarts, so one early rejection switched entries off for the rest of a 2.8 year run (grid-1 made 10 trades, grid-2 made 9). The screen would then fail on trade rate for a reason that has nothing to do with the idea.
+
+Options weighed with the engineer:
+- **Check the quote and the fill price before placing the stop (chosen)**: if the stop is already through, exit at market with reason `stop_through` and add no block. This is predictable market movement, not a bug, so it should not need a human restart. It also holds in the trader, where a fast move between the fill and the stop gives the same result.
+- **Copy spec 0018 AC-3 exactly** (check the average fill price only): runner up. It is consistent with 0018 but misses every case seen here, where the fill was above the stop and the bid had already moved below it.
+- **Lab only, no latch**: rejected. The lab would no longer replay the trader's exact code, which is the point of both labs sharing one strategy class.
+
+A real rejection after the check passed still blocks, so fail closed holds for anything unexpected. The edit changes `scalp_base.py` only, so it changes the frozen hash of the three scalping strategies and no other.
+
 ## Audit result
 
 Filled in by build task 2 in `verify.md` (batch folder, spread p95, median 5 minute move, `reachable` flags, and the resulting order), before any candidate study runs.
