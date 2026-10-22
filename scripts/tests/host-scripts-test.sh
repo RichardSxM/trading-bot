@@ -270,9 +270,13 @@ case "\$*" in
     "manifest inspect"*) exit 0 ;;
     *"exec -T backup"*) exit 1 ;;
     *"pull --quiet"*) exit 0 ;;
+    *"run --rm --no-deps -T migrate"*)
+        echo migrate >>"$work/calls"
+        exit "\$(cat "$work/migrate_rc")" ;;
     *"run --rm --no-deps -T trader python -m trader.version"*)
         printf '{\n  "frozen_hash": "f1",\n  "git_commit": "%s"\n}\n' "$sha" ;;
     *"run --rm --no-deps -T gate check-version"*)
+        echo check >>"$work/calls"
         cat >"$work/gate_stdin"
         rc=\$(cat "$work/gate_rc")
         echo '{"msg": "gate_check_version", "stage_needed": "paper", "version_id": "log-line"}'
@@ -287,6 +291,7 @@ pdeploy() {
     KFS_ROOT=$droot KFS_LOG_DIR=$work/plog KFS_SECRETS_DIR=$work/dsecrets KFS_ENV_FILE=$work/denv \
         "$droot/releases/$sha/deploy/host/kfs-deploy" run "$sha" >"$work/pout" 2>&1
 }
+echo 0 >"$work/migrate_rc"
 echo 3 >"$work/gate_rc"
 pdeploy; rc=$?
 check "kfs-deploy: a version without its paper pass is refused before the drain" "4 preflight_refused" \
@@ -305,11 +310,20 @@ check "kfs-deploy: a gate error refuses too" "4 promotion check: gate check-vers
     "$rc $(grep 'preflight refused' "$work/plog/host.jsonl" | tail -n 1 | jq -r .reason)"
 echo 0 >"$work/gate_rc"
 : >"$work/plog/deploys.jsonl"
+: >"$work/calls"
 pdeploy; rc=$?
 check "kfs-deploy: a version with its pass goes on to the drain" "v-1" \
     "$(grep 'promotion check passed' "$work/plog/host.jsonl" | jq -r .version_id)"
 check "kfs-deploy: past the check, not refused" "no" \
     "$(jq -r .outcome "$work/plog/deploys.jsonl" | grep -qx preflight_refused && echo refused || echo no)"
+check "kfs-deploy: the new migrate runs before the check reads the schema" "migrate,check" \
+    "$(paste -sd, "$work/calls")"
+echo 1 >"$work/migrate_rc"
+: >"$work/plog/deploys.jsonl"
+: >"$work/calls"
+pdeploy; rc=$?
+check "kfs-deploy: a failed migrate refuses before the check" "4 migrate failed in the new image (exit 1) migrate" \
+    "$rc $(grep 'preflight refused' "$work/plog/host.jsonl" | tail -n 1 | jq -r .reason) $(paste -sd, "$work/calls")"
 
 rm -rf "$work"
 if [ "$fails" -eq 0 ]; then echo PASS; else echo "FAIL: $fails checks"; exit 1; fi

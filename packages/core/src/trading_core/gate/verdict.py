@@ -2,7 +2,10 @@
 
 The verdict is ``fail`` if any reason is a missed threshold, else ``insufficient`` if any reason is
 insufficient evidence, else ``pass``. Missing evidence never passes: no holdout, no benchmark, a
-missing cost, or a NULL code hash each give an insufficient reason.
+missing cost, or a NULL code hash each give an insufficient reason. So does evidence that disagrees
+with itself (``inconsistent_evidence``): two completed holdouts, a run whose ``study_runs`` frozen hash
+is not its version's, a holdout of another grid point than the development winner, or days on the
+wrong side of ``holdout_start``.
 """
 
 from collections.abc import Sequence
@@ -14,6 +17,7 @@ from trading_core.gate.checks import (
     BENCHMARKS,
     FAILED,
     FOLD_WITHOUT_RUN,
+    INCONSISTENT_EVIDENCE,
     MISSING_COST,
     MISSING_METRIC,
     MISSING_RUN,
@@ -28,8 +32,10 @@ from trading_core.gate.checks import (
     check_concentration_folds,
     check_drawdown,
     check_fee_hurdle,
+    check_holdout_evidence,
     check_holdout_sharpe,
     check_trade_floor,
+    check_versions,
     text_of,
 )
 from trading_core.gate.folds import FoldRange, candle_ranges, common_days, replay_ranges, walk_forward
@@ -244,12 +250,18 @@ def evaluate_candidate(inputs: CandidateInputs) -> GateResult:
         out.reason(NULL_CODE_HASH, "frozen_version")
     if not any(r.completed for r in inputs.by_role(Role.DEVELOPMENT)):
         out.reason(MISSING_RUN, "development")
+    check_versions(inputs, out)
+    holdouts = len(inputs.completed_holdouts())
     holdout = inputs.holdout()
     if holdout is None:
-        out.reason(MISSING_RUN, "holdout")
+        if holdouts > 1:
+            out.reason(INCONSISTENT_EVIDENCE, "holdout", holdouts, 1)
+        else:
+            out.reason(MISSING_RUN, "holdout")
         return GateResult(decide(out.reasons), tuple(out.reasons), out.metrics)
 
     assert holdout.summary is not None
+    check_holdout_evidence(inputs, holdout, out)
     series = holdout.series(inputs.lab)
     out.metric("holdout_run_id", str(holdout.run_id))
     out.metric("holdout_return", holdout.summary.return_after_costs)
