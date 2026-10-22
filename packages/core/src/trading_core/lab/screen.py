@@ -4,10 +4,12 @@ It reads a candle study's development runs as the gate reads them (``CandidateIn
 when three things hold: the walk forward Sharpe (the gate's folds, best in sample point per fold) is
 above 0; the final grid point's average gross edge per trade is at least ``fee_hurdle_k`` times its
 average round trip cost (both in USD per trade, as the gate's ``fee_hurdle``); and that point trades at
-least ``SCREEN_MIN_TRADES_PER_DAY`` a day (its trade count over its days of daily equity). A figure
-that is missing fails the screen with ``missing:<figure>``. A pass is a filter, never evidence of an edge.
+least ``SCREEN_MIN_TRADES_PER_DAY`` a day (its trade count over its days of daily equity), or
+``CANDLE_GATE_MIN_TRADES_PER_DAY`` for a candle gate study (AC-20). A figure that is missing fails the
+screen with ``missing:<figure>``. A pass is a filter, never evidence of an edge.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Final
@@ -18,6 +20,8 @@ from trading_core.gate.series import DailySeries, annualized, sharpe, to_decimal
 
 # The ceiling of 200 / 12: the replay holdout's trade floor over its 12 free Tardis days.
 SCREEN_MIN_TRADES_PER_DAY: Final = 17
+# A candle gate study's floor (AC-20): the candle holdout's 60 trades over 365 days, rounded up to 2 places.
+CANDLE_GATE_MIN_TRADES_PER_DAY: Final = Decimal("0.17")
 
 WALK_FORWARD: Final = "walk_forward_sharpe"
 FEE_HURDLE: Final = "fee_hurdle"
@@ -56,8 +60,16 @@ class ScreenVerdict:
         return self.reasons == (TRADES_PER_DAY,)
 
 
-def screen_verdict(figures: ScreenFigures, fee_hurdle_k: Decimal) -> ScreenVerdict:
-    """Apply the AC-9 rule to ``figures``."""
+def is_candle_gate(plan: Mapping[str, object]) -> bool:
+    """True when a study's stored plan has ``[study] candle_gate = true`` (spec 0017 AC-20)."""
+    study = plan.get("study")
+    return isinstance(study, Mapping) and study.get("candle_gate") is True
+
+
+def screen_verdict(
+    figures: ScreenFigures, fee_hurdle_k: Decimal, min_trades_per_day: Decimal | int = SCREEN_MIN_TRADES_PER_DAY
+) -> ScreenVerdict:
+    """Apply the AC-9 rule to ``figures``, with ``min_trades_per_day`` as the trade rate floor."""
     reasons: list[str] = []
     if figures.walk_forward_sharpe is None:
         reasons.append(MISSING_PREFIX + WALK_FORWARD)
@@ -73,7 +85,7 @@ def screen_verdict(figures: ScreenFigures, fee_hurdle_k: Decimal) -> ScreenVerdi
     rate = figures.trades_per_day
     if rate is None:
         reasons.append(MISSING_PREFIX + TRADES_PER_DAY)
-    elif rate < SCREEN_MIN_TRADES_PER_DAY:
+    elif rate < min_trades_per_day:
         reasons.append(TRADES_PER_DAY)
     return ScreenVerdict(passed=not reasons, reasons=tuple(reasons))
 

@@ -1,5 +1,6 @@
 """covers: spec 0017 AC-7 (the scalping registry entries and their run fields per lab), AC-8 (a candle screen
-is admitted to the candle lab only with ``candle_screen``, and never holds out), and AC-9 (``lab screen``)."""
+is admitted to the candle lab only with ``candle_screen``, and never holds out), AC-9 (``lab screen``), and
+AC-20 (the candle gate path: its refusals, its plan, its floor, and its holdout)."""
 
 import json
 from dataclasses import replace
@@ -121,5 +122,58 @@ def test_a_candle_screen_runs_its_development_but_never_holds_out(tmp_path, caps
         assert report["figures"]["min_trades_per_day"] == 17
         assert run_holdout(settings, name, store, today=TODAY) == EXIT_USAGE
         assert "a candle screen never holds out" in capsys.readouterr().err
+    finally:
+        store.engine.dispose()
+
+
+def test_only_bollinger_rsi_may_take_the_candle_gate_path():
+    assert registry_entry("bollinger_rsi").candle_gate is True
+    assert registry_entry("vwap_retest").candle_gate is False
+    assert registry_entry("delta_divergence").candle_gate is False
+
+
+def test_candle_gate_is_in_the_plan_only_when_the_study_file_sets_it(tmp_path):
+    plain = load_study(_write(tmp_path, SCREEN.replace("NAME", "plain"), "plain"))
+    gated = load_study(_write(tmp_path, SCREEN.replace("NAME", "gated") + "candle_gate = true\n", "gated"))
+
+    assert "candle_gate" not in plain.plan["study"]  # an older plan hashes as before
+    assert gated.plan["study"]["candle_gate"] is True  # type: ignore[index, call-overload]  # JSON object
+
+
+def test_a_replay_study_takes_no_candle_gate(tmp_path):
+    text = '[study]\nname = "r"\nlab = "replay"\nentry_mode = "maker"\nseed = 1\ncandle_gate = true\n'
+
+    with pytest.raises(RunFileError, match="a replay study takes no candle_gate"):
+        load_study(_write(tmp_path, CANDLE_RUN.replace("STRATEGY", "bollinger_rsi") + text, "replay"))
+
+
+@pytest.mark.postgres
+def test_a_candle_gate_study_has_the_lower_floor_and_holds_out(tmp_path, capsys):
+    """Runs in the lab service: ``docker compose --profile lab run --rm -T --entrypoint pytest lab -q -m postgres``."""
+    catalog, reports = tmp_path / "catalog", tmp_path / "reports"
+    _catalog(catalog)
+    settings = lab_settings(catalog, reports).model_copy(update={"git_commit": uuid4().hex + uuid4().hex[:8]})
+    name = f"gate-{uuid4().hex[:8]}"
+    base = Settings(trading_env="demo", postgres_user="lab_app")
+    store = StudyStore(create_engine(base.database_url(read_secret(POSTGRES_PASSWORD)), pool_size=2))
+    try:
+        vwap = SCREEN.replace("bollinger_rsi", "vwap_retest").replace('bb_k = ["2.0"]', 'target_r = ["1.5"]')
+        vwap = vwap.replace("NAME", f"vwap-{uuid4().hex[:8]}") + "candle_gate = true\n"
+        assert run_study(settings, load_study(_write(tmp_path, vwap, "vwap")), store) == EXIT_USAGE
+        assert "vwap_retest may not take the candle gate path" in capsys.readouterr().err
+
+        text = SCREEN.replace("NAME", name).replace(
+            'entry_mode = "maker"', f'entry_mode = "maker"\nrsi_low = {20 + uuid4().int % 9}'
+        )
+        assert (
+            run_study(settings, load_study(_write(tmp_path, text + "candle_gate = true\n", "gate")), store) == EXIT_OK
+        )
+        assert run_screen(settings, name, store.engine) in (EXIT_PASS, EXIT_FAIL)
+        report = json.loads((reports / f"screen-{name}" / "screen.json").read_text())
+        assert report["figures"]["min_trades_per_day"] == "0.17"
+
+        capsys.readouterr()
+        run_holdout(settings, name, store, today=TODAY)  # its outcome is the backtest's; only the refusal matters
+        assert "a candle screen never holds out" not in capsys.readouterr().err
     finally:
         store.engine.dispose()

@@ -144,6 +144,8 @@ class StrategyEntry:
     module: str | None = None
     # A scalping strategy the candle lab may screen (spec 0017 AC-7, AC-8); never held out there.
     candle_screen: bool = False
+    # A candle screen strategy whose candle study may be a gate study (spec 0017 AC-20).
+    candle_gate: bool = False
 
     def frozen(self, config: JsonObject) -> FrozenHashes | None:
         """The version's ``code_hash`` and ``frozen_hash`` with ``config``; None for a strategy without a module."""
@@ -370,6 +372,7 @@ REGISTRY: Final[Mapping[str, StrategyEntry]] = {
         run_fields=_scalp_fields,
         default_entry_mode="maker",
         candle_screen=True,
+        candle_gate=True,
     ),
     VWAP_RETEST: StrategyEntry(
         name=VWAP_RETEST,

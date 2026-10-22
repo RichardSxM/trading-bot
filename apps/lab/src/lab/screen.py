@@ -3,7 +3,8 @@
 Read only as ``lab_app``. It refuses (64) anything but a candle study of a scalping strategy whose every
 grid point has a completed development run, picks the final point with the rule ``lab holdout`` uses,
 applies the pure ``trading_core.lab.screen`` rule, prints the verdict, and writes
-``lab-reports/screen-<study>/screen.json``. Exit 0 on a pass, 3 on a fail.
+``lab-reports/screen-<study>/screen.json``. Exit 0 on a pass, 3 on a fail. A candle gate study
+(AC-20) has the lower trade rate floor ``CANDLE_GATE_MIN_TRADES_PER_DAY``.
 """
 
 import json
@@ -16,7 +17,13 @@ from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 
 from lab.settings import LabSettings
-from trading_core.lab.screen import SCREEN_MIN_TRADES_PER_DAY, screen_figures, screen_verdict
+from trading_core.lab.screen import (
+    CANDLE_GATE_MIN_TRADES_PER_DAY,
+    SCREEN_MIN_TRADES_PER_DAY,
+    is_candle_gate,
+    screen_figures,
+    screen_verdict,
+)
 from trading_core.recording import repository
 from trading_core.recording.enums import StrategyKind, StudyLab
 from trading_core.recording.gate_queries import UnknownStudyError, study_evidence
@@ -50,6 +57,7 @@ def run_screen(settings: LabSettings, name: str, engine: Engine) -> int:
         if study.lab != StudyLab.CANDLE or inputs.strategy_kind != StrategyKind.SCALPING:
             return _refuse([f"{name!r} is not a candle study of a scalping strategy"])
         grid = study.plan.get("grid")
+        floor = CANDLE_GATE_MIN_TRADES_PER_DAY if is_candle_gate(study.plan) else SCREEN_MIN_TRADES_PER_DAY
         points = len(grid) if isinstance(grid, list) and grid else 1
         done = repository.completed_grid_points(session, study.id)
         missing = [str(i) for i in range(points) if i not in done]
@@ -59,7 +67,7 @@ def run_screen(settings: LabSettings, name: str, engine: Engine) -> int:
         session.rollback()
     assert final is not None  # every point completed
     figures = screen_figures(inputs, final)
-    verdict = screen_verdict(figures, inputs.thresholds.fee_hurdle_k)
+    verdict = screen_verdict(figures, inputs.thresholds.fee_hurdle_k, floor)
     report = {
         "study": name,
         "strategy": inputs.strategy_name,
@@ -75,7 +83,7 @@ def run_screen(settings: LabSettings, name: str, engine: Engine) -> int:
             "trade_count": figures.trade_count,
             "days": figures.days,
             "trades_per_day": _text(figures.trades_per_day),
-            "min_trades_per_day": SCREEN_MIN_TRADES_PER_DAY,
+            "min_trades_per_day": floor if isinstance(floor, int) else str(floor),
         },
     }
     text = json.dumps(report, indent=2, sort_keys=True) + "\n"

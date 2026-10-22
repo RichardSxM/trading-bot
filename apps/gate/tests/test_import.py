@@ -160,3 +160,28 @@ def test_evaluate_refuses_a_candle_screen_and_writes_nothing(tmp_path, gate_engi
             select(func.count()).select_from(models.Promotion).where(models.Promotion.study_id == the_study.id)
         ).scalar_one()
     assert promotions == 0
+
+
+@pytest.mark.postgres
+def test_evaluate_takes_a_candle_gate_study_of_a_scalping_strategy(tmp_path, gate_engine):
+    # covers: spec 0017 AC-20 (the gate reads candle_gate from studies.plan, with no registry)
+    name = f"gate-{uuid4().hex[:8]}"
+    strategy = f"scalp_test_{uuid4().hex[:8]}"
+    strategy_id = uuid7()
+    the_study = study(strategy_id, name, {"study": {"name": name, "candle_gate": True}})
+    the_version = version(strategy_id, {"fast": 12, "name": name})
+    bundle = replace(
+        study_bundle(the_study, the_version, strategy=strategy),
+        strategy_kind=StrategyKind.SCALPING,
+        study_strategy_name=strategy,
+        study_strategy_kind=StrategyKind.SCALPING,
+    )
+    _write(tmp_path, "gate", bundle)
+    assert not import_folder(sessionmaker(gate_engine), tmp_path).refused
+
+    evaluation = evaluate_candidate_step(gate_engine, name, gate_commit="g" * 40, now=NOW)
+
+    with Session(gate_engine) as session:
+        promotion = session.get(models.Promotion, evaluation.promotion_id)
+        assert promotion is not None
+        assert promotion.study_id == the_study.id
