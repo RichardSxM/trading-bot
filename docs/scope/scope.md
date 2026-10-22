@@ -414,8 +414,8 @@ spec [0018](../specs/0018-hour-level-strategy-candidates/index.md)
 
 - [x] Design it (spec): `/architect hour level strategy candidates`
 - [ ] Build it: `/develop hour level strategy candidates`
-  - [ ] Shared base and family trials: `bar_indicators`, `bar_rule` (pure and node, `macd_baseline` lifecycle, frozen after the first study), config checks, trial count and variance by kind and lab on the VPS (AC-1 to AC-8, AC-19)
-  - [ ] Thin thread: `connors_rsi` rule, study, holdout, push, evaluate, verdict with N0 in its spec file (AC-9, AC-15, AC-16, AC-17)
+  - [x] Shared base and family trials: `bar_indicators`, `bar_rule` (pure and node, `macd_baseline` lifecycle, frozen after the first study), config checks, trial count and variance by kind and lab on the VPS (AC-1 to AC-8, AC-19)
+  - [x] Thin thread: `connors_rsi` rule, study, holdout, push, evaluate, verdict with N0 in its spec file (AC-9, AC-15, AC-16, AC-17)
   - [ ] Mean reversion and breakouts: `bollinger_rsi_1h`, `nr4_breakout`, `failed_breakout`, each to a recorded verdict (AC-10, AC-11, AC-12, AC-15 to AC-17)
   - [ ] Your layered plan: `trend_rsi_pullback`, then `trend_rsi_macd` with layer 1's holdout settings and the layer comparison (AC-13, AC-14, AC-15 to AC-17, AC-20)
   - [ ] Revisions and close out: at most one revision per failed candidate, evaluate every study again with the final family N, scope tick (AC-18, AC-21)
