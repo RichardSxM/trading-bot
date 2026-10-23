@@ -29,6 +29,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 14 | Scalping simulator | Slice 6 | done |
 | 15 | Strategy scoring & promotion gate | Slice 6 | done |
 | 16 | Scalping strategy candidates | Slice 7 | planned |
+| 22 | Intraday swing candidates | Slice 7 | in-progress |
 | 17 | Hour level strategy candidates | Slice 7 | in-progress |
 | 18 | Trade journal export | Slice 8 | planned |
 | 19 | Go live with small capital | Slice 9 | planned |
@@ -374,6 +375,22 @@ A small set of well known scalping ideas (for example order book imbalance, shor
 - **One candidate at a time,** changing one design dimension at a time, with a recorded verdict (pass, fail, or insufficient evidence) kept even when it fails.
 - **Order (decided 2026-10-17):** hour level candidates (feature 17) run alongside these, not after a scalping verdict, because the fee hurdle favors longer holds.
 - [ ] Design it (spec): `/architect scalping strategy candidates`
+
+### 22. Intraday swing candidates · in-progress
+Strategies on 15 minute candles that hold 2 to 8 hours, so each trade aims for a move several times the round trip cost, after the scalping candidates (feature 16) kept losing to fees. Same shared base and family as feature 17, same gate.
+**Done when:** each candidate run has a recorded verdict with its average hold and its gross and cost per trade, and every study has been judged again with the final family N.
+spec [0019](../specs/0019-intraday-swing-candidates/index.md)
+
+- [x] Design it (spec): `/architect intraday swing candidates`
+- [ ] Build it: `/develop intraday swing candidates`
+  - [ ] Thin thread: cost check, bar interval aware look ahead cuts, `connors_rsi_15m` study to a recorded "holdout seen" verdict (AC-1, AC-2, AC-5, AC-9 to AC-12)
+  - [ ] Trend following: `ema_pullback` to a recorded verdict, then the checkpoint with you (AC-2, AC-4, AC-6, AC-9 to AC-11)
+  - [ ] Session ideas, only if the checkpoint says continue: `intraday.py`, `vwap_reversion`, `us_open_breakout`, each to a recorded verdict (AC-2 to AC-4, AC-7, AC-8, AC-9 to AC-11)
+  - [ ] Revisions and close out: at most one revision per failed new candidate, evaluate every study again with the final family N, scope tick (AC-13, AC-14)
+- [ ] Verify it: `/check verify intraday swing candidates`
+- [ ] Test it: `/test intraday swing candidates`
+- [ ] Review it (fresh model): `/check review intraday swing candidates`
+- [ ] Document it: `/document intraday swing candidates`
 
 ### 17. Hour level strategy candidates · in-progress
 The fallback set: trend following and mean reversion on 1h to 4h candles, tested in the candle lab.
