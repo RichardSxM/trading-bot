@@ -199,6 +199,28 @@ The candle gate study (AC-20, AC-21): v4's grid with maker target exits (`exit_m
 
 Maker exits cut the cost per trade only a little (1.3944 in v4 to 1.2896; the stops and time stops still pay taker), and the gross edge fell further (2.3601 to 1.5596). v4's walk forward Sharpe of 0.068 turns negative. No holdout runs (AC-20 needs a passed screen). The `bollinger_rsi` family is **closed** (AC-21).
 
+### `book_imbalance` pre check (AC-23, task 19, 2026-10-23): not run, fee hurdle
+
+`lab replay lab-reports/scratch/book_imbalance_precheck.toml` (`imb_min = "0.3"`, `target_bps = "6"`, `persist_bars` 2, `levels` 5, `stop_bps` 9, maker in and out, `time_stop_min` 5, `max_spread_bps` 6.27) on `kfs/lab:s0017` (commit 56ee678), one day per run, via `lab-reports/scratch/task19_precheck.sh`. Started 07:51 UTC (09:51 Amsterdam), all four exit 0 by 09:47 UTC (11:47 Amsterdam). The report JSON has no AC-5 `enter` table, so approved entries are counted from each run's decision rows, as AC-23 allows.
+
+| Day | Run | Approved enters | Trades | Net P&L (USD) | Fees (USD) |
+|---|---|---|---|---|---|
+| 2022-10-01 | `0b936cd7-42e4-4b2b-b264-3a3e5f232780` | 126 | 21 | −28.61 | 25.20 |
+| 2023-10-01 | `e70e87ff-6a7d-4ff4-83dc-680ffe52f4b1` | 88 (4 more rejected) | 16 | −14.26 | 17.39 |
+| 2024-10-01 | `d52f5fb0-81a6-4052-8a30-e96dfb89319e` | 16 | 12 | −41.65 | 12.60 |
+| 2025-10-01 | `5e495fd7-f25f-4f0f-b8bd-134a086cd356` | 20 | 10 | −38.89 | 12.45 |
+| Total | | 250 | 59 | −123.40 | 67.64 |
+
+| Figure | Value | Needs |
+|---|---|---|
+| Approved enters a day (average) | 62.5 | ≥ 17 (pass) |
+| Gross P&L per trade (USD), (Σ net + Σ fees) ÷ Σ trades | −0.9451 | ≥ 1.5 × cost = 1.7196 (fail) |
+| Cost per trade (USD), Σ fees ÷ Σ trades | 1.1464 | |
+
+The gross is negative: before any fee, the trades lost money on average, so no fee saving could rescue the rule. Every day lost after costs. The 2025-09-01 proof day (gross 0.23 against cost 1.04) pointed the same way. `book_imbalance` is recorded as **not run: fee hurdle**, and its replay study (task 20) does not run (AC-23, AC-24).
+
+With this, every spec 0017 candidate has a recorded result (AC-24): `bollinger_rsi` (v4, ADX v2, r1), `vwap_retest` (both screens), and `delta_divergence` all failed or were not run.
+
 ## Test notes
 
 - `apps/lab/tests/test_candle_failure.py::test_sigterm_stops_every_unit_writes_interrupted_reports_and_exits_130` fails (exit 1, not 130) when the machine is loaded, on `main` as well as this branch. It sends SIGTERM on a fixed 2 second timer, which races the backtest's setup. This branch doesn't cause it; a fix belongs in its own change.
