@@ -1,0 +1,37 @@
+# The replay study of vwap_retest (spec 0017 child 0002, index AC-10): free Tardis days only.
+# Runs only after its candle screen passes `lab screen` (index Order rule).
+# The plan is frozen by name: change anything here and give the study a new name.
+source = "tardis"                    # "tardis" | "own"
+instrument_id = "PF_XBTUSD.KRAKEN"
+from = 2022-04-01                    # the first whole Tardis day; development is every 1st up to 2025-10-01
+to = 2025-10-18                      # the day before holdout_start; the plan sets the ranges
+seed = 7
+maker_fee = "0.0002"                 # strings, parsed as Decimal
+taker_fee = "0.0005"
+latency_ms = 25
+starting_balance_usd = "10000"
+leverage = "2"
+
+[risk]                               # RiskLimits (spec 0006 check_entry), same field names
+max_order_notional = "2000"
+max_leverage = "2"
+
+[strategy]
+name = "vwap_retest"
+[strategy.config]
+bar_spec = "1-MINUTE-LAST"
+atr_n = 14
+vwap_min_bars = 60
+time_stop_min = 15
+entry_timeout_s = 30
+min_target_bps = "10.5"
+max_spread_bps = "6.27"             # audit-20261021 pooled spread p95 6.2615, rounded up (index AC-3); never changed
+[strategy.grid]                      # 4 points; every point is a trial
+stop_atr = ["1.0", "2.0"]
+target_r = ["1.5", "2.0"]
+
+[study]
+name = "vwap_retest"
+lab = "replay"                       # replay folds: 15 days in sample first, then 7 day steps
+entry_mode = "maker"
+seed = 42                            # the bootstrap's seed

@@ -1,0 +1,41 @@
+# The replay study of bollinger_rsi (spec 0017 child 0001, index AC-10): free Tardis days only.
+# Runs only after its candle screen passes `lab screen` (index Order rule).
+# The plan is frozen by name: change anything here and give the study a new name.
+source = "tardis"                    # "tardis" | "own"
+instrument_id = "PF_XBTUSD.KRAKEN"
+from = 2022-04-01                    # the first whole Tardis day; development is every 1st up to 2025-10-01
+to = 2025-10-18                      # the day before holdout_start; the plan sets the ranges
+seed = 7
+maker_fee = "0.0002"                 # strings, parsed as Decimal
+taker_fee = "0.0005"
+latency_ms = 25
+starting_balance_usd = "10000"
+leverage = "2"
+
+[risk]                               # RiskLimits (spec 0006 check_entry), same field names
+max_order_notional = "2000"
+max_leverage = "2"
+
+[strategy]
+name = "bollinger_rsi"
+[strategy.config]
+bar_spec = "1-MINUTE-LAST"
+bb_n = 20
+rsi_n = 14
+atr_n = 14
+flat_band_frac = "0.5"
+stop_atr_buffer = "0.25"
+time_stop_min = 15
+entry_timeout_s = 30
+min_target_bps = "10.5"
+regime_adx_max = "25"               # the ADX regime gate on 5 minute bars (index AC-6)
+max_spread_bps = "6.27"             # audit-20261021 pooled spread p95 6.2615, rounded up (index AC-3); never changed
+[strategy.grid]                      # 4 points; every point is a trial
+bb_k = ["2.0", "2.5"]
+rsi_low = [30, 25]
+
+[study]
+name = "bollinger_rsi"
+lab = "replay"                       # replay folds: 15 days in sample first, then 7 day steps
+entry_mode = "maker"
+seed = 42                            # the bootstrap's seed

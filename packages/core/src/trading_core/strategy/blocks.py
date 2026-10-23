@@ -26,6 +26,7 @@ class BlockReason(StrEnum):
     TRADE_CAP = "trade_cap"
     LOSS_COOLDOWN = "loss_cooldown"
     LOSS_UNKNOWN = "loss_unknown"
+    REGIME = "regime"
 
 
 PLAIN_WORDS: Final[dict[BlockReason, str]] = {
@@ -41,6 +42,7 @@ PLAIN_WORDS: Final[dict[BlockReason, str]] = {
     BlockReason.TRADE_CAP: "Today's trade cap is reached (clears at midnight UTC)",
     BlockReason.LOSS_COOLDOWN: "Cooling down after a losing trade",
     BlockReason.LOSS_UNKNOWN: "Today's loss is not known yet (waiting for the database)",
+    BlockReason.REGIME: "The market is trending (ADX above the limit), entries wait",
 }
 """What the dashboard shows for each reason."""
 
@@ -53,6 +55,7 @@ SELF_CLEARING: Final = frozenset(
         BlockReason.TRADE_CAP,
         BlockReason.LOSS_COOLDOWN,
         BlockReason.LOSS_UNKNOWN,
+        BlockReason.REGIME,
     }
 )
 """Reasons that clear by themselves; the rest hold until the trader restarts."""

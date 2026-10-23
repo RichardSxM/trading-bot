@@ -45,6 +45,7 @@ from lab.report import (
     SideSplitReport,
     Status,
     candle_index_markdown,
+    entry_decision_counts,
     write_variant,
 )
 from lab.runfile import LoadedCandleRun
@@ -481,6 +482,7 @@ def _report(
         results=results,
         before_funding=False,
         candle=candle,
+        entry_decisions=entry_decision_counts(bundle),
     )
 
 

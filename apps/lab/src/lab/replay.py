@@ -44,6 +44,7 @@ from lab.report import (
     LabReport,
     Results,
     Status,
+    entry_decision_counts,
     index_markdown,
     write_variant,
 )
@@ -625,6 +626,7 @@ def _report(
         loser_band=band,
         before_funding=batch.funding_source == "none",
         funding_skipped_ns=batch.funding_skipped_ns,
+        entry_decisions=entry_decision_counts(bundle),
     )
 
 

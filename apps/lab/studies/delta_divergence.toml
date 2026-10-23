@@ -1,0 +1,38 @@
+# The replay study of delta_divergence (spec 0017 child 0003, index AC-10): free Tardis days only.
+# No candle screen: runs only after its AC-17 trade rate pre check passes (index Order rule).
+# The plan is frozen by name: change anything here and give the study a new name.
+source = "tardis"                    # "tardis" | "own"
+instrument_id = "PF_XBTUSD.KRAKEN"
+from = 2022-04-01                    # the first whole Tardis day; development is every 1st up to 2025-10-01
+to = 2025-10-18                      # the day before holdout_start; the plan sets the ranges
+seed = 7
+maker_fee = "0.0002"                 # strings, parsed as Decimal
+taker_fee = "0.0005"
+latency_ms = 25
+starting_balance_usd = "10000"
+leverage = "2"
+
+[risk]                               # RiskLimits (spec 0006 check_entry), same field names
+max_order_notional = "2000"
+max_leverage = "2"
+
+[strategy]
+name = "delta_divergence"
+[strategy.config]
+bar_spec = "1-MINUTE-LAST"
+atr_n = 14
+stop_atr_buffer = "0.25"
+time_stop_min = 10
+entry_timeout_s = 30
+min_target_bps = "10.5"
+regime_adx_max = "25"               # the ADX regime gate on 5 minute bars (index AC-6)
+max_spread_bps = "6.27"             # audit-20261021 pooled spread p95 6.2615, rounded up (index AC-3); never changed
+[strategy.grid]                      # 4 points; every point is a trial
+lookback_bars = [5, 10]
+move_atr = ["1.5", "2.5"]
+
+[study]
+name = "delta_divergence"
+lab = "replay"                       # replay folds: 15 days in sample first, then 7 day steps
+entry_mode = "maker"
+seed = 42                            # the bootstrap's seed

@@ -17,11 +17,11 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.orm import Session, sessionmaker
 
-from gate.evaluate import NothingToEvaluateError, evaluate_candidate_step
+from gate.evaluate import CandleScreenError, NothingToEvaluateError, evaluate_candidate_step
 from gate.importer import BundleRefused, check_bundle, import_folder
 from trading_core.recording import models
 from trading_core.recording.bundle_codec import bundle_json
-from trading_core.recording.enums import Env, RunMode, StudyRole
+from trading_core.recording.enums import Env, RunMode, StrategyKind, StudyRole
 from trading_core.recording.gate_queries import UnknownStudyError
 
 NOW = datetime(2026, 10, 19, 15, tzinfo=UTC)
@@ -190,3 +190,53 @@ def test_a_study_with_no_holdout_never_overrides_another_studys_decision(tmp_pat
     assert decided.result.verdict.value == again.result.verdict.value == "insufficient"
     with pytest.raises(NothingToEvaluateError, match="no completed holdout"):
         evaluate_candidate_step(gate_engine, second.name, gate_commit="g" * 40, clock=lambda: NOW)
+
+
+@pytest.mark.postgres
+def test_evaluate_refuses_a_candle_screen_and_writes_nothing(tmp_path, gate_engine):
+    # covers: spec 0017 AC-8 (the gate reads studies.lab and strategies.kind from Postgres)
+    name = f"screen-{uuid4().hex[:8]}"
+    strategy = f"scalp_test_{uuid4().hex[:8]}"
+    the_study, the_version = _fresh(name)
+    bundle = study_bundle(the_study, the_version, strategy=strategy)
+    bundle = replace(
+        bundle,
+        strategy_kind=StrategyKind.SCALPING,
+        study_strategy_name=strategy,
+        study_strategy_kind=StrategyKind.SCALPING,
+    )
+    _write(tmp_path, "screen", bundle)
+    assert not import_folder(sessionmaker(gate_engine), tmp_path).refused
+
+    with pytest.raises(CandleScreenError, match="not a gate study"):
+        evaluate_candidate_step(gate_engine, name, gate_commit="g" * 40, clock=lambda: NOW)
+    with Session(gate_engine) as session:
+        promotions = session.execute(
+            select(func.count()).select_from(models.Promotion).where(models.Promotion.study_id == the_study.id)
+        ).scalar_one()
+    assert promotions == 0
+
+
+@pytest.mark.postgres
+def test_evaluate_takes_a_candle_gate_study_of_a_scalping_strategy(tmp_path, gate_engine):
+    # covers: spec 0017 AC-20 (the gate reads candle_gate from studies.plan, with no registry)
+    name = f"gate-{uuid4().hex[:8]}"
+    strategy = f"scalp_test_{uuid4().hex[:8]}"
+    strategy_id = uuid7()
+    the_study = study(strategy_id, name, {"study": {"name": name, "candle_gate": True}})
+    the_version = version(strategy_id, {"fast": 12, "name": name})
+    bundle = replace(
+        study_bundle(the_study, the_version, strategy=strategy),
+        strategy_kind=StrategyKind.SCALPING,
+        study_strategy_name=strategy,
+        study_strategy_kind=StrategyKind.SCALPING,
+    )
+    _write(tmp_path, "gate", bundle)
+    assert not import_folder(sessionmaker(gate_engine), tmp_path).refused
+
+    evaluation = evaluate_candidate_step(gate_engine, name, gate_commit="g" * 40, clock=lambda: NOW)
+
+    with Session(gate_engine) as session:
+        promotion = session.get(models.Promotion, evaluation.promotion_id)
+        assert promotion is not None
+        assert promotion.study_id == the_study.id

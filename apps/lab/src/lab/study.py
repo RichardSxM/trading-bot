@@ -10,7 +10,9 @@ completed; a different plan under the same name exits 64 before any run.
 (best development daily Sharpe, ties to the lowest index), and runs it once from ``holdout_start`` to
 the last complete UTC day of the catalog, unless that frozen version already spent its holdout. Then
 the benchmarks (``buy_and_hold``, plus ``macd_baseline`` for an hour level study, minus the studied
-strategy itself) run over the same range as candle runs. When this study already ran its holdout, a
+strategy itself) run over the same range as candle runs. A candle study of a scalping strategy is a
+screen and never holds out, unless its plan has ``candle_gate`` true (spec 0017 AC-20). When this study
+already ran its holdout, a
 rerun only fills in the benchmarks still missing, over the stored holdout range. Every run writes its
 bundle beside its report, for ``scripts/push-bundles.sh``.
 
@@ -53,12 +55,13 @@ from lab.runfile import (
     replay_run_from_raw,
 )
 from lab.settings import LabSettings
-from lab.strategies import ConfigValue, StrategyEntry, registry_entry
+from lab.strategies import ConfigValue, StrategyConfigError, StrategyEntry, registry_entry
 from lab.study_rows import StudyContext
 from trading_core.gate.checks import benchmark_names
 from trading_core.gate.thresholds import Thresholds
 from trading_core.lab.candles import Month
 from trading_core.lab.errors import MissingDaysError, StudyDaysError
+from trading_core.lab.screen import is_candle_gate
 from trading_core.lab.study_days import development_days, dropped_days, holdout_days, import_command
 from trading_core.lab.variants import (
     BASE,
@@ -106,6 +109,9 @@ class StudySection(BaseModel):
     step_months: int | None = Field(default=None, ge=1)
     first_in_sample_days: int | None = Field(default=None, ge=1)
     step_days: int | None = Field(default=None, ge=1)
+    # A candle scalping study judged by the gate (spec 0017 AC-20). None, never False, by default, so a
+    # plan without it dumps (``exclude_none``) and hashes as before.
+    candle_gate: bool | None = None
 
     @model_validator(mode="after")
     def _check(self) -> Self:
@@ -115,6 +121,8 @@ class StudySection(BaseModel):
             raise ValueError("a candle study takes no entry_mode, first_in_sample_days, or step_days")
         if self.lab == "replay" and (self.entry_mode is None or any(v is not None for v in candle)):
             raise ValueError("a replay study needs entry_mode and takes no first_in_sample_months or step_months")
+        if self.lab == "replay" and self.candle_gate is not None:
+            raise ValueError("a replay study takes no candle_gate")
         return self
 
     def folds(self, thresholds: Thresholds) -> dict[str, int]:
@@ -413,6 +421,8 @@ def run_study(settings: LabSettings, study: LoadedStudy, store: StudyStore) -> i
     """``lab study`` after validation: store the study, then run every grid point not yet completed (AC-2, AC-3)."""
     run = study.loaded.run
     entry = registry_entry(run.strategy.name, test_strategies=settings.lab_test_strategies)
+    if study.section.candle_gate and not entry.candle_gate:
+        return _refuse("study", [f"study.candle_gate: {run.strategy.name} may not take the candle gate path"])
     configs = {
         name: _version_config(entry, {**run.strategy.config, **point}, study.section.entry_mode)
         for name, point in study.points
@@ -567,8 +577,22 @@ def run_holdout(settings: LabSettings, name: str, store: StudyStore, *, today: d
         stored = _load_study(session, name)
     if stored is None:
         return _refuse("holdout", [f"no study called {name!r}"])
+    screen = stored.lab == StudyLab.CANDLE and _studied_kind(stored, settings) == StrategyKind.SCALPING
+    if screen and not is_candle_gate(stored.plan):
+        return _refuse("holdout", ["a candle screen never holds out"])
     with store.lock(stored.id):
         return _holdout_locked(settings, stored, store, today)
+
+
+def _studied_kind(stored: StudyRow, settings: LabSettings) -> StrategyKind | None:
+    """The registry kind of the study's strategy, read from its stored plan (None when not registered)."""
+    run_file = stored.plan.get("run_file")
+    strategy = run_file.get("strategy") if isinstance(run_file, Mapping) else None
+    name = strategy.get("name") if isinstance(strategy, Mapping) else None
+    try:
+        return registry_entry(str(name), test_strategies=settings.lab_test_strategies).kind
+    except StrategyConfigError:
+        return None
 
 
 def _holdout_locked(settings: LabSettings, stored: StudyRow, store: StudyStore, today: date) -> int:

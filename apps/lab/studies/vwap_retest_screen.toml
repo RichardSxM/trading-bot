@@ -1,0 +1,38 @@
+# A candle screen of vwap_retest (spec 0017 child 0002, index AC-8 to AC-10): the replay study's
+# strategy config and grid, on 1 minute candles. Run `lab study studies/vwap_retest_screen.toml`,
+# then `lab screen vwap_retest_screen`.
+# A screen is a filter before the replay study, never a gate study: it never holds out.
+# The plan is frozen by name: change anything here and give the study a new name.
+instrument_id = "PF_XBTUSD.KRAKEN"
+from = 2023-01-01                    # UTC day, inclusive: the development range starts here
+to = 2025-10-18                      # the day before holdout_start; a screen never holds out
+seed = 7
+stale_quote_s = 300
+maker_fee = "0.0002"                 # strings, parsed as Decimal (Kraken base tier)
+taker_fee = "0.0005"
+slippage_bps = "2"                   # per side, built into the synthetic quote's spread
+starting_balance_usd = "10000"
+leverage = "2"
+
+[risk]
+max_order_notional = "2000"
+max_leverage = "2"
+
+[strategy]
+name = "vwap_retest"
+[strategy.config]
+bar_spec = "1-MINUTE-LAST"
+atr_n = 14
+vwap_min_bars = 60
+time_stop_min = 15
+entry_mode = "maker"
+entry_timeout_s = 30
+min_target_bps = "10.5"
+[strategy.grid]                      # 4 points; every point is a trial
+stop_atr = ["1.0", "2.0"]
+target_r = ["1.5", "2.0"]
+
+[study]
+name = "vwap_retest_screen"
+lab = "candle"                       # candle folds: 12 months in sample first, then 6 month steps
+seed = 42                            # the bootstrap's seed

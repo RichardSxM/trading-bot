@@ -18,14 +18,22 @@ from sqlalchemy.orm import Session
 from trading_core.gate.checks import MetricValue
 from trading_core.gate.paper import evaluate_paper
 from trading_core.gate.verdict import GateResult, evaluate_candidate
+from trading_core.lab.screen import is_candle_gate
 from trading_core.recording import models, repository
-from trading_core.recording.enums import DecidedBy, Stage, Verdict
+from trading_core.recording.enums import DecidedBy, Stage, StrategyKind, StudyLab, Verdict
 from trading_core.recording.gate_queries import UnknownStudyError, paper_evidence, study_evidence
 from trading_core.recording.rows import JsonValue, PromotionFoldRow, PromotionRow
 
 
 class NothingToEvaluateError(Exception):
     """The study has no run of a frozen version of its strategy, so there is no version to decide on."""
+
+
+class CandleScreenError(Exception):
+    """The study is a candle screen of a scalping strategy (spec 0017 AC-8): a filter, never a gate study.
+
+    A candle scalping study whose plan has ``candle_gate`` true is a gate study (AC-20).
+    """
 
 
 @dataclass(frozen=True)
@@ -62,12 +70,19 @@ def _decided_elsewhere(session: Session, frozen_hash: str, study_id: UUID) -> bo
 def evaluate_candidate_step(
     engine: Engine, name: str, *, gate_commit: str, clock: Callable[[], datetime]
 ) -> Evaluation:
-    """Evaluate the study called ``name`` and append its promotion; raises ``UnknownStudyError`` or
-    ``NothingToEvaluateError``."""
+    """Evaluate the study called ``name`` and append its promotion; raises ``UnknownStudyError``,
+    ``CandleScreenError``, or ``NothingToEvaluateError``."""
     with Session(engine) as session:
-        study_id = session.execute(select(models.Study.id).where(models.Study.name == name)).scalar_one_or_none()
-    if study_id is None:
+        found = session.execute(
+            select(models.Study.id, models.Study.lab, models.Study.plan, models.Strategy.kind)
+            .join(models.Strategy, models.Strategy.id == models.Study.strategy_id)
+            .where(models.Study.name == name)
+        ).one_or_none()
+    if found is None:
         raise UnknownStudyError(name)
+    study_id, lab, plan, kind = found
+    if lab == StudyLab.CANDLE and kind == StrategyKind.SCALPING and not is_candle_gate(plan):
+        raise CandleScreenError("a candle screen is not a gate study")
     with repository.study_lock(engine, study_id), Session(engine) as session:
         now = clock()
         evidence = study_evidence(session, name)
