@@ -177,6 +177,28 @@ The ADX filter makes it worse: fewer trades and a smaller edge. Neither `vwap_re
 
 All four candle screens failed, so no replay study ran (AC-11). `bollinger_rsi` continues as `bollinger_rsi_r1` on the candle gate path (AC-19 to AC-21), and `book_imbalance` takes the replay slot (AC-22 to AC-24).
 
+### `bollinger_rsi_r1` (2026-10-22): fail
+
+The candle gate study (AC-20, AC-21): v4's grid with maker target exits (`exit_mode = "maker"`, `min_target_bps = "6"`). Started 22:27 UTC on `kfs/lab:s0017` (commit f115da6, batch `01a165bb-1b96-722f-9abb-297f6956af26`) and finished all four grid points at 23:33 UTC (exit 0, 3,988 s). 142 rejected stops were settled as `stop_through` exits, and no signal was refused with `blocked:stop_not_accepted`.
+
+| Grid point | Run | Trades (2.8 years) | Net P&L (USD) |
+|---|---|---|---|
+| grid-1 | `a6783fa5-a1a1-4f7a-8b19-1f29a95fdd8a` | 473 | −361.11 |
+| grid-2 | `80bc0b42-09fd-4b4c-9bdf-7024bb5e719f` | 241 | 38.88 |
+| grid-3 | `5fccf196-3ce7-4151-8ad4-5ed24b1467bc` | 460 | −287.31 |
+| grid-4 | `02b659ba-a413-43c4-949f-fe6f55ba8f68` | 313 | 84.52 |
+
+`lab screen bollinger_rsi_r1`: **fail** (exit 3), reasons `walk_forward_sharpe` and `fee_hurdle`, final grid point 3 (grid-4).
+
+| Figure | Value | Needs |
+|---|---|---|
+| Walk forward Sharpe | −0.901510 | > 0 (fail) |
+| Avg gross edge (USD per trade) | 1.5596 | ≥ 1.5 × cost = 1.9343 (fail) |
+| Avg round trip cost (USD per trade) | 1.2896 | |
+| Trades per day | 0.3063 (313 over 1,022 days) | ≥ 0.17, the candle gate floor (pass) |
+
+Maker exits cut the cost per trade only a little (1.3944 in v4 to 1.2896; the stops and time stops still pay taker), and the gross edge fell further (2.3601 to 1.5596). v4's walk forward Sharpe of 0.068 turns negative. No holdout runs (AC-20 needs a passed screen). The `bollinger_rsi` family is **closed** (AC-21).
+
 ## Test notes
 
 - `apps/lab/tests/test_candle_failure.py::test_sigterm_stops_every_unit_writes_interrupted_reports_and_exits_130` fails (exit 1, not 130) when the machine is loaded, on `main` as well as this branch. It sends SIGTERM on a fixed 2 second timer, which races the backtest's setup. This branch doesn't cause it; a fix belongs in its own change.
