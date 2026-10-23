@@ -64,6 +64,8 @@ class StudyRunInput:
     ``funding_missing`` is set when a position spanned a funding charge time with no payment row, and
     ``cost_setting_missing`` when ``run_config`` lacks the slippage (candle) or latency (replay) setting.
     ``starting_balance`` is None for a run that never recorded one; such a run never counts as completed.
+    ``frozen_hash`` is the ``study_runs`` copy and ``version_frozen_hash`` that of the run's own strategy
+    version; the gate needs the two to agree.
     """
 
     run_id: UUID
@@ -78,6 +80,7 @@ class StudyRunInput:
     measures: Measures | None = None
     funding_missing: bool = False
     cost_setting_missing: bool = False
+    version_frozen_hash: str | None = None
 
     @property
     def completed(self) -> bool:
@@ -104,8 +107,12 @@ class CandidateInputs:
     """Everything ``evaluate_candidate`` reads for one study.
 
     ``code_hash`` is the final version's (None when it predates spec 0015). ``trial_count`` is N for
-    the deflated Sharpe: distinct frozen hashes over the strategy's development and holdout study
-    runs, failed ones too (benchmarks are yardsticks, not attempts).
+    the deflated Sharpe: distinct frozen hashes over the development and holdout study runs of every
+    strategy of the same kind in the same lab, failed ones too (benchmarks are yardsticks, not
+    attempts; spec 0018 AC-19). ``trial_sharpes`` are that family's per day Sharpes, one per frozen
+    hash with a completed development run, for the deflated Sharpe's trial variance.
+    ``final_grid_point`` is the development winner as the lab ranks it (``repository.final_grid_point``),
+    the only grid point the holdout may run.
     """
 
     study_id: UUID
@@ -118,16 +125,22 @@ class CandidateInputs:
     runs: tuple[StudyRunInput, ...]
     holdout_trades: tuple[TradeReturn, ...] = ()
     trial_count: int = 1
+    trial_sharpes: tuple[float, ...] = ()
     fold_overrides: tuple[tuple[str, int], ...] = ()
+    final_grid_point: int | None = None
 
     def by_role(self, role: Role) -> list[StudyRunInput]:
         """This role's runs, in grid point order then run id."""
         return sorted((r for r in self.runs if r.role == role), key=lambda r: (r.grid_point or 0, str(r.run_id)))
 
+    def completed_holdouts(self) -> list[StudyRunInput]:
+        """Every completed holdout run; more than one is a broken study, never a choice."""
+        return [r for r in self.by_role(Role.HOLDOUT) if r.completed]
+
     def holdout(self) -> StudyRunInput | None:
-        """The completed holdout run, or None."""
-        done = [r for r in self.by_role(Role.HOLDOUT) if r.completed]
-        return done[0] if done else None
+        """The study's one completed holdout run, or None (none, or more than one)."""
+        done = self.completed_holdouts()
+        return done[0] if len(done) == 1 else None
 
     def benchmark(self, strategy: str) -> StudyRunInput | None:
         """The completed benchmark run of ``strategy``, or None."""

@@ -1,9 +1,9 @@
 """covers: spec 0015 AC-7 (import refuses a non lab file whole, loads the rest, and adds nothing twice),
-AC-8 (one promotion per evaluation, evidence on every study run, the same metrics every time), AC-22
-(gate_app may not update a promotion)."""
+AC-8 (one promotion per evaluation, evidence on every study run, the same metrics every time), AC-12 (the
+gate cross checks its evidence), AC-22 (gate_app may not update a promotion)."""
 
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from uuid import uuid4, uuid7
 
@@ -17,7 +17,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.orm import Session, sessionmaker
 
-from gate.evaluate import CandleScreenError, evaluate_candidate_step
+from gate.evaluate import CandleScreenError, NothingToEvaluateError, evaluate_candidate_step
 from gate.importer import BundleRefused, check_bundle, import_folder
 from trading_core.recording import models
 from trading_core.recording.bundle_codec import bundle_json
@@ -83,20 +83,39 @@ def test_import_loads_good_files_refuses_bad_ones_and_repeats_nothing(tmp_path, 
         )
 
 
-def _study_files(folder: Path, name: str) -> None:
+# The packaged thresholds' holdout_start.
+HOLDOUT_START = date(2025, 10, 19)
+
+
+def _study_files(folder: Path, name: str, *, holdout_point: int = 1, development_start: date | None = None) -> None:
+    """Two grid points with equal results (so point 0 wins), a holdout, and both benchmarks.
+
+    By default the holdout runs point 1 and development runs from the factory's 2026 days, after
+    ``holdout_start``, which the gate must call inconsistent.
+    """
     strategy_id = uuid7()
     the_study = study(strategy_id, name)
     points = [version(strategy_id, {"fast": f, "study": name}) for f in (8, 12)]
+    dev = {} if development_start is None else {"start": development_start}
     for i, v in enumerate(points):
-        _write(folder, f"dev{i}", study_bundle(the_study, v, grid_point=i))
-    _write(folder, "holdout", study_bundle(the_study, points[1], role=StudyRole.HOLDOUT, grid_point=1))
+        _write(folder, f"dev{i}", study_bundle(the_study, v, grid_point=i, **dev))
+    held = {} if development_start is None else {"start": HOLDOUT_START}
+    _write(
+        folder,
+        "holdout",
+        study_bundle(the_study, points[holdout_point], role=StudyRole.HOLDOUT, grid_point=holdout_point, **held),
+    )
     for bench in ("buy_and_hold", "macd_baseline"):
         bench_id = uuid7()
         _write(
             folder,
             bench,
             study_bundle(
-                the_study, version(bench_id, {"b": bench, "s": name}), strategy=bench, role=StudyRole.BENCHMARK
+                the_study,
+                version(bench_id, {"b": bench, "s": name}),
+                strategy=bench,
+                role=StudyRole.BENCHMARK,
+                **held,
             ),
         )
 
@@ -107,8 +126,8 @@ def test_evaluate_appends_one_promotion_with_evidence_and_the_same_metrics_each_
     _study_files(tmp_path, name)
     assert not import_folder(sessionmaker(gate_engine), tmp_path).refused
 
-    first = evaluate_candidate_step(gate_engine, name, gate_commit="g" * 40, now=NOW)
-    second = evaluate_candidate_step(gate_engine, name, gate_commit="g" * 40, now=NOW)
+    first = evaluate_candidate_step(gate_engine, name, gate_commit="g" * 40, clock=lambda: NOW)
+    second = evaluate_candidate_step(gate_engine, name, gate_commit="g" * 40, clock=lambda: NOW)
 
     assert first.promotion_id != second.promotion_id
     assert first.result.metrics == second.result.metrics
@@ -134,7 +153,43 @@ def test_evaluate_appends_one_promotion_with_evidence_and_the_same_metrics_each_
 @pytest.mark.postgres
 def test_evaluate_refuses_an_unknown_study(gate_engine):
     with pytest.raises(UnknownStudyError):
-        evaluate_candidate_step(gate_engine, f"none-{uuid4().hex[:8]}", gate_commit="g", now=NOW)
+        evaluate_candidate_step(gate_engine, f"none-{uuid4().hex[:8]}", gate_commit="g", clock=lambda: NOW)
+
+
+def _inconsistent(result) -> set[str]:
+    return {r.check for r in result.reasons if r.code == "inconsistent_evidence"}
+
+
+@pytest.mark.postgres
+def test_evaluate_cross_checks_the_holdout_against_the_development_evidence(tmp_path, gate_engine):
+    good, bad = f"good-{uuid4().hex[:8]}", f"bad-{uuid4().hex[:8]}"
+    _study_files(tmp_path / "good", good, holdout_point=0, development_start=date(2025, 10, 1))
+    _study_files(tmp_path / "bad", bad)
+    assert not import_folder(sessionmaker(gate_engine), tmp_path).refused
+
+    consistent = evaluate_candidate_step(gate_engine, good, gate_commit="g" * 40, clock=lambda: NOW)
+    broken = evaluate_candidate_step(gate_engine, bad, gate_commit="g" * 40, clock=lambda: NOW)
+
+    assert _inconsistent(consistent.result) == set()
+    assert _inconsistent(broken.result) == {"holdout_grid_point", "development_days"}
+    assert broken.result.verdict.value != "pass"
+
+
+@pytest.mark.postgres
+def test_a_study_with_no_holdout_never_overrides_another_studys_decision(tmp_path, gate_engine):
+    strategy_id = uuid7()
+    the_version = version(strategy_id, {"fast": 12, "shared": uuid4().hex})
+    first, second = study(strategy_id, f"first-{uuid4().hex[:8]}"), study(strategy_id, f"second-{uuid4().hex[:8]}")
+    _write(tmp_path / "first", "dev", study_bundle(first, the_version))
+    _write(tmp_path / "second", "dev", study_bundle(second, the_version))
+    assert not import_folder(sessionmaker(gate_engine), tmp_path).refused
+
+    decided = evaluate_candidate_step(gate_engine, first.name, gate_commit="g" * 40, clock=lambda: NOW)
+    again = evaluate_candidate_step(gate_engine, first.name, gate_commit="g" * 40, clock=lambda: NOW)
+
+    assert decided.result.verdict.value == again.result.verdict.value == "insufficient"
+    with pytest.raises(NothingToEvaluateError, match="no completed holdout"):
+        evaluate_candidate_step(gate_engine, second.name, gate_commit="g" * 40, clock=lambda: NOW)
 
 
 @pytest.mark.postgres
@@ -154,7 +209,7 @@ def test_evaluate_refuses_a_candle_screen_and_writes_nothing(tmp_path, gate_engi
     assert not import_folder(sessionmaker(gate_engine), tmp_path).refused
 
     with pytest.raises(CandleScreenError, match="not a gate study"):
-        evaluate_candidate_step(gate_engine, name, gate_commit="g" * 40, now=NOW)
+        evaluate_candidate_step(gate_engine, name, gate_commit="g" * 40, clock=lambda: NOW)
     with Session(gate_engine) as session:
         promotions = session.execute(
             select(func.count()).select_from(models.Promotion).where(models.Promotion.study_id == the_study.id)
@@ -179,7 +234,7 @@ def test_evaluate_takes_a_candle_gate_study_of_a_scalping_strategy(tmp_path, gat
     _write(tmp_path, "gate", bundle)
     assert not import_folder(sessionmaker(gate_engine), tmp_path).refused
 
-    evaluation = evaluate_candidate_step(gate_engine, name, gate_commit="g" * 40, now=NOW)
+    evaluation = evaluate_candidate_step(gate_engine, name, gate_commit="g" * 40, clock=lambda: NOW)
 
     with Session(gate_engine) as session:
         promotion = session.get(models.Promotion, evaluation.promotion_id)

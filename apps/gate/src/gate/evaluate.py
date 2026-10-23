@@ -2,9 +2,11 @@
 
 Holds the study's advisory lock, reads the study through ``gate_queries``, runs the pure gate, and
 appends a ``candidate → paper`` promotion decided by ``gate``. The evaluation time comes from the
-caller, never from inside ``trading_core.gate``.
+caller, never from inside ``trading_core.gate``, and is read once the lock is held, so an evaluation
+that waited never gets an older time than the one that committed first.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
@@ -50,7 +52,24 @@ def _decimal(value: str | None) -> Decimal | None:
     return None if value is None else Decimal(value)
 
 
-def evaluate_candidate_step(engine: Engine, name: str, *, gate_commit: str, now: datetime) -> Evaluation:
+def _decided_elsewhere(session: Session, frozen_hash: str, study_id: UUID) -> bool:
+    """Whether a promotion of ``frozen_hash`` came from another study or by hand."""
+    return (
+        session.execute(
+            select(models.Promotion.id)
+            .where(
+                models.Promotion.frozen_hash == frozen_hash,
+                models.Promotion.study_id.is_distinct_from(study_id),
+            )
+            .limit(1)
+        ).scalar_one_or_none()
+        is not None
+    )
+
+
+def evaluate_candidate_step(
+    engine: Engine, name: str, *, gate_commit: str, clock: Callable[[], datetime]
+) -> Evaluation:
     """Evaluate the study called ``name`` and append its promotion; raises ``UnknownStudyError``,
     ``CandleScreenError``, or ``NothingToEvaluateError``."""
     with Session(engine) as session:
@@ -65,9 +84,19 @@ def evaluate_candidate_step(engine: Engine, name: str, *, gate_commit: str, now:
     if lab == StudyLab.CANDLE and kind == StrategyKind.SCALPING and not is_candle_gate(plan):
         raise CandleScreenError("a candle screen is not a gate study")
     with repository.study_lock(engine, study_id), Session(engine) as session:
+        now = clock()
         evidence = study_evidence(session, name)
         if evidence.final_version_id is None or evidence.final_frozen_hash is None:
             raise NothingToEvaluateError(f"study {name!r} has no run of a frozen version of its strategy yet")
+        if not evidence.inputs.completed_holdouts() and _decided_elsewhere(
+            session, evidence.final_frozen_hash, evidence.study.id
+        ):
+            # Its insufficient row would become the hash's latest decision and take away a pass
+            # that another study (or a manual promotion) gave the same version.
+            raise NothingToEvaluateError(
+                f"study {name!r} has no completed holdout, and its version already has a decision "
+                "from another study or by hand; run lab holdout first"
+            )
         result = evaluate_candidate(evidence.inputs)
         row = PromotionRow(
             strategy_version_id=evidence.final_version_id,

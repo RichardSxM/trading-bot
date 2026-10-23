@@ -10,7 +10,8 @@
 #
 # Exit codes of `run`: 0 deployed, 1 rolled back or rollback failed, 2 aborted with nothing
 # switched (not flat, pause lifted, pause failed, no trader_state), 3 another deploy holds the
-# lock, 4 refused before anything changed (preflight, pull, or the promotion check).
+# lock, 4 refused before anything was paused or switched (preflight, pull, migrate, or the
+# promotion check; a migration that ran stays applied, as it does on a rollback).
 #
 # --wait sets how long to wait for flat (90s, 15m, 1h; default 15m). --now sends the pause but
 # skips the wait, and goes on when the trader cannot confirm it (an old release, say); the
@@ -125,10 +126,19 @@ preflight() {
     kfs_log INFO "preflight passed" sha "$SHA" images "$(echo "$images" | wc -l | tr -d ' ')"
 }
 
+# The new release's migrate, before the promotion check (review 2026-10-22). Migrations are expand
+# only (spec 0005), so the running release keeps working on the new schema, and the check's new code
+# then reads the schema it was written for, with any role it adds (gate_app, say). --no-deps: Postgres
+# is the running release's and must not be recreated before the drain.
+migrate_new() {
+    compose_new run --rm --no-deps -T migrate >&2 || refuse "migrate failed in the new image (exit $?)"
+    kfs_log INFO "migrated" sha "$SHA"
+}
+
 # The new trader's strategy version must hold its candidate → paper pass, or the paper guard
 # would stop the trader after the switch (spec 0015 AC-26). Runs the new images with --no-deps:
-# Postgres is up from the running release, and the new release's migrate must not run yet. There is
-# no flag to skip it; promote the version (the command below), then deploy again.
+# Postgres is up from the running release, already migrated by migrate_new. There is no flag to
+# skip it; promote the version (the command below), then deploy again.
 promotion_check() {
     local version checked rc=0 version_id verdict
     version=$(compose_new run --rm --no-deps -T trader python -m trader.version) ||
@@ -328,8 +338,10 @@ run() {
         refuse "image pull failed"
     fi
     kfs_log INFO "images pulled" sha "$SHA"
-    # The first deploy has no running Postgres to check against; its trader's own guard still applies.
+    # The first deploy has no running Postgres to check against (its `up` migrates); its trader's
+    # own guard still applies.
     if [ -n "$PREVIOUS_SHA" ]; then
+        migrate_new
         promotion_check
     fi
 

@@ -7,7 +7,8 @@
 # image (bash, jq, flock), with stub `docker` and `kfs-compose` commands on PATH, so nothing
 # touches a real Docker or a real VPS. Covers the Compose files per TRADING_ENV (AC-5), the
 # health gate leaving out one off containers (AC-4, PR #36), the deploy's pause and drain rules
-# (AC-8, AC-11), and the autoheal cap (AC-15). Prints one line per check, then PASS or FAIL.
+# (AC-8, AC-11), the autoheal cap (AC-15), and the limits of kfs-bundles (spec 0015 AC-7).
+# Prints one line per check, then PASS or FAIL.
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
@@ -270,9 +271,13 @@ case "\$*" in
     "manifest inspect"*) exit 0 ;;
     *"exec -T backup"*) exit 1 ;;
     *"pull --quiet"*) exit 0 ;;
+    *"run --rm --no-deps -T migrate"*)
+        echo migrate >>"$work/calls"
+        exit "\$(cat "$work/migrate_rc")" ;;
     *"run --rm --no-deps -T trader python -m trader.version"*)
         printf '{\n  "frozen_hash": "f1",\n  "git_commit": "%s"\n}\n' "$sha" ;;
     *"run --rm --no-deps -T gate check-version"*)
+        echo check >>"$work/calls"
         cat >"$work/gate_stdin"
         rc=\$(cat "$work/gate_rc")
         echo '{"msg": "gate_check_version", "stage_needed": "paper", "version_id": "log-line"}'
@@ -287,6 +292,7 @@ pdeploy() {
     KFS_ROOT=$droot KFS_LOG_DIR=$work/plog KFS_SECRETS_DIR=$work/dsecrets KFS_ENV_FILE=$work/denv \
         "$droot/releases/$sha/deploy/host/kfs-deploy" run "$sha" >"$work/pout" 2>&1
 }
+echo 0 >"$work/migrate_rc"
 echo 3 >"$work/gate_rc"
 pdeploy; rc=$?
 check "kfs-deploy: a version without its paper pass is refused before the drain" "4 preflight_refused" \
@@ -305,11 +311,52 @@ check "kfs-deploy: a gate error refuses too" "4 promotion check: gate check-vers
     "$rc $(grep 'preflight refused' "$work/plog/host.jsonl" | tail -n 1 | jq -r .reason)"
 echo 0 >"$work/gate_rc"
 : >"$work/plog/deploys.jsonl"
+: >"$work/calls"
 pdeploy; rc=$?
 check "kfs-deploy: a version with its pass goes on to the drain" "v-1" \
     "$(grep 'promotion check passed' "$work/plog/host.jsonl" | jq -r .version_id)"
 check "kfs-deploy: past the check, not refused" "no" \
     "$(jq -r .outcome "$work/plog/deploys.jsonl" | grep -qx preflight_refused && echo refused || echo no)"
+check "kfs-deploy: the new migrate runs before the check reads the schema" "migrate,check" \
+    "$(paste -sd, "$work/calls")"
+echo 1 >"$work/migrate_rc"
+: >"$work/plog/deploys.jsonl"
+: >"$work/calls"
+pdeploy; rc=$?
+check "kfs-deploy: a failed migrate refuses before the check" "4 migrate failed in the new image (exit 1) migrate" \
+    "$rc $(grep 'preflight refused' "$work/plog/host.jsonl" | tail -n 1 | jq -r .reason) $(paste -sd, "$work/calls")"
+
+# --- kfs-bundles: the receive script's limits (spec 0015 AC-7, review 2026-10-22) -----------
+# The VPS has GNU tar and a real df: drop the df stub above, and add GNU tar to this Alpine image.
+rm -f "$work/bin/df"
+apk add --quiet --no-cache tar >/dev/null
+bstate="$work/bstate"
+bsrc="$work/bsrc/batch"
+mkdir -p "$bsrc"
+cat >"$work/bin/bundles-compose" <<'STUB'
+#!/bin/sh
+echo "compose $*"
+STUB
+chmod +x "$work/bin/bundles-compose"
+bundles() { # bundles [max bytes] <tar on stdin>
+    KFS_STATE_DIR=$bstate KFS_COMPOSE=bundles-compose KFS_BUNDLES_MAX_BYTES=${1:-1048576} /host/kfs-bundles 2>&1
+}
+echo '{}' >"$bsrc/a.bundle.json"
+echo 'x' >"$bsrc/notes.txt"
+out=$(tar -c -f - -C "$work/bsrc" batch | bundles); rc=$?
+check "kfs-bundles: a good archive installs its bundle files and imports" "0 compose run --rm gate import" \
+    "$rc $(echo "$out" | tail -n 1)"
+check "kfs-bundles: only the bundle files are kept" "batch/a.bundle.json" \
+    "$(cd "$bstate/bundles" && find . -type f | sed 's|^\./||')"
+out=$(tar -c -f - -C "$work/bsrc" batch | bundles 100); rc=$?
+check "kfs-bundles: an archive over the cap is refused" "1 kfs-bundles: refused: the archive is over 100 bytes" \
+    "$rc $out"
+ln -s /etc/passwd "$bsrc/b.bundle.json"
+out=$(tar -c -f - -C "$work/bsrc" batch | bundles); rc=$?
+check "kfs-bundles: a link named like a bundle is refused whole" \
+    "1 kfs-bundles: refused: 1 member(s) named *.bundle.json are not regular files" "$rc $out"
+check "kfs-bundles: and nothing of it is installed" "batch/a.bundle.json" \
+    "$(cd "$bstate/bundles" && find . ! -type d | sed 's|^\./||')"
 
 rm -rf "$work"
 if [ "$fails" -eq 0 ]; then echo PASS; else echo "FAIL: $fails checks"; exit 1; fi

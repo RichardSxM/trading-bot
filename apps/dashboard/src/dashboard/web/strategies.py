@@ -187,9 +187,19 @@ def detail_context(detail: StudyDetail) -> dict[str, object]:
         "folds": [fold_cells(f) for f in detail.folds],
         "figures": figures,
         "trials": detail.trials,
+        "family_trials": _family_trials(detail),
         "attempt_columns": ATTEMPT_COLUMNS,
         "attempts": [[ts(a.decided_at), a.verdict, _reasons(a.reasons)] for a in detail.attempts],
     }
+
+
+def _family_trials(detail: StudyDetail) -> int | None:
+    """N over the strategy kind and lab from the latest promotion (spec 0018 AC-19); None before that rule."""
+    if not detail.attempts:
+        return None
+    metrics = detail.attempts[0].metrics
+    count = metrics.get("trial_count")
+    return count if metrics.get("trial_scope") is not None and isinstance(count, int) else None
 
 
 def log_context(lines: Sequence[PromotionLine], page: int) -> dict[str, object]:

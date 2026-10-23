@@ -27,6 +27,8 @@ from trading_core.node.book_imbalance import STRATEGY_NAME as BOOK_IMBALANCE
 from trading_core.node.book_imbalance import BookImbalance, BookImbalanceConfig
 from trading_core.node.buy_and_hold import STRATEGY_NAME as BUY_AND_HOLD
 from trading_core.node.buy_and_hold import BuyAndHold, BuyAndHoldConfig
+from trading_core.node.connors_rsi import STRATEGY_NAME as CONNORS_RSI
+from trading_core.node.connors_rsi import ConnorsRsi, ConnorsRsiConfig
 from trading_core.node.delta_divergence import STRATEGY_NAME as DELTA_DIVERGENCE
 from trading_core.node.delta_divergence import DeltaDivergence, DeltaDivergenceConfig
 from trading_core.node.macd_baseline import STRATEGY_NAME as MACD_BASELINE
@@ -318,6 +320,12 @@ def _book_imbalance(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks
     return BookImbalance(config, gate, blocks, record)
 
 
+def _connors_rsi(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
+    if not isinstance(config, ConnorsRsiConfig):
+        raise TypeError(f"connors_rsi needs a ConnorsRsiConfig, not {type(config).__name__}")
+    return ConnorsRsi(config, gate, blocks, record)
+
+
 def _peek_probe(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
     if not isinstance(config, MacdBaselineConfig):
         raise TypeError(f"peek_probe needs a MacdBaselineConfig, not {type(config).__name__}")
@@ -408,6 +416,15 @@ REGISTRY: Final[Mapping[str, StrategyEntry]] = {
         factory=_book_imbalance,
         run_fields=_scalp_fields,
         default_entry_mode="maker",
+    ),
+    # The hour level candidates (spec 0018) on the shared ``BarRuleStrategy`` base.
+    CONNORS_RSI: StrategyEntry(
+        name=CONNORS_RSI,
+        module=ConnorsRsi.__module__,
+        config_cls=ConnorsRsiConfig,
+        factory=_connors_rsi,
+        run_fields=_candle_fields,
+        kind=StrategyKind.HOUR_LEVEL,
     ),
 }
 

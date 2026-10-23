@@ -2,18 +2,23 @@
 
 The verdict is ``fail`` if any reason is a missed threshold, else ``insufficient`` if any reason is
 insufficient evidence, else ``pass``. Missing evidence never passes: no holdout, no benchmark, a
-missing cost, or a NULL code hash each give an insufficient reason.
+missing cost, or a NULL code hash each give an insufficient reason. So does evidence that disagrees
+with itself (``inconsistent_evidence``): two completed holdouts, a run whose ``study_runs`` frozen hash
+is not its version's, a holdout of another grid point than the development winner, or days on the
+wrong side of ``holdout_start``.
 """
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import StrEnum
+from typing import Final
 
 from trading_core.gate.checks import (
     BENCHMARKS,
     FAILED,
     FOLD_WITHOUT_RUN,
+    INCONSISTENT_EVIDENCE,
     MISSING_COST,
     MISSING_METRIC,
     MISSING_RUN,
@@ -28,14 +33,20 @@ from trading_core.gate.checks import (
     check_concentration_folds,
     check_drawdown,
     check_fee_hurdle,
+    check_holdout_evidence,
     check_holdout_sharpe,
     check_trade_floor,
+    check_versions,
+    summary_of,
     text_of,
 )
 from trading_core.gate.folds import FoldRange, candle_ranges, common_days, replay_ranges, walk_forward
 from trading_core.gate.inputs import CandidateInputs, Lab, Role, StudyRunInput
 from trading_core.gate.series import DailySeries, annualized, sample_std, sharpe, to_decimal
 from trading_core.gate.stats import deflated_sharpe, moments, pbo_cscv, politis_white_block, stationary_bootstrap_lower
+
+# The deflated Sharpe's trials span the strategy kind and the lab (spec 0018 AC-19).
+TRIAL_SCOPE: Final = "kind+lab"
 
 
 class GateVerdict(StrEnum):
@@ -84,8 +95,8 @@ def decide(reasons: Sequence[Reason]) -> GateVerdict:
 
 def _cost_reasons(run: StudyRunInput, out: Outcome) -> None:
     """A missing cost on the holdout makes its numbers untrustworthy (AC-12)."""
-    assert run.summary is not None
-    if run.summary.trade_count > 0 and run.summary.fees_total == 0:
+    summary = summary_of(run)
+    if summary.trade_count > 0 and summary.fees_total == 0:
         out.reason(MISSING_COST, "costs", "fees_total=0")
     if run.funding_missing:
         out.reason(MISSING_COST, "costs", "funding")
@@ -194,8 +205,13 @@ def _bootstrap(inputs: CandidateInputs, series: DailySeries, out: Outcome) -> No
 
 
 def _deflated(inputs: CandidateInputs, holdout: StudyRunInput, points: dict[int, DailySeries], out: Outcome) -> None:
-    """``deflated_sharpe``: the final version's development Sharpe deflated by every trial of the strategy."""
+    """``deflated_sharpe``: the final version's development Sharpe deflated by every trial of its family.
+
+    N and the trial variance span the strategy kind and lab (spec 0018 AC-19), not the study's own grid.
+    """
     out.metric("trial_count", inputs.trial_count)
+    out.metric("trial_scope", TRIAL_SCOPE)
+    out.metric("trial_pool", len(inputs.trial_sharpes))
     series = None if holdout.grid_point is None else points.get(holdout.grid_point)
     sr = None if series is None else sharpe(series.returns)
     if series is None or sr is None:
@@ -203,7 +219,7 @@ def _deflated(inputs: CandidateInputs, holdout: StudyRunInput, points: dict[int,
         out.reason(MISSING_METRIC, "deflated_sharpe")
         return
     skew, kurt = moments(series.returns)
-    trial_sharpes = [x for x in (sharpe(s.returns) for s in points.values()) if x is not None]
+    trial_sharpes = list(inputs.trial_sharpes)
     variance = sample_std(trial_sharpes) ** 2 if len(trial_sharpes) >= 2 else 0.0
     value = deflated_sharpe(sr, len(series), skew, kurt, inputs.trial_count, variance)
     dsr = to_decimal(value)
@@ -244,16 +260,22 @@ def evaluate_candidate(inputs: CandidateInputs) -> GateResult:
         out.reason(NULL_CODE_HASH, "frozen_version")
     if not any(r.completed for r in inputs.by_role(Role.DEVELOPMENT)):
         out.reason(MISSING_RUN, "development")
+    check_versions(inputs, out)
+    holdouts = len(inputs.completed_holdouts())
     holdout = inputs.holdout()
     if holdout is None:
-        out.reason(MISSING_RUN, "holdout")
+        if holdouts > 1:
+            out.reason(INCONSISTENT_EVIDENCE, "holdout", holdouts, 1)
+        else:
+            out.reason(MISSING_RUN, "holdout")
         return GateResult(decide(out.reasons), tuple(out.reasons), out.metrics)
 
-    assert holdout.summary is not None
+    summary = summary_of(holdout)
+    check_holdout_evidence(inputs, holdout, out)
     series = holdout.series(inputs.lab)
     out.metric("holdout_run_id", str(holdout.run_id))
-    out.metric("holdout_return", holdout.summary.return_after_costs)
-    out.metric("holdout_win_rate", holdout.summary.win_rate)
+    out.metric("holdout_return", summary.return_after_costs)
+    out.metric("holdout_win_rate", summary.win_rate)
     out.metric("holdout_days", len(series))
     _cost_reasons(holdout, out)
     check_trade_floor(inputs, holdout, out)

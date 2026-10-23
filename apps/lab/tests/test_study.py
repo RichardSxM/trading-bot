@@ -1,6 +1,7 @@
 """covers: spec 0015 AC-2 (study file and plan), AC-3 (development runs and resume), AC-4 (benchmarks),
 AC-5 (holdout once)."""
 
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 from uuid import uuid4
@@ -148,6 +149,9 @@ def test_a_candle_study_runs_resumes_and_spends_its_holdout_once(tmp_path, monke
         # The same name with another plan is refused before any run.
         other = load_study(_write(tmp_path, text.replace("seed = 42", "seed = 1"), "o"))
         assert run_study(settings, other, store) == EXIT_USAGE
+        # The same plan with edited thresholds is refused too, with exit 64, not a conflict traceback.
+        edited = replace(study, thresholds=replace(study.thresholds, dsr_min=study.thresholds.dsr_min + 1))
+        assert run_study(settings, edited, store) == EXIT_USAGE
 
         # Stopped before its benchmarks: the holdout lands, no benchmark does.
         monkeypatch.setattr("lab.study.benchmark_names", lambda kind, studied: ())

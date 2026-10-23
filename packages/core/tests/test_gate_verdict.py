@@ -1,5 +1,5 @@
-"""covers: spec 0015 AC-4 (the shared benchmark rule), AC-10, AC-12 (the checks and the fail before
-insufficient before pass rule)."""
+"""covers: spec 0015 AC-4 (the shared benchmark rule), AC-10, AC-12 (the checks, the inconsistent evidence
+reasons, and the fail before insufficient before pass rule)."""
 
 import random
 from dataclasses import replace
@@ -28,13 +28,15 @@ THRESHOLDS = parse_thresholds((package_root() / "gate" / "thresholds.toml").read
 START = date(2025, 10, 19)
 
 
-def _daily(drift: float, days: int = 120, seed: int = 1) -> tuple[DayEquity, ...]:
+def _daily(drift: float, days: int = 120, seed: int = 1, *, development: bool = False) -> tuple[DayEquity, ...]:
+    """From the holdout start, or for development the ``days`` that end the day before it."""
     rng = random.Random(seed)
     equity = Decimal(10_000)
+    first = START - timedelta(days=days) if development else START
     rows = []
     for i in range(days):
         equity *= Decimal(str(round(1 + drift + rng.gauss(0, 0.01), 6)))
-        rows.append(DayEquity(START + timedelta(days=i), equity, 1, Decimal(1), Decimal(0)))
+        rows.append(DayEquity(first + timedelta(days=i), equity, 1, Decimal(1), Decimal(0)))
     return tuple(rows)
 
 
@@ -67,12 +69,13 @@ def _run(role: Role, strategy: str, daily, *, grid_point: int | None = 0, summar
         daily=daily,
         summary=summary or _summary(),
         measures=MEASURES,
+        version_frozen_hash=f"h{n}",
     )
 
 
 def _inputs(*, holdout_drift=0.004, bench_drift=0.0, kind="hour_level", trades=100, **changes) -> CandidateInputs:
     runs = [
-        _run(Role.DEVELOPMENT, "macd_x", _daily(0.004, days=300, seed=9)),
+        _run(Role.DEVELOPMENT, "macd_x", _daily(0.004, days=300, seed=9, development=True)),
         _run(Role.HOLDOUT, "macd_x", _daily(holdout_drift), summary=_summary(trades)),
         _run(Role.BENCHMARK, BUY_AND_HOLD, _daily(bench_drift, seed=2), n=1),
         _run(Role.BENCHMARK, MACD_BASELINE, _daily(bench_drift, seed=3), n=2),
@@ -87,6 +90,7 @@ def _inputs(*, holdout_drift=0.004, bench_drift=0.0, kind="hour_level", trades=1
         code_hash="c" * 64,
         runs=tuple(runs),
         fold_overrides=(("first_in_sample_months", 1), ("step_months", 1)),
+        final_grid_point=0,
     )
     return replace(base, **changes)
 
@@ -218,7 +222,8 @@ def test_a_known_loser_fails_on_the_fee_hurdle_and_the_holdout_sharpe():
 def test_twenty_noise_grid_points_fail_pbo_and_the_deflated_sharpe():
     base = _inputs(holdout_drift=0.004)
     noise = [
-        _run(Role.DEVELOPMENT, "macd_x", _daily(0.0, days=240, seed=s), grid_point=s, n=300 + s) for s in range(20)
+        _run(Role.DEVELOPMENT, "macd_x", _daily(0.0, days=240, seed=s, development=True), grid_point=s, n=300 + s)
+        for s in range(20)
     ]
     base_holdout = base.holdout()
     assert base_holdout is not None
@@ -260,6 +265,54 @@ def test_a_missing_drawdown_or_cost_measure_is_insufficient():
     assert ("drawdown_budget", "missing_metric") in codes
     assert ("fee_hurdle", "missing_cost") in codes
     assert evaluate_candidate(inputs).verdict == GateVerdict.INSUFFICIENT
+
+
+def test_two_completed_holdouts_score_neither():
+    inputs = _inputs()
+    holdout = inputs.holdout()
+    assert holdout is not None
+    second = replace(holdout, run_id=UUID(int=99), grid_point=1, frozen_hash="h9", version_frozen_hash="h9")
+    both = replace(inputs, runs=(*inputs.runs, second))
+
+    result = evaluate_candidate(both)
+
+    assert both.holdout() is None
+    assert _codes(result) == [("holdout", "inconsistent_evidence")]
+    assert result.verdict == GateVerdict.INSUFFICIENT
+    assert "holdout_run_id" not in result.metrics
+
+
+def test_a_study_run_hash_that_is_not_its_versions_is_insufficient():
+    inputs = _holdout_with(_inputs(), version_frozen_hash="other")
+
+    result = evaluate_candidate(inputs)
+
+    assert _codes(result) == [("frozen_version", "inconsistent_evidence")]
+    assert result.verdict == GateVerdict.INSUFFICIENT
+
+
+def test_a_holdout_of_another_grid_point_than_the_winner_is_insufficient():
+    for final in (1, None):
+        result = evaluate_candidate(_inputs(final_grid_point=final))
+
+        assert _codes(result) == [("holdout_grid_point", "inconsistent_evidence")]
+        assert result.verdict == GateVerdict.INSUFFICIENT
+
+
+def test_days_on_the_wrong_side_of_the_holdout_start_are_insufficient():
+    inputs = _inputs()
+    late = replace(
+        inputs,
+        runs=tuple(
+            replace(r, daily=_daily(0.004, days=300, seed=9)) if r.role == Role.DEVELOPMENT else r for r in inputs.runs
+        ),
+    )
+    early = _holdout_with(inputs, daily=_daily(0.004, days=150, seed=1, development=True) + _daily(0.004))
+
+    assert ("development_days", "inconsistent_evidence") in _codes(evaluate_candidate(late))
+    assert ("holdout_days", "inconsistent_evidence") in _codes(evaluate_candidate(early))
+    for result in map(evaluate_candidate, (late, early)):
+        assert result.verdict != GateVerdict.PASS
 
 
 def test_folds_and_bootstrap_bounds_are_stored_and_repeat_exactly():

@@ -1138,7 +1138,8 @@ def import_run_bundle(session: Session, bundle: RunBundle, rows: BundleRows | No
     ``RecordConflictError``. The laptop's strategy ids are mapped to the VPS strategy of the same name;
     the version keeps the laptop's id and ``git_commit``. Validation of env, mode, and trader is the
     caller's (``gate import``); this raises ``InvalidModeError`` for a paper or live run,
-    ``ForeignRunError`` for a foreign row, and ``MissingParentError`` when the bundle lacks its strategy,
+    ``ForeignRunError`` for a foreign row or a study run whose frozen hash is not its version's, and
+    ``MissingParentError`` when the bundle lacks its strategy,
     version, or instrument, or carries fills or events for orders it does not carry.
     """
     run = bundle.run
@@ -1151,6 +1152,11 @@ def import_run_bundle(session: Session, bundle: RunBundle, rows: BundleRows | No
         raise MissingParentError(f"run bundle {run.id} carries no instrument")
     if bundle.version.id != run.strategy_version_id:
         raise ForeignRunError(f"run bundle {run.id}: its version {bundle.version.id} is not the run's")
+    if bundle.study_run is not None and bundle.study_run.frozen_hash != bundle.version.frozen_hash:
+        raise ForeignRunError(
+            f"run bundle {run.id}: study run frozen hash {bundle.study_run.frozen_hash}"
+            f" is not its version's {bundle.version.frozen_hash}"
+        )
     source: BundleRows = _HeldRows(bundle) if rows is None else rows
 
     def each[R: _RunChild](part: str, cls: type[R]) -> Iterator[R]:

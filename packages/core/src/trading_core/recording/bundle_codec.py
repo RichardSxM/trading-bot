@@ -12,9 +12,9 @@ import dataclasses
 import json
 import types
 import typing
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from enum import Enum
 from pathlib import Path
 from typing import Final, TypeAliasType, cast
@@ -47,6 +47,11 @@ def bundle_json(bundle: RunBundle) -> str:
 
 
 _SCALARS: Final = (str, int, bool)
+_PARSERS: Final[dict[object, Callable[[str], object]]] = {
+    UUID: UUID,
+    datetime: datetime.fromisoformat,
+    date: date.fromisoformat,
+}
 
 
 def _decode(kind: object, value: object, where: str) -> object:
@@ -79,13 +84,15 @@ def _decode(kind: object, value: object, where: str) -> object:
     if kind is Decimal:
         if not isinstance(value, str | int) or isinstance(value, bool):
             raise BundleFormatError(f"{where} must be a decimal string")
-        return Decimal(value)
-    if kind is UUID:
-        return UUID(str(value))
-    if kind is datetime:
-        return datetime.fromisoformat(str(value))
-    if kind is date:
-        return date.fromisoformat(str(value))
+        try:
+            return Decimal(value)
+        except InvalidOperation as exc:
+            raise BundleFormatError(f"{where}: {value!r} is not a decimal") from exc
+    if kind in _PARSERS:
+        try:
+            return _PARSERS[kind](str(value))
+        except ValueError as exc:
+            raise BundleFormatError(f"{where}: {value!r} is not a {cast(type, kind).__name__}") from exc
     if kind in _SCALARS:
         if type(value) is not kind:
             raise BundleFormatError(f"{where} must be {cast(type, kind).__name__}, not {value!r}")

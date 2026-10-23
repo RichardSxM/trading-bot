@@ -104,6 +104,18 @@ def test_a_failed_read_shows_the_error_state(redis, clock):
     assert "Strategies unavailable." in response.text
 
 
+def test_a_failed_log_read_shows_the_error_on_the_log_page(redis, clock):
+    def broken(page):
+        raise OperationalError("SELECT", {}, Exception("down"))
+
+    with _logged_in(redis, clock, read_promotions=broken) as client:
+        response = client.get("/strategies/log")
+
+    assert response.status_code == 200
+    assert "Promotion log unavailable." in response.text
+    assert "Strategy ranking" not in response.text
+
+
 def test_the_page_needs_a_session(client):
     assert client.get("/strategies").status_code == 303
 

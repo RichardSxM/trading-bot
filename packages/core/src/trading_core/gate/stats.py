@@ -101,15 +101,18 @@ def stationary_bootstrap_lower(
     if n == 0:
         raise ValueError("a bootstrap needs at least one value")
     rng = random.Random(seed)
+    # Bound once: a long scalping holdout runs this inner loop tens of millions of times. The draws
+    # stay exactly those of the plain loop, so a seed always gives the same bound.
+    draw, pick, fsum = rng.random, rng.randrange, math.fsum
     p = 1.0 / block
     means: list[float] = []
+    picked = [0.0] * n
     for _ in range(resamples):
-        index = rng.randrange(n)
-        picked = []
-        for _ in range(n):
-            picked.append(values[index])
-            index = rng.randrange(n) if rng.random() < p else (index + 1) % n
-        means.append(math.fsum(picked) / n)
+        index = pick(n)
+        for step in range(n):
+            picked[step] = values[index]
+            index = pick(n) if draw() < p else (index + 1) % n
+        means.append(fsum(picked) / n)
     means.sort()
     position = min(resamples - 1, math.floor((1.0 - confidence) * resamples))
     return BootstrapBound(means[position], block, resamples)

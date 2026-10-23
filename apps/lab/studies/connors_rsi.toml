@@ -1,0 +1,44 @@
+# The connors_rsi candle study (spec 0018.1, AC-15): the shared hour level study settings plus the
+# candidate's fixed settings and its 6 point grid, committed before the study first runs. Run it only
+# through `lab study studies/connors_rsi.toml`, then `lab holdout connors_rsi` (spec 0018 AC-16): never
+# `lab backtest` connors_rsi on real candles, so every look at real data is a counted trial.
+# The plan is frozen by name: change anything here and give the study a new name (a revision, AC-18).
+instrument_id = "PF_XBTUSD.KRAKEN"
+from = 2022-04-01                    # first whole month after the 2022-03-24 floor
+to = 2025-10-18                      # the day before holdout_start
+seed = 7                             # the run seed (look ahead cut times)
+stale_quote_s = 300
+maker_fee = "0.0002"
+taker_fee = "0.0005"
+slippage_bps = "2"
+starting_balance_usd = "10000"
+leverage = "2"
+
+[risk]                               # every value written out, none left to a default
+max_order_notional = "20000"
+max_leverage = "2"
+max_total_exposure = "20000"
+risk_per_trade = "0.005"
+maintenance_margin_rate = "0.01"
+min_liq_distance_pct = "10"
+liq_stop_multiple = "3"
+stop_slippage_bps = "5"              # the sizing's assumed stop slippage, separate from slippage_bps
+
+[strategy]
+name = "connors_rsi"
+[strategy.config]                    # the candidate's fixed settings (spec 0018.1 Settings)
+bar_spec = "1-HOUR-LAST"
+atr_period = 14
+atr_floor_mult = "1"
+time_stop_bars = 10
+trend_sma = 200
+exit_sma = 5
+stop_atr_mult = "3"
+[strategy.grid]                      # 6 points; every point is a trial
+rsi_period = [2, 3, 4]
+rsi_lower = [5, 10]
+
+[study]
+name = "connors_rsi"
+lab = "candle"
+seed = 42                            # the gate's bootstrap seed

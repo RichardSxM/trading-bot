@@ -225,6 +225,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute(f"REVOKE ALL ON ALL TABLES IN SCHEMA public FROM {GATE_ROLE}")
+    # 0005 granted lab_app only the bundle tables, so this revokes exactly what upgrade granted.
     op.execute(f"REVOKE SELECT ON promotions, promotion_evidence FROM {LAB_ROLE}")
     op.drop_table("promotion_folds")
     op.drop_index(op.f("ix_promotions_frozen_hash_to_stage_decided_at"), table_name="promotions")

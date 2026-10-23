@@ -240,3 +240,16 @@ def test_role_setup_runs_twice_without_error(database: str):
     for _ in range(2):
         with psycopg.connect(owner_url(database).replace("+psycopg", "")) as conn:
             setup_roles(conn, database, passwords)
+
+
+def test_gate_app_can_read_a_table_a_later_migration_adds(engine: Engine):
+    """covers: spec 0015 AC-22 (migration 0011: a default SELECT grant, so a new table is never
+    unreadable by the gate)."""
+    with engine.connect() as conn, conn.begin() as tx:
+        conn.execute(text("CREATE TABLE later_table (id int)"))
+        readable: bool = conn.execute(
+            text("SELECT has_table_privilege(:role, 'later_table', 'SELECT')"), {"role": GATE_ROLE}
+        ).scalar_one()
+        tx.rollback()
+
+    assert readable
