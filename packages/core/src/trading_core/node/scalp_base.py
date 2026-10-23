@@ -225,11 +225,15 @@ class ScalpStrategy(KfsStrategy, StaleQuoteBlock):
 
     # Lifecycle ------------------------------------------------------------------------------
 
+    def _start_signal_source(self) -> None:
+        """Start what drives the child's signal: ``bar_spec`` bars by default (a child may override, AC-22)."""
+        self.subscribe_bars(self.bar_type)
+
     def on_start(self) -> None:
-        """Subscribe to quotes and the strategy's bars, then arm the stale quote check."""
+        """Subscribe to quotes and the signal source, then arm the stale quote check."""
         super().on_start()
         self.subscribe_quote_ticks(self._instrument_id)
-        self.subscribe_bars(self.bar_type)
+        self._start_signal_source()
         self.start_stale_check(
             timer=_STALE,
             instrument_id=self._instrument_id,
@@ -276,8 +280,12 @@ class ScalpStrategy(KfsStrategy, StaleQuoteBlock):
             return
         if bar.bar_type != self.bar_type:
             return
+        self._on_signal_source(lambda: self.signal_on_bar(bar))
+
+    def _on_signal_source(self, produce: Callable[[], ScalpSignal | None]) -> None:
+        """One bar close or firing: always feed the child; act on its signal only while flat with no entry working."""
         try:
-            signal = self.signal_on_bar(bar)
+            signal = produce()
             if signal is not None and self.phase == Phase.FLAT and self._position() is None:
                 self._decide_entry(signal)
         except Exception:

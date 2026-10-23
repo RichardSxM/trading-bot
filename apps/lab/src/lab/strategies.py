@@ -23,6 +23,8 @@ from trading_core import versioning
 from trading_core.lab.candles import CANDLE_STALE_CHECK_S
 from trading_core.node.bollinger_rsi import STRATEGY_NAME as BOLLINGER_RSI
 from trading_core.node.bollinger_rsi import BollingerRsi, BollingerRsiConfig
+from trading_core.node.book_imbalance import STRATEGY_NAME as BOOK_IMBALANCE
+from trading_core.node.book_imbalance import BookImbalance, BookImbalanceConfig
 from trading_core.node.buy_and_hold import STRATEGY_NAME as BUY_AND_HOLD
 from trading_core.node.buy_and_hold import BuyAndHold, BuyAndHoldConfig
 from trading_core.node.delta_divergence import STRATEGY_NAME as DELTA_DIVERGENCE
@@ -310,6 +312,12 @@ def _delta_divergence(config: StrategyConfig, gate: PauseGate, blocks: EntryBloc
     return DeltaDivergence(config, gate, blocks, record)
 
 
+def _book_imbalance(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
+    if not isinstance(config, BookImbalanceConfig):
+        raise TypeError(f"book_imbalance needs a BookImbalanceConfig, not {type(config).__name__}")
+    return BookImbalance(config, gate, blocks, record)
+
+
 def _peek_probe(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
     if not isinstance(config, MacdBaselineConfig):
         raise TypeError(f"peek_probe needs a MacdBaselineConfig, not {type(config).__name__}")
@@ -389,6 +397,15 @@ REGISTRY: Final[Mapping[str, StrategyEntry]] = {
         module=DeltaDivergence.__module__,
         config_cls=DeltaDivergenceConfig,
         factory=_delta_divergence,
+        run_fields=_scalp_fields,
+        default_entry_mode="maker",
+    ),
+    # Replay only: it reads the L2 book, which the candle lab does not have (spec 0017 AC-22).
+    BOOK_IMBALANCE: StrategyEntry(
+        name=BOOK_IMBALANCE,
+        module=BookImbalance.__module__,
+        config_cls=BookImbalanceConfig,
+        factory=_book_imbalance,
         run_fields=_scalp_fields,
         default_entry_mode="maker",
     ),

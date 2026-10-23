@@ -212,17 +212,20 @@ class Delta:
 
 
 class DeltaWindow:
-    """The signed traded size of the last ``n`` closed 1 minute buckets.
+    """The signed traded size of the last ``n`` closed buckets of ``bucket_ns`` (1 minute by default).
 
-    A trade adds its size to the bucket of its ``ts_event`` minute: + for a buyer aggressor, - for a
-    seller, 0 for none. ``close(m)`` sums minutes ``m - n + 1`` to ``m`` (``None`` until ``n`` minutes
-    were closed) and drops the buckets the next window no longer needs. A trade whose minute was already
-    closed is dropped and counted in ``late_trades``.
+    A trade adds its size to the bucket of its ``ts_event`` (``ts_event // bucket_ns``): + for a buyer
+    aggressor, - for a seller, 0 for none. ``close(m)`` sums buckets ``m - n + 1`` to ``m`` (``None`` until
+    ``n`` buckets were closed) and drops the buckets the next window no longer needs. A trade whose bucket
+    was already closed is dropped and counted in ``late_trades``.
     """
 
-    def __init__(self, n: int) -> None:
+    def __init__(self, n: int, bucket_ns: int = MINUTE_NS) -> None:
         _check_period("a delta window", n)
+        if bucket_ns < 1:
+            raise ValueError(f"bucket_ns must be at least 1, got {bucket_ns}")
         self.n = n
+        self._bucket_ns = bucket_ns
         self._buckets: dict[int, tuple[Decimal, Decimal]] = {}
         self._closed: int | None = None
         self._closes = 0
@@ -230,7 +233,7 @@ class DeltaWindow:
 
     def add(self, ts_event_ns: int, size: Decimal, aggressor: str) -> None:
         """One trade; ``aggressor`` is ``buy``, ``sell``, or ``none``."""
-        minute = ts_event_ns // MINUTE_NS
+        minute = ts_event_ns // self._bucket_ns
         if self._closed is not None and minute <= self._closed:
             self.late_trades += 1
             return
@@ -242,7 +245,7 @@ class DeltaWindow:
         self._buckets[minute] = (buy, sell)
 
     def close(self, minute: int) -> Delta | None:
-        """Close ``minute`` (minutes since the epoch); return the window ending at it."""
+        """Close bucket ``minute`` (buckets since the epoch); return the window ending at it."""
         self._closed = minute
         self._closes += 1
         first = minute - self.n + 1
