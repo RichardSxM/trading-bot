@@ -10,7 +10,7 @@ from lab.study import load_study
 STUDIES = Path(__file__).resolve().parents[1] / "studies"
 # The hour level study whose shared settings every spec 0019 study keeps (spec 0018 Shared study settings).
 SHARED_FROM = "connors_rsi.toml"
-INTRADAY = ["connors_rsi_15m.toml"]
+INTRADAY = ["connors_rsi_15m.toml", "ema_pullback.toml"]
 
 
 def _shared(study):

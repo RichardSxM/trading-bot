@@ -31,6 +31,8 @@ from trading_core.node.connors_rsi import STRATEGY_NAME as CONNORS_RSI
 from trading_core.node.connors_rsi import ConnorsRsi, ConnorsRsiConfig
 from trading_core.node.delta_divergence import STRATEGY_NAME as DELTA_DIVERGENCE
 from trading_core.node.delta_divergence import DeltaDivergence, DeltaDivergenceConfig
+from trading_core.node.ema_pullback import STRATEGY_NAME as EMA_PULLBACK
+from trading_core.node.ema_pullback import EmaPullback, EmaPullbackConfig
 from trading_core.node.macd_baseline import STRATEGY_NAME as MACD_BASELINE
 from trading_core.node.macd_baseline import MacdBaseline, MacdBaselineConfig
 from trading_core.node.maker_probe import MakerProbe, MakerProbeConfig
@@ -326,6 +328,12 @@ def _connors_rsi(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, r
     return ConnorsRsi(config, gate, blocks, record)
 
 
+def _ema_pullback(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
+    if not isinstance(config, EmaPullbackConfig):
+        raise TypeError(f"ema_pullback needs an EmaPullbackConfig, not {type(config).__name__}")
+    return EmaPullback(config, gate, blocks, record)
+
+
 def _peek_probe(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
     if not isinstance(config, MacdBaselineConfig):
         raise TypeError(f"peek_probe needs a MacdBaselineConfig, not {type(config).__name__}")
@@ -423,6 +431,15 @@ REGISTRY: Final[Mapping[str, StrategyEntry]] = {
         module=ConnorsRsi.__module__,
         config_cls=ConnorsRsiConfig,
         factory=_connors_rsi,
+        run_fields=_candle_fields,
+        kind=StrategyKind.HOUR_LEVEL,
+    ),
+    # The intraday swing candidates (spec 0019) on the same base, in the hour level family, on 15 minute bars.
+    EMA_PULLBACK: StrategyEntry(
+        name=EMA_PULLBACK,
+        module=EmaPullback.__module__,
+        config_cls=EmaPullbackConfig,
+        factory=_ema_pullback,
         run_fields=_candle_fields,
         kind=StrategyKind.HOUR_LEVEL,
     ),

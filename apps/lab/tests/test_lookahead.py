@@ -35,7 +35,10 @@ RISK = RiskLimits(
 )
 HOUR_LEVEL = sorted(name for name, entry in REGISTRY.items() if entry.kind == StrategyKind.HOUR_LEVEL)
 # Each candle strategy's settings for the synthetic days; a short trend average gives connors_rsi room to trade.
-CONFIGS = {"connors_rsi": {"rsi_period": 2, "rsi_lower": 10, "trend_sma": 20}}
+CONFIGS = {
+    "connors_rsi": {"rsi_period": 2, "rsi_lower": 10, "trend_sma": 20},
+    "ema_pullback": {"rsi_low": 1, "rsi_high": 50},
+}
 NOTIONAL = {"notional_usd": "10000"}
 RUN = """
 instrument_id = "PF_XBTUSD.KRAKEN"
@@ -118,7 +121,7 @@ def test_connors_rsi_on_15_minute_bars_decides_the_same_before_each_of_five_cuts
 
 
 def test_the_registry_has_the_candle_strategies():
-    assert HOUR_LEVEL == ["buy_and_hold", "connors_rsi", "macd_baseline"]
+    assert HOUR_LEVEL == ["buy_and_hold", "connors_rsi", "ema_pullback", "macd_baseline"]
 
 
 # A cut lies 1 to 59 minutes past an hour, so the cut run has the bar that closed before it but not
