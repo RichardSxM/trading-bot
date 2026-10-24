@@ -383,7 +383,7 @@ code in `packages/core/src/trading_core/strategy`, `packages/core/src/trading_co
   - [x] Studies and verdicts: study files, candle screens, delta pre check, replay studies in audit order to recorded gate verdicts, at most one revision each (AC-10 to AC-12, AC-17)
   - [x] Fourth amendment (2026-10-22): maker target exits, the candle gate path, `bollinger_rsi_r1` to a verdict, `book_imbalance` with its pre check (AC-19 to AC-24)
 - [x] Verify it: `/check verify scalping strategy candidates` (passed 2026-10-24 on main 5a28578)
-- [ ] Test it: `/test scalping strategy candidates`
+- [x] Test it: `/test scalping strategy candidates` (`apps/lab/tests/test_scalp_studies.py`, 2026-10-24)
 - [ ] Review it (fresh model): `/check review scalping strategy candidates`
 - [ ] Document it: `/document scalping strategy candidates`
 
