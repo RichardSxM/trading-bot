@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from lab.study import load_study
+from trading_core.lab.study_days import firsts_of_month
 
 D = Decimal
 STUDIES = Path(__file__).resolve().parents[1] / "studies"
@@ -38,12 +39,21 @@ def _raw(name):
         return tomllib.load(f)
 
 
-def _common(raw, name):
+def _catalog(root):
+    """An empty manifest for every replay development day, so loading needs no recorded data (CI has none)."""
+    manifests = root / "tardis" / "manifests"
+    manifests.mkdir(parents=True)
+    for day in firsts_of_month(date(2022, 4, 1), date(2025, 10, 18)):
+        (manifests / f"{day.isoformat()}.json").write_text(f'{{"date": "{day}", "gaps": [], "streams": []}}')
+    return root
+
+
+def _common(raw, name, tmp_path):
     assert {k: raw[k] for k in SHARED} == SHARED
     assert raw["risk"] == RISK  # risk_per_trade left at its default
     assert raw["study"]["name"] == name
     assert raw["study"]["seed"] == 42
-    assert len(load_study(STUDIES / f"{name}.toml").points) == 4
+    assert len(load_study(STUDIES / f"{name}.toml", catalog_dir=_catalog(tmp_path / "catalog")).points) == 4
 
 
 def test_every_spec_0017_study_file_exists_and_no_others_were_added():
@@ -54,10 +64,10 @@ def test_every_spec_0017_study_file_exists_and_no_others_were_added():
 
 
 @pytest.mark.parametrize("name", sorted(REPLAY))
-def test_a_replay_study_has_the_shared_replay_fields(name):
+def test_a_replay_study_has_the_shared_replay_fields(name, tmp_path):
     # covers: AC-10
     raw = _raw(name)
-    _common(raw, name)
+    _common(raw, name, tmp_path)
     assert raw["source"] == "tardis"
     assert (raw["from"], raw["to"]) == (date(2022, 4, 1), date(2025, 10, 18))
     assert raw["latency_ms"] == 25
@@ -75,11 +85,11 @@ def test_a_replay_study_caps_the_spread_at_the_audit_p95_rounded_up(name):
 
 
 @pytest.mark.parametrize("name", sorted(SCREENS))
-def test_a_candle_screen_has_the_screen_fields_and_the_replay_rules(name):
+def test_a_candle_screen_has_the_screen_fields_and_the_replay_rules(name, tmp_path):
     # covers: AC-10
     strategy, regime = SCREENS[name]
     raw = _raw(name)
-    _common(raw, name)
+    _common(raw, name, tmp_path)
     assert (raw["from"], raw["to"]) == (date(2023, 1, 1), date(2025, 10, 18))
     assert raw["slippage_bps"] == "2"
     assert raw["study"]["lab"] == "candle"
@@ -98,10 +108,10 @@ def test_a_candle_screen_has_the_screen_fields_and_the_replay_rules(name):
     assert raw["strategy"]["grid"] == replay["grid"]
 
 
-def test_bollinger_rsi_r1_is_the_v4_screen_with_maker_exits_on_the_candle_gate_path():
+def test_bollinger_rsi_r1_is_the_v4_screen_with_maker_exits_on_the_candle_gate_path(tmp_path):
     # covers: AC-21, AC-19 (min_target_bps 6 for a maker exit study), AC-20 (candle_gate in the study file)
     raw = _raw("bollinger_rsi_r1")
-    _common(raw, "bollinger_rsi_r1")
+    _common(raw, "bollinger_rsi_r1", tmp_path)
     v4 = _raw(SCREEN_OF["bollinger_rsi"])
     assert raw["study"]["lab"] == "candle"
     assert raw["study"]["candle_gate"] is True
