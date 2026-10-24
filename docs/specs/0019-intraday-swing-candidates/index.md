@@ -1,7 +1,7 @@
 # 0019. Intraday swing candidates: four BTC strategies on 15 minute bars, held 2 to 8 hours, on spec 0018's shared base
 
 **Date**: 2026-10-23
-**Status**: Proposed
+**Status**: In Progress
 
 ## Summary
 

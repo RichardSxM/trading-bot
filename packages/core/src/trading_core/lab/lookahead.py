@@ -5,10 +5,12 @@ data after it exists. So the full run is run again on the same data cut at a few
 decision strictly before a cut must be one of the cut run's, with no extra one there. The lab
 leaves out the ``range_end`` decisions before it calls ``first_mismatch``.
 
-A cut never falls on a whole hour. It is a whole hour plus 1 to 59 minutes, so the cut run has
-the hour bar that closed before the cut but not the one that closes after it. A strategy that
-decides about a bar from the next one stamps that decision before the cut while the cut run
-never sees the next bar, so even a one bar peek is caught.
+A cut never falls on a bar close. It is a whole bar interval plus 1 minute to one minute short of
+the next close (for hour bars 1 to 59 minutes past the hour, for 15 minute bars 1 to 14 minutes
+past a quarter hour, spec 0019 AC-2), so the cut run has the bar that closed before the cut but
+not the one that closes after it. A strategy that decides about a bar from the next one stamps
+that decision before the cut while the cut run never sees the next bar, so even a one bar peek
+is caught.
 
 Times are Nautilus nanosecond ints (UTC).
 """
@@ -23,26 +25,31 @@ from trading_core.marketdata.hours import HOUR_NS
 
 # The share of the range at each end where no cut is drawn.
 EDGE_SHARE_PCT: Final = 10
-# A cut lies this many whole minutes after its hour, both inclusive: never on the hour itself.
-CUT_MINUTES: Final = (1, 59)
+# A cut lies at least this many whole minutes after a bar close: never on the close itself.
+CUT_FIRST_MINUTE: Final = 1
 
 
-def cut_times(seed: int, start_ns: int, end_ns: int, count: int) -> list[int]:
-    """``count`` cuts in the range's middle 80 %, sorted: each a distinct whole hour plus 1 to 59 minutes.
+def cut_times(seed: int, start_ns: int, end_ns: int, count: int, interval_ns: int = HOUR_NS) -> list[int]:
+    """``count`` cuts in the range's middle 80 %, sorted: each strictly between two ``interval_ns`` bar closes.
 
-    ``random.Random(seed)`` first samples the hours, from those whose 59th minute still lies in
-    the middle, then draws each cut's minute. Raises ``ValueError`` when fewer than ``count``
-    hours qualify.
+    A cut is a distinct whole interval plus 1 minute up to one minute short of the next close.
+    ``random.Random(seed)`` first samples the intervals, from those whose last cut minute still
+    lies in the middle, then draws each cut's minute; with the default hour interval that is a
+    whole hour plus 1 to 59 minutes. Raises ``ValueError`` when the interval is not a whole number
+    of at least 2 minutes, or when fewer than ``count`` intervals qualify.
     """
+    if interval_ns % MINUTE_NS or interval_ns < 2 * MINUTE_NS:
+        raise ValueError(f"a cut needs bars of whole minutes, at least 2, not {interval_ns} ns")
+    last_minute = interval_ns // MINUTE_NS - 1
     edge = (end_ns - start_ns) * EDGE_SHARE_PCT // 100
     low, high = start_ns + edge, end_ns - edge
-    first = -(-low // HOUR_NS) * HOUR_NS
-    hours = range(first, high - CUT_MINUTES[1] * MINUTE_NS + 1, HOUR_NS)
-    if len(hours) < count:
-        raise ValueError(f"the range's middle holds {len(hours)} whole hours, fewer than the {count} cuts")
+    first = -(-low // interval_ns) * interval_ns
+    closes = range(first, high - last_minute * MINUTE_NS + 1, interval_ns)
+    if len(closes) < count:
+        raise ValueError(f"the range's middle holds {len(closes)} whole bar intervals, fewer than the {count} cuts")
     rng = random.Random(seed)
-    drawn = rng.sample(hours, count)
-    return sorted(hour + rng.randint(*CUT_MINUTES) * MINUTE_NS for hour in drawn)
+    drawn = rng.sample(closes, count)
+    return sorted(close + rng.randint(CUT_FIRST_MINUTE, last_minute) * MINUTE_NS for close in drawn)
 
 
 @dataclass(frozen=True)
