@@ -1,4 +1,4 @@
-# Verify: scalping strategy candidates · spec 0017 · updated 2026-10-22
+# Verify: scalping strategy candidates · spec 0017 · updated 2026-10-24
 _Results and verify steps for spec 0017. The audit record below was written before any candidate study ran (AC-3)._
 
 ## Audit record (AC-3)
@@ -220,6 +220,18 @@ Maker exits cut the cost per trade only a little (1.3944 in v4 to 1.2896; the st
 The gross is negative: before any fee, the trades lost money on average, so no fee saving could rescue the rule. Every day lost after costs. The 2025-09-01 proof day (gross 0.23 against cost 1.04) pointed the same way. `book_imbalance` is recorded as **not run: fee hurdle**, and its replay study (task 20) does not run (AC-23, AC-24).
 
 With this, every spec 0017 candidate has a recorded result (AC-24): `bollinger_rsi` (v4, ADX v2, r1), `vwap_retest` (both screens), and `delta_divergence` all failed or were not run.
+
+## /check verify (2026-10-24, main 5a28578): pass
+
+Real runs on the lab and gate images built at 5a28578, against the laptop catalog and database.
+
+- Candle backtests: `bollinger_rsi` 3 trades, net 7.89; `vwap_retest` 2 trades, net 5.83. Both match the AC-16 record.
+- `lab audit` over 2025-09-01 to 2025-10-01, run twice: both exit 0, `audit.json` identical apart from `generated_at`, `audit.md` differs only in its Generated line (AC-1 to AC-3).
+- Replays of 2025-09-01, every candidate traded end to end (AC-16, AC-22): `bollinger_rsi` 4 trades, net −10.08; `vwap_retest` 9 trades, net −14.26, run twice with the same result; `delta_divergence` 16 trades, net −31.85; `book_imbalance` 11 trades, net −8.93, the same as the task 18 proof run.
+- Tests: 123 core and 11 lab tests for the scalping code pass.
+- No candidate has a promotion row (AC-23, AC-24).
+
+Note: `book_imbalance.toml` is absent on purpose (task 20 skipped), but the study table in child 0004 still lists it. Worth a one line fix in the spec.
 
 ## Test notes
 
