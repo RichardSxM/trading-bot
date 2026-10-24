@@ -10,7 +10,7 @@ which exist only when the caller asks for the test strategies (``LAB_TEST_STRATE
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Final
+from typing import Final, Literal
 from uuid import UUID
 
 import msgspec
@@ -21,10 +21,16 @@ from nautilus_trader.model.enums import BarAggregation, PriceType
 from lab.probes import PeekProbe, RaiseProbe, RaiseProbeConfig
 from trading_core import versioning
 from trading_core.lab.candles import CANDLE_STALE_CHECK_S
+from trading_core.node.bollinger_rsi import STRATEGY_NAME as BOLLINGER_RSI
+from trading_core.node.bollinger_rsi import BollingerRsi, BollingerRsiConfig
+from trading_core.node.book_imbalance import STRATEGY_NAME as BOOK_IMBALANCE
+from trading_core.node.book_imbalance import BookImbalance, BookImbalanceConfig
 from trading_core.node.buy_and_hold import STRATEGY_NAME as BUY_AND_HOLD
 from trading_core.node.buy_and_hold import BuyAndHold, BuyAndHoldConfig
 from trading_core.node.connors_rsi import STRATEGY_NAME as CONNORS_RSI
 from trading_core.node.connors_rsi import ConnorsRsi, ConnorsRsiConfig
+from trading_core.node.delta_divergence import STRATEGY_NAME as DELTA_DIVERGENCE
+from trading_core.node.delta_divergence import DeltaDivergence, DeltaDivergenceConfig
 from trading_core.node.macd_baseline import STRATEGY_NAME as MACD_BASELINE
 from trading_core.node.macd_baseline import MacdBaseline, MacdBaselineConfig
 from trading_core.node.maker_probe import MakerProbe, MakerProbeConfig
@@ -32,6 +38,8 @@ from trading_core.node.placeholder import STRATEGY_NAME as PLACEHOLDER
 from trading_core.node.placeholder import PlaceholderConfig, PlaceholderTimed, Record
 from trading_core.node.random_taker import RandomTaker, RandomTakerConfig
 from trading_core.node.strategy import KfsStrategy, PauseGate
+from trading_core.node.vwap_retest import STRATEGY_NAME as VWAP_RETEST
+from trading_core.node.vwap_retest import VwapRetest, VwapRetestConfig
 from trading_core.recording.enums import Env, StrategyKind
 from trading_core.recording.rows import JsonObject
 from trading_core.recording.spool import WriteItem
@@ -94,6 +102,8 @@ class RunContext:
     # A candle run's stale quote block (spec 0014 AC-13): the run file's limit, checked every 60 s.
     stale_quote_s: Decimal = Decimal(300)
     stale_check_s: int = CANDLE_STALE_CHECK_S
+    # Which lab builds the strategy: a scalping candidate takes the candle fields only in a candle run (spec 0017 AC-7).
+    lab: Literal["replay", "candle"] = "replay"
 
 
 # Stands in for the run while checking a config at startup, before any run exists.
@@ -136,6 +146,10 @@ class StrategyEntry:
     # The ``trading_core.node`` module the strategy class lives in, for its frozen hashes (spec 0015
     # AC-1). None for a test probe, whose versions keep NULL hashes and so can never be promoted.
     module: str | None = None
+    # A scalping strategy the candle lab may screen (spec 0017 AC-7, AC-8); never held out there.
+    candle_screen: bool = False
+    # A candle screen strategy whose candle study may be a gate study (spec 0017 AC-20).
+    candle_gate: bool = False
 
     def frozen(self, config: JsonObject) -> FrozenHashes | None:
         """The version's ``code_hash`` and ``frozen_hash`` with ``config``; None for a strategy without a module."""
@@ -247,6 +261,11 @@ def _candle_fields(context: RunContext) -> dict[str, object]:
     }
 
 
+def _scalp_fields(context: RunContext) -> dict[str, object]:
+    # A scalping candidate (spec 0017 AC-7): the placeholder's run fields, plus the stale quote block in a candle run.
+    return _candle_fields(context) if context.lab == "candle" else _placeholder_fields(context)
+
+
 def _placeholder(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
     if not isinstance(config, PlaceholderConfig):
         raise TypeError(f"placeholder_timed needs a PlaceholderConfig, not {type(config).__name__}")
@@ -275,6 +294,30 @@ def _macd_baseline(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks,
     if not isinstance(config, MacdBaselineConfig):
         raise TypeError(f"macd_baseline needs a MacdBaselineConfig, not {type(config).__name__}")
     return MacdBaseline(config, gate, blocks, record)
+
+
+def _bollinger_rsi(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
+    if not isinstance(config, BollingerRsiConfig):
+        raise TypeError(f"bollinger_rsi needs a BollingerRsiConfig, not {type(config).__name__}")
+    return BollingerRsi(config, gate, blocks, record)
+
+
+def _vwap_retest(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
+    if not isinstance(config, VwapRetestConfig):
+        raise TypeError(f"vwap_retest needs a VwapRetestConfig, not {type(config).__name__}")
+    return VwapRetest(config, gate, blocks, record)
+
+
+def _delta_divergence(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
+    if not isinstance(config, DeltaDivergenceConfig):
+        raise TypeError(f"delta_divergence needs a DeltaDivergenceConfig, not {type(config).__name__}")
+    return DeltaDivergence(config, gate, blocks, record)
+
+
+def _book_imbalance(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
+    if not isinstance(config, BookImbalanceConfig):
+        raise TypeError(f"book_imbalance needs a BookImbalanceConfig, not {type(config).__name__}")
+    return BookImbalance(config, gate, blocks, record)
 
 
 def _connors_rsi(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
@@ -335,6 +378,44 @@ REGISTRY: Final[Mapping[str, StrategyEntry]] = {
         factory=_macd_baseline,
         run_fields=_candle_fields,
         kind=StrategyKind.HOUR_LEVEL,
+    ),
+    # The scalping candidates (spec 0017): replay studies, and a candle screen for the bar ideas.
+    BOLLINGER_RSI: StrategyEntry(
+        name=BOLLINGER_RSI,
+        module=BollingerRsi.__module__,
+        config_cls=BollingerRsiConfig,
+        factory=_bollinger_rsi,
+        run_fields=_scalp_fields,
+        default_entry_mode="maker",
+        candle_screen=True,
+        candle_gate=True,
+    ),
+    VWAP_RETEST: StrategyEntry(
+        name=VWAP_RETEST,
+        module=VwapRetest.__module__,
+        config_cls=VwapRetestConfig,
+        factory=_vwap_retest,
+        run_fields=_scalp_fields,
+        default_entry_mode="maker",
+        candle_screen=True,
+    ),
+    # Replay only: the candle lab's trades carry no aggressor side.
+    DELTA_DIVERGENCE: StrategyEntry(
+        name=DELTA_DIVERGENCE,
+        module=DeltaDivergence.__module__,
+        config_cls=DeltaDivergenceConfig,
+        factory=_delta_divergence,
+        run_fields=_scalp_fields,
+        default_entry_mode="maker",
+    ),
+    # Replay only: it reads the L2 book, which the candle lab does not have (spec 0017 AC-22).
+    BOOK_IMBALANCE: StrategyEntry(
+        name=BOOK_IMBALANCE,
+        module=BookImbalance.__module__,
+        config_cls=BookImbalanceConfig,
+        factory=_book_imbalance,
+        run_fields=_scalp_fields,
+        default_entry_mode="maker",
     ),
     # The hour level candidates (spec 0018) on the shared ``BarRuleStrategy`` base.
     CONNORS_RSI: StrategyEntry(

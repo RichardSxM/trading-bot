@@ -166,6 +166,7 @@ def run_candle_unit(plan: CandleUnitPlan) -> CandleUnitResult:
         market=plan.market,
         stale_quote_s=plan.stale_quote_s,
         stale_check_s=CANDLE_STALE_CHECK_S,
+        lab="candle",
     )
     config = entry.build_config(plan.strategy_config, context)
     strategy = entry.build(config, gate, blocks, rows)
