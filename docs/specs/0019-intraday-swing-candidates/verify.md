@@ -16,6 +16,12 @@ was built or run, so it is not a trial (AC-9).
 - `connors_rsi` median |close − SMA(5)|: **11.11 bps**, 0.79 × cost. Its typical exit is under the round trip
   cost, which is the likely fail child 1 names.
 
+## connors_rsi_15m run (2026-10-24)
+
+- Study 11:42 to 13:34 UTC, 6 grid points, all ok; holdout 13:34 to 13:53 UTC (candidate batch 01a16e1f, buy and hold 01a16e24, MACD 01a16e2a); study batch 01a16db8. Image `kfs/lab:s0019` built at 7b3583c.
+- Pushed with `scripts/push-bundles.sh` (imports took about an hour each on the VPS, nothing refused), then `gate evaluate connors_rsi_15m` on the VPS: `fail`, promotion 01a16ec6. The laptop dry run gave the same verdict and metrics (laptop N 74, VPS N 12). Full results in [0001-connors-rsi-15m.md](0001-connors-rsi-15m.md).
+- Checked: the study file commit (11:41:09 UTC) is earlier than `studies.created_at` (11:42:20 UTC); every grid point's stored config has `time_stop_bars` 12 and `bar_spec` `15-MINUTE-LAST`.
+
 ## Commands
 - [ ] `pytest tests/test_lab_lookahead.py` (core) → cuts with a 15 minute interval never land on a quarter hour, the hour interval draws are unchanged → AC-2
 - [ ] `pytest tests/test_lookahead.py` (lab) → every hour level strategy and `connors_rsi` at `15-MINUTE-LAST` pass the prefix check → AC-2, AC-5

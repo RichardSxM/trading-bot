@@ -50,4 +50,33 @@ It costs one study file and tells you, before any new rule is written, whether t
 
 ## Results
 
-Not run yet.
+**Verdict: `fail`.** holdout seen: the same idea's 1 hour study (spec 0018.1) already judged this holdout year.
+
+| Field | Value |
+|---|---|
+| Study | `connors_rsi_15m` (study file committed 2026-10-24 11:41 UTC in 7b3583c, study created 11:42 UTC) |
+| Promotion id | `01a16ec6-ab2b-7395-84bc-e6f6994cf05c` (VPS) |
+| Evaluation date | 2026-10-24 |
+| Chosen grid point | 2 of 0 to 5 (`rsi_period` 3, `rsi_lower` 5), chosen in all 5 folds |
+| Walk forward Sharpe | −1.084547 (5 folds, every fold negative; return −3.04%) |
+| Holdout Sharpe | −0.825348, against buy and hold −0.460362 and the MACD baseline −1.377988 |
+| Holdout return after costs | −0.56% |
+| Holdout marked max drawdown | 0.73% |
+| Deflated Sharpe probability | 0.000000 |
+| PBO | 0.000000 |
+| Holdout trades | 20 (12 long, 8 short; 18 exits at `target`, 2 stopped out; win rate 45%) |
+| Trial count N, trial pool | 12, 12 (`kind+lab`, VPS) |
+| `avg_hold_minutes` | 45.9 (longest 140) |
+| Holdout gross per trade | 3.644 USD |
+| Holdout cost per trade | 6.443 USD |
+
+Reasons (code, value, threshold):
+- `trade_floor`: `too_few_trades`, 20, 60
+- `fee_hurdle`: `failed`, 3.644, 9.664
+- `holdout_sharpe`: `failed`, −0.825348, 0
+- `beats_buy_and_hold`: `failed`, −0.825348, −0.460362
+- `walk_forward_sharpe`: `failed`, −1.084547, 0
+- `bootstrap_lower_bound`: `failed`, −0.000049, 0
+- `deflated_sharpe`: `failed`, 0.000000, 0.95
+
+Reading: the trade rate was far below the expected 500 a year (about 20 a year in the holdout and 5 to 10 per half year fold), because RSI extremes beyond 5 above the 200 bar average are rare on 15 minute bars. When it did trade, the exit at SMA(5) gave a gross per trade about half the cost, as task 1's 11 bps median exit distance predicted. No revision (AC-13). The `time_stop_bars` 12 and `bar_spec` `15-MINUTE-LAST` overrides are in every grid point's stored strategy version config.
