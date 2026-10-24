@@ -38,7 +38,7 @@ Warmup: `persist_bars` bar closes with a book on both sides (30 seconds), so a r
 
 | File | Lab | Notes |
 |---|---|---|
-| `apps/lab/studies/book_imbalance.toml` | replay | all fields per index AC-10, the config above |
+| `apps/lab/studies/book_imbalance.toml` | replay | all fields per index AC-10, the config above (not written: the pre check failed on the fee hurdle, so task 20 was skipped) |
 
 No candle screen (the candle lab has no book). The index AC-23 pre check (4 development days, grid point `imb_min = "0.3"`, `target_bps = "6"`, at least 17 approved entries a day and an edge of at least 1.5 × cost) must pass first. Scratch run files (not baked into the image): `lab-reports/scratch/book_imbalance.toml` (2025-09-01, for the AC-16 style one day proof) and `lab-reports/scratch/book_imbalance_precheck.toml` (the pre check days and grid point).
 
