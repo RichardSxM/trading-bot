@@ -28,7 +28,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 13 | Candle backtest lab | Slice 6 | done |
 | 14 | Scalping simulator | Slice 6 | done |
 | 15 | Strategy scoring & promotion gate | Slice 6 | done |
-| 16 | Scalping strategy candidates | Slice 7 | in-progress |
+| 16 | Scalping strategy candidates | Slice 7 | done |
 | 17 | Hour level strategy candidates | Slice 7 | in-progress |
 | 18 | Trade journal export | Slice 8 | planned |
 | 19 | Go live with small capital | Slice 9 | planned |
@@ -350,7 +350,7 @@ code in `packages/core/src/trading_core/gate`, `packages/core/src/trading_core/v
 
 ## Slice 7: First strategies
 
-### 16. Scalping strategy candidates · in-progress
+### 16. Scalping strategy candidates · done
 A small set of well known scalping ideas (for example order book imbalance, short term mean reversion) run through the simulator and the gate.
 **Done when:** each candidate has a scored result on recorded data, and the gate's verdict is recorded, pass or fail.
 **Carried over from an article (2026-10-04), for the design to weigh:** a regime gate. Scalping and mean reversion tend to work in calm, rangebound markets and get run over in strong trends. Consider pausing new entries when volatility or trend strength (from feature 20's context or the candles) crosses a level, added as one more reason in `entries_blocked` (spec 0006) so the dashboard shows it. Score each candidate with and without the gate. A standard measure of trend strength is ADX(14) (the average directional index): above about 25 is the common reading for a trending market, the case the gate would block. Treat 25 as a starting point to tune on recorded data, not a fixed rule.

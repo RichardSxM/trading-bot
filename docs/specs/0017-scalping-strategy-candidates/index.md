@@ -1,7 +1,7 @@
 # 0017. Test three scalping candidates, chosen and ordered by a data audit, through a cheap candle screen and the replay gate
 
 **Date**: 2026-10-21 (amended 2026-10-22: AC-18, stop already through at the fill; amended again 2026-10-22: the rejected stop verdict; third amendment 2026-10-22: the quote already seen at the rejection; fourth amendment 2026-10-22: maker target exits, the candle gate path for slow scalpers, `bollinger_rsi_r1`, and a fourth candidate `book_imbalance`, AC-19 to AC-24)
-**Status**: In Progress
+**Status**: Accepted
 
 ## Summary
 
