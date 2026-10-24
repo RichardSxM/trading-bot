@@ -382,7 +382,7 @@ code in `packages/core/src/trading_core/strategy`, `packages/core/src/trading_co
   - [ ] Regime gate and the other two: `REGIME` block reason (deployed before any study), `vwap_retest`, `delta_divergence` (AC-4, AC-6, AC-7, AC-14 to AC-16)
   - [ ] Studies and verdicts: study files, candle screens, delta pre check, replay studies in audit order to recorded gate verdicts, at most one revision each (AC-10 to AC-12, AC-17)
   - [ ] Fourth amendment (2026-10-22): maker target exits, the candle gate path, `bollinger_rsi_r1` to a verdict, `book_imbalance` with its pre check (AC-19 to AC-24)
-- [ ] Verify it: `/check verify scalping strategy candidates`
+- [x] Verify it: `/check verify scalping strategy candidates` (passed 2026-10-24 on main 5a28578)
 - [ ] Test it: `/test scalping strategy candidates`
 - [ ] Review it (fresh model): `/check review scalping strategy candidates`
 - [ ] Document it: `/document scalping strategy candidates`
