@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from lab.runfile import LoadedCandleRun
 from lab.study import load_study
 
 STUDIES = Path(__file__).resolve().parents[1] / "studies"
@@ -25,6 +26,7 @@ def test_each_intraday_study_keeps_the_shared_hour_level_settings(name):
     assert _shared(study) == _shared(reference)
     assert study.section.lab == "candle"
     assert study.section.seed == 42
+    assert isinstance(study.loaded, LoadedCandleRun)
     assert study.loaded.bar_spec == "15-MINUTE-LAST"
     assert 4 <= len(study.points) <= 6
 
