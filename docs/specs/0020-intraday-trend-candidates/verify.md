@@ -43,6 +43,28 @@ Development range per grid point (net, fees, trades, gross and cost per trade in
 | 1 | 1.5 | −91.56% | 7 406.98 | 2 648 | −0.65 | 2.80 |
 | 2 | 2 | −77.82% | 6 654.81 | 1 784 | −0.61 | 3.75 |
 
+## donchian_4h run (2026-10-26)
+
+All on the laptop in `kfs/lab:s0020` (rebuilt at 86c928f), with `--no-deps` and `LAB_WORKERS=2`, through `lab-reports/scratch/s0020_donchian_4h.sh`.
+
+| Step | Start (UTC) | Wall | Result |
+|---|---|---|---|
+| `lab study studies/donchian_4h.toml` | 15:51 | 90 min | batch `01a178e9-a6ad-713f-804c-105853b43e83`, 4 grid points, exit 0 |
+| `lab holdout donchian_4h` | 17:21 | 46 min | candidate `01a1793b-c7e9-7610-9d2c-a8dfb1ae5459` (grid 1), buy and hold `01a1794c-7140-7432-a1b0-7a4ddb79a6c7`, MACD `01a17955-1d31-7611-8813-331ea0520de2`, exit 0 |
+| `scripts/push-bundles.sh` (all 4 folders) | 18:38 | about 1 h 20 min (almost all in `gate import`) | loaded 7, already there 35, refused 0 |
+| `gate evaluate donchian_4h` (VPS, `--no-deps`) | 23:08 | under 1 min | `fail`, promotion `01a17a79-2207-7512-944c-92079a9cc065` |
+
+`gate evaluate` was run a second time by mistake right after, to read the top of its output. It wrote a second promotion row, `01a17a79-45a7-7342-9a92-446f561b2415`, with the same verdict and the same metrics. The first row is the one of record.
+
+Development range per grid point:
+
+| Grid | `entry_bars` | `stop_atr` | Return | Trades |
+|---|---|---|---|---|
+| 1 | 20 | 2 | +24.5% | 209 |
+| 2 | 20 | 3 | +16.5% | 200 |
+| 3 | 55 | 2 | +0.9% | 120 |
+| 4 | 55 | 3 | −3.6% | 115 |
+
 ## AC-9 checkpoint (2026-10-26)
 
 The trader saw the `noise_breakout` verdict (`fail`) with its holdout gross per trade 0.188 USD and cost per trade 6.277 USD, a ratio of 0.03, far below the 1.5 × bar. The trader chose the recommendation: skip candidate 2 (`noise_breakout_tod`), because a time of day filter only removes trades and cannot lift a below cost signal past the hurdle, and still run candidate 3 (`donchian_4h`), because it is a different timescale and not a variant of candidate 1.
