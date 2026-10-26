@@ -32,7 +32,7 @@ def _config(**overrides):
         "taker_fee": D("0.0005"),
         "stale_quote_s": D(300),
     } | overrides
-    return EmaPullbackConfig(**values)
+    return EmaPullbackConfig(**values)  # type: ignore[arg-type]  # each value has its own type
 
 
 def test_the_defaults_are_the_spec_settings_on_15_minute_bars_with_an_8_hour_time_stop():

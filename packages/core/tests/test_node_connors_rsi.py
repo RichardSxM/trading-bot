@@ -30,7 +30,7 @@ def _config(**overrides):
         "taker_fee": D("0.0005"),
         "stale_quote_s": D(300),
     } | overrides
-    return ConnorsRsiConfig(**values)
+    return ConnorsRsiConfig(**values)  # type: ignore[arg-type]  # each value has its own type
 
 
 def test_connors_rsi_on_15_minute_bars_subscribes_to_the_15_minute_internal_bars():
