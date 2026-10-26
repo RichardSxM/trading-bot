@@ -104,3 +104,5 @@ Reasons (code, value, threshold):
 - `drawdown_budget`: `failed`, 0.742, 0.10
 
 Reading: the trade rate was high (about 700 a year, 323 to 375 per half year fold), so the 15 minute pullback trades often enough. But the edge before costs is negative: gross per trade is −4.8 USD, so the loss is not only the cost. A pullback to EMA(8) inside an EMA(8/21) trend is followed by a stop more often than a 2 R move (26% winners, while a 2 R target needs about 33% to break even before costs). All 4 grid points lost about 99% over the full study run (−99.10% to −99.96%). No revision (AC-13).
+
+Final family N (AC-14, 2026-10-26): N 16, pool 16 (`kind+lab`, VPS), verdict `fail`, promotion `01a1769b-de30-72b6-8e8c-46167c2a7999`. N did not change, because no study ran after this one.

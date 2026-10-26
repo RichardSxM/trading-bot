@@ -80,3 +80,5 @@ Reasons (code, value, threshold):
 - `deflated_sharpe`: `failed`, 0.000000, 0.95
 
 Reading: the trade rate was far below the expected 500 a year (about 20 a year in the holdout and 5 to 10 per half year fold), because RSI extremes beyond 5 above the 200 bar average are rare on 15 minute bars. When it did trade, the exit at SMA(5) gave a gross per trade about half the cost, as task 1's 11 bps median exit distance predicted. No revision (AC-13). The `time_stop_bars` 12 and `bar_spec` `15-MINUTE-LAST` overrides are in every grid point's stored strategy version config.
+
+Final family N (AC-14, 2026-10-26): N 16, pool 16 (`kind+lab`, VPS), verdict `fail`, promotion `01a1769b-a28d-7444-b5e1-b7970f388d15`. The same 7 checks failed, with the same holdout Sharpe (−0.825348) and deflated Sharpe probability (0.000000).

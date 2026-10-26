@@ -206,4 +206,5 @@ Tracer Bullet: `connors_rsi_15m` goes end to end first with no code (a study fil
 - [ ] `/scope`: reword the product header (it still says seconds timescale scalping) once spec 0017 closes.
 - [ ] On the first `pass` (without the "holdout seen" label): `/scope` the feature that runs a chosen registered strategy instead of `PlaceholderTimed` for paper evidence (same follow up as spec 0018).
 - [ ] Round 2 (`/architect intraday swing candidates, round 2`): Bollinger RSI and NR4 at 15 minutes once spec 0018 builds those modules, a maker entry base (`bar_rule_v2`) with an honest fill model, busy hours and regime filters, and ETH.
-- [ ] `/sync`: `packages/core/AGENTS.md` should list `strategy/intraday.py`.
+- [ ] `/sync`: `packages/core/AGENTS.md` should list `strategy/intraday.py` (only if candidates 3 and 4 are ever built; the 2026-10-26 checkpoint skipped them).
+- [ ] `/architect`: the AC-10 checkpoint stopped this feature on 2026-10-26 (both candidates below cost per trade). Choose the next approach before any round 2.

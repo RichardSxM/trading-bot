@@ -34,6 +34,11 @@ was built or run, so it is not a trial (AC-9).
 - `ema_pullback`: gross per trade −4.834 USD against a cost per trade of 5.642 USD.
 - Both are below cost, so the trader chose on 2026-10-26 to stop here and go back to `/architect` rather than run candidates 3 (`vwap_reversion`) and 4 (`us_open_breakout`). Reason: two different rule shapes on 15 minute bars both earn less than the round trip cost before any fees are paid, so more candidates of the same kind are unlikely to clear the fee hurdle.
 
+## Close out (AC-14, 2026-10-26)
+
+- `gate evaluate` again on the VPS at 05:07 to 05:08 UTC (06:07 to 06:08 Amsterdam): `connors_rsi_15m` `fail` (promotion 01a1769b-a28d), `ema_pullback` `fail` (promotion 01a1769b-de30), both with final family N 16, pool 16. No revision ran, so nothing else to judge. No pass, so no paper follow up.
+- Hash check (AC-1): `gate versions` does not print the code hash, so `code_hash(code_closure(...))` ran for every `trading_core.node` module, once against origin/main's `packages/core` and once against this branch, in `kfs/lab:s0019t`. All 27 modules gave the same hash, 0 changed. `git diff origin/main...HEAD` adds only `strategy/ema_pullback.py` and `node/ema_pullback.py` under strategy and node.
+
 ## Commands
 - [ ] `pytest tests/test_lab_lookahead.py` (core) → cuts with a 15 minute interval never land on a quarter hour, the hour interval draws are unchanged → AC-2
 - [ ] `pytest tests/test_lookahead.py` (lab) → every hour level strategy and `connors_rsi` at `15-MINUTE-LAST` pass the prefix check → AC-2, AC-5

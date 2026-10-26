@@ -394,11 +394,11 @@ Strategies on 15 minute candles that hold 2 to 8 hours, so each trade aims for a
 spec [0019](../specs/0019-intraday-swing-candidates/index.md)
 
 - [x] Design it (spec): `/architect intraday swing candidates`
-- [ ] Build it: `/develop intraday swing candidates`
+- [x] Build it: `/develop intraday swing candidates` (done 2026-10-26; the checkpoint stopped it after candidate 2)
   - [x] Thin thread: cost check, bar interval aware look ahead cuts, `connors_rsi_15m` study to a recorded "holdout seen" verdict (AC-1, AC-2, AC-5, AC-9 to AC-12)
-  - [ ] Trend following: `ema_pullback` to a recorded verdict, then the checkpoint with you (AC-2, AC-4, AC-6, AC-9 to AC-11)
-  - [ ] Session ideas, only if the checkpoint says continue: `intraday.py`, `vwap_reversion`, `us_open_breakout`, each to a recorded verdict (AC-2 to AC-4, AC-7, AC-8, AC-9 to AC-11)
-  - [ ] Revisions and close out: at most one revision per failed new candidate, evaluate every study again with the final family N, scope tick (AC-13, AC-14)
+  - [x] Trend following: `ema_pullback` to a recorded verdict, then the checkpoint with you (AC-2, AC-4, AC-6, AC-9 to AC-11)
+  - [ ] Session ideas, only if the checkpoint says continue: `intraday.py`, `vwap_reversion`, `us_open_breakout`, each to a recorded verdict (AC-2 to AC-4, AC-7, AC-8, AC-9 to AC-11). Skipped: the checkpoint on 2026-10-26 said stop (both candidates below cost per trade).
+  - [x] Revisions and close out: at most one revision per failed new candidate, evaluate every study again with the final family N, scope tick (AC-13, AC-14). No revision; both studies `fail` again at final family N 16 (2026-10-26).
 - [ ] Verify it: `/check verify intraday swing candidates`
 - [ ] Test it: `/test intraday swing candidates`
 - [ ] Review it (fresh model): `/check review intraday swing candidates`
