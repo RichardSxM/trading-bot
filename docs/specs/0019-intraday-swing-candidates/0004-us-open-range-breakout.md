@@ -62,4 +62,4 @@ The opening range breakout is one of the oldest intraday rules and is fully rule
 
 ## Results
 
-Not run yet.
+Not run. The AC-10 checkpoint on 2026-10-26 stopped after candidate 2: both earlier candidates earned less than the cost per trade before costs, and the trader chose to go back to `/architect` (see [verify.md](verify.md)). No code was written for this candidate.

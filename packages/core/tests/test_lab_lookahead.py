@@ -36,6 +36,33 @@ def test_a_range_too_short_for_the_cuts_is_refused():
         cut_times(7, T0, T0 + 2 * HOUR_NS, 3)
 
 
+# covers: spec 0019 AC-2 (cut times between two bar closes for any bar interval)
+def test_the_hour_interval_draws_what_the_hour_only_cuts_drew():
+    # Pinned from the hour only cut_times before spec 0019, so existing look ahead runs are unchanged.
+    assert cut_times(7, T0, T0 + 30 * DAY, 3) == [1789034640000000000, 1789674120000000000, 1789934700000000000]
+    assert cut_times(42, T0, T0 + 300 * DAY, 5, HOUR_NS) == [
+        1791550080000000000,
+        1794096540000000000,
+        1798037040000000000,
+        1798924020000000000,
+        1809670500000000000,
+    ]
+
+
+def test_fifteen_minute_cuts_fall_1_to_14_minutes_past_a_quarter_hour():
+    quarter = 15 * MINUTE_NS
+    drawn = {c for seed in range(2000) for c in cut_times(seed, T0, T0 + DAY, 3, quarter)}
+    assert all(c % MINUTE_NS == 0 and c % quarter != 0 for c in drawn)
+    assert {c % quarter // MINUTE_NS for c in drawn} == set(range(1, 15))
+    assert all(T0 + DAY // 10 <= c <= T0 + DAY - DAY // 10 for c in drawn)
+
+
+@pytest.mark.parametrize("interval", [MINUTE_NS, 0, 90 * 10**9])
+def test_an_interval_with_no_minute_strictly_between_closes_is_refused(interval):
+    with pytest.raises(ValueError, match="whole minutes"):
+        cut_times(7, T0, T0 + 30 * DAY, 3, interval)
+
+
 def test_equal_decisions_before_the_cut_match_whatever_follows_it():
     full = [_key(1), _key(5, "exit", "sell", "macd_exit"), _key(9)]
     cut = [_key(1), _key(5, "exit", "sell", "macd_exit"), _key(6, reason="range_end")]

@@ -13,6 +13,7 @@ from lab.probes import PEEK_REASON
 from lab.runfile import Overrides, load_candle_run
 from lab.strategies import REGISTRY, MarketContextValues
 from trading_core.lab.lookahead import cut_times, first_mismatch
+from trading_core.node.bar_rule import bar_interval_ns
 from trading_core.recording.enums import StrategyKind
 from trading_core.risk.check import RiskLimits
 
@@ -34,7 +35,10 @@ RISK = RiskLimits(
 )
 HOUR_LEVEL = sorted(name for name, entry in REGISTRY.items() if entry.kind == StrategyKind.HOUR_LEVEL)
 # Each candle strategy's settings for the synthetic days; a short trend average gives connors_rsi room to trade.
-CONFIGS = {"connors_rsi": {"rsi_period": 2, "rsi_lower": 10, "trend_sma": 20}}
+CONFIGS = {
+    "connors_rsi": {"rsi_period": 2, "rsi_lower": 10, "trend_sma": 20},
+    "ema_pullback": {"rsi_low": 1, "rsi_high": 50},
+}
 NOTIONAL = {"notional_usd": "10000"}
 RUN = """
 instrument_id = "PF_XBTUSD.KRAKEN"
@@ -90,10 +94,11 @@ def _plan(catalog, name, **overrides):
 
 
 def _prefix_mismatches(plan, count):
-    """Run ``plan`` in full, then cut at ``count`` seeded hours; every cut whose decisions differ."""
+    """Run ``plan`` in full, then cut at ``count`` seeded times between bar closes; each cut that differs."""
     full = decided_keys(run_candle_unit(plan))
+    interval = bar_interval_ns(str(plan.strategy_config.get("bar_spec", "1-HOUR-LAST")))
     found = []
-    for cut in cut_times(plan.seed, plan.start_ns, plan.end_ns, count):
+    for cut in cut_times(plan.seed, plan.start_ns, plan.end_ns, count, interval):
         mismatch = first_mismatch(full, decided_keys(run_candle_unit(replace(plan, end_ns=cut, cut_ns=cut))), cut)
         if mismatch is not None:
             found.append(mismatch)
@@ -107,8 +112,16 @@ def test_every_candle_strategy_decides_the_same_before_each_of_five_cuts(month, 
     assert mismatches == []
 
 
+# covers: spec 0019 AC-2 and 0019.1 (connors_rsi on 15 minute bars is prefix tested too)
+def test_connors_rsi_on_15_minute_bars_decides_the_same_before_each_of_five_cuts(month):
+    config = {**CONFIGS["connors_rsi"], "bar_spec": "15-MINUTE-LAST", "time_stop_bars": 12}
+    full, mismatches = _prefix_mismatches(_plan(month, "connors_rsi", strategy_config=config), 5)
+    assert full, "connors_rsi made no decision on 15 minute bars over the synthetic days"
+    assert mismatches == []
+
+
 def test_the_registry_has_the_candle_strategies():
-    assert HOUR_LEVEL == ["buy_and_hold", "connors_rsi", "macd_baseline"]
+    assert HOUR_LEVEL == ["buy_and_hold", "connors_rsi", "ema_pullback", "macd_baseline"]
 
 
 # A cut lies 1 to 59 minutes past an hour, so the cut run has the bar that closed before it but not

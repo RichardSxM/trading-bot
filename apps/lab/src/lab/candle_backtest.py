@@ -71,6 +71,7 @@ from trading_core.lab.lookahead import DecidedKey, cut_times, first_mismatch
 from trading_core.lab.metrics import ClosedTrade, FundingCash, run_metrics
 from trading_core.lab.variants import CandleVariantSpec, expand_candle_variants
 from trading_core.marketdata.hours import HOUR_NS
+from trading_core.node.bar_rule import bar_interval_ns
 from trading_core.node.recording import instrument_row
 from trading_core.recording.enums import (
     Env,
@@ -638,8 +639,12 @@ def backtest(
             "fields": {"batch_id": str(batch_id), "variants": [v.name for v in variants], "range": [start_ns, end_ns]}
         },
     )
-    # Look ahead is a property of the code, not of a parameter value: only the first variant is cut (AC-19).
-    cuts = cut_times(run.seed, start_ns, end_ns, LOOKAHEAD_CUTS) if lookahead_check else []
+    # Look ahead is a property of the code, not of a parameter value: only the first variant is cut (AC-19),
+    # between two of its bar closes (spec 0019 AC-2).
+    cuts: list[int] = []
+    if lookahead_check:
+        interval_ns = bar_interval_ns(str(variants[0].grid_point.get("bar_spec", loaded.bar_spec)))
+        cuts = cut_times(run.seed, start_ns, end_ns, LOOKAHEAD_CUTS, interval_ns)
     reports, interrupted = run_candle_batch(batch, variants, store, cuts=cuts, target=target)
     (batch.folder / "index.md").write_text(candle_index_markdown(str(batch_id), reports), encoding="utf-8")
     failed = [r.variant for r in reports if r.status == "failed"]
