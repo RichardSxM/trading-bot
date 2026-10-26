@@ -37,6 +37,7 @@ HOUR_LEVEL = sorted(name for name, entry in REGISTRY.items() if entry.kind == St
 # Each candle strategy's settings for the synthetic days; a short trend average gives connors_rsi room to trade.
 CONFIGS: dict[str, dict[str, int | str | bool]] = {
     "connors_rsi": {"rsi_period": 2, "rsi_lower": 10, "trend_sma": 20},
+    "donchian_4h": {"entry_bars": 2, "bar_spec": "4-HOUR-LAST"},
     "ema_pullback": {"rsi_low": 1, "rsi_high": 50},
     # The bar_spec is set so the cuts use its 30 minute interval (the test reads it from the config).
     "noise_breakout": {"lookback_days": 1, "band_mult": "0.1", "bar_spec": "30-MINUTE-LAST"},
@@ -123,7 +124,14 @@ def test_connors_rsi_on_15_minute_bars_decides_the_same_before_each_of_five_cuts
 
 
 def test_the_registry_has_the_candle_strategies():
-    assert HOUR_LEVEL == ["buy_and_hold", "connors_rsi", "ema_pullback", "macd_baseline", "noise_breakout"]
+    assert HOUR_LEVEL == [
+        "buy_and_hold",
+        "connors_rsi",
+        "donchian_4h",
+        "ema_pullback",
+        "macd_baseline",
+        "noise_breakout",
+    ]
 
 
 # A cut lies 1 to 59 minutes past an hour, so the cut run has the bar that closed before it but not

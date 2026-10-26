@@ -1,7 +1,7 @@
 """covers: spec 0020 AC-2 (each new candidate registered as hour_level with its own module, and how Nautilus
 builds 30 minute and 4 hour bars), AC-4 (a bad setting, or the wrong bars, refused before any run), AC-5
-(noise_breakout trades through the candle lab on 30 minute bars), AC-8 (each study file keeps the shared
-settings)."""
+(noise_breakout trades through the candle lab on 30 minute bars), AC-7 (donchian_4h trades through the
+candle lab on 4 hour bars), AC-8 (each study file keeps the shared settings)."""
 
 from decimal import Decimal
 from pathlib import Path
@@ -47,6 +47,7 @@ RISK = RiskLimits(
     stop_slippage_bps=D(5),
 )
 EXIT_REASONS = {"noise_trail", "time_stop", "stop_through", "range_end", "liquidated"}
+DONCHIAN_EXITS = {"channel_exit", "time_stop", "stop_through", "range_end", "liquidated"}
 
 
 def _plan(root, name, config):
@@ -196,3 +197,64 @@ def test_the_noise_breakout_study_keeps_the_shared_settings_with_its_3_point_gri
     config = dict(study.loaded.run.strategy.config)
     assert (config["time_stop_bars"], config["lookback_days"], config["atr_period"]) == (16, 14, 14)
     assert sorted(D(str(p["band_mult"])) for _, p in study.points) == [D(1), D("1.5"), D(2)]
+
+
+def test_donchian_4h_is_an_hour_level_strategy_in_its_own_module():
+    entry = registry_entry("donchian_4h")
+    assert entry.kind == StrategyKind.HOUR_LEVEL
+    assert entry.module == "trading_core.node.donchian_4h"
+    assert {"entry_bars", "stop_atr", "bar_spec", "time_stop_bars"} <= entry.user_fields()
+
+
+@pytest.mark.parametrize(
+    ("change", "problem"),
+    [
+        ({"entry_bars": 1}, "entry_bars"),
+        ({"stop_atr": "0.5"}, "stop_atr"),
+        ({"bar_spec": "1-HOUR-LAST"}, "bar_spec"),
+    ],
+)
+def test_a_bad_donchian_4h_setting_is_refused_by_the_startup_check(change, problem):
+    with pytest.raises(StrategyConfigError, match=problem):
+        registry_entry("donchian_4h").check_strategy(change)
+
+
+def test_a_donchian_4h_study_on_hour_bars_is_refused_before_any_run(tmp_path):
+    text = (STUDIES / "donchian_4h.toml").read_text(encoding="utf-8")
+    path = tmp_path / "hourly.toml"
+    path.write_text(text.replace('bar_spec = "4-HOUR-LAST"', 'bar_spec = "1-HOUR-LAST"'), encoding="utf-8")
+    with pytest.raises(RunFileError, match="bar_spec"):
+        load_study(path)
+
+
+def test_donchian_4h_trades_with_floored_stops_on_4_hour_bars_through_the_candle_lab(tmp_path):
+    _month_with_empty_windows(tmp_path / "catalog")
+    result = run_candle_unit(_plan(tmp_path / "catalog", "donchian_4h", {"entry_bars": 2}))
+
+    decisions = [d for _, d in result.decisions]
+    entries = [d for d in decisions if d.intent == Intent.ENTER]
+    exits = [d for d in decisions if d.intent == Intent.EXIT]
+    assert entries
+    assert exits
+    assert {d.reason for d in entries} <= {"donchian_long", "donchian_short"}
+    assert {d.reason for d in exits} <= DONCHIAN_EXITS
+    for d in entries:
+        mid, atr, stop = (D(str(d.inputs[k])) for k in ("mid", "atr", "stop"))
+        assert abs(mid - stop) >= atr  # never closer than 1 ATR to the mid (spec 0018 AC-2)
+        assert {"entry_high", "entry_low", "exit_high", "exit_low"} <= set(d.inputs)
+    assert result.zero_volume_bars >= 1  # the empty 4 hour window
+    assert all(p.quantity == 0 for _, p in result.positions)
+
+
+def test_the_donchian_4h_study_keeps_the_shared_settings_with_its_4_point_grid():
+    reference = load_study(STUDIES / SHARED_FROM)
+    study = load_study(STUDIES / "donchian_4h.toml")
+
+    assert _shared(study) == _shared(reference)
+    assert (study.section.name, study.section.lab, study.section.seed) == ("donchian_4h", "candle", 42)
+    assert isinstance(study.loaded, LoadedCandleRun)
+    assert study.loaded.bar_spec == "4-HOUR-LAST"
+    config = dict(study.loaded.run.strategy.config)
+    assert (config["time_stop_bars"], config["atr_period"]) == (60, 14)
+    points = sorted((int(p["entry_bars"]), D(str(p["stop_atr"]))) for _, p in study.points)
+    assert points == [(20, D(2)), (20, D(3)), (55, D(2)), (55, D(3))]

@@ -31,6 +31,8 @@ from trading_core.node.connors_rsi import STRATEGY_NAME as CONNORS_RSI
 from trading_core.node.connors_rsi import ConnorsRsi, ConnorsRsiConfig
 from trading_core.node.delta_divergence import STRATEGY_NAME as DELTA_DIVERGENCE
 from trading_core.node.delta_divergence import DeltaDivergence, DeltaDivergenceConfig
+from trading_core.node.donchian_4h import STRATEGY_NAME as DONCHIAN_4H
+from trading_core.node.donchian_4h import Donchian4h, Donchian4hConfig
 from trading_core.node.ema_pullback import STRATEGY_NAME as EMA_PULLBACK
 from trading_core.node.ema_pullback import EmaPullback, EmaPullbackConfig
 from trading_core.node.macd_baseline import STRATEGY_NAME as MACD_BASELINE
@@ -342,6 +344,12 @@ def _noise_breakout(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks
     return NoiseBreakout(config, gate, blocks, record)
 
 
+def _donchian_4h(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
+    if not isinstance(config, Donchian4hConfig):
+        raise TypeError(f"donchian_4h needs a Donchian4hConfig, not {type(config).__name__}")
+    return Donchian4h(config, gate, blocks, record)
+
+
 def _peek_probe(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
     if not isinstance(config, MacdBaselineConfig):
         raise TypeError(f"peek_probe needs a MacdBaselineConfig, not {type(config).__name__}")
@@ -457,6 +465,14 @@ REGISTRY: Final[Mapping[str, StrategyEntry]] = {
         module=NoiseBreakout.__module__,
         config_cls=NoiseBreakoutConfig,
         factory=_noise_breakout,
+        run_fields=_candle_fields,
+        kind=StrategyKind.HOUR_LEVEL,
+    ),
+    DONCHIAN_4H: StrategyEntry(
+        name=DONCHIAN_4H,
+        module=Donchian4h.__module__,
+        config_cls=Donchian4hConfig,
+        factory=_donchian_4h,
         run_fields=_candle_fields,
         kind=StrategyKind.HOUR_LEVEL,
     ),

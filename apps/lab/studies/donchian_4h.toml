@@ -1,0 +1,41 @@
+# The donchian_4h candle study (spec 0020.3, AC-8): spec 0018's shared hour level study settings
+# unchanged, plus the candidate's fixed settings and its 4 point grid, committed before the study first
+# runs. Run it only through `lab study studies/donchian_4h.toml`, then `lab holdout donchian_4h`
+# (spec 0020 AC-9): never `lab backtest` donchian_4h on real candles, so every look at real data is a
+# counted trial. The plan is frozen by name: change anything here and it is a revision (AC-12).
+instrument_id = "PF_XBTUSD.KRAKEN"
+from = 2022-04-01                    # first whole month after the 2022-03-24 floor
+to = 2025-10-18                      # the day before holdout_start
+seed = 7                             # the run seed (look ahead cut times)
+stale_quote_s = 300
+maker_fee = "0.0002"
+taker_fee = "0.0005"
+slippage_bps = "2"
+starting_balance_usd = "10000"
+leverage = "2"
+
+[risk]                               # every value written out, none left to a default
+max_order_notional = "20000"
+max_leverage = "2"
+max_total_exposure = "20000"
+risk_per_trade = "0.005"
+maintenance_margin_rate = "0.01"
+min_liq_distance_pct = "10"
+liq_stop_multiple = "3"
+stop_slippage_bps = "5"              # the sizing's assumed stop slippage, separate from slippage_bps
+
+[strategy]
+name = "donchian_4h"
+[strategy.config]                    # the candidate's fixed settings (spec 0020.3 Settings)
+bar_spec = "4-HOUR-LAST"
+atr_period = 14
+atr_floor_mult = "1"
+time_stop_bars = 60                  # 10 days of 4 hour bars
+[strategy.grid]                      # 2 × 2 = 4 points; every point is a trial
+entry_bars = [20, 55]
+stop_atr = ["2", "3"]
+
+[study]
+name = "donchian_4h"
+lab = "candle"
+seed = 42                            # the gate's bootstrap seed
