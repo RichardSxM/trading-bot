@@ -67,4 +67,40 @@ This is the published intraday trend rule with the fewest free settings (one ban
 
 ## Results
 
-Not run yet.
+**Verdict: `fail`.**
+
+| Field | Value |
+|---|---|
+| Study | `noise_breakout` (study file committed 2026-10-26 in b830c83, study batch `01a1776b-cae8-72e4-8d4d-e320988a34e9`) |
+| Promotion id | `01a17847-1da0-7077-bab3-07b324da327c` (VPS) |
+| Evaluation date | 2026-10-26 |
+| Chosen grid point | 2 of 0 to 2 (`band_mult` 2) |
+| Walk forward Sharpe | −3.092398 (5 folds; return −69.59%) |
+| Holdout Sharpe | −2.361946, against buy and hold −0.460362 and the MACD baseline −1.377988 |
+| Holdout return after costs | −29.30% |
+| Holdout marked max drawdown | 31.42% |
+| Deflated Sharpe probability | 0.000000 |
+| PBO | not applicable (gate reports `pbo_applicable` false) |
+| Holdout trades | 483 (238 long, 245 short; win rate 25.05%) |
+| Trial count N, trial pool | 19, 19 (`kind+lab`, VPS) |
+| `avg_hold_minutes` | 163.3 (longest 480) |
+| Holdout gross per trade | 0.188 USD |
+| Holdout cost per trade | 6.277 USD |
+
+Reasons (code, value, threshold):
+- `fee_hurdle`: `failed`, 0.188, 9.416
+- `holdout_sharpe`: `failed`, −2.361946, 0
+- `beats_buy_and_hold`: `failed`, −2.361946, −0.460362
+- `beats_macd_baseline`: `failed`, −2.361946, −1.377988
+- `walk_forward_sharpe`: `failed`, −3.092398, 0
+- `bootstrap_lower_bound`: `failed`, −0.001622, 0
+- `deflated_sharpe`: `failed`, 0.000000, 0.95
+- `drawdown_budget`: `failed`, 0.3142, 0.10
+
+From the holdout run's `decisions` (483 closed trades):
+- Exits by reason: `noise_trail` 296 (61.3%), `time_stop` 80 (16.6%), stop fill 107 (22.2%, the positions with no exit decision).
+- Rule exits within 2 bars of entry: 170, which is 57.4% of the `noise_trail` exits and 35.2% of all trades.
+- `BAD_SIGNAL` refusals: 0 (all 859 decisions approved).
+- Warmup bars skipped: 672 (the first 14 UTC days, 2025-10-19 to 2025-11-01, until every slot's `sigma` has 14 days of history; first decision 2025-11-03 01:00 UTC).
+
+Reading: the signal barely moves before costs. On the holdout each trade made 0.19 USD gross against 6.28 USD of cost (0.03 ×), and in the development range all three grid points were negative even before costs (−0.61 to −0.93 USD per trade). So this is not only a fee problem: on 30 minute bars the breakout past the noise band did not keep going often enough. Over a third of trades were whipsaws, closed back inside the line within 2 bars, which is the churn the expected risks named. The development range grid lost 78% to 99%, with fewer losses at wider bands (fewer trades).

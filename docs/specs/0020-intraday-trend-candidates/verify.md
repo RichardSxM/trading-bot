@@ -23,3 +23,26 @@ Reading: the band is several times the cost, so a breakout that keeps going can 
 ## AC-1 hash baseline (2026-10-26)
 
 `code_hash(code_closure(m, root))` for every `trading_core.node` module (28) on origin/main 02a0cc5, run in `kfs/lab:s0019` against a `git archive` of main's `packages/core/src`. The sorted `module hash` list (one line per module) has sha256 `1b7e0a32a5c4ce62066c560872ed47d05bc76080ae197c9128374800b134dbc9`. The close out (AC-13) runs the same list on the branch: the 28 existing lines must match exactly, and only the new candidates' modules may be added.
+
+## noise_breakout run (2026-10-26)
+
+All on the laptop in `kfs/lab:s0020` (built at b830c83), with `--no-deps` and `LAB_WORKERS=2`, through `lab-reports/scratch/s0020_noise_breakout.sh`.
+
+| Step | Start (UTC) | Wall | Result |
+|---|---|---|---|
+| `lab study studies/noise_breakout.toml` | 08:53 | 86 min | batch `01a1776b-cae8-72e4-8d4d-e320988a34e9`, 3 grid points, exit 0 |
+| `lab holdout noise_breakout` | 10:20 | 21 min | candidate `01a177b9-ceb7-75cf-81ab-1007838f27bb` (grid 2), buy and hold `01a177c0-6c8c-7679-ad50-c9b3c2da5419`, MACD `01a177c7-35c2-767e-a3cd-056a91f59ede`, exit 0 |
+| `scripts/push-bundles.sh` (all 4 folders) | 10:45 | about 2 h 10 min | loaded 6, already there 29, refused 0 |
+| `gate evaluate noise_breakout` (VPS, `--no-deps`) | 12:54 | under 1 min | `fail`, promotion `01a17847-1da0-7077-bab3-07b324da327c` |
+
+Development range per grid point (net, fees, trades, gross and cost per trade in USD):
+
+| Grid | `band_mult` | Return | Fees | Trades | Gross per trade | Cost per trade |
+|---|---|---|---|---|---|---|
+| 0 | 1 | −99.32% | 6 040.20 | 4 159 | −0.93 | 1.45 |
+| 1 | 1.5 | −91.56% | 7 406.98 | 2 648 | −0.65 | 2.80 |
+| 2 | 2 | −77.82% | 6 654.81 | 1 784 | −0.61 | 3.75 |
+
+## AC-9 checkpoint (2026-10-26)
+
+The trader saw the `noise_breakout` verdict (`fail`) with its holdout gross per trade 0.188 USD and cost per trade 6.277 USD, a ratio of 0.03, far below the 1.5 × bar. The trader chose the recommendation: skip candidate 2 (`noise_breakout_tod`), because a time of day filter only removes trades and cannot lift a below cost signal past the hurdle, and still run candidate 3 (`donchian_4h`), because it is a different timescale and not a variant of candidate 1.
