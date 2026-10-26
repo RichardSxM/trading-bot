@@ -1,7 +1,7 @@
 # 0020. Intraday trend candidates: a noise area breakout on 30 minute bars, a time of day variant, and a 4 hour Donchian trend, on spec 0018's frozen base
 
 **Date**: 2026-10-26
-**Status**: Proposed
+**Status**: In Progress
 
 ## Summary
 

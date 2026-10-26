@@ -36,6 +36,8 @@ from trading_core.node.ema_pullback import EmaPullback, EmaPullbackConfig
 from trading_core.node.macd_baseline import STRATEGY_NAME as MACD_BASELINE
 from trading_core.node.macd_baseline import MacdBaseline, MacdBaselineConfig
 from trading_core.node.maker_probe import MakerProbe, MakerProbeConfig
+from trading_core.node.noise_breakout import STRATEGY_NAME as NOISE_BREAKOUT
+from trading_core.node.noise_breakout import NoiseBreakout, NoiseBreakoutConfig
 from trading_core.node.placeholder import STRATEGY_NAME as PLACEHOLDER
 from trading_core.node.placeholder import PlaceholderConfig, PlaceholderTimed, Record
 from trading_core.node.random_taker import RandomTaker, RandomTakerConfig
@@ -334,6 +336,12 @@ def _ema_pullback(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, 
     return EmaPullback(config, gate, blocks, record)
 
 
+def _noise_breakout(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
+    if not isinstance(config, NoiseBreakoutConfig):
+        raise TypeError(f"noise_breakout needs a NoiseBreakoutConfig, not {type(config).__name__}")
+    return NoiseBreakout(config, gate, blocks, record)
+
+
 def _peek_probe(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
     if not isinstance(config, MacdBaselineConfig):
         raise TypeError(f"peek_probe needs a MacdBaselineConfig, not {type(config).__name__}")
@@ -440,6 +448,15 @@ REGISTRY: Final[Mapping[str, StrategyEntry]] = {
         module=EmaPullback.__module__,
         config_cls=EmaPullbackConfig,
         factory=_ema_pullback,
+        run_fields=_candle_fields,
+        kind=StrategyKind.HOUR_LEVEL,
+    ),
+    # The intraday trend candidates (spec 0020) on the same base, in the hour level family.
+    NOISE_BREAKOUT: StrategyEntry(
+        name=NOISE_BREAKOUT,
+        module=NoiseBreakout.__module__,
+        config_cls=NoiseBreakoutConfig,
+        factory=_noise_breakout,
         run_fields=_candle_fields,
         kind=StrategyKind.HOUR_LEVEL,
     ),
