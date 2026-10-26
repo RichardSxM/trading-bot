@@ -30,6 +30,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 15 | Strategy scoring & promotion gate | Slice 6 | done |
 | 16 | Scalping strategy candidates | Slice 7 | done |
 | 22 | Intraday swing candidates | Slice 7 | in-progress |
+| 23 | Intraday trend candidates | Slice 7 | in-progress |
 | 17 | Hour level strategy candidates | Slice 7 | in-progress |
 | 18 | Trade journal export | Slice 8 | planned |
 | 19 | Go live with small capital | Slice 9 | planned |
@@ -403,6 +404,22 @@ spec [0019](../specs/0019-intraday-swing-candidates/index.md)
 - [ ] Test it: `/test intraday swing candidates`
 - [ ] Review it (fresh model): `/check review intraday swing candidates`
 - [ ] Document it: `/document intraday swing candidates`
+
+### 23. Intraday trend candidates · in-progress
+Trend following with no fixed target, so a winner can be many times the round trip cost: a noise area breakout on 30 minute candles, its time of day variant, and a turtle style Donchian channel on 4 hour candles. Same shared base, family, and gate as features 17 and 22.
+**Done when:** each candidate run has a recorded verdict with its gross and cost per trade and its exit reason shares, and every study has been judged again with the final family N.
+spec [0020](../specs/0020-intraday-trend-candidates/index.md)
+
+- [x] Design it (spec): `/architect intraday trend candidates`
+- [ ] Build it: `/develop intraday trend candidates`
+  - [ ] Thin thread: cost check, `noise_area.py`, `noise_breakout` to a recorded verdict, then the checkpoint with you (AC-1 to AC-5, AC-8 to AC-10)
+  - [ ] Time of day variant, only if the checkpoint says run it: `noise_breakout_tod` to a recorded verdict (AC-6, AC-8 to AC-11)
+  - [ ] Multi day trend: `donchian_4h` to a recorded verdict (AC-7 to AC-10)
+  - [ ] Revisions and close out: at most one revision per failed candidate, evaluate every study again with the final family N, scope tick (AC-12, AC-13)
+- [ ] Verify it: `/check verify intraday trend candidates`
+- [ ] Test it: `/test intraday trend candidates`
+- [ ] Review it (fresh model): `/check review intraday trend candidates`
+- [ ] Document it: `/document intraday trend candidates`
 
 ### 17. Hour level strategy candidates · in-progress
 The fallback set: trend following and mean reversion on 1h to 4h candles, tested in the candle lab.
