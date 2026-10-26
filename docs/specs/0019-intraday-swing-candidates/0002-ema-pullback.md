@@ -73,4 +73,34 @@ Your feature 16 notes carried this rule at 1 minute, where its 1.5 to 2 R target
 
 ## Results
 
-Not run yet.
+**Verdict: `fail`.**
+
+| Field | Value |
+|---|---|
+| Study | `ema_pullback` (study file committed 2026-10-24 12:03 UTC in 24216d9, study created 2026-10-25 19:55 UTC) |
+| Promotion id | `01a1766f-6593-7011-b417-3bb821acea4b` (VPS) |
+| Evaluation date | 2026-10-26 |
+| Chosen grid point | 1 of 0 to 3 (`target_r` 2, `rsi_high` 45), chosen in all 5 folds |
+| Walk forward Sharpe | −8.214422 (5 folds, every fold negative; return −96.15%) |
+| Holdout Sharpe | −8.133190, against buy and hold −0.460362 and the MACD baseline −1.377988 |
+| Holdout return after costs | −73.91% |
+| Holdout marked max drawdown | 74.21% |
+| Deflated Sharpe probability | 0.000000 |
+| PBO | 0.015873 |
+| Holdout trades | 706 (344 long, 362 short; 149 exits at `target`, 79 at `time_stop`, 478 stopped out; win rate 26.2%) |
+| Trial count N, trial pool | 16, 16 (`kind+lab`, VPS) |
+| `avg_hold_minutes` | 164.4 (longest 480) |
+| Holdout gross per trade | −4.834 USD |
+| Holdout cost per trade | 5.642 USD |
+
+Reasons (code, value, threshold):
+- `fee_hurdle`: `failed`, −4.834, 8.463
+- `holdout_sharpe`: `failed`, −8.133190, 0
+- `beats_buy_and_hold`: `failed`, −8.133190, −0.460362
+- `beats_macd_baseline`: `failed`, −8.133190, −1.377988
+- `walk_forward_sharpe`: `failed`, −8.214422, 0
+- `bootstrap_lower_bound`: `failed`, −0.004401, 0
+- `deflated_sharpe`: `failed`, 0.000000, 0.95
+- `drawdown_budget`: `failed`, 0.742, 0.10
+
+Reading: the trade rate was high (about 700 a year, 323 to 375 per half year fold), so the 15 minute pullback trades often enough. But the edge before costs is negative: gross per trade is −4.8 USD, so the loss is not only the cost. A pullback to EMA(8) inside an EMA(8/21) trend is followed by a stop more often than a 2 R move (26% winners, while a 2 R target needs about 33% to break even before costs). All 4 grid points lost about 99% over the full study run (−99.10% to −99.96%). No revision (AC-13).

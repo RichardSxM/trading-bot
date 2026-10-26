@@ -22,6 +22,18 @@ was built or run, so it is not a trial (AC-9).
 - Pushed with `scripts/push-bundles.sh` (imports took about an hour each on the VPS, nothing refused), then `gate evaluate connors_rsi_15m` on the VPS: `fail`, promotion 01a16ec6. The laptop dry run gave the same verdict and metrics (laptop N 74, VPS N 12). Full results in [0001-connors-rsi-15m.md](0001-connors-rsi-15m.md).
 - Checked: the study file commit (11:41:09 UTC) is earlier than `studies.created_at` (11:42:20 UTC); every grid point's stored config has `time_stop_bars` 12 and `bar_spec` `15-MINUTE-LAST`.
 
+## ema_pullback run (2026-10-25)
+
+- Study 2026-10-25 19:54 to 22:27 UTC, 4 grid points, all ok; holdout 22:27 to 23:10 UTC (candidate batch 01a1752d, buy and hold 01a1753a, MACD 01a17549); study batch 01a174a2. Image `kfs/lab:s0019` built at 219a2e0.
+- Pushed with `scripts/push-bundles.sh` (nothing refused), then `gate evaluate ema_pullback` on the VPS on 2026-10-26: `fail`, promotion 01a1766f. The laptop dry run gave the same verdict and metrics (laptop N 78, VPS N 16). Full results in [0002-ema-pullback.md](0002-ema-pullback.md).
+- Checked: the study file commit (2026-10-24 12:03:09 UTC) is earlier than `studies.created_at` (2026-10-25 19:55:20 UTC).
+
+## Checkpoint after candidate 2 (AC-10, 2026-10-26)
+
+- `connors_rsi_15m`: gross per trade 3.644 USD against a cost per trade of 6.443 USD.
+- `ema_pullback`: gross per trade −4.834 USD against a cost per trade of 5.642 USD.
+- Both are below cost, so the trader chose on 2026-10-26 to stop here and go back to `/architect` rather than run candidates 3 (`vwap_reversion`) and 4 (`us_open_breakout`). Reason: two different rule shapes on 15 minute bars both earn less than the round trip cost before any fees are paid, so more candidates of the same kind are unlikely to clear the fee hurdle.
+
 ## Commands
 - [ ] `pytest tests/test_lab_lookahead.py` (core) → cuts with a 15 minute interval never land on a quarter hour, the hour interval draws are unchanged → AC-2
 - [ ] `pytest tests/test_lookahead.py` (lab) → every hour level strategy and `connors_rsi` at `15-MINUTE-LAST` pass the prefix check → AC-2, AC-5
