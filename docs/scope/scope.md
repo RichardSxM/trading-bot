@@ -30,7 +30,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 15 | Strategy scoring & promotion gate | Slice 6 | done |
 | 16 | Scalping strategy candidates | Slice 7 | done |
 | 22 | Intraday swing candidates | Slice 7 | in-progress |
-| 23 | Intraday trend candidates | Slice 7 | in-progress |
+| 23 | Intraday trend candidates | Slice 7 | done |
 | 24 | Imbalance fade candidate | Slice 7 | done |
 | 17 | Hour level strategy candidates | Slice 7 | in-progress |
 | 18 | Trade journal export | Slice 8 | planned |
@@ -406,7 +406,7 @@ spec [0019](../specs/0019-intraday-swing-candidates/index.md)
 - [ ] Review it (fresh model): `/check review intraday swing candidates`
 - [ ] Document it: `/document intraday swing candidates`
 
-### 23. Intraday trend candidates · in-progress
+### 23. Intraday trend candidates · done
 Trend following with no fixed target, so a winner can be many times the round trip cost: a noise area breakout on 30 minute candles, its time of day variant, and a turtle style Donchian channel on 4 hour candles. Same shared base, family, and gate as features 17 and 22.
 **Done when:** each candidate run has a recorded verdict with its gross and cost per trade and its exit reason shares, and every study has been judged again with the final family N.
 spec [0020](../specs/0020-intraday-trend-candidates/index.md)
