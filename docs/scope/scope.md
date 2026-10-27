@@ -429,8 +429,8 @@ spec [0021](../specs/0021-imbalance-fade-candidate/index.md)
 
 - [x] Design it (spec): `/architect imbalance fade candidate`
 - [ ] Build it: `/develop imbalance fade candidate`
-  - [ ] Thin thread: hash baseline, `imbalance_fade` rule, node, and registry with tests (AC-1 to AC-4)
-  - [ ] Pre check on 4 days, then the checkpoint with you (AC-5, AC-6)
+  - [x] Thin thread: hash baseline, `imbalance_fade` rule, node, and registry with tests (AC-1 to AC-4)
+  - [x] Pre check on 4 days, then the checkpoint with you (AC-5, AC-6)
   - [ ] Only on a pass: study, holdout, push, gate, recorded verdict (AC-7, AC-8)
   - [ ] Close out: hash comparison, scope tick (AC-9)
 - [ ] Verify it: `/check verify imbalance fade candidate`

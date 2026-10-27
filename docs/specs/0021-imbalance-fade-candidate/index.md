@@ -125,4 +125,4 @@ Tracer Bullet: the thinnest real thread is the rule, wired into the node and reg
 
 ## Results
 
-Not run yet.
+**Not run: pre check** (2026-10-27). Over the 4 pre check days `imbalance_fade` closed 110 trades (27.5 a day, bar 25, holds). Gross per trade was +0.45 USD against a cost per trade of 1.15 USD, so the bar of 1.5 × cost (1.72 USD) fails. No study file, no study, no gate run, no revision. Figures and run ids in [verify.md](verify.md).
