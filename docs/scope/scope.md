@@ -411,11 +411,11 @@ Trend following with no fixed target, so a winner can be many times the round tr
 spec [0020](../specs/0020-intraday-trend-candidates/index.md)
 
 - [x] Design it (spec): `/architect intraday trend candidates`
-- [ ] Build it: `/develop intraday trend candidates`
-  - [ ] Thin thread: cost check, `noise_area.py`, `noise_breakout` to a recorded verdict, then the checkpoint with you (AC-1 to AC-5, AC-8 to AC-10)
-  - [ ] Time of day variant, only if the checkpoint says run it: `noise_breakout_tod` to a recorded verdict (AC-6, AC-8 to AC-11)
-  - [ ] Multi day trend: `donchian_4h` to a recorded verdict (AC-7 to AC-10)
-  - [ ] Revisions and close out: at most one revision per failed candidate, evaluate every study again with the final family N, scope tick (AC-12, AC-13)
+- [x] Build it: `/develop intraday trend candidates` (done 2026-10-27; the checkpoint skipped the time of day variant)
+  - [x] Thin thread: cost check, `noise_area.py`, `noise_breakout` to a recorded verdict, then the checkpoint with you (AC-1 to AC-5, AC-8 to AC-10)
+  - [ ] Time of day variant, only if the checkpoint says run it: `noise_breakout_tod` to a recorded verdict (AC-6, AC-8 to AC-11). Skipped: the checkpoint on 2026-10-26 said skip (`noise_breakout` far below cost per trade).
+  - [x] Multi day trend: `donchian_4h` to a recorded verdict (AC-7 to AC-10)
+  - [x] Revisions and close out: at most one revision per failed candidate, evaluate every study again with the final family N, scope tick (AC-12, AC-13). One revision, `donchian_4h_r1` on 1 hour bars; all three studies `fail` at final family N 27 (2026-10-27).
 - [ ] Verify it: `/check verify intraday trend candidates`
 - [ ] Test it: `/test intraday trend candidates`
 - [ ] Review it (fresh model): `/check review intraday trend candidates`

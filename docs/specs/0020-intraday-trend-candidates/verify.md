@@ -88,3 +88,8 @@ Development range per grid point:
 ## AC-9 checkpoint (2026-10-26)
 
 The trader saw the `noise_breakout` verdict (`fail`) with its holdout gross per trade 0.188 USD and cost per trade 6.277 USD, a ratio of 0.03, far below the 1.5 × bar. The trader chose the recommendation: skip candidate 2 (`noise_breakout_tod`), because a time of day filter only removes trades and cannot lift a below cost signal past the hurdle, and still run candidate 3 (`donchian_4h`), because it is a different timescale and not a variant of candidate 1.
+
+## Close out (AC-13, 2026-10-27)
+
+- `gate evaluate` again on the VPS at 07:34 to 07:35 UTC (08:34 to 08:35 Amsterdam): `noise_breakout` `fail` (promotion 01a17c48-bc35), `donchian_4h` `fail` (promotion 01a17c48-d7ed), both with final family N 27, pool 27. `donchian_4h_r1` was not run again: its first evaluation at 07:32 UTC already used N 27 and nothing ran after it, so a second run would only write an identical row. `noise_breakout_tod` was skipped at the checkpoint, so it has no study. No pass, so no paper follow up.
+- Hash check (AC-1): `scripts/spikes/hash_check.py` ran in `kfs/lab:s0020` (built at d799ce5; later commits change only docs) against the branch's own `trading_core`. It printed 31 modules. With the 3 new ones removed (`noise_breakout`, `donchian_4h`, `donchian_4h_r1`), the 28 remaining lines have sha256 `1b7e0a32a5c4ce62066c560872ed47d05bc76080ae197c9128374800b134dbc9`, the same as the AC-1 baseline on main 02a0cc5, so 0 existing hashes changed.

@@ -113,6 +113,8 @@ From the holdout run's `decisions` (64 closed trades):
 
 Reading: this is the first candidate in the family whose signal clears its cost. Each trade made 6.11 USD gross against 1.85 USD of cost (3.3 ×), and the holdout beat buy and hold and MACD in a year when BTC fell. But the profit is thin and lopsided. Longs made more than all of it (direction share 1.05), one walk forward fold made 8.25 times the total, and the top trades made 6.25 times the total, so the rest of the trades lost money overall. With 64 trades the bootstrap lower bound sits just below 0, and at N 23 the deflated Sharpe is 0. In plain words, a few big trend trades carried a rule that otherwise bled, which is what a trend rule looks like, but one year and 64 trades are too few to tell that apart from luck.
 
+Final family N (AC-13, 2026-10-27): N 27, pool 27 (`kind+lab`, VPS), verdict `fail`, promotion `01a17c48-d7ed-762b-8b6a-1e346f6b809d`. The same 5 checks failed with the same values; only N grew (23 to 27, the revision's 4 grid points).
+
 ## Revision 1 results (holdout seen)
 
 **Verdict: `fail`.** Revision 1 is final, so `donchian_4h` is closed.
@@ -152,3 +154,5 @@ From the holdout run's `decisions` (104 closed trades):
 - Net by side: longs −171.70 USD, shorts +351.79 USD.
 
 Reading: the faster bars did what was asked, 104 holdout trades instead of 64, and the signal still clears its cost, but by much less (1.65 × instead of 3.3 ×). Only one of the four development points made money, and the walk forward lost 19%, so the chosen point looks like the lucky one of four. In the holdout the profit flipped sides (shorts carried it, longs lost), and the top trades made 13 times the total, so the rest lost money overall. At N 27 the deflated Sharpe is 0. This is the same picture as the 4 hour run, a few big trend trades and a lot of small losses, only weaker. The fee hurdle passes but the gate's concentration checks are built to reject exactly this shape, so trend rules on BTC alone look like a dead end under gate v1.
+
+Final family N (AC-13, 2026-10-27): N 27, pool 27, verdict `fail`, the first row `01a17c46-6169-70c5-b029-3e7a20e9ef89`. That row was already judged at the final family N, because no study ran after it, so `gate evaluate` was not run a second time (it would only write an identical row).

@@ -212,4 +212,5 @@ Tracer Bullet: `noise_breakout` goes end to end first (helpers, rule, node, stud
 - [x] `/scope`: enroll feature 23 "Intraday trend candidates" in Slice 7, linking spec 0020 (done by /architect, 2026-10-26).
 - [ ] On the first `pass` (without a label): `/scope` the feature that runs a chosen registered strategy instead of `PlaceholderTimed` for paper evidence (same follow up as specs 0018 and 0019).
 - [ ] `/sync`: `packages/core/AGENTS.md` should list `strategy/noise_area.py` once it lands.
+- [ ] `/architect`: every candidate failed (close out 2026-10-27, final family N 27). The trend rules clear the fee hurdle but fail the concentration checks, which reject a few big winners by design. Next to weigh: maker (post only) entries, which cut the cost per trade, starting with a contrarian order book imbalance rule (`book_imbalance`'s gross was negative, see spec 0017).
 - [ ] Later, only if a trend candidate clears the fee hurdle: volatility target sizing (a new risk path), a Donchian lookback ensemble (needs fractional sizing), BTC plus ETH for more trades (the deferred ETH candles item), and a slow gate path for daily bars. Each needs its own `/architect`.

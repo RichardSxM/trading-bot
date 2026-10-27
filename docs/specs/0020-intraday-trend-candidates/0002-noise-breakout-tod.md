@@ -47,4 +47,4 @@ One fixed, published window, stateless and cheap, is the smallest honest test of
 
 ## Results
 
-Not run yet.
+Not run. The AC-9 checkpoint on 2026-10-26 skipped it: `noise_breakout` earned 0.19 USD gross per trade against 6.28 USD of cost, and a time of day filter only removes trades, so it cannot lift a below cost signal past the hurdle. The trader chose to skip it and still run `donchian_4h` (see [verify.md](verify.md)). No code was written for this candidate, and it adds nothing to N.

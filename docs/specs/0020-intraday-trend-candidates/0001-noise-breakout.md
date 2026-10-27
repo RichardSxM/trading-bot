@@ -104,3 +104,5 @@ From the holdout run's `decisions` (483 closed trades):
 - Warmup bars skipped: 672 (the first 14 UTC days, 2025-10-19 to 2025-11-01, until every slot's `sigma` has 14 days of history; first decision 2025-11-03 01:00 UTC).
 
 Reading: the signal barely moves before costs. On the holdout each trade made 0.19 USD gross against 6.28 USD of cost (0.03 ×), and in the development range all three grid points were negative even before costs (−0.61 to −0.93 USD per trade). So this is not only a fee problem: on 30 minute bars the breakout past the noise band did not keep going often enough. Over a third of trades were whipsaws, closed back inside the line within 2 bars, which is the churn the expected risks named. The development range grid lost 78% to 99%, with fewer losses at wider bands (fewer trades).
+
+Final family N (AC-13, 2026-10-27): N 27, pool 27 (`kind+lab`, VPS), verdict `fail`, promotion `01a17c48-bc35-7026-8382-08ceb78914ec`. The same 8 checks failed, with the same holdout Sharpe (−2.361946) and deflated Sharpe probability (0.000000).
