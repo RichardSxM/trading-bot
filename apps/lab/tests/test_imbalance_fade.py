@@ -1,17 +1,19 @@
 """covers: spec 0021 AC-4 (``imbalance_fade`` registered as a maker scalping strategy in its own module, replay
-only with no candle flags, its factory refusing a plain ``BookImbalanceConfig``), AC-6 (no study file before
-the pre check passes)."""
+only with no candle flags, listed in sorted order, its factory refusing a plain ``BookImbalanceConfig``), AC-1
+and AC-9 (``book_imbalance``'s code closure stays free of the fade), AC-6 (no study file before the pre check
+passes)."""
 
 from pathlib import Path
 
 import pytest
 
 from lab.runfile import Overrides, RunFileError, load_candle_run
-from lab.strategies import _CHECK_CONTEXT, registry_entry
+from lab.strategies import _CHECK_CONTEXT, REGISTRY, registry_entry
 from trading_core.node.imbalance_fade import ImbalanceFade, ImbalanceFadeConfig
 from trading_core.node.strategy import PauseGate
 from trading_core.recording.enums import StrategyKind
 from trading_core.strategy.blocks import EntryBlocks
+from trading_core.versioning import code_closure
 
 from .test_scalp_admission import CANDLE_RUN, _write
 
@@ -45,6 +47,30 @@ def test_the_factory_refuses_a_plain_book_imbalance_config():
 def test_the_candle_lab_refuses_it(tmp_path):
     with pytest.raises(RunFileError, match="scalping candidates with a candle screen"):
         load_candle_run(_write(tmp_path, CANDLE_RUN.replace("STRATEGY", "imbalance_fade")), Overrides())
+
+
+def test_the_replay_scalping_strategies_list_it_in_sorted_order():
+    names = sorted(
+        name for name, entry in REGISTRY.items() if entry.kind == StrategyKind.SCALPING and not entry.candle_screen
+    )
+
+    assert names == [
+        "book_imbalance",
+        "delta_divergence",
+        "imbalance_fade",
+        "maker_probe",
+        "placeholder_timed",
+        "random_taker",
+    ]
+
+
+# covers: AC-1, AC-9 (the fade adds its own module without touching book_imbalance's frozen code)
+def test_book_imbalances_code_closure_never_reaches_the_fade():
+    parent = {path for path, _ in code_closure("trading_core.node.book_imbalance")}
+    fade = {path for path, _ in code_closure("trading_core.node.imbalance_fade")}
+
+    assert not {path for path in parent if "imbalance_fade" in path}
+    assert fade - parent == {"trading_core/node/imbalance_fade.py", "trading_core/strategy/imbalance_fade.py"}
 
 
 def test_no_study_file_exists_before_the_pre_check_passes():

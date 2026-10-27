@@ -434,7 +434,7 @@ spec [0021](../specs/0021-imbalance-fade-candidate/index.md)
   - [ ] Only on a pass: study, holdout, push, gate, recorded verdict (AC-7, AC-8) (skipped: pre check failed)
   - [x] Close out: hash comparison, scope tick (AC-9)
 - [x] Verify it: `/check verify imbalance fade candidate`
-- [ ] Test it: `/test imbalance fade candidate`
+- [x] Test it: `/test imbalance fade candidate`
 - [ ] Review it (fresh model): `/check review imbalance fade candidate`
 - [ ] Document it: `/document imbalance fade candidate`
 
