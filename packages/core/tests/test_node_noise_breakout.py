@@ -54,6 +54,7 @@ def test_the_node_subscribes_to_30_minute_internal_bars_and_builds_the_rule_from
     ("change", "problem"),
     [
         ({"band_mult": D(0)}, "band_mult"),
+        ({"band_mult": D("-1")}, "band_mult"),
         ({"lookback_days": 0}, "lookback_days"),
         ({"bar_spec": "15-MINUTE-LAST"}, "bar_spec"),
         ({"time_stop_bars": 0}, "time_stop_bars"),
@@ -62,3 +63,9 @@ def test_the_node_subscribes_to_30_minute_internal_bars_and_builds_the_rule_from
 def test_a_bad_setting_is_refused(change, problem):
     with pytest.raises(ValueError, match=problem):
         _config(**change)
+
+
+def test_the_smallest_allowed_settings_are_accepted():
+    # The look ahead test's loose config (spec 0020 AC-2) relies on these.
+    config = _config(lookback_days=1, band_mult=D("0.1"))
+    assert (config.lookback_days, config.band_mult) == (1, D("0.1"))
