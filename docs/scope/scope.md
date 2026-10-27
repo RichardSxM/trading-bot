@@ -435,7 +435,7 @@ spec [0021](../specs/0021-imbalance-fade-candidate/index.md)
   - [x] Close out: hash comparison, scope tick (AC-9)
 - [x] Verify it: `/check verify imbalance fade candidate`
 - [x] Test it: `/test imbalance fade candidate`
-- [ ] Review it (fresh model): `/check review imbalance fade candidate`
+- [x] Review it (fresh model): `/check review imbalance fade candidate`
 - [ ] Document it: `/document imbalance fade candidate`
 
 ### 17. Hour level strategy candidates · in-progress
