@@ -60,6 +60,19 @@ Few trades: perhaps 30 to 80 a year at 20 bars and 15 to 30 at 55, so the holdou
 
 The best documented crypto trend rule, with only two settings, and a timescale none of the earlier candidates tested. It is independent of candidates 1 and 2, so the checkpoint keeps it even if they fall below cost.
 
+## Revision 1 (`donchian_4h_r1`, holdout seen)
+
+Asked for by the trader on 2026-10-27, after the `fail` below. Written and committed before the revision's first `lab study` run.
+
+**What changes:** the rule runs on `1-HOUR-LAST` bars instead of `4-HOUR-LAST`. The channel lengths stay the same counts of bars (`entry_bars` 20 or 55, exit half of that), so a channel now spans 20 or 55 hours instead of 80 or 220. The time stop stays at 10 days, which is now `time_stop_bars` 240. The stop grid (`stop_atr` 2 or 3, on the 1 hour ATR(14)), the rule code (`DonchianRule`, unchanged), the base, and every shared study setting stay as they are. 4 grid points, so N grows by 4.
+
+**Why, from development and walk forward evidence only:**
+- Too few trades for the gate's statistics. The best development point (20 bars, 2 ATR) made 209 trades in about 3.5 years, about 60 a year, right at the 60 trade floor, and the 55 bar points made only 115 to 120. The walk forward's 5 folds each held only a few dozen trades, so one fold could carry the whole result. A 1 hour bar gives about 4 times the signals.
+- Shorter channels did better in the development range: 20 bars made +24.5% and +16.5%, 55 bars +0.9% and −3.6%. A 20 hour channel continues in that direction.
+- Cost still looks covered. The development median 4 hour ATR is about 9.9 times the round trip cost, so a 1 hour ATR (roughly half) puts a 2 ATR stop still well above the 14 bps cost.
+
+**Risk:** faster channels whipsaw more, so gross per trade will shrink, and the revision may fall below cost the way `noise_breakout` did. It runs once as `donchian_4h_r1` in its own node module `trading_core/node/donchian_4h_r1.py`, its results are labelled "holdout seen" (its holdout is the year whose verdict prompted it), and it is final.
+
 ## Results
 
 **Verdict: `fail`.**

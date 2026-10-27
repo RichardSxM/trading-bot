@@ -1,7 +1,8 @@
 """covers: spec 0020 AC-2 (each new candidate registered as hour_level with its own module, and how Nautilus
 builds 30 minute and 4 hour bars), AC-4 (a bad setting, or the wrong bars, refused before any run), AC-5
 (noise_breakout trades through the candle lab on 30 minute bars), AC-7 (donchian_4h trades through the
-candle lab on 4 hour bars), AC-8 (each study file keeps the shared settings)."""
+candle lab on 4 hour bars), AC-8 (each study file keeps the shared settings), AC-12 (donchian_4h_r1, the
+revision on 1 hour bars)."""
 
 from decimal import Decimal
 from pathlib import Path
@@ -256,5 +257,45 @@ def test_the_donchian_4h_study_keeps_the_shared_settings_with_its_4_point_grid()
     assert study.loaded.bar_spec == "4-HOUR-LAST"
     config = dict(study.loaded.run.strategy.config)
     assert (config["time_stop_bars"], config["atr_period"]) == (60, 14)
+    points = sorted((int(p["entry_bars"]), D(str(p["stop_atr"]))) for _, p in study.points)
+    assert points == [(20, D(2)), (20, D(3)), (55, D(2)), (55, D(3))]
+
+
+# covers: spec 0020 AC-12 and 0020.3 Revision 1 (the same rule on 1 hour bars, in its own module)
+def test_donchian_4h_r1_is_an_hour_level_strategy_in_its_own_module():
+    entry = registry_entry("donchian_4h_r1")
+    assert entry.kind == StrategyKind.HOUR_LEVEL
+    assert entry.module == "trading_core.node.donchian_4h_r1"
+    assert {"entry_bars", "stop_atr", "bar_spec", "time_stop_bars"} <= entry.user_fields()
+
+
+def test_a_donchian_4h_r1_setting_on_4_hour_bars_is_refused_by_the_startup_check():
+    with pytest.raises(StrategyConfigError, match="bar_spec"):
+        registry_entry("donchian_4h_r1").check_strategy({"bar_spec": "4-HOUR-LAST"})
+
+
+def test_donchian_4h_r1_trades_on_1_hour_bars_through_the_candle_lab(tmp_path):
+    _month_with_empty_windows(tmp_path / "catalog")
+    result = run_candle_unit(_plan(tmp_path / "catalog", "donchian_4h_r1", {"entry_bars": 2}))
+
+    decisions = [d for _, d in result.decisions]
+    entries = [d for d in decisions if d.intent == Intent.ENTER]
+    assert entries
+    assert {d.reason for d in entries} <= {"donchian_long", "donchian_short"}
+    assert {d.reason for d in decisions if d.intent == Intent.EXIT} <= DONCHIAN_EXITS
+    assert all(d.decided_ns % HOUR_NS == 0 for d in decisions)  # each decision on a 1 hour bar close
+    assert all(p.quantity == 0 for _, p in result.positions)
+
+
+def test_the_donchian_4h_r1_study_keeps_the_shared_settings_and_the_grid_on_1_hour_bars():
+    reference = load_study(STUDIES / SHARED_FROM)
+    study = load_study(STUDIES / "donchian_4h_r1.toml")
+
+    assert _shared(study) == _shared(reference)
+    assert (study.section.name, study.section.lab, study.section.seed) == ("donchian_4h_r1", "candle", 42)
+    assert isinstance(study.loaded, LoadedCandleRun)
+    assert study.loaded.bar_spec == "1-HOUR-LAST"
+    config = dict(study.loaded.run.strategy.config)
+    assert (config["time_stop_bars"], config["atr_period"]) == (240, 14)
     points = sorted((int(p["entry_bars"]), D(str(p["stop_atr"]))) for _, p in study.points)
     assert points == [(20, D(2)), (20, D(3)), (55, D(2)), (55, D(3))]

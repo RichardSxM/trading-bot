@@ -33,6 +33,8 @@ from trading_core.node.delta_divergence import STRATEGY_NAME as DELTA_DIVERGENCE
 from trading_core.node.delta_divergence import DeltaDivergence, DeltaDivergenceConfig
 from trading_core.node.donchian_4h import STRATEGY_NAME as DONCHIAN_4H
 from trading_core.node.donchian_4h import Donchian4h, Donchian4hConfig
+from trading_core.node.donchian_4h_r1 import STRATEGY_NAME as DONCHIAN_4H_R1
+from trading_core.node.donchian_4h_r1 import Donchian4hR1, Donchian4hR1Config
 from trading_core.node.ema_pullback import STRATEGY_NAME as EMA_PULLBACK
 from trading_core.node.ema_pullback import EmaPullback, EmaPullbackConfig
 from trading_core.node.macd_baseline import STRATEGY_NAME as MACD_BASELINE
@@ -350,6 +352,12 @@ def _donchian_4h(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, r
     return Donchian4h(config, gate, blocks, record)
 
 
+def _donchian_4h_r1(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
+    if not isinstance(config, Donchian4hR1Config):
+        raise TypeError(f"donchian_4h_r1 needs a Donchian4hR1Config, not {type(config).__name__}")
+    return Donchian4hR1(config, gate, blocks, record)
+
+
 def _peek_probe(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
     if not isinstance(config, MacdBaselineConfig):
         raise TypeError(f"peek_probe needs a MacdBaselineConfig, not {type(config).__name__}")
@@ -473,6 +481,15 @@ REGISTRY: Final[Mapping[str, StrategyEntry]] = {
         module=Donchian4h.__module__,
         config_cls=Donchian4hConfig,
         factory=_donchian_4h,
+        run_fields=_candle_fields,
+        kind=StrategyKind.HOUR_LEVEL,
+    ),
+    # donchian_4h's one revision (spec 0020.3 Revision 1): the same rule on 1 hour bars.
+    DONCHIAN_4H_R1: StrategyEntry(
+        name=DONCHIAN_4H_R1,
+        module=Donchian4hR1.__module__,
+        config_cls=Donchian4hR1Config,
+        factory=_donchian_4h_r1,
         run_fields=_candle_fields,
         kind=StrategyKind.HOUR_LEVEL,
     ),
