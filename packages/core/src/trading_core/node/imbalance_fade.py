@@ -24,6 +24,7 @@ class ImbalanceFade(BookImbalance):
 
     def __init__(self, config: ImbalanceFadeConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> None:
         super().__init__(config, gate, blocks, record)
+        # Replaces the parent's rule on purpose: a rule hook on BookImbalance would move its frozen hash (AC-1).
         self.rule = ImbalanceFadeState(
             imb_min=config.imb_min,
             persist_bars=config.persist_bars,

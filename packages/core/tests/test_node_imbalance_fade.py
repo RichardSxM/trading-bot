@@ -1,9 +1,11 @@
 """covers: spec 0021 AC-3 (``ImbalanceFade`` on the node: it builds an ``ImbalanceFadeState``, its config keeps
 ``BookImbalanceConfig``'s defaults, and the book ``book_imbalance`` joins long is entered short, with the
-``imbalance_fade_entry`` reason, on the same aligned firing).
+``imbalance_fade_entry`` reason, on the same aligned firing, with its stop above the mid and its target below).
 
 Reuses the ``BookImbalance`` engine harness. Needs the ``node`` extra.
 """
+
+from decimal import Decimal
 
 import pytest
 
@@ -44,6 +46,8 @@ def test_a_heavy_book_with_buying_flow_is_entered_short_on_the_second_aligned_fi
     assert enters[0].reason == "imbalance_fade_entry"
     assert enters[0].inputs["imbalance"] == "0.5"
     assert enters[0].decided_ns == _ns(START) + 2 * BUCKET_NS
+    mid, stop, target = (Decimal(str(enters[0].inputs[key])) for key in ("mid", "stop_px", "target_px"))
+    assert target < mid < stop
 
 
 def test_an_empty_ask_side_enters_nothing():

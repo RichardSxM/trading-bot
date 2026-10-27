@@ -1,6 +1,6 @@
 """covers: spec 0021 AC-2 (``imbalance_fade``: the parent long faded to a short and the parent short to a long,
 each with its stop and target mirrored around the same mid, the parent's inputs passed through, and every
-case where the parent gives no signal still giving none)."""
+case where the parent gives no signal still giving none, and a parent signal with no Decimal mid refused)."""
 
 from decimal import Decimal
 
@@ -10,6 +10,7 @@ from test_strategy_book_imbalance import EVEN, HEAVY_ASK, HEAVY_BID, K0, MID, _a
 from trading_core.recording.enums import OrderSide
 from trading_core.strategy.book_imbalance import BookImbalanceState
 from trading_core.strategy.imbalance_fade import ImbalanceFadeState
+from trading_core.strategy.scalp import ScalpSignal
 
 D = Decimal
 SETTINGS = {"imb_min": D("0.3"), "persist_bars": 2, "levels": 5, "stop_bps": D(9), "target_bps": D(6)}
@@ -101,3 +102,11 @@ def test_no_mid_gives_no_signal():
 def test_bad_settings_are_refused_as_the_parent_refuses_them():
     with pytest.raises(ValueError, match="imb_min"):
         ImbalanceFadeState(**(SETTINGS | {"imb_min": D(1)}))  # type: ignore[arg-type]
+
+
+def test_a_parent_signal_without_a_decimal_mid_is_refused(monkeypatch):
+    bad = ScalpSignal(OrderSide.BUY, MID, MID, {"mid": str(MID)})
+    monkeypatch.setattr(BookImbalanceState, "on_firing", lambda *args: bad)
+
+    with pytest.raises(TypeError, match="mid must be a Decimal"):
+        _fire(_pair()[1], K0, HEAVY_BID)
