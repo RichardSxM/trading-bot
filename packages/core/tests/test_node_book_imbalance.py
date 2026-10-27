@@ -124,7 +124,7 @@ def _run(minutes, book=None, trades=(), strategy_cls=BookImbalance, config_cls=B
         "stop_slippage_bps": D(5),
         "taker_fee": D("0.0005"),
     } | overrides
-    strategy = strategy_cls(config_cls(**values), PauseGate(), blocks, records.append)  # type: ignore[arg-type]  # each value has its own type
+    strategy = strategy_cls(config_cls(**values), PauseGate(), blocks, records.append)
     fired: list[int] = []
     rule_on_firing = strategy.rule.on_firing
 
@@ -132,7 +132,7 @@ def _run(minutes, book=None, trades=(), strategy_cls=BookImbalance, config_cls=B
         fired.append(bucket)
         return rule_on_firing(bucket, *args)
 
-    strategy.rule.on_firing = spy  # type: ignore[method-assign]  # records each firing's bucket
+    strategy.rule.on_firing = spy
     engine.add_strategy(strategy)
 
     async def run():
