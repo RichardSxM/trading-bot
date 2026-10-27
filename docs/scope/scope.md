@@ -31,7 +31,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 16 | Scalping strategy candidates | Slice 7 | done |
 | 22 | Intraday swing candidates | Slice 7 | in-progress |
 | 23 | Intraday trend candidates | Slice 7 | in-progress |
-| 24 | Imbalance fade candidate | Slice 7 | in-progress |
+| 24 | Imbalance fade candidate | Slice 7 | done |
 | 17 | Hour level strategy candidates | Slice 7 | in-progress |
 | 18 | Trade journal export | Slice 8 | planned |
 | 19 | Go live with small capital | Slice 9 | planned |
@@ -422,7 +422,7 @@ spec [0020](../specs/0020-intraday-trend-candidates/index.md)
 - [ ] Review it (fresh model): `/check review intraday trend candidates`
 - [ ] Document it: `/document intraday trend candidates`
 
-### 24. Imbalance fade candidate · in-progress
+### 24. Imbalance fade candidate · done
 `book_imbalance`'s exact mirror: the same lopsided book signal, the opposite side, post only in and out, in the replay lab. From spec 0017's negative gross per trade and research finding that maker orders work against the book imbalance. A 4 day pre check decides whether the full study runs.
 **Done when:** the pre check has a recorded verdict, and if it passed, the study has a recorded gate verdict; the hash check matches at close out.
 spec [0021](../specs/0021-imbalance-fade-candidate/index.md)
