@@ -28,3 +28,7 @@ Net P&L is after fees, funding left out (`run_results.return_after_costs` × 100
 - Gross per trade: (−76.46 + 126.07) ÷ 110 = **+0.45 USD**. Cost per trade: 126.07 ÷ 110 = 1.15 USD, so the bar is 1.5 × 1.15 = **1.72 USD**. Fails.
 
 The pre check fails on the fee hurdle. Gross per trade turned positive (`book_imbalance` had −0.95), but it covers only about 40% of the cost, well short of the 1.5 × bar. Per AC-6: study not run (not run: pre check), no study file written, no revision. The feature goes to close out (AC-9).
+
+## AC-9 close out (2026-10-27)
+
+`scripts/spikes/hash_check.py` ran in `kfs/lab:s0021` (built at a0f0315; nothing under `packages/` or `apps/` changed since). It printed 32 modules: the 31 of the baseline plus `trading_core.node.imbalance_fade`, the only one added. The sorted list without that line has sha256 `4982f569395f3ca0cb2567b6a05a06ff987f0b2bc181628c372d2c96dc1926c2`, the same as AC-1. The scope Build it box is ticked. No paper follow up is added (the pre check failed), and no revision runs.
