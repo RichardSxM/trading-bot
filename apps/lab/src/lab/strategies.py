@@ -37,6 +37,8 @@ from trading_core.node.donchian_4h_r1 import STRATEGY_NAME as DONCHIAN_4H_R1
 from trading_core.node.donchian_4h_r1 import Donchian4hR1, Donchian4hR1Config
 from trading_core.node.ema_pullback import STRATEGY_NAME as EMA_PULLBACK
 from trading_core.node.ema_pullback import EmaPullback, EmaPullbackConfig
+from trading_core.node.imbalance_fade import STRATEGY_NAME as IMBALANCE_FADE
+from trading_core.node.imbalance_fade import ImbalanceFade, ImbalanceFadeConfig
 from trading_core.node.macd_baseline import STRATEGY_NAME as MACD_BASELINE
 from trading_core.node.macd_baseline import MacdBaseline, MacdBaselineConfig
 from trading_core.node.maker_probe import MakerProbe, MakerProbeConfig
@@ -328,6 +330,12 @@ def _book_imbalance(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks
     return BookImbalance(config, gate, blocks, record)
 
 
+def _imbalance_fade(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
+    if not isinstance(config, ImbalanceFadeConfig):
+        raise TypeError(f"imbalance_fade needs an ImbalanceFadeConfig, not {type(config).__name__}")
+    return ImbalanceFade(config, gate, blocks, record)
+
+
 def _connors_rsi(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
     if not isinstance(config, ConnorsRsiConfig):
         raise TypeError(f"connors_rsi needs a ConnorsRsiConfig, not {type(config).__name__}")
@@ -446,6 +454,15 @@ REGISTRY: Final[Mapping[str, StrategyEntry]] = {
         module=BookImbalance.__module__,
         config_cls=BookImbalanceConfig,
         factory=_book_imbalance,
+        run_fields=_scalp_fields,
+        default_entry_mode="maker",
+    ),
+    # book_imbalance's mirror (spec 0021), replay only for the same reason.
+    IMBALANCE_FADE: StrategyEntry(
+        name=IMBALANCE_FADE,
+        module=ImbalanceFade.__module__,
+        config_cls=ImbalanceFadeConfig,
+        factory=_imbalance_fade,
         run_fields=_scalp_fields,
         default_entry_mode="maker",
     ),

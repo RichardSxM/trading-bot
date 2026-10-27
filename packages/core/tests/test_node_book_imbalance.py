@@ -77,7 +77,7 @@ def _buys(seconds, every_s=5):
     return ticks
 
 
-def _run(minutes, book=None, trades=(), **overrides):
+def _run(minutes, book=None, trades=(), strategy_cls=BookImbalance, config_cls=BookImbalanceConfig, **overrides):
     engine = BacktestEngine(BacktestEngineConfig(logging=LoggingConfig(bypass_logging=True)))
     engine.add_venue(
         Venue("KRAKEN"),
@@ -124,7 +124,7 @@ def _run(minutes, book=None, trades=(), **overrides):
         "stop_slippage_bps": D(5),
         "taker_fee": D("0.0005"),
     } | overrides
-    strategy = BookImbalance(BookImbalanceConfig(**values), PauseGate(), blocks, records.append)  # type: ignore[arg-type]  # each value has its own type
+    strategy = strategy_cls(config_cls(**values), PauseGate(), blocks, records.append)  # type: ignore[arg-type]  # each value has its own type
     fired: list[int] = []
     rule_on_firing = strategy.rule.on_firing
 

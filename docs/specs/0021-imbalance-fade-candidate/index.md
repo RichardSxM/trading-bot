@@ -1,7 +1,7 @@
 # 0021. `imbalance_fade`: fade a lopsided order book with post only orders
 
 **Date**: 2026-10-27
-**Status**: Proposed
+**Status**: In Progress
 
 ## Summary
 
