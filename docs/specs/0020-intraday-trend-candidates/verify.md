@@ -65,6 +65,26 @@ Development range per grid point:
 | 3 | 55 | 2 | +0.9% | 120 |
 | 4 | 55 | 3 | −3.6% | 115 |
 
+## donchian_4h_r1 run (2026-10-27)
+
+All on the laptop in `kfs/lab:s0020` (rebuilt at d799ce5 with `GIT_COMMIT=$(git rev-parse HEAD)`), with `--no-deps` and `LAB_WORKERS=2`, through `lab-reports/scratch/s0020_donchian_4h_r1.sh`. A first attempt exited 78 (`lab_unknown_commit`) because the image was built without `GIT_COMMIT`; it recorded nothing, and the image was rebuilt before the run below.
+
+| Step | Start (UTC) | Wall | Result |
+|---|---|---|---|
+| `lab study studies/donchian_4h_r1.toml` | 02:03 | 83 min | batch `01a17b1a-594b-70dd-a5a6-e669256202a7`, 4 grid points, exit 0 |
+| `lab holdout donchian_4h_r1` | 03:26 | 42 min | candidate `01a17b65-bce0-71b8-b9c6-a2551c9dd770` (grid 4), buy and hold `01a17b71-7194-7320-a3fd-4b584c4e9b39`, MACD `01a17b81-db35-76f3-ba22-82c02133c15a`, exit 0 |
+| `scripts/push-bundles.sh` (all 4 folders) | about 06:00 | about 1 h 30 min (`gate import` 06:06 to 07:31) | loaded 7, already there 42, refused 0 |
+| `gate evaluate donchian_4h_r1` (VPS, `--no-deps`) | 07:32 | under 1 min | `fail`, promotion `01a17c46-6169-70c5-b029-3e7a20e9ef89` (run once) |
+
+Development range per grid point:
+
+| Grid | `entry_bars` | `stop_atr` | Return | Trades |
+|---|---|---|---|---|
+| 1 | 20 | 2 | −30.9% | 912 |
+| 2 | 20 | 3 | −21.8% | 853 |
+| 3 | 55 | 2 | −8.6% | 423 |
+| 4 | 55 | 3 | +5.6% | 374 |
+
 ## AC-9 checkpoint (2026-10-26)
 
 The trader saw the `noise_breakout` verdict (`fail`) with its holdout gross per trade 0.188 USD and cost per trade 6.277 USD, a ratio of 0.03, far below the 1.5 × bar. The trader chose the recommendation: skip candidate 2 (`noise_breakout_tod`), because a time of day filter only removes trades and cannot lift a below cost signal past the hurdle, and still run candidate 3 (`donchian_4h`), because it is a different timescale and not a variant of candidate 1.

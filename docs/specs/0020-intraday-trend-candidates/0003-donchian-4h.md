@@ -112,3 +112,43 @@ From the holdout run's `decisions` (64 closed trades):
 - Net by side: longs +290.35 USD, shorts −12.61 USD.
 
 Reading: this is the first candidate in the family whose signal clears its cost. Each trade made 6.11 USD gross against 1.85 USD of cost (3.3 ×), and the holdout beat buy and hold and MACD in a year when BTC fell. But the profit is thin and lopsided. Longs made more than all of it (direction share 1.05), one walk forward fold made 8.25 times the total, and the top trades made 6.25 times the total, so the rest of the trades lost money overall. With 64 trades the bootstrap lower bound sits just below 0, and at N 23 the deflated Sharpe is 0. In plain words, a few big trend trades carried a rule that otherwise bled, which is what a trend rule looks like, but one year and 64 trades are too few to tell that apart from luck.
+
+## Revision 1 results (holdout seen)
+
+**Verdict: `fail`.** Revision 1 is final, so `donchian_4h` is closed.
+
+| Field | Value |
+|---|---|
+| Study | `donchian_4h_r1` (committed 2026-10-27 in d799ce5, study batch `01a17b1a-594b-70dd-a5a6-e669256202a7`) |
+| Promotion id | `01a17c46-6169-70c5-b029-3e7a20e9ef89` (VPS) |
+| Evaluation date | 2026-10-27 |
+| Chosen grid point | 4 of 1 to 4 (`entry_bars` 55, `stop_atr` 3) |
+| Walk forward Sharpe | −0.824742 (5 folds; return −19.36%) |
+| Holdout Sharpe | 0.220825, against buy and hold −0.460362 and the MACD baseline −1.377988 |
+| Holdout return after costs | +1.80% |
+| Holdout marked max drawdown | 9.86% |
+| Deflated Sharpe probability | 0.000000 |
+| PBO | 0.083333 (`pbo_applicable` true) |
+| Holdout trades | 104 (53 long, 51 short; win rate 25.00%) |
+| Trial count N, trial pool | 27, 27 (`kind+lab`, VPS) |
+| `avg_hold_minutes` | 2 987.6 (longest 14 400, the 10 day time stop) |
+| Holdout gross per trade | 4.191 USD |
+| Holdout cost per trade | 2.543 USD (ratio 1.65) |
+
+Reasons that failed (code, value, threshold):
+- `walk_forward_sharpe`: `failed`, −0.824742, 0
+- `bootstrap_lower_bound`: `failed`, −0.000456, 0
+- `deflated_sharpe`: `failed`, 0.000000, 0.95
+- `concentration_direction`: `failed`, 1.953426, 0.60
+- `concentration_top_trades`: `failed`, 12.988068, 0.60
+
+`concentration_fold` was skipped (`fold_share` null) because the walk forward total is below 0. Every other check passed, among them the fee hurdle (4.19 against 1.5 × 2.54 = 3.82), holdout Sharpe above 0, beating both baselines, and the drawdown budget (9.86% against 10%).
+
+From the holdout run's `decisions` (104 closed trades):
+- Exits by reason: `channel_exit` 62 (59.6%), stop fill 41 (39.4%, the positions with no exit decision), `time_stop` 1 (1.0%).
+- Rule exits within 2 bars of entry: 0.
+- `BAD_SIGNAL` refusals: 0 (all 167 decisions approved).
+- Warmup bars skipped: 55 (the entry window on 1 hour bars). First decision 2025-10-21 15:00 UTC.
+- Net by side: longs −171.70 USD, shorts +351.79 USD.
+
+Reading: the faster bars did what was asked, 104 holdout trades instead of 64, and the signal still clears its cost, but by much less (1.65 × instead of 3.3 ×). Only one of the four development points made money, and the walk forward lost 19%, so the chosen point looks like the lucky one of four. In the holdout the profit flipped sides (shorts carried it, longs lost), and the top trades made 13 times the total, so the rest lost money overall. At N 27 the deflated Sharpe is 0. This is the same picture as the 4 hour run, a few big trend trades and a lot of small losses, only weaker. The fee hurdle passes but the gate's concentration checks are built to reject exactly this shape, so trend rules on BTC alone look like a dead end under gate v1.
