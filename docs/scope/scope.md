@@ -419,7 +419,7 @@ spec [0020](../specs/0020-intraday-trend-candidates/index.md)
   - [x] Revisions and close out: at most one revision per failed candidate, evaluate every study again with the final family N, scope tick (AC-12, AC-13). One revision, `donchian_4h_r1` on 1 hour bars; all three studies `fail` at final family N 27 (2026-10-27).
 - [x] Verify it: `/check verify intraday trend candidates` (PASS 2026-10-27, on main bed1415)
 - [x] Test it: `/test intraday trend candidates` (2026-10-27: 63 core and 31 lab tests pass; added boundary cases for the node configs)
-- [ ] Review it (fresh model): `/check review intraday trend candidates`
+- [x] Review it (fresh model): `/check review intraday trend candidates` (2026-10-27: approve with nits, sonnet, [review](../reviews/2026-10-27-feat-0020-close-gates.md))
 - [ ] Document it: `/document intraday trend candidates`
 
 ### 24. Imbalance fade candidate · done
