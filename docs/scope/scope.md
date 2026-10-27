@@ -436,7 +436,7 @@ spec [0021](../specs/0021-imbalance-fade-candidate/index.md)
 - [x] Verify it: `/check verify imbalance fade candidate`
 - [x] Test it: `/test imbalance fade candidate`
 - [x] Review it (fresh model): `/check review imbalance fade candidate`
-- [ ] Document it: `/document imbalance fade candidate`
+- [x] Document it: `/document imbalance fade candidate`
 
 ### 17. Hour level strategy candidates · in-progress
 The fallback set: trend following and mean reversion on 1h to 4h candles, tested in the candle lab.
