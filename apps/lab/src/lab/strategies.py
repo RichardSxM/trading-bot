@@ -31,11 +31,19 @@ from trading_core.node.connors_rsi import STRATEGY_NAME as CONNORS_RSI
 from trading_core.node.connors_rsi import ConnorsRsi, ConnorsRsiConfig
 from trading_core.node.delta_divergence import STRATEGY_NAME as DELTA_DIVERGENCE
 from trading_core.node.delta_divergence import DeltaDivergence, DeltaDivergenceConfig
+from trading_core.node.donchian_4h import STRATEGY_NAME as DONCHIAN_4H
+from trading_core.node.donchian_4h import Donchian4h, Donchian4hConfig
+from trading_core.node.donchian_4h_r1 import STRATEGY_NAME as DONCHIAN_4H_R1
+from trading_core.node.donchian_4h_r1 import Donchian4hR1, Donchian4hR1Config
 from trading_core.node.ema_pullback import STRATEGY_NAME as EMA_PULLBACK
 from trading_core.node.ema_pullback import EmaPullback, EmaPullbackConfig
+from trading_core.node.imbalance_fade import STRATEGY_NAME as IMBALANCE_FADE
+from trading_core.node.imbalance_fade import ImbalanceFade, ImbalanceFadeConfig
 from trading_core.node.macd_baseline import STRATEGY_NAME as MACD_BASELINE
 from trading_core.node.macd_baseline import MacdBaseline, MacdBaselineConfig
 from trading_core.node.maker_probe import MakerProbe, MakerProbeConfig
+from trading_core.node.noise_breakout import STRATEGY_NAME as NOISE_BREAKOUT
+from trading_core.node.noise_breakout import NoiseBreakout, NoiseBreakoutConfig
 from trading_core.node.placeholder import STRATEGY_NAME as PLACEHOLDER
 from trading_core.node.placeholder import PlaceholderConfig, PlaceholderTimed, Record
 from trading_core.node.random_taker import RandomTaker, RandomTakerConfig
@@ -322,6 +330,12 @@ def _book_imbalance(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks
     return BookImbalance(config, gate, blocks, record)
 
 
+def _imbalance_fade(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
+    if not isinstance(config, ImbalanceFadeConfig):
+        raise TypeError(f"imbalance_fade needs an ImbalanceFadeConfig, not {type(config).__name__}")
+    return ImbalanceFade(config, gate, blocks, record)
+
+
 def _connors_rsi(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
     if not isinstance(config, ConnorsRsiConfig):
         raise TypeError(f"connors_rsi needs a ConnorsRsiConfig, not {type(config).__name__}")
@@ -332,6 +346,24 @@ def _ema_pullback(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, 
     if not isinstance(config, EmaPullbackConfig):
         raise TypeError(f"ema_pullback needs an EmaPullbackConfig, not {type(config).__name__}")
     return EmaPullback(config, gate, blocks, record)
+
+
+def _noise_breakout(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
+    if not isinstance(config, NoiseBreakoutConfig):
+        raise TypeError(f"noise_breakout needs a NoiseBreakoutConfig, not {type(config).__name__}")
+    return NoiseBreakout(config, gate, blocks, record)
+
+
+def _donchian_4h(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
+    if not isinstance(config, Donchian4hConfig):
+        raise TypeError(f"donchian_4h needs a Donchian4hConfig, not {type(config).__name__}")
+    return Donchian4h(config, gate, blocks, record)
+
+
+def _donchian_4h_r1(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
+    if not isinstance(config, Donchian4hR1Config):
+        raise TypeError(f"donchian_4h_r1 needs a Donchian4hR1Config, not {type(config).__name__}")
+    return Donchian4hR1(config, gate, blocks, record)
 
 
 def _peek_probe(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
@@ -425,6 +457,15 @@ REGISTRY: Final[Mapping[str, StrategyEntry]] = {
         run_fields=_scalp_fields,
         default_entry_mode="maker",
     ),
+    # book_imbalance's mirror (spec 0021), replay only for the same reason.
+    IMBALANCE_FADE: StrategyEntry(
+        name=IMBALANCE_FADE,
+        module=ImbalanceFade.__module__,
+        config_cls=ImbalanceFadeConfig,
+        factory=_imbalance_fade,
+        run_fields=_scalp_fields,
+        default_entry_mode="maker",
+    ),
     # The hour level candidates (spec 0018) on the shared ``BarRuleStrategy`` base.
     CONNORS_RSI: StrategyEntry(
         name=CONNORS_RSI,
@@ -440,6 +481,32 @@ REGISTRY: Final[Mapping[str, StrategyEntry]] = {
         module=EmaPullback.__module__,
         config_cls=EmaPullbackConfig,
         factory=_ema_pullback,
+        run_fields=_candle_fields,
+        kind=StrategyKind.HOUR_LEVEL,
+    ),
+    # The intraday trend candidates (spec 0020) on the same base, in the hour level family.
+    NOISE_BREAKOUT: StrategyEntry(
+        name=NOISE_BREAKOUT,
+        module=NoiseBreakout.__module__,
+        config_cls=NoiseBreakoutConfig,
+        factory=_noise_breakout,
+        run_fields=_candle_fields,
+        kind=StrategyKind.HOUR_LEVEL,
+    ),
+    DONCHIAN_4H: StrategyEntry(
+        name=DONCHIAN_4H,
+        module=Donchian4h.__module__,
+        config_cls=Donchian4hConfig,
+        factory=_donchian_4h,
+        run_fields=_candle_fields,
+        kind=StrategyKind.HOUR_LEVEL,
+    ),
+    # donchian_4h's one revision (spec 0020.3 Revision 1): the same rule on 1 hour bars.
+    DONCHIAN_4H_R1: StrategyEntry(
+        name=DONCHIAN_4H_R1,
+        module=Donchian4hR1.__module__,
+        config_cls=Donchian4hR1Config,
+        factory=_donchian_4h_r1,
         run_fields=_candle_fields,
         kind=StrategyKind.HOUR_LEVEL,
     ),
