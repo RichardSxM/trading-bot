@@ -96,10 +96,11 @@ class StudyRunInput:
 
 @dataclass(frozen=True)
 class TradeReturn:
-    """One closed holdout trade: its net P&L and its return over the equity before it (AC-11)."""
+    """One closed holdout trade: its net P&L, its return over the equity before it (AC-11), and its coin."""
 
     net_pnl: Decimal
     ret: Decimal
+    instrument_id: str
 
 
 @dataclass(frozen=True)

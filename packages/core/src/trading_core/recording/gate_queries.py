@@ -86,17 +86,18 @@ def _funding_missing(session: Session, run_id: UUID) -> bool:
 
 def holdout_trades(session: Session, run_id: UUID, starting_balance: Decimal) -> tuple[TradeReturn, ...]:
     """The run's closed positions by close time: net P&L (realized, already after fees, plus funding) and
-    its return over the equity before it, rebuilt from the starting balance (AC-11)."""
+    its return over the equity before it, rebuilt from the starting balance (AC-11). Ties in close time
+    go by open time, then coin, so a multi coin run orders them the same every time (spec 0022 AC-13)."""
     rows = session.execute(
-        select(models.Position.realized_pnl, models.Position.funding_total)
+        select(models.Position.realized_pnl, models.Position.funding_total, models.Position.instrument_id)
         .where(models.Position.run_id == run_id, models.Position.status == PositionStatus.CLOSED)
-        .order_by(models.Position.closed_at, models.Position.opened_ns)
+        .order_by(models.Position.closed_at, models.Position.opened_ns, models.Position.instrument_id)
     ).all()
     equity = starting_balance
     trades = []
-    for realized, funding in rows:
+    for realized, funding, instrument_id in rows:
         net = realized + funding
-        trades.append(TradeReturn(net, net / equity if equity > 0 else Decimal(0)))
+        trades.append(TradeReturn(net, net / equity if equity > 0 else Decimal(0), instrument_id))
         equity += net
     return tuple(trades)
 

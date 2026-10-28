@@ -12,7 +12,9 @@ from datetime import date
 from decimal import Decimal
 from typing import Final
 
-SUPPORTED_VERSION: Final = 1
+SUPPORTED_VERSIONS: Final = (1, 2)
+# A field added in a later version: absent before it (loads as None, its check skipped), required from it on.
+_ADDED_IN: Final[Mapping[str, int]] = {"instrument_max_share": 2}
 
 
 class ThresholdsError(ValueError):
@@ -71,10 +73,13 @@ class Thresholds:
     candle: CandleThresholds
     replay: ReplayThresholds
     paper: PaperThresholds
+    # The largest coin's share of holdout net profit (spec 0022 AC-13); None in version 1.
+    instrument_max_share: Decimal | None = None
 
     def to_json(self) -> dict[str, object]:
         """Plain JSON: Decimals as fixed notation strings, the date as ISO."""
-        return _plain(asdict(self))  # type: ignore[return-value]  # a dict in, a dict out
+        data = {k: v for k, v in asdict(self).items() if not (k in _ADDED_IN and v is None)}
+        return _plain(data)  # type: ignore[return-value]  # a dict in, a dict out
 
     @classmethod
     def from_json(cls, data: Mapping[str, object]) -> Thresholds:
@@ -127,6 +132,9 @@ _NESTED: Final[Mapping[str, type]] = {
 
 def _build[T](cls: type[T], data: Mapping[str, object], prefix: str) -> T:
     names = {f.name: f for f in fields(cls)}  # type: ignore[arg-type]  # every T here is a dataclass
+    version = data.get("version")
+    if cls is Thresholds and isinstance(version, int):
+        names = {n: f for n, f in names.items() if _ADDED_IN.get(n, 0) <= version}
     unknown = sorted(set(data) - set(names))
     missing = sorted(set(names) - set(data))
     if unknown or missing:
@@ -139,6 +147,8 @@ def _build[T](cls: type[T], data: Mapping[str, object], prefix: str) -> T:
             if not isinstance(value, Mapping):
                 raise ThresholdsError(f"{where} must be a table")
             values[name] = _build(_NESTED[name], value, f"{name}.")
+        elif name in _ADDED_IN:
+            values[name] = _coerce(Decimal, value, where)
         else:
             values[name] = _coerce(f.type, value, where)
     built = cls(**values)
@@ -148,10 +158,13 @@ def _build[T](cls: type[T], data: Mapping[str, object], prefix: str) -> T:
 
 
 def _check_ranges(t: Thresholds) -> None:
-    if t.version != SUPPORTED_VERSION:
-        raise ThresholdsError(f"thresholds version {t.version} is not supported (only {SUPPORTED_VERSION})")
-    for name in ("max_drawdown", "pbo_max", "dsr_min", "bootstrap_confidence", "concentration_max_share"):
+    if t.version not in SUPPORTED_VERSIONS:
+        raise ThresholdsError(f"thresholds version {t.version} is not supported (only {SUPPORTED_VERSIONS})")
+    shares = ("max_drawdown", "pbo_max", "dsr_min", "bootstrap_confidence", "concentration_max_share")
+    for name in (*shares, "instrument_max_share"):
         value = getattr(t, name)
+        if value is None:
+            continue
         if not Decimal(0) < value < Decimal(1):
             raise ThresholdsError(f"{name} must be between 0 and 1 (exclusive), not {value}")
     if not Decimal(0) < t.top_trades_quantile <= Decimal(1):

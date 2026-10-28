@@ -1,7 +1,8 @@
 # The promotion gate's thresholds (spec 0015), frozen into each study when `lab study` creates it.
 # Editing this file never changes an existing study. Change a value only in a new version, as a
 # deliberate commit, and never after looking at a result.
-version = 1
+# v2 (spec 0022) adds instrument_max_share; every v1 value is unchanged.
+version = 2
 # The final holdout: every day from here on is unseen until `lab holdout` (today minus 12 months, fixed in v1).
 holdout_start = 2025-10-19
 fee_hurdle_k = 1.5
@@ -13,6 +14,8 @@ bootstrap_resamples = 10000
 bootstrap_min_block_days = 5
 bootstrap_confidence = 0.95
 concentration_max_share = 0.60
+# The largest coin's share of holdout net profit (a study with trades on at least 2 coins).
+instrument_max_share = 0.60
 top_trades_quantile = 0.05
 
 [candle]

@@ -138,9 +138,12 @@ DETAIL_FIGURES: Final = [
     ("Largest fold share of profit", "fold_share", True),
     ("Long or short share of profit", "direction_share", True),
     ("Top trades share of profit", "top_trades_share", True),
+    ("Coin share of profit", "instrument_share", True),
     ("Average gross edge per trade (USD)", "avg_gross_edge", False),
     ("Average round trip cost (USD)", "avg_round_trip_cost", False),
 ]
+# Shown only when the evaluation recorded them: a multi coin study (spec 0022 AC-14).
+OPTIONAL_FIGURES: Final = frozenset({"instrument_share"})
 
 
 def _hash(value: str | None) -> str:
@@ -170,6 +173,8 @@ def detail_context(detail: StudyDetail) -> dict[str, object]:
     row = detail.ranking
     figures = []
     for label, name, fraction in DETAIL_FIGURES:
+        if name in OPTIONAL_FIGURES and name not in row.metrics:
+            continue
         value = row.decimal(name)
         count = row.integer(name)
         if count is not None:
