@@ -8,9 +8,11 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 from nautilus_trader.model.data import FundingRateUpdate, QuoteTick, TradeTick
+from sqlalchemy import Engine
 
 from lab.actors import LIQUIDATED, RANGE_END, RUINED
 from lab.candle_backtest import backtest
@@ -18,7 +20,7 @@ from lab.candle_fetch import candle_tree
 from lab.candle_stream import CandleStream, SideFlag, merged_chunks
 from lab.candle_units import CandleUnitPlan, run_candle_unit
 from lab.main import main
-from lab.runfile import MULTI_REFUSED, Overrides, RunFileError, candle_run_from_raw, load_candle_run
+from lab.runfile import MULTI_REFUSED, LoadedCandleRun, Overrides, RunFileError, candle_run_from_raw, load_candle_run
 from lab.screen import EXIT_USAGE, run_screen
 from lab.strategies import MarketContextValues, registry_entry
 from lab.study import _benchmark_run, load_study
@@ -209,6 +211,7 @@ MACD = {"bar_spec": "1-HOUR-LAST", "notional_usd": "10000", "signal": 9, "slow":
 def test_committed_single_coin_studies_plan_and_version_as_before(study, plan_hash, configs, tmp_path):
     loaded = load_study(STUDIES / study, catalog_dir=tmp_path)
     assert loaded.plan_hash == plan_hash
+    assert isinstance(loaded.loaded, LoadedCandleRun)
     run = loaded.loaded.run
     assert {name: run.version_config(point) for name, point in loaded.points} == configs
 
@@ -377,6 +380,7 @@ def test_a_two_coin_backtest_charges_each_coin_its_own_funding_and_reports_gaps_
     assert sorted(p.instrument_id for p in bundle.positions) == [ETH, BTC]
     assert bundle.funding
     for row in bundle.funding:
+        assert row.position_id is not None
         assert by_id[row.position_id].instrument_id == row.instrument_id
         assert row.rate == (D("0.0003") if row.instrument_id == ETH else D("0.0001"))
     # Funding rows come coin by coin in sorted order.
@@ -538,5 +542,8 @@ def test_screen_refuses_a_multi_coin_study(monkeypatch, capsys):
     evidence = SimpleNamespace(study=study, inputs=SimpleNamespace(strategy_kind=StrategyKind.SCALPING))
     monkeypatch.setattr("lab.screen.study_evidence", lambda session, name: evidence)
 
-    assert run_screen(worker_settings(Path("/nonexistent"), Path("/nonexistent"), 1), "pair", None) == EXIT_USAGE
+    assert (
+        run_screen(worker_settings(Path("/nonexistent"), Path("/nonexistent"), 1), "pair", cast(Engine, None))
+        == EXIT_USAGE
+    )
     assert MULTI_REFUSED in capsys.readouterr().err
