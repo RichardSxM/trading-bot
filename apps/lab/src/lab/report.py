@@ -9,7 +9,7 @@ runs of the same inputs goes in, except ``run_id``, ``batch_id``, ``started_at``
 """
 
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from decimal import Decimal
 from pathlib import Path
 from typing import Literal
@@ -94,8 +94,33 @@ class SideSplitReport(_Model):
     net_pnl: Decimal
 
 
+class CoinReport(_Model):
+    """One coin's share of a candle run (spec 0022 AC-9): its trades, costs, splits, and data quality."""
+
+    trade_count: int
+    net_pnl: Decimal
+    fees_total: Decimal
+    funding_total: Decimal
+    long: SideSplitReport
+    short: SideSplitReport
+    exposure: Decimal
+    benchmark: Decimal | None
+    events: int
+    first_trade_ns: int | None
+    last_point_ns: int
+    first_candle_ns: int | None
+    last_candle_ns: int | None
+    gaps: list[tuple[int, int, int]]
+    months: list[MonthQuality]
+    carried_funding_charges: int
+    zero_volume_bars: int
+
+
 class CandleReport(_Model):
-    """What a candle backtest adds (spec 0014 AC-16): marked equity, the splits, costs, and data quality."""
+    """What a candle backtest adds (spec 0014 AC-16): marked equity, the splits, costs, and data quality.
+
+    The figures are over the whole run (for a multi coin run, the shared account's combined ones);
+    ``per_instrument`` holds each coin's own, keys in sorted order, one key for a single coin run."""
 
     range: tuple[int, int]
     marked_max_drawdown: Decimal
@@ -118,6 +143,7 @@ class CandleReport(_Model):
     months: list[MonthQuality]
     carried_funding_charges: int
     zero_volume_bars: int
+    per_instrument: dict[str, CoinReport] = {}
 
 
 class EntryDecisionCount(_Model):
@@ -345,12 +371,63 @@ def candle_report_markdown(report: LabReport) -> str:
             for m in candle.months
         ]
         lines.append("")
+        if len(candle.per_instrument) > 1:
+            lines += _coin_lines(candle, config)
     lines += _entry_decision_lines(report)
     return "\n".join(lines)
 
 
+def _coin_lines(candle: CandleReport, config: dict[str, JsonValue]) -> list[str]:
+    """Each coin of a multi coin run: its share of the results, then its own data quality (spec 0022 AC-9)."""
+    coins = list(candle.per_instrument)
+    lines = [
+        "## Per coin",
+        "",
+        "| Measure | " + " | ".join(coins) + " |",
+        "|---|" + "---|" * len(coins),
+    ]
+
+    def row(name: str, cell: Callable[[CoinReport], str]) -> None:
+        lines.append(f"| {name} | " + " | ".join(cell(c) for c in candle.per_instrument.values()) + " |")
+
+    row("Closed trades", lambda c: f"{c.trade_count} (long {c.long.trades}, short {c.short.trades})")
+    row("Net P&L (USD)", lambda c: _money(c.net_pnl))
+    row("Net P&L long / short (USD)", lambda c: f"{_money(c.long.net_pnl)} / {_money(c.short.net_pnl)}")
+    row("Fees (USD)", lambda c: _money(c.fees_total))
+    row("Funding (USD)", lambda c: _money(c.funding_total))
+    row("Exposure time", lambda c: _pct(c.exposure))
+    row("Buy and hold, before costs", lambda c: "n/a" if c.benchmark is None else _pct(c.benchmark))
+    row("Candles from", lambda c: _span(c.first_candle_ns))
+    row("Candles to", lambda c: _span(c.last_candle_ns))
+    row("Gap rows overlapping the range", lambda c: str(len(c.gaps)))
+    row("Funding charges at a carried rate", lambda c: str(c.carried_funding_charges))
+    row(f"Zero volume `{config.get('bar_spec')}` bars", lambda c: str(c.zero_volume_bars))
+    lines.append("")
+    for coin, c in candle.per_instrument.items():
+        lines += [
+            f"{coin} per month touched:",
+            "",
+            "| Month | Missing minutes | Quiet minutes | Rounded volumes | Zero volume trades | Missing funding |",
+            "|---|---|---|---|---|---|",
+        ]
+        lines += [
+            f"| {m.month} | {m.missing_minutes} | {m.quiet_minutes} | {m.volume_rounded_rows} | "
+            f"{m.zero_volume_trade_rows} | {m.missing_funding_charges} |"
+            for m in c.months
+        ]
+        lines.append("")
+    return lines
+
+
 def _span(ns: int | None) -> str:
     return "n/a" if ns is None else _utc(ns)
+
+
+def _coins(config: dict[str, JsonValue]) -> str:
+    """The run's coins by symbol, ``PF_ETHUSD + PF_XBTUSD`` for a multi coin run (spec 0022 AC-9)."""
+    ids = config.get("instrument_ids")
+    names = [str(i) for i in ids] if isinstance(ids, list) else [str(config.get("instrument_id"))]
+    return " + ".join(n.split(".")[0] for n in names)
 
 
 def candle_index_markdown(batch_id: str, reports: Sequence[LabReport]) -> str:
@@ -358,20 +435,22 @@ def candle_index_markdown(batch_id: str, reports: Sequence[LabReport]) -> str:
     lines = [
         f"# Backtest batch `{batch_id}`",
         "",
-        "| Variant | Status | Net P&L (USD) | Return | Max DD realized | Max DD marked | Fees (USD) | "
+        "| Variant | Status | Coins | Net P&L (USD) | Return | Max DD realized | Max DD marked | Fees (USD) | "
         "Funding (USD) | Trades | Exposure | Liquidations | First decision | Buy and hold |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for report in reports:
         r, c = report.results, report.candle
         name = report.variant.replace("=", "-")
+        coins = _coins(report.run_config)
         if r is None or c is None:
-            lines.append(f"| [{report.variant}]({name}.md) | {report.status} |" + " n/a |" * 11)
+            lines.append(f"| [{report.variant}]({name}.md) | {report.status} | {coins} |" + " n/a |" * 11)
             continue
         first = "none" if c.first_decision_ns is None else _utc(c.first_decision_ns)
         bench = "n/a" if c.benchmark is None else _pct(c.benchmark)
         lines.append(
-            f"| [{report.variant}]({name}.md) | {report.status} | {_money(r.net_pnl)} | {_pct(r.return_after_costs)} | "
+            f"| [{report.variant}]({name}.md) | {report.status} | {coins} | {_money(r.net_pnl)} | "
+            f"{_pct(r.return_after_costs)} | "
             f"{_pct(r.max_drawdown)} | {_pct(c.marked_max_drawdown)} | {_money(r.fees_total)} | "
             f"{_money(r.funding_total)} | {r.trade_count} | {_pct(c.exposure)} | {c.liquidations} | {first} | {bench} |"
         )

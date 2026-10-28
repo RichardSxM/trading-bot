@@ -16,6 +16,7 @@ from typing import Final
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 
+from lab.runfile import MULTI_REFUSED
 from lab.settings import LabSettings
 from trading_core.lab.screen import (
     CANDLE_GATE_MIN_TRADES_PER_DAY,
@@ -56,6 +57,9 @@ def run_screen(settings: LabSettings, name: str, engine: Engine) -> int:
         study, inputs = evidence.study, evidence.inputs
         if study.lab != StudyLab.CANDLE or inputs.strategy_kind != StrategyKind.SCALPING:
             return _refuse([f"{name!r} is not a candle study of a scalping strategy"])
+        run_file = study.plan.get("run_file")
+        if isinstance(run_file, dict) and "instrument_ids" in run_file:
+            return _refuse([MULTI_REFUSED])
         grid = study.plan.get("grid")
         floor = CANDLE_GATE_MIN_TRADES_PER_DAY if is_candle_gate(study.plan) else SCREEN_MIN_TRADES_PER_DAY
         points = len(grid) if isinstance(grid, list) and grid else 1

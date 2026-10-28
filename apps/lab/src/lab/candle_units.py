@@ -87,6 +87,16 @@ class CandleUnitPlan:
 
 
 @dataclass(frozen=True)
+class CoinUnitFacts:
+    """What one coin of a unit streamed (spec 0022 AC-9)."""
+
+    zero_volume_bars: int
+    first_trade_ns: int | None
+    last_point_ns: int
+    events: int
+
+
+@dataclass(frozen=True)
 class CandleUnitResult:
     """A candle unit's rows with their sequence inside the unit, the funding samples, and what the report needs.
 
@@ -103,6 +113,8 @@ class CandleUnitResult:
     positions: Sequenced[PositionRow]
     # Each coin's samples by instrument id, keys in sorted order; one key for a single coin run (spec 0022 AC-8).
     funding_samples: Mapping[str, tuple[FundingSample, ...]]
+    # The scalar fields below hold the combined value; each coin's own is here, keys in sorted order (spec 0022 AC-9).
+    per_instrument: Mapping[str, CoinUnitFacts]
     zero_volume_bars: int
     first_trade_ns: int | None
     last_point_ns: int
@@ -322,6 +334,15 @@ def run_candle_unit(plan: CandleUnitPlan) -> CandleUnitResult:
         fills=_sorted(rows.fills.values()),
         positions=_sorted(rows.positions.values()),
         funding_samples={k: tuple(rows.funding_samples[k]) for k in sorted(rows.funding_samples)},
+        per_instrument={
+            c.instrument_id.value: CoinUnitFacts(
+                zero_volume_bars=recorder.zero_volume_by_coin[c.instrument_id.value],
+                first_trade_ns=c.stream.first_trade_ns,
+                last_point_ns=c.last_point_ns,
+                events=c.stream.events,
+            )
+            for c in coins
+        },
         zero_volume_bars=recorder.zero_volume_bars,
         first_trade_ns=min(first_trades, default=None),
         last_point_ns=max(c.last_point_ns for c in coins),

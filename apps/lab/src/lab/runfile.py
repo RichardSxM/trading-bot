@@ -326,6 +326,10 @@ def replay_run_from_raw(
 
 # A candle run file's two ways to name its coins; the one not given is left out of every dump (spec 0022 AC-3).
 _COIN_KEYS: Final = frozenset({"instrument_id", "instrument_ids"})
+# A single coin command's refusal of a multi coin run file (spec 0022 AC-10).
+MULTI_REFUSED: Final = (
+    "instrument_ids: this command runs one coin; only lab backtest, lab study, and lab holdout take several"
+)
 
 
 class CandleContextSection(ContextSection):
@@ -488,13 +492,18 @@ def _grid_problems(
     return problems
 
 
-def load_candle_run(path: Path, overrides: Overrides, *, test_strategies: bool = False) -> LoadedCandleRun:
+def load_candle_run(
+    path: Path, overrides: Overrides, *, test_strategies: bool = False, allow_multi: bool = False
+) -> LoadedCandleRun:
     """Read, override, and validate a candle run file, its strategy's kind, config, and ``bar_spec``.
 
+    ``allow_multi`` is True only for the commands that run several coins (spec 0022 AC-10).
     Raises ``RunFileError`` listing every problem found (exit 64).
     """
     data, raw = read_toml(path)
-    return candle_run_from_raw(str(path), data, raw, overrides, test_strategies=test_strategies)
+    return candle_run_from_raw(
+        str(path), data, raw, overrides, test_strategies=test_strategies, allow_multi=allow_multi
+    )
 
 
 def read_toml(path: Path) -> tuple[bytes, dict[str, object]]:
@@ -510,17 +519,26 @@ def read_toml(path: Path) -> tuple[bytes, dict[str, object]]:
 
 
 def candle_run_from_raw(
-    path: str, data: bytes, raw: Mapping[str, object], overrides: Overrides, *, test_strategies: bool = False
+    path: str,
+    data: bytes,
+    raw: Mapping[str, object],
+    overrides: Overrides,
+    *,
+    test_strategies: bool = False,
+    allow_multi: bool = False,
 ) -> LoadedCandleRun:
     """Validate parsed candle run file tables (``load_candle_run`` after reading, or a study's stored plan).
 
-    Raises ``RunFileError`` listing every problem found (exit 64).
+    ``instrument_ids`` is refused unless ``allow_multi`` (only ``lab backtest``, ``lab study``, and
+    ``lab holdout`` pass it, spec 0022 AC-10). Raises ``RunFileError`` listing every problem found (exit 64).
     """
     try:
         run = CandleRunFile.model_validate(_apply(dict(raw), overrides))
     except ValidationError as exc:
         problems = [f"{_location(e['loc'])}: {e['msg']}" for e in exc.errors(include_url=False, include_input=False)]
         raise RunFileError(problems) from None
+    if run.multi and not allow_multi:
+        raise RunFileError([MULTI_REFUSED])
     try:
         entry = registry_entry(run.strategy.name, test_strategies=test_strategies)
         entry.check_strategy(dict(run.strategy.config))

@@ -39,6 +39,7 @@ from lab.replay import (
 )
 from lab.report import (
     CandleReport,
+    CoinReport,
     LabReport,
     MonthQuality,
     Results,
@@ -347,14 +348,14 @@ def _months(batch: CandleBatch) -> list[MonthQuality]:
 
 def coin_funding(
     batch: CandleBatch, unit: CandleUnitResult, positions: Sequence[PositionRow], run_id: uuid.UUID
-) -> tuple[list[PositionRow], list[BundleFundingRow], int]:
+) -> tuple[list[PositionRow], list[BundleFundingRow], dict[str, int]]:
     """Funding once per coin (spec 0022 AC-8): each coin's samples against its own stored rates and its
     own positions only, so a position never takes another coin's rate. Returns the positions with their
-    ``funding_total`` (in their original order), the payment rows in sorted coin order, and the charge
-    times with no exact row, summed over the coins."""
+    ``funding_total`` (in their original order), the payment rows in sorted coin order, and each coin's
+    charge times with no exact row."""
     updated = {p.id: p for p in positions}
     funding: list[BundleFundingRow] = []
-    carried = 0
+    carried: dict[str, int] = {}
     for coin, tree in batch.trees.items():
         rows = stored_funding(tree, batch.start_ns, batch.end_ns)
         payments, coin_carried = funding_pass(unit.funding_samples[coin], rows, batch.start_ns, batch.end_ns)
@@ -363,7 +364,7 @@ def coin_funding(
         )
         updated.update({p.id: p for p in coin_positions})
         funding += coin_rows
-        carried += coin_carried
+        carried[coin] = coin_carried
     return [updated[p.id] for p in positions], funding, carried
 
 
@@ -389,44 +390,86 @@ def build_candle_bundle(
         cash,
         sum((f.fee for f in fills), Decimal(0)),
     )
-    # Each coin marked at its own hour closes, then one shared account curve (spec 0022 AC-9).
-    curves = []
-    closes: list[tuple[Decimal | None, Decimal | None]] = []
-    spans: list[int] = []
-    for coin, tree in batch.trees.items():
-        marks, first_close, last_close, first_ns, last_ns = hour_marks(
-            tree, batch.start_ns, batch.end_ns, variant.slippage_bps
-        )
-        curves.append(
-            marked_equity(
-                run.starting_balance_usd,
-                [
-                    MarkFill(f.filled_ns, f.side == OrderSide.BUY, f.quantity, f.price, f.fee)
-                    for f in fills
-                    if f.instrument_id == coin
-                ],
-                [FundingCash(paid_ns=f.paid_ns, amount=f.amount) for f in funding if f.instrument_id == coin],
-                marks,
-            )
-        )
-        closes.append((first_close, last_close))
-        spans += [t for t in (first_ns, last_ns) if t is not None]
-    curve = combined_equity(run.starting_balance_usd, curves)
     # A closed position's row side is FLAT, so a trade's direction comes from its first fill.
     opening: dict[uuid.UUID, bool] = {}
     for f in sorted(fills, key=lambda f: f.filled_ns):
         if f.position_id is not None:
             opening.setdefault(f.position_id, f.side == OrderSide.BUY)
-    trades = [
-        TradeOutcome(
-            opening.get(p.id, p.side == PositionSide.LONG),
-            p.opened_ns,
-            p.last_event_ns if p.status == PositionStatus.CLOSED else None,
-            p.realized_pnl + p.funding_total,
+
+    def outcomes(coin: str | None = None) -> list[TradeOutcome]:
+        return [
+            TradeOutcome(
+                opening.get(p.id, p.side == PositionSide.LONG),
+                p.opened_ns,
+                p.last_event_ns if p.status == PositionStatus.CLOSED else None,
+                p.realized_pnl + p.funding_total,
+            )
+            for p in positions
+            if coin is None or p.instrument_id == coin
+        ]
+
+    # Each coin marked at its own hour closes, then one shared account curve (spec 0022 AC-9).
+    curves = []
+    closes: list[tuple[Decimal | None, Decimal | None]] = []
+    spans: list[int] = []
+    gaps = _gaps(batch)
+    per_coin: dict[str, CoinReport] = {}
+    for coin, tree in batch.trees.items():
+        marks, first_close, last_close, first_ns, last_ns = hour_marks(
+            tree, batch.start_ns, batch.end_ns, variant.slippage_bps
         )
-        for p in positions
-    ]
-    measures = candle_measures(run.starting_balance_usd, curve, trades, batch.start_ns, batch.end_ns, *closes[0])
+        coin_fills = [f for f in fills if f.instrument_id == coin]
+        coin_cash = [FundingCash(paid_ns=f.paid_ns, amount=f.amount) for f in funding if f.instrument_id == coin]
+        coin_curve = marked_equity(
+            run.starting_balance_usd,
+            [MarkFill(f.filled_ns, f.side == OrderSide.BUY, f.quantity, f.price, f.fee) for f in coin_fills],
+            coin_cash,
+            marks,
+        )
+        curves.append(coin_curve)
+        closes.append((first_close, last_close))
+        spans += [t for t in (first_ns, last_ns) if t is not None]
+        coin_metrics = run_metrics(
+            run.starting_balance_usd,
+            [
+                ClosedTrade(p.last_event_ns, p.realized_pnl, p.fees_total, p.funding_total)
+                for p in closed
+                if p.instrument_id == coin
+            ],
+            coin_cash,
+            sum((f.fee for f in coin_fills), Decimal(0)),
+        )
+        coin_measures = candle_measures(
+            run.starting_balance_usd,
+            coin_curve,
+            outcomes(coin),
+            batch.start_ns,
+            batch.end_ns,
+            first_close,
+            last_close,
+        )
+        facts = unit.per_instrument[coin]
+        per_coin[coin] = CoinReport(
+            trade_count=coin_metrics.trade_count,
+            net_pnl=coin_metrics.net_pnl,
+            fees_total=coin_metrics.fees_total,
+            funding_total=coin_metrics.funding_total,
+            long=SideSplitReport(trades=coin_measures.long.trades, net_pnl=coin_measures.long.net_pnl),
+            short=SideSplitReport(trades=coin_measures.short.trades, net_pnl=coin_measures.short.net_pnl),
+            exposure=coin_measures.exposure,
+            benchmark=coin_measures.benchmark,
+            events=facts.events,
+            first_trade_ns=facts.first_trade_ns,
+            last_point_ns=facts.last_point_ns,
+            first_candle_ns=first_ns,
+            last_candle_ns=last_ns,
+            gaps=[(g.start_ns, g.end_ns, g.minutes) for g in gaps[coin]],
+            months=_coin_months(tree, batch.start_ns, batch.end_ns),
+            carried_funding_charges=carried[coin],
+            zero_volume_bars=facts.zero_volume_bars,
+        )
+    curve = combined_equity(run.starting_balance_usd, curves)
+    measures = candle_measures(run.starting_balance_usd, curve, outcomes(), batch.start_ns, batch.end_ns, *closes[0])
     if run.multi:
         measures = replace(measures, benchmark=mean_benchmark(closes))
     closed_positions = [
@@ -440,7 +483,6 @@ def build_candle_bundle(
         for p in closed
     ]
     days = marked_daily(curve, batch.start_ns, batch.end_ns, run.starting_balance_usd, closed_positions, cash)
-    gaps = _gaps(batch)
     run_row = RunRow(
         id=run_id,
         env=Env.DEMO,
@@ -522,8 +564,9 @@ def build_candle_bundle(
         # Every coin's gaps in time order (each coin's own list is in run_config, AC-6).
         gaps=sorted((g.start_ns, g.end_ns, g.minutes) for coin_gaps in gaps.values() for g in coin_gaps),
         months=_months(batch),
-        carried_funding_charges=carried,
+        carried_funding_charges=sum(carried.values()),
         zero_volume_bars=unit.zero_volume_bars,
+        per_instrument=per_coin,
     )
     return bundle, results, candle
 

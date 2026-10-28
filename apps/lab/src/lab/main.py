@@ -47,7 +47,7 @@ from lab.instruments import UnknownInstrumentError, pinned_instrument
 from lab.paper_csv import read_paper_csv
 from lab.parity import parity
 from lab.replay import PostgresStore, replay
-from lab.runfile import Overrides, RunFileError, load_candle_run, load_run
+from lab.runfile import MULTI_REFUSED, Overrides, RunFileError, load_candle_run, load_run
 from lab.screen import run_screen
 from lab.settings import LabSettings, ProbeSwitch
 from lab.strategies import registry_entry
@@ -272,8 +272,12 @@ def _backtest(args: argparse.Namespace) -> int:
             args.runfile,
             Overrides(from_=args.from_, to=args.to, seed=args.seed),
             test_strategies=ProbeSwitch().lab_test_strategies,
+            allow_multi=True,
         )
         run = loaded.run
+        if args.lookahead_check and run.multi:
+            # A look ahead cut run checks one coin's decisions (spec 0022 AC-10).
+            raise RunFileError([f"--lookahead-check: {MULTI_REFUSED}"])
         variants = expand_candle_variants(run.slippage_bps, run.strategy.grid, sweep_slippage=args.sweep_slippage)
     except (RunFileError, VariantError) as exc:
         problems = exc.problems if isinstance(exc, RunFileError) else [str(exc)]
