@@ -141,10 +141,10 @@ Tracer Bullet: the thinnest real thread is two coins through one engine, on real
 1. [x] Branch from main, record the AC-1 hash baseline in `verify.md`, satisfies **AC-1**
 2. [x] ETH data: the pinned `PF_ETHUSD.KRAKEN.json`, `--instrument` on `fetch-candles` and `import-funding` with tests; the off tick open and close rounding with its tests; fetch ETH candles and import its funding on the laptop; record the data quality figures, the off tick roundings, and the shared first month in `verify.md`. Commit `feat(lab): ETH candles and funding (0022)`, satisfies **AC-2**, **AC-2a**
 3. [x] Thin thread: `instrument_ids` in the run file and `CandleUnitPlan`; `candle_tree` per coin; the multi coin unit (per coin instances and guards, the shared recorder and side flag with per coin maps, the merged stream, the shared ruin handler); per coin funding samples and funding pass; the single coin stability, determinism, tie order, sizing, gap, ruin, and funding tests on fixture candles. Smoke run `buy_and_hold` (a benchmark, not a trial) on BTC plus ETH over one real month, satisfies **AC-3**, **AC-4**, **AC-4b**, **AC-5**, **AC-6**, **AC-7**, **AC-8**
-4. Report `per_instrument` block and the mean buy and hold figure; refusals in the single coin commands, satisfies **AC-9**, **AC-10**
-5. Bundles carry instruments, the importer upserts them, with tests; push the step 3 smoke bundle to a laptop gate import to prove it loads, satisfies **AC-12**
-6. Gate: `instrument_id` on `TradeReturn`, `concentration_instrument`, thresholds v2, the v1 fixture parity test; dashboard coin share. Commit `feat(gate): concentration_instrument check, thresholds v2 (0022)`, satisfies **AC-13**, **AC-14**
-7. Multi coin benchmarks in `lab holdout`, with the 50/50 split test, satisfies **AC-11**
+4. [x] Report `per_instrument` block and the mean buy and hold figure; refusals in the single coin commands, satisfies **AC-9**, **AC-10**
+5. [x] Bundles carry instruments, the importer upserts them, with tests; push the step 3 smoke bundle to a laptop gate import to prove it loads, satisfies **AC-12**
+6. [x] Gate: `instrument_id` on `TradeReturn`, `concentration_instrument`, thresholds v2, the v1 fixture parity test; dashboard coin share. Commit `feat(gate): concentration_instrument check, thresholds v2 (0022)`, satisfies **AC-13**, **AC-14**
+7. [x] Multi coin benchmarks in `lab holdout`, with the 50/50 split test, satisfies **AC-11**
 8. Checkpoint with the trader: show the thin thread results and the ETH data record, then commit the study file and rebuild `kfs/lab` with `GIT_COMMIT`, satisfies **AC-15**
 9. Run `lab study` and `lab holdout`. Then, each VPS step confirmed: deploy the gate and dashboard (thresholds v2), push the bundles, run `gate evaluate donchian_4h_pair` once, satisfies **AC-16**
 10. Write the Results and `verify.md` run log, commit `docs(specs): donchian_4h_pair verdict (0022)`, satisfies **AC-17**

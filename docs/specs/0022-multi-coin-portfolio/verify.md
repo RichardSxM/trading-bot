@@ -41,3 +41,12 @@ Three notes on the design as built:
 - Realized P&L: ETH +423.06, BTC +306.00. Funding: ETH −35.55, BTC −24.76 (1,436 hourly rows, 718 per coin). Net +668.75 USD, which matches the sum.
 - Exposure 0.9986, marked max drawdown 7.15%, benchmark (mean of both coins) 7.65%.
 - The run config lists `instrument_ids`, a `bar_type` per coin, and `candle_gaps` per coin. The bundle still carries a single `instrument` key (null here); task 5 adds `instruments`.
+
+## AC-9 to AC-14 report, bundles, gate, benchmarks (2026-10-28)
+
+Built in 6fc8fe1 (AC-9, AC-10), cf51e1e (AC-12), fc49bb9 (AC-13, AC-14), and 305eb35 (AC-11). The files study.py and test_multi_coin.py carry hunks of several tasks, so they landed whole in the last commit. Full suites on that build: hooks and mypy clean, core 1672 passed (5 skipped), integration 151 passed, dashboard 551 passed, lab 49 passed on the chain plus 31 passed for `test_multi_coin.py` and `test_study.py` after the task 7 split.
+
+- **AC-9, AC-10**: the report's `per_instrument` block and the mean buy and hold figure; the single coin commands refuse a run file with several coins with `MULTI_REFUSED`.
+- **AC-12**: a bundle carries `instruments`, and `gate import` upserts each coin before its rows. The integration tests cover the upsert (an equal row is a no op) and the refusal when a stored coin has other specs. **One deviation**: the plan said to import the step 3 smoke bundle on a laptop gate. That bundle has no study version, so `gate import` refuses it by design (`MissingParentError`). The proof is the integration tests here, and the real study bundle in task 9.
+- **AC-13, AC-14**: thresholds v2 adds `instrument_max_share = 0.60`, and v1 files still load with the same verdicts (the v1 fixture parity test). `concentration_instrument` is skipped with fewer than 2 coins or a total net at or below 0. The dashboard shows "Coin share of profit".
+- **AC-11**: on several coins, a benchmark file's `notional_usd` is split evenly, so `buy_and_hold` on BTC plus ETH opens each coin at 5000 USD of the file's 10,000 USD and never trades again. A single coin benchmark keeps the file's notional.
