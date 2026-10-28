@@ -1,10 +1,11 @@
-"""covers: spec 0014 AC-1, AC-2, AC-4 (the candles tree: month files round trip, manifest written as JSON)."""
+"""covers: spec 0014 AC-1, AC-2, AC-4 (the candles tree: month files round trip, manifest written as JSON);
+spec 0022 AC-2 (a second coin's own gap and manifest folders, BTC's paths unchanged)."""
 
 import json
 from decimal import Decimal
 
 import pytest
-from nautilus_trader.model.currencies import BTC, USD
+from nautilus_trader.model.currencies import BTC, ETH, USD
 from nautilus_trader.model.identifiers import InstrumentId, Symbol
 from nautilus_trader.model.instruments import CryptoPerpetual
 from nautilus_trader.model.objects import Price, Quantity
@@ -91,3 +92,39 @@ def test_an_outdated_manifest_reads_as_none_and_a_broken_one_raises(tmp_path):
     path.write_text(json.dumps(data))
     with pytest.raises(CandleInputError):
         tree.read_manifest(SEP)
+
+
+ETH_INSTRUMENT = CryptoPerpetual(
+    instrument_id=InstrumentId.from_str("PF_ETHUSD.KRAKEN"),
+    raw_symbol=Symbol("PF_ETHUSD"),
+    base_currency=ETH,
+    quote_currency=USD,
+    settlement_currency=USD,
+    is_inverse=False,
+    price_precision=1,
+    size_precision=3,
+    price_increment=Price.from_str("0.1"),
+    size_increment=Quantity.from_str("0.001"),
+    margin_init=D("0.01"),
+    margin_maint=D("0.005"),
+    maker_fee=D("0.0002"),
+    taker_fee=D("0.0005"),
+    ts_event=0,
+    ts_init=0,
+)
+
+
+def test_btc_keeps_its_root_paths_and_another_coin_gets_its_own_folders(tmp_path):
+    btc, eth = CandleTree(tmp_path, INSTRUMENT), CandleTree(tmp_path, ETH_INSTRUMENT)
+
+    assert btc.gap_file(SEP) == tmp_path / "gaps" / "2026-09.parquet"
+    assert btc.manifest_file(SEP) == tmp_path / "manifests" / "2026-09.json"
+    assert eth.gap_file(SEP) == tmp_path / "gaps" / "PF_ETHUSD.KRAKEN" / "2026-09.parquet"
+    assert eth.manifest_file(SEP) == tmp_path / "manifests" / "PF_ETHUSD.KRAKEN" / "2026-09.json"
+    assert (
+        eth.bar_file(SEP) == tmp_path / "data" / "bar" / "PF_ETHUSD.KRAKEN-1-MINUTE-LAST-EXTERNAL" / "2026-09.parquet"
+    )
+
+    eth.write_gaps(SEP, [CandleGap(SEP.start_ns, SEP.start_ns + 2 * MINUTE_NS, 2)])
+    assert btc.read_gaps(SEP) == []
+    assert eth.read_gaps(SEP) == [CandleGap(SEP.start_ns, SEP.start_ns + 2 * MINUTE_NS, 2)]

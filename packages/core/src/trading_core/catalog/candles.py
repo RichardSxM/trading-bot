@@ -4,6 +4,9 @@
 ``quiet`` column, ``data/funding_rate_update/<instrument>/<YYYY-MM>.parquet`` the ``FundingRateUpdate``
 rows by charge time plus a ``source`` column, ``gaps/<YYYY-MM>.parquet`` the gap rows, and
 ``manifests/<YYYY-MM>.json`` the month's commit point, written last. Every write is atomic.
+
+BTC, the first coin, keeps those gap and manifest paths; every other coin puts them one folder
+down, ``gaps/<instrument>/`` and ``manifests/<instrument>/`` (spec 0022 AC-2), so no BTC file moves.
 """
 
 import json
@@ -29,6 +32,8 @@ from trading_core.lab.candles import CandleGap, CandleRow, FundingRow, FundingSo
 from trading_core.lab.errors import OutdatedManifestError
 
 BAR_TABLE: Final = "bar"
+# The coin whose gaps and manifests sit at the tree's root, as before spec 0022.
+ROOT_INSTRUMENT_ID: Final = "PF_XBTUSD.KRAKEN"
 GAP_SCHEMA: Final = pa.schema(
     [
         pa.field("start_ns", pa.uint64(), nullable=False),
@@ -60,13 +65,17 @@ class CandleTree:
         """The funding rows charged in the month."""
         return self.root / "data" / FUNDING_TABLE / urisafe_identifier(self.instrument_id) / f"{month}.parquet"
 
+    def _own(self, folder: str) -> Path:
+        base = self.root / folder
+        return base if self.instrument_id == ROOT_INSTRUMENT_ID else base / urisafe_identifier(self.instrument_id)
+
     def gap_file(self, month: Month) -> Path:
         """The month's gap rows."""
-        return self.root / "gaps" / f"{month}.parquet"
+        return self._own("gaps") / f"{month}.parquet"
 
     def manifest_file(self, month: Month) -> Path:
         """The month's manifest, its commit point."""
-        return self.root / "manifests" / f"{month}.json"
+        return self._own("manifests") / f"{month}.json"
 
     # Candles ---------------------------------------------------------------------------------
 

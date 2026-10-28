@@ -67,7 +67,7 @@ def book_plans(settings: LabSettings, loaded: LoadedCandleRun, segments: Sequenc
             variant=BOOK,
             segment=segment,
             source_root=settings.lab_catalog_dir / SOURCE,
-            instrument_id=run.instrument_id,
+            instrument_id=run.single_instrument,
             maker_fee=run.maker_fee,
             taker_fee=run.taker_fee,
             latency_ms=latency,
@@ -89,12 +89,12 @@ def book_plans(settings: LabSettings, loaded: LoadedCandleRun, segments: Sequenc
 def candle_plans(settings: LabSettings, loaded: LoadedCandleRun, segments: Sequence[Segment]) -> list[CandleUnitPlan]:
     """One candle unit per segment, over the segment's own first and last nanosecond (AC-21)."""
     run = loaded.run
-    tree = candle_tree(settings.lab_catalog_dir)
+    tree = candle_tree(settings.lab_catalog_dir, run.single_instrument)
     return [
         CandleUnitPlan(
             variant=CANDLES,
             candles_root=tree.root,
-            instrument_id=run.instrument_id,
+            instrument_ids=(run.single_instrument,),
             start_ns=segment.start_ns,
             end_ns=segment.end_ns + 1,
             maker_fee=run.maker_fee,
@@ -181,11 +181,11 @@ def candle_parity(
 ) -> int:
     """Run ``lab candle-parity`` after validation; returns the exit code."""
     run = loaded.run
-    tree = SourceTree(settings.lab_catalog_dir / SOURCE, run.instrument_id)
+    tree = SourceTree(settings.lab_catalog_dir / SOURCE, run.single_instrument)
     days = required_days(SOURCE, run.from_, run.to)
     missing = tree.missing_manifests(days)
     start_ns, end_ns = range_ns(loaded)
-    problems = span_problems(candle_tree(settings.lab_catalog_dir), start_ns, end_ns)
+    problems = span_problems(candle_tree(settings.lab_catalog_dir, run.single_instrument), start_ns, end_ns)
     if not days or missing or problems:
         if missing:
             print(f"lab candle-parity: no own day for {', '.join(d.isoformat() for d in missing)}", file=sys.stderr)

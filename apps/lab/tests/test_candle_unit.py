@@ -37,13 +37,13 @@ def _minute(m, quiet=False):
 
 
 def _plan(tmp_path, rows, **overrides):
-    tree = candle_tree(tmp_path)
+    tree = candle_tree(tmp_path, "PF_XBTUSD.KRAKEN")
     tree.write_bars(SEP, rows)
     tree.write_funding(SEP, [FundingRow(T0 + h * HOUR_NS, D("0.0001"), HOUR_NS, "api") for h in range(HOURS + 1)])
     plan = CandleUnitPlan(
         variant="base",
         candles_root=tree.root,
-        instrument_id="PF_XBTUSD.KRAKEN",
+        instrument_ids=("PF_XBTUSD.KRAKEN",),
         start_ns=T0,
         end_ns=T0 + HOURS * HOUR_NS,
         maker_fee=D("0.0002"),
@@ -81,7 +81,8 @@ def test_buy_and_hold_buys_at_the_first_hour_close_and_closes_at_the_range_end(t
     assert position.quantity == 0
 
     # Funding is sampled at 01:00 and 02:00 (strictly inside the range); the position is open at 02:00.
-    samples = {s.boundary_ns: s for s in result.funding_samples}
+    assert list(result.funding_samples) == ["PF_XBTUSD.KRAKEN"]  # one coin, one key (spec 0022 AC-8)
+    samples = {s.boundary_ns: s for s in result.funding_samples["PF_XBTUSD.KRAKEN"]}
     assert sorted(samples) == [T0 + HOUR_NS, T0 + 2 * HOUR_NS]
     assert samples[T0 + 2 * HOUR_NS].signed_qty == D("0.1665")
     assert samples[T0 + 2 * HOUR_NS].mid == D(60120)  # minute 119's close point, the last quote before 02:00

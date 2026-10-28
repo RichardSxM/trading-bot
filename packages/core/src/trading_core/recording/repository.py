@@ -1174,7 +1174,9 @@ def import_run_bundle(session: Session, bundle: RunBundle, rows: BundleRows | No
             raise MissingParentError(f"run bundle has fills or events for orders it does not carry: {client_order_id}")
         return order_ids[client_order_id]
 
-    upsert_instrument(session, bundle.instrument)
+    # Every coin before the run's rows (spec 0022 AC-12); one stored with other specs refuses the file.
+    for instrument in (bundle.instrument, *bundle.instruments):
+        upsert_instrument(session, instrument)
     strategy_id = _ensure_strategy(session, bundle.strategy_name, bundle.strategy_kind)
     _insert_or_compare(
         session, models.StrategyVersion, column_values(bundle.version) | {"strategy_id": strategy_id}, ["id"]

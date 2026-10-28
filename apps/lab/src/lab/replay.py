@@ -124,14 +124,15 @@ class Store(Protocol):
 
     def prepare(
         self,
-        instrument: InstrumentRow,
+        instruments: Sequence[InstrumentRow],
         strategy: str,
         kind: StrategyKind,
         git_commit: str | None,
         config: JsonObject,
         frozen: FrozenHashes | None = None,
     ) -> UUID:
-        """Ensure the instrument and strategy version rows (the strategy of ``kind``); return the version id."""
+        """Ensure every coin's instrument row and the strategy version row (the strategy of ``kind``);
+        return the version id."""
         ...
 
     def write_bundle(self, bundle: RunBundle) -> None:
@@ -147,16 +148,17 @@ class PostgresStore:
 
     def prepare(
         self,
-        instrument: InstrumentRow,
+        instruments: Sequence[InstrumentRow],
         strategy: str,
         kind: StrategyKind,
         git_commit: str | None,
         config: JsonObject,
         frozen: FrozenHashes | None = None,
     ) -> UUID:
-        """Upsert the instrument and ensure the version with its frozen hashes (spec 0015 AC-1), in one commit."""
+        """Upsert every instrument and ensure the version with its frozen hashes (spec 0015 AC-1), in one commit."""
         with self._sessions() as session:
-            repository.upsert_instrument(session, instrument)
+            for instrument in instruments:
+                repository.upsert_instrument(session, instrument)
             version_id = repository.ensure_strategy_version(session, strategy, kind, git_commit, config, frozen)
             session.commit()
         return version_id
@@ -891,7 +893,7 @@ def replay(
         if mode not in by_mode:
             config = run.version_config(mode)
             by_mode[mode] = store.prepare(
-                instrument, run.strategy.name, entry.kind, settings.git_commit, config, entry.frozen(config)
+                [instrument], run.strategy.name, entry.kind, settings.git_commit, config, entry.frozen(config)
             )
         version_ids[variant.name] = by_mode[mode]
     rates, funding_source, funding_skipped_ns = run_funding(tree, run.source, days, plan)

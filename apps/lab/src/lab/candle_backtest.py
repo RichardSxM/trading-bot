@@ -39,6 +39,7 @@ from lab.replay import (
 )
 from lab.report import (
     CandleReport,
+    CoinReport,
     LabReport,
     MonthQuality,
     Results,
@@ -54,7 +55,14 @@ from lab.strategies import registry_entry
 from lab.study_rows import RATIO_KIND, StudyContext, daily_equity_rows, daily_sharpe, measures_row
 from lab.units import TRADER_ID
 from trading_core.catalog.candles import CandleTree
-from trading_core.lab.candle_metrics import MarkFill, TradeOutcome, candle_measures, marked_equity
+from trading_core.lab.candle_metrics import (
+    MarkFill,
+    TradeOutcome,
+    candle_measures,
+    combined_equity,
+    marked_equity,
+    mean_benchmark,
+)
 from trading_core.lab.candle_path import spread
 from trading_core.lab.candles import (
     FUNDING_CARRY_MAX_NS,
@@ -84,7 +92,8 @@ from trading_core.recording.enums import (
     RunStatus,
     Sample,
 )
-from trading_core.recording.rows import JsonValue, RunBundle, RunResultRow, RunRow, ns_to_utc
+from trading_core.recording.rows import FundingRow as BundleFundingRow
+from trading_core.recording.rows import JsonValue, PositionRow, RunBundle, RunResultRow, RunRow, ns_to_utc
 from trading_core.thresholds_file import packaged_thresholds
 
 log = logging.getLogger(__name__)
@@ -176,7 +185,8 @@ class CandleBatch:
     folder: Path
     start_ns: int
     end_ns: int
-    tree: CandleTree
+    # One candles tree per coin, in sorted id order (spec 0022 AC-4).
+    trees: Mapping[str, CandleTree]
     # Spec 0015: the share of trades ``run_measures.top_trades_profit_share`` counts, and the study
     # this batch belongs to (None for a plain ``lab backtest``).
     top_quantile: Decimal = Decimal("0.05")
@@ -188,8 +198,8 @@ def candle_plan(batch: CandleBatch, variant: CandleVariantSpec) -> CandleUnitPla
     run = batch.loaded.run
     return CandleUnitPlan(
         variant=variant.name,
-        candles_root=batch.tree.root,
-        instrument_id=run.instrument_id,
+        candles_root=next(iter(batch.trees.values())).root,
+        instrument_ids=run.instruments,
         start_ns=batch.start_ns,
         end_ns=batch.end_ns,
         maker_fee=run.maker_fee,
@@ -251,8 +261,16 @@ def hour_marks(
     return marks, first_close, last_close, first_ns, last_ns
 
 
-def _run_config(batch: CandleBatch, variant: CandleVariantSpec, gaps: Sequence[CandleGap]) -> dict[str, JsonValue]:
+def _run_config(
+    batch: CandleBatch, variant: CandleVariantSpec, gaps: Mapping[str, Sequence[CandleGap]]
+) -> dict[str, JsonValue]:
     run = batch.loaded.run
+    # A multi coin run names its coins, bar types, and gaps per coin (spec 0022 AC-3, AC-6).
+    coins: dict[str, JsonValue] = (
+        {"instrument_ids": list(run.instruments)} if run.multi else {"instrument_id": run.single_instrument}
+    )
+    bar_types = [str(t.bar_type) for t in batch.trees.values()]
+    gap_lists: dict[str, JsonValue] = {c: [[g.start_ns, g.end_ns, g.minutes] for g in gs] for c, gs in gaps.items()}
     return {
         "batch_id": str(batch.batch_id),
         "variant": variant.name,
@@ -261,7 +279,7 @@ def _run_config(batch: CandleBatch, variant: CandleVariantSpec, gaps: Sequence[C
         "overrides": dict(batch.loaded.overrides),
         "seed": run.seed,
         "source": "candles",
-        "instrument_id": run.instrument_id,
+        **coins,
         "maker_fee": run.maker_fee,
         "taker_fee": run.taker_fee,
         "slippage_bps": variant.slippage_bps,
@@ -271,29 +289,33 @@ def _run_config(batch: CandleBatch, variant: CandleVariantSpec, gaps: Sequence[C
         "risk_limits": dict(vars(run.risk_limits())),
         "stale_quote_s": run.stale_quote_s,
         "context": {**run.context.model_dump(), "liquidations_available": False},
-        "bar_type": str(batch.tree.bar_type),
+        "bar_type": bar_types if run.multi else bar_types[0],
         "bar_spec": str(variant.grid_point.get("bar_spec", batch.loaded.bar_spec)),
         "funding_source": FUNDING_SOURCE,
-        "candle_gaps": [[g.start_ns, g.end_ns, g.minutes] for g in gaps],
+        "candle_gaps": gap_lists if run.multi else gap_lists[run.single_instrument],
         "range": [batch.start_ns, batch.end_ns],
         "nautilus_version": version("nautilus_trader"),
         "git_commit": batch.settings.git_commit,
     }
 
 
-def _gaps(batch: CandleBatch) -> list[CandleGap]:
-    return [
-        g
-        for m in range_months(batch.start_ns, batch.end_ns)
-        for g in batch.tree.read_gaps(m)
-        if g.end_ns > batch.start_ns and g.start_ns < batch.end_ns
-    ]
+def _gaps(batch: CandleBatch) -> dict[str, list[CandleGap]]:
+    """Each coin's gaps inside the range (spec 0022 AC-6)."""
+    return {
+        coin: [
+            g
+            for m in range_months(batch.start_ns, batch.end_ns)
+            for g in tree.read_gaps(m)
+            if g.end_ns > batch.start_ns and g.start_ns < batch.end_ns
+        ]
+        for coin, tree in batch.trees.items()
+    }
 
 
-def _months(batch: CandleBatch) -> list[MonthQuality]:
+def _coin_months(tree: CandleTree, start_ns: int, end_ns: int) -> list[MonthQuality]:
     found = []
-    for month in range_months(batch.start_ns, batch.end_ns):
-        manifest = batch.tree.read_manifest(month)
+    for month in range_months(start_ns, end_ns):
+        manifest = tree.read_manifest(month)
         assert manifest is not None  # checked before the batch started
         found.append(
             MonthQuality(
@@ -308,6 +330,44 @@ def _months(batch: CandleBatch) -> list[MonthQuality]:
     return found
 
 
+def _months(batch: CandleBatch) -> list[MonthQuality]:
+    """The months' data quality, each count summed over the coins (one coin's own for a single coin run)."""
+    per_coin = [_coin_months(tree, batch.start_ns, batch.end_ns) for tree in batch.trees.values()]
+    return [
+        MonthQuality(
+            month=months[0].month,
+            missing_minutes=sum(m.missing_minutes for m in months),
+            quiet_minutes=sum(m.quiet_minutes for m in months),
+            volume_rounded_rows=sum(m.volume_rounded_rows for m in months),
+            zero_volume_trade_rows=sum(m.zero_volume_trade_rows for m in months),
+            missing_funding_charges=sum(m.missing_funding_charges for m in months),
+        )
+        for months in zip(*per_coin, strict=True)
+    ]
+
+
+def coin_funding(
+    batch: CandleBatch, unit: CandleUnitResult, positions: Sequence[PositionRow], run_id: uuid.UUID
+) -> tuple[list[PositionRow], list[BundleFundingRow], dict[str, int]]:
+    """Funding once per coin (spec 0022 AC-8): each coin's samples against its own stored rates and its
+    own positions only, so a position never takes another coin's rate. Returns the positions with their
+    ``funding_total`` (in their original order), the payment rows in sorted coin order, and each coin's
+    charge times with no exact row."""
+    updated = {p.id: p for p in positions}
+    funding: list[BundleFundingRow] = []
+    carried: dict[str, int] = {}
+    for coin, tree in batch.trees.items():
+        rows = stored_funding(tree, batch.start_ns, batch.end_ns)
+        payments, coin_carried = funding_pass(unit.funding_samples[coin], rows, batch.start_ns, batch.end_ns)
+        coin_positions, coin_rows = with_funding(
+            [p for p in positions if p.instrument_id == coin], payments, run_id, coin
+        )
+        updated.update({p.id: p for p in coin_positions})
+        funding += coin_rows
+        carried[coin] = coin_carried
+    return [updated[p.id] for p in positions], funding, carried
+
+
 def build_candle_bundle(
     batch: CandleBatch, variant: CandleVariantSpec, unit: CandleUnitResult, *, started_at: datetime, ended_at: datetime
 ) -> tuple[RunBundle, Results, CandleReport]:
@@ -320,9 +380,7 @@ def build_candle_bundle(
     order_events = stamp_run_id((r for _, r in unit.order_events), run_id)
     fills = stamp_run_id((r for _, r in unit.fills), run_id)
     positions = stamp_run_id((r for _, r in unit.positions), run_id)
-    rows = stored_funding(batch.tree, batch.start_ns, batch.end_ns)
-    payments, carried = funding_pass(unit.funding_samples, rows, batch.start_ns, batch.end_ns)
-    positions, funding = with_funding(positions, payments, run_id, run.instrument_id)
+    positions, funding, carried = coin_funding(batch, unit, positions, run_id)
 
     closed = [p for p in positions if p.status == PositionStatus.CLOSED]
     cash = [FundingCash(paid_ns=f.paid_ns, amount=f.amount) for f in funding]
@@ -332,32 +390,88 @@ def build_candle_bundle(
         cash,
         sum((f.fee for f in fills), Decimal(0)),
     )
-    marks, first_close, last_close, first_ns, last_ns = hour_marks(
-        batch.tree, batch.start_ns, batch.end_ns, variant.slippage_bps
-    )
-    curve = marked_equity(
-        run.starting_balance_usd,
-        [MarkFill(f.filled_ns, f.side == OrderSide.BUY, f.quantity, f.price, f.fee) for f in fills],
-        cash,
-        marks,
-    )
     # A closed position's row side is FLAT, so a trade's direction comes from its first fill.
     opening: dict[uuid.UUID, bool] = {}
     for f in sorted(fills, key=lambda f: f.filled_ns):
         if f.position_id is not None:
             opening.setdefault(f.position_id, f.side == OrderSide.BUY)
-    trades = [
-        TradeOutcome(
-            opening.get(p.id, p.side == PositionSide.LONG),
-            p.opened_ns,
-            p.last_event_ns if p.status == PositionStatus.CLOSED else None,
-            p.realized_pnl + p.funding_total,
+
+    def outcomes(coin: str | None = None) -> list[TradeOutcome]:
+        return [
+            TradeOutcome(
+                opening.get(p.id, p.side == PositionSide.LONG),
+                p.opened_ns,
+                p.last_event_ns if p.status == PositionStatus.CLOSED else None,
+                p.realized_pnl + p.funding_total,
+            )
+            for p in positions
+            if coin is None or p.instrument_id == coin
+        ]
+
+    # Each coin marked at its own hour closes, then one shared account curve (spec 0022 AC-9).
+    curves = []
+    closes: list[tuple[Decimal | None, Decimal | None]] = []
+    spans: list[int] = []
+    gaps = _gaps(batch)
+    per_coin: dict[str, CoinReport] = {}
+    for coin, tree in batch.trees.items():
+        marks, first_close, last_close, first_ns, last_ns = hour_marks(
+            tree, batch.start_ns, batch.end_ns, variant.slippage_bps
         )
-        for p in positions
-    ]
-    measures = candle_measures(
-        run.starting_balance_usd, curve, trades, batch.start_ns, batch.end_ns, first_close, last_close
-    )
+        coin_fills = [f for f in fills if f.instrument_id == coin]
+        coin_cash = [FundingCash(paid_ns=f.paid_ns, amount=f.amount) for f in funding if f.instrument_id == coin]
+        coin_curve = marked_equity(
+            run.starting_balance_usd,
+            [MarkFill(f.filled_ns, f.side == OrderSide.BUY, f.quantity, f.price, f.fee) for f in coin_fills],
+            coin_cash,
+            marks,
+        )
+        curves.append(coin_curve)
+        closes.append((first_close, last_close))
+        spans += [t for t in (first_ns, last_ns) if t is not None]
+        coin_metrics = run_metrics(
+            run.starting_balance_usd,
+            [
+                ClosedTrade(p.last_event_ns, p.realized_pnl, p.fees_total, p.funding_total)
+                for p in closed
+                if p.instrument_id == coin
+            ],
+            coin_cash,
+            sum((f.fee for f in coin_fills), Decimal(0)),
+        )
+        coin_measures = candle_measures(
+            run.starting_balance_usd,
+            coin_curve,
+            outcomes(coin),
+            batch.start_ns,
+            batch.end_ns,
+            first_close,
+            last_close,
+        )
+        facts = unit.per_instrument[coin]
+        per_coin[coin] = CoinReport(
+            trade_count=coin_metrics.trade_count,
+            net_pnl=coin_metrics.net_pnl,
+            fees_total=coin_metrics.fees_total,
+            funding_total=coin_metrics.funding_total,
+            long=SideSplitReport(trades=coin_measures.long.trades, net_pnl=coin_measures.long.net_pnl),
+            short=SideSplitReport(trades=coin_measures.short.trades, net_pnl=coin_measures.short.net_pnl),
+            exposure=coin_measures.exposure,
+            benchmark=coin_measures.benchmark,
+            events=facts.events,
+            first_trade_ns=facts.first_trade_ns,
+            last_point_ns=facts.last_point_ns,
+            first_candle_ns=first_ns,
+            last_candle_ns=last_ns,
+            gaps=[(g.start_ns, g.end_ns, g.minutes) for g in gaps[coin]],
+            months=_coin_months(tree, batch.start_ns, batch.end_ns),
+            carried_funding_charges=carried[coin],
+            zero_volume_bars=facts.zero_volume_bars,
+        )
+    curve = combined_equity(run.starting_balance_usd, curves)
+    measures = candle_measures(run.starting_balance_usd, curve, outcomes(), batch.start_ns, batch.end_ns, *closes[0])
+    if run.multi:
+        measures = replace(measures, benchmark=mean_benchmark(closes))
     closed_positions = [
         ClosedPosition(
             opening.get(p.id, p.side == PositionSide.LONG),
@@ -368,8 +482,7 @@ def build_candle_bundle(
         )
         for p in closed
     ]
-    closes = marked_daily(curve, batch.start_ns, batch.end_ns, run.starting_balance_usd, closed_positions, cash)
-    gaps = _gaps(batch)
+    days = marked_daily(curve, batch.start_ns, batch.end_ns, run.starting_balance_usd, closed_positions, cash)
     run_row = RunRow(
         id=run_id,
         env=Env.DEMO,
@@ -389,7 +502,7 @@ def build_candle_bundle(
         sample=Sample.FULL,
         return_after_costs=metrics.return_after_costs,
         max_drawdown=metrics.max_drawdown,
-        risk_adjusted_ratio=daily_sharpe(closes, run.starting_balance_usd, chained=True),
+        risk_adjusted_ratio=daily_sharpe(days, run.starting_balance_usd, chained=True),
         ratio_kind=RATIO_KIND,
         win_rate=metrics.win_rate,
         trade_count=metrics.trade_count,
@@ -409,7 +522,7 @@ def build_candle_bundle(
         funding=funding,
         risk_events=risk_events,
         fill_stats=[],
-        daily_equity=daily_equity_rows(run_id, closes, EquityBasis.MARKED),
+        daily_equity=daily_equity_rows(run_id, days, EquityBasis.MARKED),
         measures=measures_row(
             run_id,
             EquityBasis.MARKED,
@@ -446,12 +559,14 @@ def build_candle_bundle(
         ruined_ns=unit.ruined_ns,
         first_decision_ns=first_decision,
         benchmark=measures.benchmark,
-        first_candle_ns=first_ns,
-        last_candle_ns=last_ns,
-        gaps=[(g.start_ns, g.end_ns, g.minutes) for g in gaps],
+        first_candle_ns=min(spans, default=None),
+        last_candle_ns=max(spans, default=None),
+        # Every coin's gaps in time order (each coin's own list is in run_config, AC-6).
+        gaps=sorted((g.start_ns, g.end_ns, g.minutes) for coin_gaps in gaps.values() for g in coin_gaps),
         months=_months(batch),
-        carried_funding_charges=carried,
+        carried_funding_charges=sum(carried.values()),
         zero_volume_bars=unit.zero_volume_bars,
+        per_instrument=per_coin,
     )
     return bundle, results, candle
 
@@ -601,21 +716,25 @@ def backtest(
     run = loaded.run
     if variants is None:
         variants = expand_candle_variants(run.slippage_bps, run.strategy.grid)
-    tree = candle_tree(settings.lab_catalog_dir)
+    trees = {coin: candle_tree(settings.lab_catalog_dir, coin) for coin in run.instruments}
     start_ns, end_ns = range_ns(loaded)
-    problems = range_problems(tree, start_ns, end_ns)
+    problems = [
+        f"{coin}: {problem}" if run.multi else problem
+        for coin, tree in trees.items()
+        for problem in range_problems(tree, start_ns, end_ns)
+    ]
     if problems:
         for problem in problems:
             print(f"lab backtest: {problem}", file=sys.stderr)
         log.error("lab_candles_missing", extra={"fields": {"problems": problems}})
         return EXIT_MISSING
     entry = registry_entry(run.strategy.name, test_strategies=settings.lab_test_strategies)
-    instrument = instrument_row(pinned_instrument(run.instrument_id))
+    instruments = [instrument_row(pinned_instrument(coin)) for coin in run.instruments]
     # One strategy version per distinct config; the slippage variants share base's.
-    configs = {v.name: {**run.strategy.config, **v.grid_point} for v in variants}
+    configs = {v.name: run.version_config(v.grid_point) for v in variants}
     version_ids = {
         name: store.prepare(
-            instrument, run.strategy.name, entry.kind, settings.git_commit, config, entry.frozen(config)
+            instruments, run.strategy.name, entry.kind, settings.git_commit, config, entry.frozen(config)
         )
         for name, config in configs.items()
     }
@@ -628,7 +747,7 @@ def backtest(
         folder=settings.lab_reports_dir / str(batch_id),
         start_ns=start_ns,
         end_ns=end_ns,
-        tree=tree,
+        trees=trees,
         top_quantile=packaged_thresholds().top_trades_quantile,
         study=None if study is None else study(version_ids),
     )

@@ -1,8 +1,9 @@
 """covers: spec 0015 AC-18 (the ranking: columns, stage, dashes, empty and error states), AC-19 (study detail,
-404, 422), AC-20 (promotion log, 50 per page, 422 below 1), AC-21 (paper progress)."""
+404, 422), AC-20 (promotion log, 50 per page, 422 below 1), AC-21 (paper progress); spec 0022 AC-14 (coin share)."""
 
 import re
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import uuid7
 
@@ -132,6 +133,16 @@ def test_a_study_detail_shows_its_figures_and_trials(redis, clock):
     assert "3 trials in this study" in page
     assert "Walk forward folds" in page
     assert (missing.status_code, bad.status_code) == (404, 422)
+    assert "Coin share of profit" not in page
+
+
+def test_a_multi_coin_study_detail_shows_the_coin_share(redis, clock):
+    ranking = replace(EVALUATED, metrics={**EVALUATED.metrics, "instrument_share": "0.553"})
+    detail = replace(DETAIL, ranking=ranking)
+    with _logged_in(redis, clock, read_study=lambda study_id: detail) as c:
+        page = c.get(f"/strategies/{EVALUATED.study_id}").text
+
+    assert re.search(r"Coin share of profit.*?55\.30 %", page, re.DOTALL)
 
 
 def test_the_promotion_log_pages_and_refuses_page_zero(redis, clock):

@@ -20,7 +20,7 @@ def _row(minute, o, h, lo, c, v="1", quiet=False):
 
 
 def _tree(tmp_path, rows, funding):
-    tree = candle_tree(tmp_path)
+    tree = candle_tree(tmp_path, "PF_XBTUSD.KRAKEN")
     tree.write_bars(SEP, rows)
     if funding:
         tree.write_funding(SEP, funding)

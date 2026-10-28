@@ -241,7 +241,8 @@ def check_concentration_folds(inputs: CandidateInputs, fold_nets: list[Decimal],
 
 
 def check_concentration(inputs: CandidateInputs, holdout: StudyRunInput, out: Outcome) -> None:
-    """``concentration_direction`` and ``concentration_top_trades`` over the holdout (AC-10)."""
+    """``concentration_direction``, ``concentration_top_trades`` (AC-10), and ``concentration_instrument``
+    (spec 0022 AC-13) over the holdout."""
     limit = inputs.thresholds.concentration_max_share
     if holdout.measures is not None:
         m = holdout.measures
@@ -253,3 +254,10 @@ def check_concentration(inputs: CandidateInputs, holdout: StudyRunInput, out: Ou
     if nets:
         top = sum(nets[: math.ceil(len(nets) * inputs.thresholds.top_trades_quantile)], Decimal(0))
         _share_check("concentration_top_trades", top, sum(nets, Decimal(0)), limit, "top_trades_share", out)
+    coin_limit = inputs.thresholds.instrument_max_share
+    by_coin: dict[str, Decimal] = {}
+    for t in inputs.holdout_trades:
+        by_coin[t.instrument_id] = by_coin.get(t.instrument_id, Decimal(0)) + t.net_pnl
+    if coin_limit is not None and len(by_coin) >= 2:
+        total = sum(by_coin.values(), Decimal(0))
+        _share_check("concentration_instrument", max(by_coin.values()), total, coin_limit, "instrument_share", out)

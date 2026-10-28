@@ -1,5 +1,6 @@
 """covers: spec 0015 AC-4 (the shared benchmark rule), AC-10, AC-12 (the checks, the inconsistent evidence
-reasons, and the fail before insufficient before pass rule)."""
+reasons, and the fail before insufficient before pass rule); spec 0022 AC-13 (``concentration_instrument``,
+and a single coin study judged the same under thresholds v1 and v2)."""
 
 import random
 from dataclasses import replace
@@ -26,6 +27,7 @@ from trading_core.versioning import package_root
 
 THRESHOLDS = parse_thresholds((package_root() / "gate" / "thresholds.toml").read_bytes())
 START = date(2025, 10, 19)
+BTC, ETH = "PF_XBTUSD.KRAKEN", "PF_ETHUSD.KRAKEN"
 
 
 def _daily(drift: float, days: int = 120, seed: int = 1, *, development: bool = False) -> tuple[DayEquity, ...]:
@@ -250,7 +252,7 @@ def test_a_drawdown_over_budget_and_a_one_sided_profit_fail():
 
 
 def test_a_few_outsized_trades_fail_the_top_trade_share():
-    trades = tuple(TradeReturn(Decimal(900 if i == 0 else 1), Decimal("0.001")) for i in range(100))
+    trades = tuple(TradeReturn(Decimal(900 if i == 0 else 1), Decimal("0.001"), BTC) for i in range(100))
 
     assert ("concentration_top_trades", "failed") in _codes(
         evaluate_candidate(replace(_inputs(), holdout_trades=trades))
@@ -321,3 +323,49 @@ def test_folds_and_bootstrap_bounds_are_stored_and_repeat_exactly():
     assert first.folds == second.folds
     assert first.metrics["bootstrap_lower_bound"] == second.metrics["bootstrap_lower_bound"]
     assert Decimal(str(first.metrics["bootstrap_lower_bound"])) > 0
+
+
+def _coin_trades(btc: int, eth: int) -> tuple[TradeReturn, ...]:
+    """50 trades on each coin summing to ``btc`` and ``eth`` USD, small enough to pass the top trades share."""
+    return tuple(
+        TradeReturn(Decimal(total) / 50, Decimal("0.001"), coin)
+        for coin, total in ((BTC, btc), (ETH, eth))
+        for _ in range(50)
+    )
+
+
+def test_one_coin_with_most_of_the_profit_fails_the_coin_share():
+    result = evaluate_candidate(replace(_inputs(), holdout_trades=_coin_trades(700, 300)))
+
+    assert ("concentration_instrument", "failed") in _codes(result)
+    assert result.metrics["instrument_share"] == "0.700000"
+
+
+def test_a_coin_share_under_the_bar_passes():
+    result = evaluate_candidate(replace(_inputs(), holdout_trades=_coin_trades(550, 450)))
+
+    assert "concentration_instrument" not in {check for check, _ in _codes(result)}
+    assert result.metrics["instrument_share"] == "0.550000"
+
+
+def test_one_coin_or_no_profit_skips_the_coin_share():
+    one_coin = tuple(replace(t, instrument_id=BTC) for t in _coin_trades(700, 300))
+    for trades in (one_coin, _coin_trades(-700, 300)):
+        result = evaluate_candidate(replace(_inputs(), holdout_trades=trades))
+
+        assert "concentration_instrument" not in {check for check, _ in _codes(result)}
+    assert "instrument_share" not in evaluate_candidate(replace(_inputs(), holdout_trades=one_coin)).metrics
+
+
+def test_a_single_coin_study_gets_the_same_verdict_under_v1_and_v2():
+    v1 = replace(THRESHOLDS, version=1, instrument_max_share=None)
+    trades = tuple(replace(t, instrument_id=BTC) for t in _coin_trades(700, 300))
+    for inputs in (_inputs(), _inputs(holdout_drift=-0.004), replace(_inputs(), holdout_trades=trades)):
+        under_v2 = evaluate_candidate(inputs)
+        under_v1 = evaluate_candidate(replace(inputs, thresholds=v1))
+
+        assert (under_v1.verdict, under_v1.reasons, under_v1.metrics) == (
+            under_v2.verdict,
+            under_v2.reasons,
+            under_v2.metrics,
+        )

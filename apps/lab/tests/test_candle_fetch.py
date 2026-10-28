@@ -1,4 +1,5 @@
-"""covers: spec 0014 AC-1, AC-2, AC-2a, AC-3, AC-4, AC-5 (fetch-candles and import-funding, happy path and refusals)."""
+"""covers: spec 0014 AC-1, AC-2, AC-2a, AC-3, AC-4, AC-5 (fetch-candles and import-funding, happy path and refusals);
+spec 0022 AC-2 (``--instrument``: ETH's own symbol, tree, export member, and the unpinned id refusal)."""
 
 import io
 import json
@@ -12,7 +13,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-from lab.candle_fetch import CANDLES_PATH, FUNDING_PATH, candle_tree, fetch_candles
+from lab.candle_fetch import FUNDING_PATH, candle_tree, candles_path, fetch_candles
 from lab.funding_import import import_funding
 from lab.kraken_http import KrakenHttp
 from lab.settings import LabSettings
@@ -25,6 +26,7 @@ D = Decimal
 AUG, SEP, OCT = Month(2026, 8), Month(2026, 9), Month(2026, 10)
 NOW = OCT.start_ns + 17 * 24 * HOUR_NS  # 2026-10-18, so August and September are complete
 PAGE = 3
+CANDLES_PATH = candles_path("PF_XBTUSD")
 
 
 def _candle(month, minute, close="100", volume="1.5", high="101", low="99"):
@@ -47,9 +49,10 @@ def _iso(ts_ns):
 class FakeKraken:
     """Serves candles in pages of ``PAGE`` and a funding body, recording every URL."""
 
-    def __init__(self, candles, rates):
+    def __init__(self, candles, rates, symbol="PF_XBTUSD"):
         self.candles = candles
         self.rates = rates
+        self.symbol = symbol
         self.urls = []
 
     def __call__(self, request, timeout):
@@ -57,9 +60,10 @@ class FakeKraken:
         self.urls.append(url.path)
         query = {k: int(v[0]) if k != "symbol" else v[0] for k, v in parse_qs(url.query).items()}
         if url.path == FUNDING_PATH:
+            assert query["symbol"] == self.symbol
             body = {"result": "success", "rates": self.rates}
         else:
-            assert url.path == CANDLES_PATH
+            assert url.path == candles_path(self.symbol)
             inside = [c for c in self.candles if query["from"] * 1000 <= c["time"] < query["to"] * 1000]
             body = {"candles": inside[:PAGE], "more_candles": len(inside) > PAGE}
         return io.BytesIO(json.dumps(body).encode())
@@ -74,10 +78,11 @@ def settings(tmp_path):
     return lab_settings(tmp_path / "catalog", tmp_path / "reports")
 
 
-def _run(settings, kraken, months, *, refetch=False, waits=None, clock=lambda: NOW):
+def _run(settings, kraken, months, *, refetch=False, waits=None, clock=lambda: NOW, instrument_id=None):
     sleep = (waits if waits is not None else []).append
     http = KrakenHttp("https://kraken.test", 0, opener=kraken, sleep=sleep)
-    return fetch_candles(settings, months, refetch=refetch, http=http, clock=clock)
+    coin = {} if instrument_id is None else {"instrument_id": instrument_id}
+    return fetch_candles(settings, months, refetch=refetch, http=http, clock=clock, **coin)
 
 
 class Flaky:
@@ -106,7 +111,7 @@ def test_fetch_writes_bars_funding_gaps_and_manifest_then_skips(settings):
 
     assert _run(settings, kraken, [SEP]) == 0
 
-    tree = candle_tree(settings.lab_catalog_dir)
+    tree = candle_tree(settings.lab_catalog_dir, "PF_XBTUSD.KRAKEN")
     manifest = tree.read_manifest(SEP)
     assert manifest is not None
     assert (manifest.bar_rows, manifest.volume_rounded_rows, manifest.zero_volume_trade_rows) == (9, 1, 1)
@@ -127,7 +132,7 @@ def test_fetch_writes_bars_funding_gaps_and_manifest_then_skips(settings):
 
 def test_the_running_month_is_not_complete(settings):
     assert _run(settings, FakeKraken([_candle(OCT, 0)], []), [OCT]) == 0
-    manifest = candle_tree(settings.lab_catalog_dir).read_manifest(OCT)
+    manifest = candle_tree(settings.lab_catalog_dir, "PF_XBTUSD.KRAKEN").read_manifest(OCT)
     assert manifest is not None
     assert not manifest.complete
 
@@ -135,7 +140,7 @@ def test_the_running_month_is_not_complete(settings):
 def test_a_bad_volume_writes_no_month_and_keeps_the_ones_before(settings):
     candles = [_candle(AUG, 0), _candle(SEP, 0, volume="0.12345")]
     assert _run(settings, FakeKraken(candles, []), [AUG, SEP]) == 1
-    tree = candle_tree(settings.lab_catalog_dir)
+    tree = candle_tree(settings.lab_catalog_dir, "PF_XBTUSD.KRAKEN")
     assert tree.read_manifest(AUG) is not None
     assert tree.read_manifest(SEP) is None
     assert not tree.bar_file(SEP).exists()
@@ -163,7 +168,7 @@ def test_429_and_503_are_retried_with_backoff(settings, caplog):
     retries = [r.fields for r in caplog.records if r.getMessage() == "lab_fetch_retry"]
     assert [(f["status"], f["attempt"], f["wait_s"]) for f in retries] == [(429, 1, 1), (503, 2, 2)]
     assert retries[0]["url"] == "https://kraken.test" + FUNDING_PATH  # no query string
-    assert candle_tree(settings.lab_catalog_dir).read_manifest(SEP) is not None
+    assert candle_tree(settings.lab_catalog_dir, "PF_XBTUSD.KRAKEN").read_manifest(SEP) is not None
 
 
 def test_a_429_storm_exits_1_and_keeps_the_months_before(settings, caplog):
@@ -182,7 +187,7 @@ def test_a_429_storm_exits_1_and_keeps_the_months_before(settings, caplog):
     assert waits == [1, 2, 4, 8, 16]
     [failed] = [r.fields for r in caplog.records if r.getMessage() == "lab_fetch_failed"]
     assert (failed["url"], failed["status"]) == ("https://kraken.test" + CANDLES_PATH, 429)
-    tree = candle_tree(settings.lab_catalog_dir)
+    tree = candle_tree(settings.lab_catalog_dir, "PF_XBTUSD.KRAKEN")
     assert tree.read_manifest(AUG) is not None
     assert tree.read_manifest(SEP) is None
 
@@ -204,13 +209,13 @@ def test_the_catalog_cap_exits_3_before_the_month_is_requested(settings):
     small = settings.model_copy(update={"lab_catalog_cap_gb": D("0.05")})  # under one 0.1 GB month
     assert _run(small, kraken, [SEP]) == 3
     assert kraken.urls == [FUNDING_PATH]
-    assert candle_tree(settings.lab_catalog_dir).read_manifest(SEP) is None
+    assert candle_tree(settings.lab_catalog_dir, "PF_XBTUSD.KRAKEN").read_manifest(SEP) is None
 
 
 def test_refetch_fetches_a_complete_month_again(settings):
     candles = [_candle(SEP, m) for m in range(3)]
     assert _run(settings, FakeKraken(candles, []), [SEP]) == 0
-    tree = candle_tree(settings.lab_catalog_dir)
+    tree = candle_tree(settings.lab_catalog_dir, "PF_XBTUSD.KRAKEN")
     first, rows = tree.read_manifest(SEP), tree.read_bars(SEP)
 
     later = FakeKraken(candles, [])
@@ -234,7 +239,7 @@ def test_a_quiet_first_row_is_checked_against_the_previous_month(settings, caplo
     # With August stored (last close 100), a quiet September start at 99 is a bad row.
     candles = [_candle(AUG, 0, close="100"), _quiet(SEP, 0, "99"), _candle(SEP, 1)]
     assert _run(settings, FakeKraken(candles, []), [AUG, SEP], refetch=True) == 1
-    tree = candle_tree(settings.lab_catalog_dir)
+    tree = candle_tree(settings.lab_catalog_dir, "PF_XBTUSD.KRAKEN")
     assert tree.read_manifest(SEP) is not None  # the committed September stays as it was
     assert tree.read_bars(SEP)[0].open == D(100)
 
@@ -248,7 +253,9 @@ def test_a_refetch_that_breaks_the_next_months_quiet_rows_exits_1_but_commits(se
     [bad] = [r.fields for r in caplog.records if r.getMessage() == "lab_candles_bad_rows"]
     assert bad["scope"] == "2026-09"
     assert [row["field"] for row in bad["rows"]] == ["quiet"]
-    assert candle_tree(settings.lab_catalog_dir).read_bars(AUG)[-1].close == D(101)  # August still committed
+    assert candle_tree(settings.lab_catalog_dir, "PF_XBTUSD.KRAKEN").read_bars(AUG)[-1].close == D(
+        101
+    )  # August still committed
 
 
 def test_main_takes_refetch():
@@ -281,7 +288,7 @@ def test_import_merges_four_hour_and_hourly_rows_and_twice_adds_nothing(settings
     path = _export(tmp_path, rows)
 
     assert import_funding(settings, path) == 0
-    tree = candle_tree(settings.lab_catalog_dir)
+    tree = candle_tree(settings.lab_catalog_dir, "PF_XBTUSD.KRAKEN")
     stored = tree.read_funding(Month(2022, 9))
     # The 4 h row is charged 4 h after its stamp, at its own rate (gate G-4: no x 4).
     assert [(r.charge_ns, r.rate, r.source) for r in stored] == [
@@ -313,7 +320,9 @@ def test_import_bad_rows_and_disagreements_exit_1_with_nothing_written(settings,
 
     assert import_funding(settings, _export(tmp_path, ["2026-09-01 00:00:00,PF_XBTUSD,0,0.0001"])) == 0
     assert import_funding(settings, _export(tmp_path, ["2026-09-01 00:00:00,PF_XBTUSD,0,0.0002"])) == 1
-    assert [r.rate for r in candle_tree(settings.lab_catalog_dir).read_funding(SEP)] == [D("0.0001")]
+    assert [r.rate for r in candle_tree(settings.lab_catalog_dir, "PF_XBTUSD.KRAKEN").read_funding(SEP)] == [
+        D("0.0001")
+    ]
 
 
 def test_the_kraken_url_must_be_https():
@@ -326,7 +335,7 @@ def test_off_tick_extremes_commit_rounded_and_are_logged(settings, caplog):
     caplog.set_level(logging.INFO)
     candles = [_candle(SEP, 0, high="101.7"), _candle(SEP, 1, low="98.99999999999"), _candle(SEP, 2)]
     assert _run(settings, FakeKraken(candles, []), [SEP]) == 0
-    tree = candle_tree(settings.lab_catalog_dir)
+    tree = candle_tree(settings.lab_catalog_dir, "PF_XBTUSD.KRAKEN")
     manifest = tree.read_manifest(SEP)
     assert manifest is not None
     assert manifest.price_rounded_rows == 2
@@ -342,7 +351,7 @@ def test_off_tick_extremes_commit_rounded_and_are_logged(settings, caplog):
 def test_a_month_with_an_outdated_manifest_is_fetched_again_without_refetch(settings):
     candles = [_candle(SEP, m) for m in range(3)]
     assert _run(settings, FakeKraken(candles, []), [SEP]) == 0
-    tree = candle_tree(settings.lab_catalog_dir)
+    tree = candle_tree(settings.lab_catalog_dir, "PF_XBTUSD.KRAKEN")
     path = tree.manifest_file(SEP)
     data = json.loads(path.read_text())
     del data["price_rounded_rows"]
@@ -354,3 +363,73 @@ def test_a_month_with_an_outdated_manifest_is_fetched_again_without_refetch(sett
     manifest = tree.read_manifest(SEP)
     assert manifest is not None
     assert manifest.price_rounded_rows == 0
+
+
+ETH = "PF_ETHUSD.KRAKEN"
+
+
+def test_an_eth_fetch_uses_its_own_symbol_tick_and_tree_and_leaves_btc_alone(settings):
+    candles = [
+        _candle(SEP, 0, close="2500.20000000001", high="2501.04", low="2499.96") | {"open": "2500"},
+        _candle(SEP, 1, close="2500.3", high="2500.5", low="2500.1") | {"open": "2500.2"},
+    ]
+    rates = [_rate(SEP.start_ns, "0.00001")]
+    kraken = FakeKraken(candles, rates, symbol="PF_ETHUSD")
+
+    assert _run(settings, kraken, [SEP], instrument_id=ETH) == 0
+
+    assert kraken.urls == [FUNDING_PATH, candles_path("PF_ETHUSD")]
+    eth = candle_tree(settings.lab_catalog_dir, ETH)
+    bars = eth.read_bars(SEP)
+    # ETH's pinned tick is 0.1: a close within noise snaps to it, an off tick high rounds down
+    # and an off tick low up (spec 0014 AC-1).
+    assert [(b.close, b.high, b.low) for b in bars] == [
+        (D("2500.2"), D("2501.0"), D("2500.0")),
+        (D("2500.3"), D("2500.5"), D("2500.1")),
+    ]
+    assert eth.read_manifest(SEP) is not None
+    assert [r.rate for r in eth.read_funding(SEP)] == [D("0.00001")]
+    btc = candle_tree(settings.lab_catalog_dir, "PF_XBTUSD.KRAKEN")
+    assert btc.read_manifest(SEP) is None
+    assert btc.read_funding(SEP) == []
+
+
+def test_an_eth_import_reads_only_its_member_and_tradeable(settings, tmp_path):
+    rows = ["2026-09-01 00:00:00,PF_ETHUSD,0,0.00003"]
+    path = _export(tmp_path, rows, member="exports/PF_ETHUSD.csv")
+
+    assert import_funding(settings, path) == 64  # the BTC default looks for exports/PF_XBTUSD.csv
+    assert import_funding(settings, path, ETH) == 0
+    assert [r.rate for r in candle_tree(settings.lab_catalog_dir, ETH).read_funding(SEP)] == [D("0.00003")]
+    assert candle_tree(settings.lab_catalog_dir, "PF_XBTUSD.KRAKEN").read_funding(SEP) == []
+
+    btc_rows = _export(tmp_path, ["2026-09-01 00:00:00,PF_XBTUSD,0,0.0001"], member="exports/PF_ETHUSD.csv")
+    assert import_funding(settings, btc_rows, ETH) == 64
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["fetch-candles", "2026-09", "2026-09", "--instrument", "PF_SOLUSD.KRAKEN"],
+        ["import-funding", "/nonexistent/export.zip", "--instrument", "PF_SOLUSD.KRAKEN"],
+        ["import-funding", "/nonexistent/export.zip", "--instrument", "../runs/donchian_4h"],
+    ],
+    ids=["fetch-candles", "import-funding", "a path"],
+)
+def test_an_unpinned_instrument_exits_64_before_booting(monkeypatch, capsys, argv):
+    from lab.main import main
+
+    monkeypatch.setenv("TRADING_ENV", "demo")
+    monkeypatch.setattr("lab.main.boot", lambda *a, **k: pytest.fail("booted"))
+    with pytest.raises(SystemExit) as exit_:
+        main(argv)
+    assert exit_.value.code == 64
+    assert "no pinned instrument" in capsys.readouterr().err
+
+
+def test_the_instrument_flag_defaults_to_btc():
+    from lab.main import parser
+
+    assert parser().parse_args(["fetch-candles", "2026-09", "2026-09"]).instrument == "PF_XBTUSD.KRAKEN"
+    assert parser().parse_args(["import-funding", "x.zip"]).instrument == "PF_XBTUSD.KRAKEN"
+    assert parser().parse_args(["import-funding", "x.zip", "--instrument", ETH]).instrument == ETH

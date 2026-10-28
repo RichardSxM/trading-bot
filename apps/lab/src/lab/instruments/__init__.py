@@ -17,11 +17,20 @@ class UnknownInstrumentError(LookupError):
 
 def _definition(instrument_id: str) -> dict[str, object]:
     resource = resources.files(__name__) / f"{instrument_id}.json"
-    if not resource.is_file():
+    if "/" in instrument_id or "\\" in instrument_id or instrument_id.startswith(".") or not resource.is_file():
         raise UnknownInstrumentError(f"no pinned instrument for {instrument_id}")
     raw: dict[str, object] = json.loads(resource.read_text(encoding="utf-8"))
     raw.pop("_note", None)
     return raw
+
+
+def is_pinned(instrument_id: str) -> bool:
+    """Whether a pinned definition exists for the instrument id."""
+    try:
+        _definition(instrument_id)
+    except UnknownInstrumentError:
+        return False
+    return True
 
 
 def pinned_instrument(instrument_id: str) -> CryptoPerpetual:

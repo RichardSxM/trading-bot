@@ -78,7 +78,7 @@ def _plan(catalog, name, **overrides):
     plan = CandleUnitPlan(
         variant="base",
         candles_root=catalog / "candles",
-        instrument_id="PF_XBTUSD.KRAKEN",
+        instrument_ids=("PF_XBTUSD.KRAKEN",),
         start_ns=FEB.start_ns,
         end_ns=FEB.start_ns + DAYS * DAY,
         maker_fee=D("0.0002"),

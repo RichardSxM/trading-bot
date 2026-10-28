@@ -32,10 +32,17 @@ FUNDING_CARRY_MAX_NS: Final = 3 * HOUR_NS
 CANDLE_STALE_CHECK_S: Final = 60
 # A volume this close to a multiple of the size step is float noise and is rounded to it (AC-1).
 VOLUME_NOISE: Final = Decimal("1e-8")
+# A large volume's float noise grows with it (a 64 bit float keeps about 16 digits), so the bound is
+# also at least this share of the volume: PEPE's 257548000.0000001 is noise. Under 10,000 units it
+# is below VOLUME_NOISE, so BTC and ETH volumes meet the same bound as before.
+VOLUME_NOISE_SHARE: Final = Decimal("1e-12")
 # A price this close to a tick is float noise and is snapped to it (AC-1), the same bound as volume.
 PRICE_NOISE: Final = Decimal("1e-8")
 # Five or more consecutive missing minutes make a gap row (AC-4).
 GAP_MIN_MINUTES: Final = 5
+# More candles than this in one month with an off tick open or close looks like a real tick change, so
+# they are bad rows instead of rounded (spec 0022 AC-2a). A rule of thumb: ETH shows at most 2 a month.
+OFF_TICK_BODY_MAX: Final = 10
 
 FundingSource = Literal["export", "api"]
 
@@ -134,26 +141,30 @@ def expected_charge_times(start_ns: int, end_ns: int) -> list[int]:
 
 def snap_volume(volume: Decimal, step: Decimal) -> Decimal | None:
     """The volume on the size step: itself when on it, the nearest step (``ROUND_HALF_EVEN``) when
-    within ``VOLUME_NOISE``, or ``None`` when further off (a bad row, AC-3)."""
+    within ``VOLUME_NOISE`` (or ``VOLUME_NOISE_SHARE`` of the volume, when larger), or ``None`` when
+    further off (a bad row, AC-3)."""
     snapped = (volume / step).quantize(Decimal(1), rounding=ROUND_HALF_EVEN) * step
     snapped = snapped.quantize(step)
-    if abs(snapped - volume) > VOLUME_NOISE:
+    if abs(snapped - volume) > max(VOLUME_NOISE, abs(volume) * VOLUME_NOISE_SHARE):
         return None
     return snapped
 
 
-def round_price(raw: Decimal, tick: Decimal, name: str) -> Decimal | None:
-    """The stored price of one candle field (AC-1): the nearest tick (``ROUND_HALF_EVEN``) when within
-    ``PRICE_NOISE``; further off, a ``high`` rounds down and a ``low`` up to the tick (toward the
-    candle's body), and an ``open`` or ``close`` gives ``None`` (a bad row, AC-3)."""
+def is_off_tick(raw: Decimal, tick: Decimal) -> bool:
+    """A price further than ``PRICE_NOISE`` from every tick (not float noise)."""
     nearest = (raw / tick).quantize(Decimal(1), rounding=ROUND_HALF_EVEN) * tick
-    if abs(nearest - raw) <= PRICE_NOISE:
-        return nearest.quantize(tick)
-    if name == "high":
+    return abs(nearest - raw) > PRICE_NOISE
+
+
+def round_price(raw: Decimal, tick: Decimal, name: str) -> Decimal:
+    """The rounded price of one candle field (AC-1, spec 0022 AC-2a): the nearest tick
+    (``ROUND_HALF_EVEN``) when within ``PRICE_NOISE`` and for an off tick ``open`` or ``close``;
+    an off tick ``high`` rounds down and a ``low`` up to the tick (toward the candle's body)."""
+    if name == "high" and is_off_tick(raw, tick):
         return ((raw / tick).to_integral_value(rounding=ROUND_FLOOR) * tick).quantize(tick)
-    if name == "low":
+    if name == "low" and is_off_tick(raw, tick):
         return ((raw / tick).to_integral_value(rounding=ROUND_CEILING) * tick).quantize(tick)
-    return None
+    return ((raw / tick).quantize(Decimal(1), rounding=ROUND_HALF_EVEN) * tick).quantize(tick)
 
 
 def is_quiet(open_: Decimal, high: Decimal, low: Decimal, close: Decimal, volume: Decimal) -> bool:
@@ -193,7 +204,7 @@ class RawCandle:
 
 @dataclass(frozen=True)
 class PriceRounding:
-    """One real rounding of an off tick high or low (not a noise snap), for ``lab_candles_price_rounded``."""
+    """One real rounding of an off tick price (not a noise snap), for ``lab_candles_price_rounded``."""
 
     open_ns: int
     field: str
@@ -227,6 +238,19 @@ def _quiet_problem(row: CandleRow, prev_close: Decimal) -> tuple[str, str, str] 
 
 
 PRICE_FIELDS: Final = ("open", "high", "low", "close")
+BODY_FIELDS: Final = ("open", "close")
+
+
+def _has_off_tick_body(candle: RawCandle, tick: Decimal) -> bool:
+    return any(is_off_tick(Decimal(getattr(candle, name)), tick) for name in BODY_FIELDS)
+
+
+@dataclass(frozen=True)
+class _Previous:
+    """The latest earlier stored candle's close, raw and stored, for the flat repeat rule (spec 0022 AC-2a)."""
+
+    raw_close: Decimal
+    close: Decimal
 
 
 @dataclass(frozen=True)
@@ -243,21 +267,48 @@ class _Stored:
         return (*self.prices, self.volume)
 
 
-def _store(candle: RawCandle, open_ns: int, tick: Decimal, step: Decimal) -> _Stored:
-    prices: list[Decimal | None] = []
-    roundings: list[PriceRounding] = []
+def _store(
+    candle: RawCandle, open_ns: int, tick: Decimal, step: Decimal, round_body: bool, previous: _Previous | None
+) -> _Stored:
+    """Round one candle: highs and lows toward the body, and with ``round_body`` an off tick open or
+    close to the nearest tick kept inside the stored low to high (spec 0022 AC-2a). Without
+    ``round_body`` (past ``OFF_TICK_BODY_MAX``) an off tick open or close is a bad row."""
+    raws = {name: Decimal(getattr(candle, name)) for name in PRICE_FIELDS}
+    volume = snap_volume(Decimal(candle.volume), step)
+    flat = raws["open"]
+    if (
+        round_body
+        and previous is not None
+        and volume == 0
+        and is_off_tick(flat, tick)
+        and all(raw == flat for raw in raws.values())
+        and flat == previous.raw_close
+    ):
+        # A quiet repeat of an off tick close stays flat at the previous stored close.
+        roundings = tuple(PriceRounding(open_ns, name, getattr(candle, name), previous.close) for name in PRICE_FIELDS)
+        return _Stored((previous.close,) * 4, volume, roundings, False)
+    rounded: dict[str, Decimal | None] = {name: round_price(raw, tick, name) for name, raw in raws.items()}
+    high, low = rounded["high"], rounded["low"]
+    for name in BODY_FIELDS:
+        if not is_off_tick(raws[name], tick):
+            continue
+        price = rounded[name]
+        if not round_body:
+            rounded[name] = None
+        elif price is not None and high is not None and low is not None and low <= high:
+            rounded[name] = min(max(price, low), high)
+    roundings_list: list[PriceRounding] = []
     snapped = False
     for name in PRICE_FIELDS:
-        text: str = getattr(candle, name)
-        raw = Decimal(text)
-        stored = round_price(raw, tick, name)
-        prices.append(stored)
-        if stored is not None and stored != raw:
-            if abs(stored - raw) <= PRICE_NOISE:
-                snapped = True
-            else:
-                roundings.append(PriceRounding(open_ns, name, text, stored))
-    return _Stored(tuple(prices), snap_volume(Decimal(candle.volume), step), tuple(roundings), snapped)
+        stored = rounded[name]
+        if stored is None or stored == raws[name]:
+            continue
+        if abs(stored - raws[name]) <= PRICE_NOISE:
+            snapped = True
+        else:
+            roundings_list.append(PriceRounding(open_ns, name, getattr(candle, name), stored))
+    prices = tuple(rounded[name] for name in PRICE_FIELDS)
+    return _Stored(prices, volume, tuple(roundings_list), snapped)
 
 
 def build_candles(
@@ -265,15 +316,16 @@ def build_candles(
 ) -> CandleBuild:
     """Turn a month's raw candles into rows, sorted by close time, one per minute (AC-1, AC-3).
 
-    Candles outside the month are dropped. The four prices are rounded first (``round_price``), and
-    every other check runs on the stored values: an open or close off the tick by more than
-    ``PRICE_NOISE``, a price at or below zero, a volume off the step by more than ``VOLUME_NOISE``, a
-    time off the whole minute, a high below the open or close, a low above them, two copies of one
-    minute whose stored values differ (copies that differ only in noise are one row), or a quiet
-    minute not flat at the close of the latest earlier candle are bad rows. For the month's first
-    rows that close is ``prev_close`` (the previous month's last stored candle); when it is ``None``
-    they are only checked flat and ``quiet_unchecked`` says so. A candle that is not a bad row and had
-    any price snapped or rounded counts once in ``price_rounded_rows``.
+    Candles outside the month are dropped. The four prices are rounded first (``_store``, spec 0022
+    AC-2a), and every other check runs on the stored values: an open or close off the tick on more
+    than ``OFF_TICK_BODY_MAX`` of the month's candles, a price at or below zero, a volume off the step
+    by more than ``VOLUME_NOISE``, a time off the whole minute, a high below the open or close, a low
+    above them (also every candle wholly inside one tick), two copies of one minute whose stored
+    values differ (copies that differ only in noise are one row), or a quiet minute not flat at the
+    close of the latest earlier candle are bad rows. For the month's first rows that close is
+    ``prev_close`` (the previous month's last stored candle); when it is ``None`` they are only
+    checked flat and ``quiet_unchecked`` says so. A candle that is not a bad row and had any price
+    snapped or rounded counts once in ``price_rounded_rows``.
     """
     build = CandleBuild()
     copies: dict[int, list[RawCandle]] = {}
@@ -287,13 +339,16 @@ def build_candles(
         seen = copies.setdefault(open_ns, [])
         if candle not in seen:
             seen.append(candle)
+    off_tick_bodies = sum(any(_has_off_tick_body(c, tick) for c in seen) for seen in copies.values())
+    round_body = off_tick_bodies <= OFF_TICK_BODY_MAX
     last_close = prev_close
+    previous: _Previous | None = None
     for open_ns in sorted(copies):
         candle, *others = copies[open_ns]
-        stored = _store(candle, open_ns, tick, step)
+        stored = _store(candle, open_ns, tick, step, round_body, previous)
         bad: list[tuple[str, str, str]] = []
         for other in others:
-            if _store(other, open_ns, tick, step).values != stored.values:
+            if _store(other, open_ns, tick, step, round_body, previous).values != stored.values:
                 bad.append((str(open_ns), "duplicate", f"{candle} vs {other}"))
         bad.extend(
             (str(open_ns), name, getattr(candle, name))
@@ -323,6 +378,7 @@ def build_candles(
         elif quiet and last_close is not None and (problem := _quiet_problem(row, last_close)):
             bad.append(problem)
         last_close = c
+        previous = _Previous(Decimal(candle.close), c)
         build.bad.extend(bad)
         if not bad and (stored.roundings or stored.snapped):
             build.price_rounded_rows += 1

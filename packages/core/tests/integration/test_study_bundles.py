@@ -1,12 +1,13 @@
 """covers: spec 0015 AC-2 (a study name is bound to its plan), AC-3 (study rows in the bundle), AC-5 (one
-completed holdout per frozen hash and per study), AC-7 (import is idempotent and refuses a contradiction)."""
+completed holdout per frozen hash and per study), AC-7 (import is idempotent and refuses a contradiction);
+spec 0022 AC-12 (import upserts every coin)."""
 
 from dataclasses import replace
 from decimal import Decimal
 from uuid import uuid4, uuid7
 
 import pytest
-from bundle_factory import study, version
+from bundle_factory import eth_instrument, instrument, study, version
 from bundle_factory import study_bundle as _study_bundle
 from sqlalchemy import func, insert, select
 from sqlalchemy.exc import IntegrityError
@@ -106,6 +107,30 @@ def test_a_streamed_row_of_another_run_is_refused(session: Session, tmp_path):
 
     with pytest.raises(ForeignRunError, match="fills row"):
         repository.import_run_bundle(session, head, file)
+
+
+def test_every_coin_of_a_bundle_is_upserted_before_its_rows(session: Session):
+    """Spec 0022 AC-12: the union of ``instrument`` and ``instruments``; an equal row is a no op."""
+    the_study, the_version = _fresh(f"coins-{uuid4().hex[:8]}")
+    coin = eth_instrument(instrument_id=f"PF_T{uuid4().hex[:6].upper()}USD.KRAKEN")
+    bundle = replace(study_bundle(the_study, the_version), instruments=(coin, instrument(Decimal("0.5"))))
+
+    assert repository.import_run_bundle(session, bundle) is True
+    assert repository.import_run_bundle(session, bundle) is False
+    session.commit()
+
+    assert _count(session, models.Instrument, instrument_id=coin.instrument_id) == 1
+
+
+def test_a_coin_stored_with_other_specs_refuses_the_file(session: Session):
+    coin = eth_instrument(instrument_id=f"PF_T{uuid4().hex[:6].upper()}USD.KRAKEN")
+    repository.upsert_instrument(session, coin)
+    the_study, the_version = _fresh(f"coin-conflict-{uuid4().hex[:8]}")
+    bundle = replace(study_bundle(the_study, the_version), instruments=(replace(coin, tick_size=Decimal("0.05")),))
+
+    with pytest.raises(RecordConflictError):
+        repository.import_run_bundle(session, bundle)
+    assert _count(session, models.StrategyRun, id=bundle.run.id) == 0
 
 
 def test_a_changed_row_under_the_same_key_is_a_conflict(session: Session):
