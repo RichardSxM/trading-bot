@@ -111,9 +111,9 @@ def test_build_candles_rounds_flags_quiet_and_dedupes():
 
 
 def test_build_candles_lists_bad_rows():
-    raw = [_raw(0, o="100.5"), _raw(1, v="0.12345"), _raw(2), _raw(2, c="99")]
+    raw = [_raw(0, o="-1"), _raw(1, v="0.12345"), _raw(2), _raw(2, c="99")]
     bad = build_candles(raw, SEP, TICK, STEP).bad
-    assert [field for _, field, _ in bad] == ["open", "volume", "duplicate"]
+    assert [field for _, field, _ in bad] == ["open", "low", "volume", "duplicate"]
 
 
 @pytest.mark.parametrize(
@@ -124,8 +124,9 @@ def test_build_candles_lists_bad_rows():
         ("39522.99999999999", "high", D(39523)),
         ("42938.99999999999", "low", D(42939)),
         ("100.00000001", "open", D(100)),
-        ("100.0000001", "open", None),
-        ("100.5", "close", None),
+        ("100.0000001", "open", D(100)),
+        ("100.5", "close", D(100)),
+        ("101.5", "close", D(102)),
         ("101", "high", D(101)),
     ],
 )
@@ -151,9 +152,72 @@ def test_off_tick_extremes_are_stored_rounded_and_counted_once():
 
 
 def test_a_bad_row_is_never_counted_as_rounded():
-    build = build_candles([_raw(0, o="100.5", h="101.7")], SEP, TICK, STEP)
-    assert [field for _, field, _ in build.bad] == ["open"]
+    build = build_candles([_raw(0, h="101.7", v="0.12345")], SEP, TICK, STEP)
+    assert [field for _, field, _ in build.bad] == ["volume"]
     assert (build.price_rounded_rows, build.price_roundings, build.rows) == (0, [], [])
+
+
+ETH_TICK, ETH_STEP = D("0.1"), D("0.001")
+AUG_CLOSE = "1660.691517005051"  # 2023-08-17 22:55 UTC, also the 22:56 open
+OCT_CLOSE = "1617.853075194912"  # 2023-10-16 13:30 UTC, also the 13:31 open and low
+
+
+def test_off_tick_bodies_round_to_the_nearest_tick_inside_the_stored_range():
+    """covers: spec 0022 AC-2a."""
+    raw = [
+        _raw(0, o="1650", h=AUG_CLOSE, lo="1639.7", c=AUG_CLOSE, v="135"),
+        _raw(1, o=AUG_CLOSE, h="1692", lo="1658.7", c="1690", v="1348"),
+        _raw(2, o="1620", h="1643.2", lo="1603.1", c=OCT_CLOSE, v="10"),
+        _raw(3, o=OCT_CLOSE, h="1630", lo=OCT_CLOSE, c="1625", v="10"),
+    ]
+    build = build_candles(raw, SEP, ETH_TICK, ETH_STEP)
+    assert build.bad == []
+    assert [(r.open, r.high, r.low, r.close) for r in build.rows] == [
+        (D("1650.0"), D("1660.6"), D("1639.7"), D("1660.6")),
+        (D("1660.7"), D("1692.0"), D("1658.7"), D("1690.0")),
+        (D("1620.0"), D("1643.2"), D("1603.1"), D("1617.9")),
+        (D("1617.9"), D("1630.0"), D("1617.9"), D("1625.0")),
+    ]
+    assert build.price_rounded_rows == 4
+    assert [(r.field, r.stored) for r in build.price_roundings] == [
+        ("high", D("1660.6")),
+        ("close", D("1660.6")),
+        ("open", D("1660.7")),
+        ("close", D("1617.9")),
+        ("open", D("1617.9")),
+        ("low", D("1617.9")),
+    ]
+
+
+def test_a_quiet_repeat_of_an_off_tick_close_stays_flat_at_the_previous_close():
+    """covers: spec 0022 AC-2a."""
+    flat = dict(o=AUG_CLOSE, h=AUG_CLOSE, lo=AUG_CLOSE, c=AUG_CLOSE, v="0")
+    raw = [_raw(0, o="1650", h=AUG_CLOSE, lo="1639.7", c=AUG_CLOSE, v="135"), _raw(1, **flat)]
+    build = build_candles(raw, SEP, ETH_TICK, ETH_STEP)
+    assert build.bad == []
+    quiet = build.rows[1]
+    assert (quiet.quiet, quiet.open, quiet.high, quiet.low, quiet.close) == (True, *(D("1660.6"),) * 4)
+    assert build.price_rounded_rows == 2
+
+
+def test_a_candle_inside_one_tick_is_a_bad_row():
+    """covers: spec 0022 AC-2a."""
+    raw = [_raw(0, o="1660.62", h="1660.68", lo="1660.61", c="1660.65", v="1")]
+    build = build_candles(raw, SEP, ETH_TICK, ETH_STEP)
+    assert [field for _, field, _ in build.bad] == ["low"]
+    assert build.price_rounded_rows == 0
+
+
+@pytest.mark.parametrize(("count", "bad"), [(10, 0), (11, 22)])
+def test_off_tick_bodies_past_the_cap_are_bad_rows(count, bad):
+    """covers: spec 0022 AC-2a (OFF_TICK_BODY_MAX is 10)."""
+    raw = [_raw(m, o="1650.04", h="1651", lo="1649", c="1650.06", v="1") for m in range(count)]
+    build = build_candles(raw, SEP, ETH_TICK, ETH_STEP)
+    assert len(build.bad) == bad
+    assert {field for _, field, _ in build.bad} <= {"open", "close"}
+    assert build.price_rounded_rows == count - bad // 2
+    if bad:
+        assert build.bad[0][2] == "1650.04"
 
 
 def test_page_edge_copies_that_differ_only_in_noise_are_one_row():
