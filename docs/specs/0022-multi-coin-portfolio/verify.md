@@ -21,3 +21,23 @@
 So the most in one month is 2, far under `OFF_TICK_BODY_MAX` (10). The other real roundings are highs and lows, as spec 0014 AC-1 already handles: 2023-08 5, 2023-09 3, 2023-10 8, 2023-11 2. `price_rounded_rows` per month: 2023-08 6, 2023-09 3, 2023-10 9, 2023-11 2. Later months (2024-03 26, 2024-04 1, 2024-05 22, 2024-06 3, 2024-11 2, 2024-12 5, 2025-10 6, 2026-01 2, 2026-06 3) are noise snaps only (within `1e-8`), with no rounding listed.
 
 **BTC unchanged**: no file under the BTC tree (`candles/data`, `candles/gaps`, `candles/manifests` at the root) was written on 2026-10-28. The new rule only changes a candle with an open or close off the tick, which before AC-2a was a bad row that stopped the month. Every stored BTC month built with none, so their rows stay byte identical, and none is fetched again.
+
+## AC-3 to AC-8 thin thread (2026-10-28)
+
+Built in fa16cf0. Tests on fixture candles in `apps/lab/tests/test_multi_coin.py` cover each part: run file refusals and sorted coins (AC-3), the merged stream tie order and funding at its charge time (AC-4, AC-4b), a gap on one coin while the other trades, plus the shared exposure cap (AC-5, AC-6), ruin on both coins closing both positions at the crash time (AC-7), and per coin funding rates with byte identical repeat runs (AC-8). Full suites on that build: core 1662 passed, lab 303 passed.
+
+**Single coin unchanged**: snapshots of the reports and bundles for the `macd` 4 variant run, `buy_and_hold`, the crash unit, and every committed study's `plan_hash`, configs, and frozen hashes match the base image `kfs/lab:base0022` with 0 differences.
+
+Three notes on the design as built:
+
+- The ruin exit reason stays `ruined` (the existing `RUINED` constant), so single coin runs keep their bytes. The spec text says `ruin`; the meaning is the same.
+- A stop sized entry (`donchian_4h`, `macd`) is shrunk to fit the shared cap. `buy_and_hold` uses a fixed quantity, so the cap refuses it with `exposure_cap` instead of shrinking it, which is what the fixture test asserts.
+- The combined equity curve, exposure as the union of open time, and the mean buy and hold benchmark came forward from AC-9, because the bundle needs them already.
+
+**Smoke run** (a benchmark, not a trial): `lab-reports/scratch/smoke_pair_buy_and_hold.toml`, `runs/buy_and_hold.toml` on BTC plus ETH, 2026-09-01 to 2026-09-30, 5000 USD notional each, in one 10,000 USD account. Batch `01a182c7-a3db-7250-a6be-a98709a52f28`, exit 0, at 13:51 to 13:55 UTC (14:51 to 14:55 Amsterdam).
+
+- 688,265 events (ETH 344,295, BTC 343,952) in 197 s, peak memory about 596 MB.
+- 2 positions, 4 fills, one per coin each, both opened 2026-09-01 01:00 and closed 2026-10-01 00:00 UTC.
+- Realized P&L: ETH +423.06, BTC +306.00. Funding: ETH −35.55, BTC −24.76 (1,436 hourly rows, 718 per coin). Net +668.75 USD, which matches the sum.
+- Exposure 0.9986, marked max drawdown 7.15%, benchmark (mean of both coins) 7.65%.
+- The run config lists `instrument_ids`, a `bar_type` per coin, and `candle_gaps` per coin. The bundle still carries a single `instrument` key (null here); task 5 adds `instruments`.
