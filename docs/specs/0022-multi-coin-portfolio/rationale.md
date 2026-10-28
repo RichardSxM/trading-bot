@@ -52,3 +52,23 @@ Decisions settled while writing (pick, why, runner up):
 - **Bundles carry instrument rows.** This keeps the VPS import self contained and checks for conflicts. Runner up: a hand run SQL upsert on the VPS, which is easy to forget and has no check.
 - **`--instrument` flags with BTC as the default**, so every existing script and cron keeps working. Runner up: a required flag, which would break them.
 - **Thresholds version 2 with an explicit `instrument_max_share`**, so the new bar is a written, versioned value and not a reused constant. Runner up: reuse `concentration_max_share` silently, which hides that the gate's rules changed.
+
+## Off tick ETH closes (2026-10-28)
+
+Build plan task 2's ETH fetch stopped at 2023-08 with `lab_candles_bad_rows`: the close of 2023-08-17 22:55 UTC and the open of 22:56 were both `1660.691517005051`, off ETH's 0.1 tick. A scratch scan of Kraken's public charts endpoint over 2023-08 to 2024-01 and 2024-06 found:
+- **Highs and lows off the tick** in 2023-08 (5), 2023-09 (3), 2023-10 (8), 2023-11 (2), none after. The same stretch and the same look as BTC's (spec 0014 rationale, *Off tick prices*): the extreme of a fast, heavy move, tens of USD beyond the body. Spec 0014 AC-1 already rounds these toward the body.
+- **Two off tick closes, each repeated as the next open**: 2023-08-17 22:55 (close = high = `1660.691517005051`, volume 135 ETH; the next minute traded 1348 ETH up to 1692) and 2023-10-16 13:30 (close `1617.853075194912` inside 1603.1 to 1643.2; the next open is also that minute's low). Nothing else in the scanned months.
+
+So spec 0014's decision 2 ("an open or close off the tick stays a bad row") held for BTC but not for ETH. These are the same kind of print, landing on the last trade of the minute.
+
+### Off tick body decision (your pick, with its runner up)
+
+**Round an off tick open or close to the nearest tick, kept inside the candle's stored low to high, with a cap of 10 per month.** The error is under half a tick (0.05 USD near 1600, about 0.003%), far below the slippage the stream adds. Clamping to the stored range keeps spec 0014's promise that no stored price lies beyond what Kraken reported. The cap keeps the spirit of decision 2: a real change in Kraken's tick would put an off tick open or close on most candles, and that still stops the fetch. No manifest field is added, so no BTC month is fetched again, and BTC has no off tick open or close, so its stored rows do not change. Runner up: a committed list of known prints (coin, minute, field, raw value), the strictest option, but every new print would stop the fetch until someone edits the list by hand. Dropping the minutes was rejected because it throws away real moves (the 22:56 minute holds 1348 ETH of trading).
+
+A cross check on another model (2026-10-28) confirmed AC-1 holds (`trading_core/lab/candles.py` and its imports are outside every node closure, and `lab/__init__.py` imports nothing) and the test values. It found one real gap: a quiet minute repeating an off tick raw close would round to a low above its high and stop the fetch, so AC-2a stores such a flat repeat at the previous stored close. It also asked for the clarifications now in AC-2a and AC-8 (where the clamp lives, what the cap counts, the one tick jump, sorted map keys, the replay's flat tuple). All applied on your pick.
+
+## Funding samples per coin (2026-10-28)
+
+AC-8 first said `FundingSample` gains `instrument_id`. The build found that `trading_core.node.recording` imports `trading_core.lab.funding`, so that module is in the code closure of `recording` and of every node module that imports it, and editing it would break AC-1.
+
+**Decision (your pick, with its runner up): a per coin map in the lab.** `FundingSample` stays as it is. The lab's `UnitRows` and `CandleUnitResult` hold the samples as a map from instrument id to that coin's samples, and the funding pass runs once per coin on its own entry, so the coin of a sample is its map key and a position cannot take another coin's rate. Runner up: a lab side wrapper type pairing an id with a sample in one flat list, grouped before the funding pass. It gives the same result with one more type and a grouping step.
