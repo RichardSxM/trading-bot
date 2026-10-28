@@ -125,14 +125,20 @@ def drawdown(points: Sequence[EquityPoint], starting_balance: Decimal) -> tuple[
 
 
 def exposure(trades: Sequence[TradeOutcome], start_ns: int, end_ns: int) -> Decimal:
-    """The share of ``start_ns``..``end_ns`` with a position open."""
+    """The share of ``start_ns``..``end_ns`` with any position open: the union of the trades' open
+    times, so two coins open at once count once (spec 0022 AC-9; one coin's trades never overlap)."""
     if end_ns <= start_ns:
         return Decimal(0)
+    spans = sorted(
+        (max(t.opened_ns, start_ns), min(end_ns if t.closed_ns is None else t.closed_ns, end_ns)) for t in trades
+    )
     held = 0
-    for trade in trades:
-        opened = max(trade.opened_ns, start_ns)
-        closed = min(end_ns if trade.closed_ns is None else trade.closed_ns, end_ns)
-        held += max(0, closed - opened)
+    reached = start_ns
+    for opened, closed in spans:
+        opened = max(opened, reached)
+        if closed > opened:
+            held += closed - opened
+            reached = closed
     return Decimal(held) / Decimal(end_ns - start_ns)
 
 
@@ -141,6 +147,36 @@ def benchmark(first_close: Decimal | None, last_close: Decimal | None) -> Decima
     if first_close is None or last_close is None or first_close == 0:
         return None
     return (last_close - first_close) / first_close
+
+
+def mean_benchmark(closes: Sequence[tuple[Decimal | None, Decimal | None]]) -> Decimal | None:
+    """The plain mean of each coin's ``benchmark`` (spec 0022 AC-9); None when any coin has none."""
+    values = [benchmark(first, last) for first, last in closes]
+    if not values or any(v is None for v in values):
+        return None
+    return sum((v for v in values if v is not None), Decimal(0)) / len(values)
+
+
+def combined_equity(starting_balance: Decimal, curves: Sequence[Sequence[EquityPoint]]) -> list[EquityPoint]:
+    """One shared account curve from per coin ``marked_equity`` curves (spec 0022 AC-9).
+
+    At every hour close in the union of the curves' times it is ``starting balance + Σ (coin equity -
+    starting balance)``, each coin at its latest point at or before that time; a coin with no point yet
+    adds 0. A single curve comes back unchanged.
+    """
+    if len(curves) == 1:
+        return list(curves[0])
+    ordered = [sorted(curve, key=lambda p: p.ts_ns) for curve in curves]
+    reached = [0] * len(ordered)
+    gains = [Decimal(0)] * len(ordered)
+    points: list[EquityPoint] = []
+    for ts_ns in sorted({p.ts_ns for curve in ordered for p in curve}):
+        for n, curve in enumerate(ordered):
+            while reached[n] < len(curve) and curve[reached[n]].ts_ns <= ts_ns:
+                gains[n] = curve[reached[n]].equity - starting_balance
+                reached[n] += 1
+        points.append(EquityPoint(ts_ns, starting_balance + sum(gains, Decimal(0))))
+    return points
 
 
 def candle_measures(

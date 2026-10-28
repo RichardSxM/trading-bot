@@ -21,6 +21,7 @@ from typing import Final
 from uuid import UUID
 
 from nautilus_trader.common.actor import Actor
+from nautilus_trader.common.config import ActorConfig
 from nautilus_trader.common.events import TimeEvent
 from nautilus_trader.model.data import Bar, BarType, QuoteTick
 from nautilus_trader.model.enums import OrderSide as NautilusOrderSide
@@ -88,8 +89,9 @@ class UnitRows:
     positions: dict[tuple[str, int], tuple[int, PositionRow]] = field(default_factory=dict)
     # The quoted spread (best ask - best bid, USD) when each order was created, by client order id.
     spreads: dict[str, Decimal] = field(default_factory=dict)
-    # The mid and netted position at each funding boundary inside the segment (AC-9).
-    funding_samples: list[FundingSample] = field(default_factory=list)
+    # The mid and netted position at each funding boundary inside the segment (AC-9), per coin by
+    # instrument id (spec 0022 AC-8: the key is the sample's coin).
+    funding_samples: dict[str, list[FundingSample]] = field(default_factory=dict)
     _seq: int = 0
 
     def next_seq(self) -> int:
@@ -134,26 +136,31 @@ class UnitRows:
 
 class LabRecorder(RecordingActor):
     """The paper loop's recording actor, minus snapshots, plus the spread at order creation and
-    the funding samples at ``funding_boundaries`` (none when the run applies no funding)."""
+    the funding samples at ``funding_boundaries`` (none when the run applies no funding).
+
+    One recorder serves every coin of a unit (spec 0022 AC-4): the order and position rows take their
+    coin from each event, and the quotes, markouts, bar counts, and funding samples are kept per coin.
+    """
 
     def __init__(
         self,
         *,
         env: Env,
         run_id: UUID,
-        instrument_id: InstrumentId,
+        instrument_ids: Sequence[InstrumentId],
         rows: UnitRows,
         blocks: EntryBlocks,
         risk: RiskLimits,
         funding_boundaries: Sequence[int] = (),
-        bar_type: BarType | None = None,
+        bar_types: Sequence[BarType] = (),
     ) -> None:
         # The stale quote age and the ledger feed only the snapshots and the booked funding, which
-        # the lab never starts (it samples funding at ``funding_boundaries`` instead).
+        # the lab never starts (it samples funding at ``funding_boundaries`` instead). The instrument
+        # given here feeds only those and the instrument row, so the first coin does.
         super().__init__(
             env=env,
             run_id=run_id,
-            instrument_id=instrument_id,
+            instrument_id=instrument_ids[0],
             record=rows,
             blocks=blocks,
             maintenance_margin_rate=risk.maintenance_margin_rate,
@@ -162,22 +169,30 @@ class LabRecorder(RecordingActor):
             ledger=FundingLedger(),
         )
         self._rows = rows
-        self._lab_instrument_id = instrument_id
+        self._lab_instrument_ids = tuple(instrument_ids)
         self._funding_boundaries = tuple(funding_boundaries)
-        self._markouts = MarkoutTracker()
-        # The strategy's own internal bar type: subscribing to the same one adds no second aggregator
+        self._markouts = {i: MarkoutTracker() for i in self._lab_instrument_ids}
+        for instrument_id in self._lab_instrument_ids:
+            rows.funding_samples.setdefault(instrument_id.value, [])
+        # Each strategy's own internal bar type: subscribing to the same one adds no second aggregator
         # (spec 0014 gate G-3b), and its volume 0 bars are the report's ``zero_volume_bars`` (AC-16).
-        self._bar_type = bar_type
-        self.zero_volume_bars = 0
+        self._bar_types = tuple(bar_types)
+        self.zero_volume_by_coin = {b.instrument_id.value: 0 for b in self._bar_types}
+
+    @property
+    def zero_volume_bars(self) -> int:
+        """The strategies' bars with no volume, over every coin."""
+        return sum(self.zero_volume_by_coin.values())
 
     def on_start(self) -> None:
         """Subscribe to every order and position event (the instrument and snapshots are not replay
         rows) and to quotes (for markouts), and set one time alert per funding boundary."""
         self.msgbus.subscribe(topic="events.order.*", handler=self._guarded(self._on_lab_order_event))
         self.msgbus.subscribe(topic="events.position.*", handler=self._guarded(self._on_position_event))
-        self.subscribe_quote_ticks(self._lab_instrument_id)
-        if self._bar_type is not None:
-            self.subscribe_bars(self._bar_type)
+        for instrument_id in self._lab_instrument_ids:
+            self.subscribe_quote_ticks(instrument_id)
+        for bar_type in self._bar_types:
+            self.subscribe_bars(bar_type)
         sample = self._guarded(self._on_funding_boundary)
         for boundary in self._funding_boundaries:
             self.clock.set_time_alert_ns(name=f"funding-{boundary}", alert_time_ns=boundary, callback=sample)
@@ -186,30 +201,32 @@ class LabRecorder(RecordingActor):
         """Nothing to stop: the lab starts no timer."""
 
     def on_quote_tick(self, tick: QuoteTick) -> None:
-        """Feed the mid to the markouts, only while a fill waits for one (most quotes cost nothing)."""
-        if self._markouts.waiting:
-            self._markouts.on_mid(tick.ts_init, _mid(tick))
+        """Feed the mid to the coin's markouts, only while a fill waits for one (most quotes cost nothing)."""
+        markouts = self._markouts[tick.instrument_id]
+        if markouts.waiting:
+            markouts.on_mid(tick.ts_init, _mid(tick))
 
     def on_bar(self, bar: Bar) -> None:
-        """Count the strategy's bars with no volume (quiet hours, or hours with no candles at all)."""
-        if bar.bar_type == self._bar_type and bar.volume.as_decimal() == 0:
-            self.zero_volume_bars += 1
+        """Count the strategies' bars with no volume (quiet hours, or hours with no candles at all)."""
+        if bar.bar_type in self._bar_types and bar.volume.as_decimal() == 0:
+            self.zero_volume_by_coin[bar.bar_type.instrument_id.value] += 1
 
     def markouts(self, last_ts_ns: int) -> list[FillMarkouts]:
-        """Every fill's markouts, once the segment's data has ended at ``last_ts_ns`` (AC-10)."""
-        return self._markouts.finish(last_ts_ns)
+        """Every fill's markouts, once the segment's data has ended at ``last_ts_ns`` (AC-10), coin by coin."""
+        return [m for i in self._lab_instrument_ids for m in self._markouts[i].finish(last_ts_ns)]
 
     def _on_lab_order_event(self, event: object) -> None:
         if isinstance(event, OrderInitialized):
-            quote = self.cache.quote_tick(self._lab_instrument_id)
+            quote = self.cache.quote_tick(event.instrument_id)
             if quote is not None:
                 spread = quote.ask_price.as_decimal() - quote.bid_price.as_decimal()
                 self._rows.spreads.setdefault(event.client_order_id.value, spread)
         elif isinstance(event, OrderFilled):
-            quote = self.cache.quote_tick(self._lab_instrument_id)
+            markouts = self._markouts[event.instrument_id]
+            quote = self.cache.quote_tick(event.instrument_id)
             if quote is not None:
-                self._markouts.on_mid(quote.ts_init, _mid(quote))  # the mid the next quote will replace
-            self._markouts.on_fill(
+                markouts.on_mid(quote.ts_init, _mid(quote))  # the mid the next quote will replace
+            markouts.on_fill(
                 event.trade_id.value,
                 buy=event.order_side == NautilusOrderSide.BUY,
                 fill_px=event.last_px.as_decimal(),
@@ -218,19 +235,24 @@ class LabRecorder(RecordingActor):
         self._on_order_event(event)
 
     def _on_funding_boundary(self, event: object) -> None:
-        """The mid (last quote at or before now) and the open position, if any, at a funding boundary."""
+        """Each coin's mid (last quote at or before now) and open position, if any, at a funding boundary,
+        appended under that coin (spec 0022 AC-8)."""
         if not isinstance(event, TimeEvent):
             raise TypeError(f"unexpected funding alert {type(event).__name__}")
-        quote = self.cache.quote_tick(self._lab_instrument_id)
-        mid = Decimal(0) if quote is None else _mid(quote)
-        position = next(iter(self.cache.positions_open(instrument_id=self._lab_instrument_id)), None)
-        if position is None:
-            self._rows.funding_samples.append(FundingSample(event.ts_event, mid, Decimal(0), None))
-            return
-        if quote is None:
-            raise RecordingFailedError(f"an open position at {event.ts_event} but no quote to price funding")
-        key = PositionKey(position.id.value, position.ts_opened)
-        self._rows.funding_samples.append(FundingSample(event.ts_event, mid, position.signed_decimal_qty(), key))
+        for instrument_id in self._lab_instrument_ids:
+            samples = self._rows.funding_samples[instrument_id.value]
+            quote = self.cache.quote_tick(instrument_id)
+            mid = Decimal(0) if quote is None else _mid(quote)
+            position = next(iter(self.cache.positions_open(instrument_id=instrument_id)), None)
+            if position is None:
+                samples.append(FundingSample(event.ts_event, mid, Decimal(0), None))
+                continue
+            if quote is None:
+                raise RecordingFailedError(
+                    f"an open {instrument_id} position at {event.ts_event} but no quote to price funding"
+                )
+            key = PositionKey(position.id.value, position.ts_opened)
+            samples.append(FundingSample(event.ts_event, mid, position.signed_decimal_qty(), key))
 
 
 def closing_side(position: Position) -> OrderSide:
@@ -279,8 +301,10 @@ class SegmentEndCloser(Actor):  # type: ignore[misc]  # Actor is Cython with no 
         instrument_id: InstrumentId,
         close_at_ns: int,
         reason: str = SEGMENT_END,
+        component_id: str | None = None,
     ) -> None:
-        super().__init__()
+        # A multi coin unit names each coin's closer, since component ids are unique in an engine.
+        super().__init__(None if component_id is None else ActorConfig(component_id=component_id))
         self._strategy = strategy
         self._gate = gate
         self._rows = rows
@@ -337,6 +361,24 @@ class RuinFlag:
     at_ns: int | None = None
 
 
+class SharedRuin:
+    """The ruin stop every coin's ``LiquidationGuard`` calls (spec 0022 AC-4b): it closes each coin's open
+    position at its last quote, in sorted coin order, sets the ``RuinFlag``, and only then calls ``stop``
+    (which ends the variant early), so the variant reports ruin instead of failing on an open position."""
+
+    def __init__(self, ruin: RuinFlag, stop: Callable[[], None]) -> None:
+        self.guards: list[LiquidationGuard] = []
+        self._ruin = ruin
+        self._stop = stop
+
+    def __call__(self, ts_ns: int, equity: Decimal) -> None:
+        """Close every coin, then end the variant at ``ts_ns``."""
+        for coin_guard in self.guards:
+            coin_guard.close_for_ruin(equity)
+        self._ruin.at_ns = ts_ns
+        self._stop()
+
+
 class LiquidationGuard(Actor):  # type: ignore[misc]  # Actor is Cython with no stubs
     """The candle lab's forced liquidation and ruin stop (spec 0014 AC-14).
 
@@ -346,9 +388,9 @@ class LiquidationGuard(Actor):  # type: ignore[misc]  # Actor is Cython with no 
     maintenance rate). A long's bid at or below it, or a short's ask at or above it, records an
     ``exit`` decision with reason ``liquidated`` and closes at market on that quote through the
     strategy's own order factory, as ``SegmentEndCloser`` does. Funding is booked after the run, so
-    it does not move the price. When the account balance plus open P&L is zero or below, it closes
-    what is still open (reason ``ruined``), sets the ``RuinFlag``, and calls ``on_ruin``, which ends
-    the variant early.
+    it does not move the price. When the account balance plus open P&L (over every coin) is zero or
+    below, it calls ``on_ruin`` (a ``SharedRuin``), which closes what is still open on every coin
+    (reason ``ruined``), sets the ``RuinFlag``, and ends the variant early.
     """
 
     def __init__(
@@ -362,9 +404,10 @@ class LiquidationGuard(Actor):  # type: ignore[misc]  # Actor is Cython with no 
         taker_fee: Decimal,
         risk: RiskLimits,
         ruin: RuinFlag,
-        on_ruin: Callable[[], None],
+        on_ruin: Callable[[int, Decimal], None],
+        component_id: str | None = None,
     ) -> None:
-        super().__init__()
+        super().__init__(None if component_id is None else ActorConfig(component_id=component_id))
         self._on_ruin = on_ruin
         self._strategy = strategy
         self._rows = rows
@@ -394,12 +437,16 @@ class LiquidationGuard(Actor):  # type: ignore[misc]  # Actor is Cython with no 
             if liq_px is not None and ((long and bid <= liq_px) or (not long and ask >= liq_px)):
                 self._close(position, LIQUIDATED, {"liq_px": liq_px, "bid": bid, "ask": ask})
                 position = None
-        if self._equity() <= 0:
-            if position is not None and not self._closing():
-                self._close(position, RUINED, {"equity": self._equity()})
-            self._ruin.at_ns = tick.ts_event
+        equity = self._equity()
+        if equity <= 0:
             self.log.warning(f"account equity reached zero at {tick.ts_event}; ending the variant")
-            self._on_ruin()
+            self._on_ruin(tick.ts_event, equity)
+
+    def close_for_ruin(self, equity: Decimal) -> None:
+        """Close this coin's open position, if any and not already closing, with reason ``ruined``."""
+        position = next(iter(self.cache.positions_open(instrument_id=self._guard_instrument_id)), None)
+        if position is not None and not self._closing():
+            self._close(position, RUINED, {"equity": equity})
 
     def liquidation_px(self, position: Position) -> Decimal | None:
         """The position's liquidation price, computed once when it opened (``None``: none reachable)."""

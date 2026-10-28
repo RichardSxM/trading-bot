@@ -13,8 +13,19 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Final, Literal, Self
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    ValidationError,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
+from lab.instruments import is_pinned
 from lab.strategies import (
     MarketContextValues,
     StrategyConfigError,
@@ -27,6 +38,7 @@ from trading_core.lab.parity import PaperStrategy, ParityInputError, paper_confi
 from trading_core.lab.variants import MAX_GRID_VARIANTS, MAX_REPLAY_GRID_VARIANTS, expand_grid, grid_size
 from trading_core.node.placeholder import STRATEGY_NAME as PLACEHOLDER
 from trading_core.recording.enums import StrategyKind
+from trading_core.recording.rows import JsonObject, JsonValue
 from trading_core.risk.check import RiskLimits
 from trading_core.settings import PaperLoopSettings
 
@@ -312,6 +324,10 @@ def replay_run_from_raw(
 # The candle lab's run file (spec 0014, *Run file*) ---------------------------------------------
 
 
+# A candle run file's two ways to name its coins; the one not given is left out of every dump (spec 0022 AC-3).
+_COIN_KEYS: Final = frozenset({"instrument_id", "instrument_ids"})
+
+
 class CandleContextSection(ContextSection):
     """``[context]`` of a candle run: a funding rate stays fresh for one 4 h period plus 1 h (spec 0014 AC-13)."""
 
@@ -325,11 +341,17 @@ class ParitySection(_Section):
 
 
 class CandleRunFile(_Section):
-    """A validated candle run file (spec 0014 AC-6). ``from`` is a Python keyword, so the field is ``from_``."""
+    """A validated candle run file (spec 0014 AC-6). ``from`` is a Python keyword, so the field is ``from_``.
+
+    It names one coin (``instrument_id``) or several in one shared account (``instrument_ids``, at
+    least 2 distinct pinned ids, sorted on load; spec 0022 AC-3). The key not given is left out of
+    every dump, so a single coin file dumps as before.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
-    instrument_id: str
+    instrument_id: str | None = None
+    instrument_ids: tuple[str, ...] | None = None
     from_: date = Field(alias="from")
     to: date
     seed: int
@@ -344,8 +366,24 @@ class CandleRunFile(_Section):
     strategy: StrategySection
     parity: ParitySection | None = None
 
+    @field_validator("instrument_ids")
+    @classmethod
+    def _coins(cls, value: tuple[str, ...] | None) -> tuple[str, ...] | None:
+        if value is None:
+            return None
+        if len(value) < 2:
+            raise ValueError("lists at least 2 coins; name one coin with instrument_id")
+        if len(set(value)) != len(value):
+            raise ValueError("names a coin twice")
+        return tuple(sorted(value))
+
     @model_validator(mode="after")
     def _check(self) -> Self:
+        if (self.instrument_id is None) == (self.instrument_ids is None):
+            raise ValueError("give exactly one of instrument_id or instrument_ids")
+        unpinned = [i for i in self.instruments if not is_pinned(i)]
+        if unpinned:
+            raise ValueError(f"no pinned instrument for {', '.join(unpinned)}")
         for name in ("maker_fee", "taker_fee"):
             fee = _finite(getattr(self, name))
             if not Decimal(0) <= fee < 1:
@@ -355,6 +393,40 @@ class CandleRunFile(_Section):
         if self.from_ > self.to:
             raise ValueError(f"from {self.from_} is after to {self.to}")
         return self
+
+    @model_serializer(mode="wrap")
+    def _dump(self, handler: SerializerFunctionWrapHandler) -> dict[str, object]:
+        dumped: dict[str, object] = handler(self)
+        return {k: v for k, v in dumped.items() if k not in _COIN_KEYS or v is not None}
+
+    @property
+    def instruments(self) -> tuple[str, ...]:
+        """Every coin of the run in sorted order: ``(instrument_id,)`` for a single coin run."""
+        if self.instrument_ids is not None:
+            return self.instrument_ids
+        assert self.instrument_id is not None  # the validator requires one of them
+        return (self.instrument_id,)
+
+    @property
+    def single_instrument(self) -> str:
+        """The one coin of a single coin run; raises ``ValueError`` for a multi coin run, so a command
+        that runs one coin never runs only the first of several."""
+        if self.instrument_id is None:
+            raise ValueError("instrument_ids is not supported here; name one coin with instrument_id")
+        return self.instrument_id
+
+    @property
+    def multi(self) -> bool:
+        """Whether the run trades several coins in one shared account (spec 0022)."""
+        return self.instrument_ids is not None
+
+    def version_config(self, grid_point: Mapping[str, ConfigValue]) -> JsonObject:
+        """A variant's strategy version config: ``[strategy.config]`` plus the grid point, and for a multi
+        coin run its ``instrument_ids``, so its frozen hash differs from any single coin version (AC-3)."""
+        config: dict[str, JsonValue] = {**self.strategy.config, **grid_point}
+        if self.instrument_ids is not None:
+            config["instrument_ids"] = list(self.instrument_ids)
+        return config
 
     def risk_limits(self) -> RiskLimits:
         """The ``check_entry`` limits."""

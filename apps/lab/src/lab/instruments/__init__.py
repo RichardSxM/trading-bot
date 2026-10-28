@@ -24,6 +24,15 @@ def _definition(instrument_id: str) -> dict[str, object]:
     return raw
 
 
+def is_pinned(instrument_id: str) -> bool:
+    """Whether a pinned definition exists for the instrument id."""
+    try:
+        _definition(instrument_id)
+    except UnknownInstrumentError:
+        return False
+    return True
+
+
 def pinned_instrument(instrument_id: str) -> CryptoPerpetual:
     """The pinned instrument, fees as written in the file."""
     return CryptoPerpetual.from_dict(_definition(instrument_id))

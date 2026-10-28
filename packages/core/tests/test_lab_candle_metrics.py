@@ -1,4 +1,5 @@
-"""covers: spec 0014 AC-16 (marked equity, drawdown duration, exposure, profit factor, expectancy, benchmark)."""
+"""covers: spec 0014 AC-16 (marked equity, drawdown duration, exposure, profit factor, expectancy, benchmark),
+spec 0022 AC-9 (the combined two coin curve, union exposure, mean benchmark)."""
 
 from decimal import Decimal
 
@@ -8,9 +9,11 @@ from trading_core.lab.candle_metrics import (
     TradeOutcome,
     benchmark,
     candle_measures,
+    combined_equity,
     drawdown,
     exposure,
     marked_equity,
+    mean_benchmark,
 )
 from trading_core.lab.metrics import FundingCash
 from trading_core.marketdata.hours import HOUR_NS
@@ -64,3 +67,34 @@ def test_exposure_profit_factor_expectancy_and_benchmark():
     assert no_loss.profit_factor is None
     assert no_loss.benchmark is None
     assert benchmark(D(0), D(1)) is None
+
+
+def test_two_coin_curves_combine_on_the_union_of_their_hour_closes():
+    btc = [EquityPoint(1 * H, D(1010)), EquityPoint(2 * H, D(990)), EquityPoint(3 * H, D(1000))]
+    eth = [EquityPoint(2 * H, D(1050)), EquityPoint(3 * H, D(1020))]  # ETH's first close comes an hour later
+    combined = combined_equity(D(1000), [btc, eth])
+    # 1000 + (coin equity - 1000) summed; ETH adds 0 before its first point.
+    assert combined == [EquityPoint(1 * H, D(1010)), EquityPoint(2 * H, D(1040)), EquityPoint(3 * H, D(1020))]
+    assert drawdown(combined, D(1000)) == (D(20) / D(1040), 1)
+    assert combined_equity(D(1000), [btc]) == btc
+
+
+def test_a_coin_without_a_point_at_a_time_carries_its_last_one():
+    btc = [EquityPoint(1 * H, D(1010)), EquityPoint(3 * H, D(1030))]
+    eth = [EquityPoint(1 * H, D(995)), EquityPoint(2 * H, D(985))]
+    assert [p.equity for p in combined_equity(D(1000), [btc, eth])] == [D(1005), D(995), D(1015)]
+
+
+def test_exposure_counts_overlapping_coins_once():
+    trades = [
+        TradeOutcome(True, 0, 4 * H, D(1)),  # BTC
+        TradeOutcome(True, 2 * H, 6 * H, D(1)),  # ETH, open over BTC's last 2 hours
+        TradeOutcome(False, 8 * H, None, D(0)),
+    ]
+    assert exposure(trades, 0, 10 * H) == D("0.8")
+
+
+def test_the_multi_coin_benchmark_is_the_plain_mean_of_the_coins():
+    assert mean_benchmark([(D(100), D(110)), (D(2000), D(1900))]) == D("0.025")  # (0.10 - 0.05) / 2
+    assert mean_benchmark([(D(100), D(110)), (None, None)]) is None
+    assert mean_benchmark([]) is None

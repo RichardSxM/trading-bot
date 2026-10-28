@@ -326,7 +326,7 @@ def run_unit(plan: UnitPlan) -> UnitResult:
     recorder = LabRecorder(
         env=plan.env,
         run_id=UNIT_RUN_ID,
-        instrument_id=instrument_id,
+        instrument_ids=[instrument_id],
         rows=rows,
         blocks=blocks,
         risk=plan.risk,
@@ -390,7 +390,8 @@ def run_unit(plan: UnitPlan) -> UnitResult:
         fills=_sorted(rows.fills.values()),
         positions=_sorted(rows.positions.values()),
         spreads=dict(rows.spreads),
-        funding_samples=tuple(rows.funding_samples),
+        # One coin: the samples map's one entry (spec 0022 AC-8).
+        funding_samples=tuple(rows.funding_samples[instrument_id.value]),
         segment_end_partial=partial,
         markouts=tuple(markouts),
         events=stream.events,
