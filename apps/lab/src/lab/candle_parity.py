@@ -89,7 +89,7 @@ def book_plans(settings: LabSettings, loaded: LoadedCandleRun, segments: Sequenc
 def candle_plans(settings: LabSettings, loaded: LoadedCandleRun, segments: Sequence[Segment]) -> list[CandleUnitPlan]:
     """One candle unit per segment, over the segment's own first and last nanosecond (AC-21)."""
     run = loaded.run
-    tree = candle_tree(settings.lab_catalog_dir)
+    tree = candle_tree(settings.lab_catalog_dir, run.instrument_id)
     return [
         CandleUnitPlan(
             variant=CANDLES,
@@ -185,7 +185,7 @@ def candle_parity(
     days = required_days(SOURCE, run.from_, run.to)
     missing = tree.missing_manifests(days)
     start_ns, end_ns = range_ns(loaded)
-    problems = span_problems(candle_tree(settings.lab_catalog_dir), start_ns, end_ns)
+    problems = span_problems(candle_tree(settings.lab_catalog_dir, run.instrument_id), start_ns, end_ns)
     if not days or missing or problems:
         if missing:
             print(f"lab candle-parity: no own day for {', '.join(d.isoformat() for d in missing)}", file=sys.stderr)

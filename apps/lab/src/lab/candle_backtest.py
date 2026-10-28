@@ -601,7 +601,7 @@ def backtest(
     run = loaded.run
     if variants is None:
         variants = expand_candle_variants(run.slippage_bps, run.strategy.grid)
-    tree = candle_tree(settings.lab_catalog_dir)
+    tree = candle_tree(settings.lab_catalog_dir, run.instrument_id)
     start_ns, end_ns = range_ns(loaded)
     problems = range_problems(tree, start_ns, end_ns)
     if problems:

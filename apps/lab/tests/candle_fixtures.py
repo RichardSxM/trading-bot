@@ -39,7 +39,7 @@ def walk(seed: int, minutes: int, start_ns: int, first: int = 60000) -> list[Can
 
 def synthetic_month(catalog: Path, *, seed: int = 11, days: int = 28, month: Month = FEB) -> CandleTree:
     """``days`` days of ``walk`` from the month's start, committed, with an api funding row every hour."""
-    tree = candle_tree(catalog)
+    tree = candle_tree(catalog, "PF_XBTUSD.KRAKEN")
     rows = walk(seed, days * 1440, month.start_ns)
     tree.write_bars(month, rows)
     tree.write_funding(

@@ -543,9 +543,9 @@ def _replay_points(
     return EXIT_FAILED if failed else EXIT_OK
 
 
-def last_complete_day(settings: LabSettings, start: date) -> date | None:
-    """The last UTC day the candle catalog holds whole, from the newest month with a manifest."""
-    tree = candle_tree(settings.lab_catalog_dir)
+def last_complete_day(settings: LabSettings, instrument_id: str, start: date) -> date | None:
+    """The last UTC day the coin's candle tree holds whole, from the newest month with a manifest."""
+    tree = candle_tree(settings.lab_catalog_dir, instrument_id)
     month = Month.of_ns(time.time_ns())
     first = Month.of_ns(int(datetime(start.year, start.month, 1, tzinfo=UTC).timestamp()) * 1_000_000_000)
     while month >= first:
@@ -647,7 +647,7 @@ def _holdout_locked(settings: LabSettings, stored: StudyRow, store: StudyStore, 
         assert section.entry_mode is not None  # StudySection requires it for replay
         return _replay_holdout(settings, stored, store, base, entry, section.entry_mode, final, point, todo, today)
     variant = variants[final]
-    end = last_complete_day(settings, thresholds.holdout_start)
+    end = last_complete_day(settings, base.run.instrument_id, thresholds.holdout_start)
     if end is None or end < thresholds.holdout_start:
         return _refuse(
             "holdout", [f"the catalog holds no complete day from {thresholds.holdout_start}; run lab fetch-candles"]

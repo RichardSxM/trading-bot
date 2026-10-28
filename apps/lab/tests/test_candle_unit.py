@@ -37,7 +37,7 @@ def _minute(m, quiet=False):
 
 
 def _plan(tmp_path, rows, **overrides):
-    tree = candle_tree(tmp_path)
+    tree = candle_tree(tmp_path, "PF_XBTUSD.KRAKEN")
     tree.write_bars(SEP, rows)
     tree.write_funding(SEP, [FundingRow(T0 + h * HOUR_NS, D("0.0001"), HOUR_NS, "api") for h in range(HOURS + 1)])
     plan = CandleUnitPlan(

@@ -40,9 +40,10 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from lab.audit import AuditRangeError, audit_days, run_audit
 from lab.candle_backtest import backtest
-from lab.candle_fetch import fetch_candles
+from lab.candle_fetch import DEFAULT_INSTRUMENT_ID, fetch_candles
 from lab.candle_parity import candle_parity
 from lab.funding_import import import_funding
+from lab.instruments import UnknownInstrumentError, pinned_instrument
 from lab.paper_csv import read_paper_csv
 from lab.parity import parity
 from lab.replay import PostgresStore, replay
@@ -131,8 +132,14 @@ def parser() -> argparse.ArgumentParser:
     candles.add_argument("from_", metavar="from", help="first UTC month, YYYY-MM")
     candles.add_argument("to", help="last UTC month, YYYY-MM")
     candles.add_argument("--refetch", action="store_true", help="fetch complete months again too")
+    candles.add_argument(
+        "--instrument", default=DEFAULT_INSTRUMENT_ID, help=f"a pinned instrument id (default {DEFAULT_INSTRUMENT_ID})"
+    )
     funding = commands.add_parser("import-funding", help="merge Kraken's funding export ZIP or CSV (spec 0014)")
-    funding.add_argument("file", type=Path, help="the export ZIP, or its PF_XBTUSD.csv")
+    funding.add_argument("file", type=Path, help="the export ZIP, or its exports/<symbol>.csv")
+    funding.add_argument(
+        "--instrument", default=DEFAULT_INSTRUMENT_ID, help=f"a pinned instrument id (default {DEFAULT_INSTRUMENT_ID})"
+    )
     study = commands.add_parser("study", help="run every grid point of a study file over its development range")
     study.add_argument("studyfile", type=Path)
     holdout = commands.add_parser("holdout", help="run a study's final grid point once over the holdout")
@@ -400,13 +407,29 @@ def _fetch_candles(args: argparse.Namespace) -> int:
         print(f"lab fetch-candles: {exc}", file=sys.stderr)
         log.error("lab_bad_input", extra={"fields": {"problems": [str(exc)]}})
         return EXIT_USAGE
+    if not _pinned(args.instrument, "fetch-candles"):
+        return EXIT_USAGE
     started = boot("worker", settings_cls=LabSettings)
-    return fetch_candles(started.settings, months, refetch=args.refetch)
+    return fetch_candles(started.settings, months, instrument_id=args.instrument, refetch=args.refetch)
+
+
+def _pinned(instrument_id: str, command: str) -> bool:
+    """Whether ``--instrument`` names a pinned coin; prints and logs the refusal when not (spec 0022 AC-2)."""
+    try:
+        pinned_instrument(instrument_id)
+    except UnknownInstrumentError as exc:
+        print(f"lab {command}: {exc}", file=sys.stderr)
+        log.error("lab_bad_input", extra={"fields": {"problems": [str(exc)]}})
+        return False
+    return True
 
 
 def _import_funding(args: argparse.Namespace) -> int:
+    configure_logging(process=PROCESS, env=os.environ.get("TRADING_ENV", ""))
+    if not _pinned(args.instrument, "import-funding"):
+        return EXIT_USAGE
     started = boot("worker", settings_cls=LabSettings)
-    return import_funding(started.settings, args.file)
+    return import_funding(started.settings, args.file, args.instrument)
 
 
 def _audit(args: argparse.Namespace) -> int:

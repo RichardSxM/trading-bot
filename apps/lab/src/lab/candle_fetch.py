@@ -39,9 +39,8 @@ from trading_core.marketdata.hours import GB, SECOND_NS
 
 log = logging.getLogger(__name__)
 
-INSTRUMENT_ID: Final = "PF_XBTUSD.KRAKEN"
-SYMBOL: Final = "PF_XBTUSD"
-CANDLES_PATH: Final = f"/api/charts/v1/trade/{SYMBOL}/1m"
+# The coin ``fetch-candles`` and ``import-funding`` use without ``--instrument`` (spec 0022 AC-2).
+DEFAULT_INSTRUMENT_ID: Final = "PF_XBTUSD.KRAKEN"
 FUNDING_PATH: Final = "/derivatives/api/v4/historicalfundingrates"
 # The expected size of one stored month, for the catalog cap check (AC-5).
 CANDLE_MONTH_GB: Final = Decimal("0.1")
@@ -53,9 +52,20 @@ EXIT_FAILED: Final = 1
 EXIT_CATALOG_FULL: Final = 3
 
 
-def candle_tree(catalog_dir: Path) -> CandleTree:
-    """The candles tree under the lab catalog, for the pinned instrument."""
-    return CandleTree(catalog_dir / "candles", pinned_instrument(INSTRUMENT_ID))
+def candle_tree(catalog_dir: Path, instrument_id: str) -> CandleTree:
+    """The candles tree under the lab catalog for one pinned coin. Raises ``UnknownInstrumentError``."""
+    return CandleTree(catalog_dir / "candles", pinned_instrument(instrument_id))
+
+
+def kraken_symbol(tree: CandleTree) -> str:
+    """The Kraken symbol of the tree's coin: its id's symbol part, ``PF_ETHUSD`` for ``PF_ETHUSD.KRAKEN``."""
+    symbol: str = tree.instrument.id.symbol.value
+    return symbol
+
+
+def candles_path(symbol: str) -> str:
+    """The chart endpoint for one symbol's 1 minute trade candles."""
+    return f"/api/charts/v1/trade/{symbol}/1m"
 
 
 def _iso(ts_ns: int) -> str:
@@ -113,14 +123,16 @@ def merge_into_tree(tree: CandleTree, rows: Iterable[FundingRow], scope: str) ->
 # Candles ---------------------------------------------------------------------------------------
 
 
-def page_month(http: KrakenHttp, month: Month, end_ns: int) -> list[RawCandle]:
-    """Every candle Kraken returns for ``month`` up to ``end_ns``, paging by ``more_candles`` and the last time."""
+def page_month(http: KrakenHttp, symbol: str, month: Month, end_ns: int) -> list[RawCandle]:
+    """Every candle Kraken returns for ``symbol`` in ``month`` up to ``end_ns``, paging by
+    ``more_candles`` and the last time."""
     start_s, end_s = month.start_ns // SECOND_NS, end_ns // SECOND_NS
-    url = http.base_url + CANDLES_PATH
+    path = candles_path(symbol)
+    url = http.base_url + path
     candles: list[RawCandle] = []
     since = start_s
     while since < end_s:
-        body = http.get_json(CANDLES_PATH, {"from": since, "to": end_s})
+        body = http.get_json(path, {"from": since, "to": end_s})
         try:
             page = [
                 RawCandle(
@@ -159,7 +171,7 @@ def fetch_month(tree: CandleTree, http: KrakenHttp, month: Month, fetch_start_ns
     instrument = tree.instrument
     complete = is_complete(month, fetch_start_ns)
     end_ns = month.end_ns if complete else fetch_start_ns - fetch_start_ns % MINUTE_NS
-    raw = page_month(http, month, end_ns)
+    raw = page_month(http, kraken_symbol(tree), month, end_ns)
     build = build_candles(
         raw,
         month,
@@ -227,20 +239,22 @@ def fetch_candles(
     settings: LabSettings,
     months: list[Month],
     *,
+    instrument_id: str = DEFAULT_INSTRUMENT_ID,
     refetch: bool = False,
     http: KrakenHttp | None = None,
     clock: Callable[[], int] = time.time_ns,
 ) -> int:
-    """Fetch funding once, then each month in order. Returns the exit code (AC-1, AC-2, AC-5).
+    """Fetch one coin's funding once, then each month in order. Returns the exit code (AC-1, AC-2, AC-5).
 
-    A complete month is skipped unless ``refetch`` is set.
+    A complete month is skipped unless ``refetch`` is set. ``instrument_id`` must be pinned
+    (``UnknownInstrumentError`` otherwise; the command checks it first, spec 0022 AC-2).
     """
-    tree = candle_tree(settings.lab_catalog_dir)
+    tree = candle_tree(settings.lab_catalog_dir, instrument_id)
     client = http or KrakenHttp(settings.lab_kraken_futures_url, settings.lab_kraken_pause_ms)
     fetch_start_ns = clock()
     try:
         url = client.base_url + FUNDING_PATH
-        funding = api_funding_rows(client.get_json(FUNDING_PATH, {"symbol": SYMBOL}), url)
+        funding = api_funding_rows(client.get_json(FUNDING_PATH, {"symbol": kraken_symbol(tree)}), url)
         added, present, touched = merge_into_tree(tree, funding, "funding api")
         log.info(
             "lab_funding_fetched",

@@ -48,7 +48,7 @@ def _write_run(tmp_path, text=RUN):
 
 def _day_of_candles(settings, *, funding_hours=range(25), source=lambda hour: "api"):
     """2026-09-01 as 1440 rising minutes, committed, with hourly funding at the given hours."""
-    tree = candle_tree(settings.lab_catalog_dir)
+    tree = candle_tree(settings.lab_catalog_dir, "PF_XBTUSD.KRAKEN")
     rows = []
     for m in range(1440):
         o = D(60000 + m)

@@ -74,7 +74,7 @@ def _plan(root, name, config):
 
 def _month_with_empty_windows(catalog: Path) -> CandleTree:
     """``synthetic_month``'s 10 days, less every candle in the two empty windows."""
-    tree = candle_tree(catalog)
+    tree = candle_tree(catalog, "PF_XBTUSD.KRAKEN")
     empty = {FEB.start_ns + (m + 1) * MINUTE * 10**9 for m in (*EMPTY_HALF_HOUR, *EMPTY_FOUR_HOURS)}
     rows = [r for r in walk(11, DAYS * 1440, FEB.start_ns) if r.ts_ns not in empty]
     tree.write_bars(FEB, rows)
