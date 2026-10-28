@@ -203,7 +203,9 @@ def load_study(path: Path, *, catalog_dir: Path = CATALOG_DIR, test_strategies: 
     thresholds = packaged_thresholds()
     if section.lab == "replay":
         return _load_replay_study(str(path), data, section, run_file, thresholds, catalog_dir, test_strategies)
-    loaded = candle_run_from_raw(str(path), data, run_file, Overrides(), test_strategies=test_strategies)
+    loaded = candle_run_from_raw(
+        str(path), data, run_file, Overrides(), test_strategies=test_strategies, allow_multi=True
+    )
     start, end = development_range(loaded.run.from_, thresholds)
     if start > end:
         raise RunFileError([f"from {start} is on or after holdout_start {thresholds.holdout_start}"])
@@ -367,7 +369,7 @@ def _context(
     role: StudyRole,
     strategy: str,
     kind: StrategyKind,
-    instrument_id: str,
+    instrument_ids: Sequence[str],
     grid_points: Mapping[str, int | None],
     studied: tuple[str, StrategyKind] | None = None,
 ) -> Callable[[Mapping[str, uuid.UUID]], StudyContext]:
@@ -382,7 +384,7 @@ def _context(
             strategy_kind=kind,
             study_strategy_name=study_name,
             study_strategy_kind=study_kind,
-            instrument=instrument_row(pinned_instrument(instrument_id)),
+            instruments=tuple(instrument_row(pinned_instrument(coin)) for coin in instrument_ids),
             grid_points=grid_points,
             versions=store.version_rows(version_ids),
         )
@@ -486,8 +488,8 @@ def run_study(settings: LabSettings, study: LoadedStudy, store: StudyStore) -> i
             StudyRole.DEVELOPMENT,
             study.dropped,
         )
-    coin = study.loaded.run.instruments[0]  # the bundle's instrument: the first coin (spec 0022 AC-12)
-    context = _context(store, stored, StudyRole.DEVELOPMENT, run.strategy.name, entry.kind, coin, points)
+    coins = study.loaded.run.instruments
+    context = _context(store, stored, StudyRole.DEVELOPMENT, run.strategy.name, entry.kind, coins, points)
     variants = [v for v in study.variants if points[v.name] not in done]
     return backtest(settings, study.loaded, store, variants=variants, study=context)
 
@@ -547,7 +549,7 @@ def _replay_points(
     variant = VariantSpec(BASE, run.latency_ms, True, None if entry.default_entry_mode is None else entry_mode)
     failed = False
     for index, point in points:
-        context = _context(store, stored, role, run.strategy.name, entry.kind, run.instrument_id, {BASE: index})
+        context = _context(store, stored, role, run.strategy.name, entry.kind, (run.instrument_id,), {BASE: index})
         code = replay(
             settings, _with_point(loaded, point), store, variants=[variant], study=context, dropped_days=dropped
         )
@@ -579,10 +581,16 @@ def _coin_last_day(settings: LabSettings, instrument_id: str, start: date) -> da
 
 def _benchmark_run(path: str, market: Market, start: date, end: date) -> LoadedCandleRun:
     """A committed benchmark run file with the study's coins and fees, over ``start``..``end`` (AC-4;
-    spec 0022 AC-11: ``instrument_ids`` in place of the file's ``instrument_id`` for several coins)."""
+    spec 0022 AC-11: ``instrument_ids`` in place of the file's ``instrument_id`` for several coins, and a
+    ``notional_usd`` split evenly over them, so the benchmark holds the file's notional in total)."""
     coins, maker_fee, taker_fee = market
     data, raw = read_toml(Path(path))
     coin_key: dict[str, object] = {"instrument_ids": list(coins)} if len(coins) > 1 else {"instrument_id": coins[0]}
+    strategy = raw.get("strategy")
+    config = strategy.get("config") if isinstance(strategy, Mapping) else None
+    if len(coins) > 1 and isinstance(strategy, Mapping) and isinstance(config, Mapping) and "notional_usd" in config:
+        share = Decimal(str(config["notional_usd"])) / len(coins)
+        coin_key["strategy"] = dict(strategy) | {"config": dict(config) | {"notional_usd": format(share, "f")}}
     merged = (
         {k: v for k, v in raw.items() if k not in ("instrument_id", "instrument_ids")}
         | coin_key
@@ -591,7 +599,7 @@ def _benchmark_run(path: str, market: Market, start: date, end: date) -> LoadedC
             "taker_fee": format(taker_fee, "f"),
         }
     )
-    return candle_run_from_raw(path, data, merged, Overrides(from_=start, to=end))
+    return candle_run_from_raw(path, data, merged, Overrides(from_=start, to=end), allow_multi=True)
 
 
 def run_holdout(settings: LabSettings, name: str, store: StudyStore, *, today: date) -> int:
@@ -637,7 +645,7 @@ def _holdout_locked(settings: LabSettings, stored: StudyRow, store: StudyStore, 
         points = list(replay_points(base))
         variants: list[CandleVariantSpec] = []
     else:
-        base = candle_run_from_raw(source, data, run_file, Overrides())
+        base = candle_run_from_raw(source, data, run_file, Overrides(), allow_multi=True)
         variants = expand_candle_variants(base.run.slippage_bps, base.run.strategy.grid)
         points = [(v.name, dict(v.grid_point)) for v in variants]
     market: Market = (_coins(base), base.run.maker_fee, base.run.taker_fee)
@@ -689,7 +697,7 @@ def _holdout_locked(settings: LabSettings, stored: StudyRow, store: StudyStore, 
         StudyRole.HOLDOUT,
         base.run.strategy.name,
         entry.kind,
-        base.run.instruments[0],
+        base.run.instruments,
         {variant.name: final},
     )
     code = backtest(settings, holdout, store, variants=[variant], study=context)
@@ -806,7 +814,7 @@ def _run_benchmarks(
             StudyRole.BENCHMARK,
             name,
             bench_entry.kind,
-            bench.run.instruments[0],
+            bench.run.instruments,
             {bench_variant.name: None},
             studied=(studied, kind),
         )

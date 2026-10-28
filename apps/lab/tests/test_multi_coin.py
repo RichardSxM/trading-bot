@@ -1,10 +1,13 @@
-"""covers: spec 0022 AC-3, AC-4, AC-4b, AC-5, AC-6, AC-7, AC-8 (one rule on two coins in one engine and account)."""
+"""covers: spec 0022 AC-3, AC-4, AC-4b, AC-5, AC-6, AC-7, AC-8, AC-9, AC-10, AC-11 (one rule on two coins in one
+engine and account, its per coin report, the single coin commands refusing it, and the split benchmark)."""
 
 import json
 import tomllib
 from dataclasses import replace
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from nautilus_trader.model.data import FundingRateUpdate, QuoteTick, TradeTick
@@ -14,12 +17,14 @@ from lab.candle_backtest import backtest
 from lab.candle_fetch import candle_tree
 from lab.candle_stream import CandleStream, SideFlag, merged_chunks
 from lab.candle_units import CandleUnitPlan, run_candle_unit
-from lab.runfile import Overrides, RunFileError, candle_run_from_raw, load_candle_run
+from lab.main import main
+from lab.runfile import MULTI_REFUSED, Overrides, RunFileError, candle_run_from_raw, load_candle_run
+from lab.screen import EXIT_USAGE, run_screen
 from lab.strategies import MarketContextValues, registry_entry
-from lab.study import load_study
+from lab.study import _benchmark_run, load_study
 from trading_core.lab.candles import MINUTE_NS, CandleGap, CandleRow, FundingRow, Month, MonthManifest
 from trading_core.marketdata.hours import HOUR_NS
-from trading_core.recording.enums import Intent, OrderSide, RiskVerdict
+from trading_core.recording.enums import Intent, OrderSide, RiskVerdict, StrategyKind, StudyLab
 from trading_core.risk.check import RiskLimits
 
 from .conftest import MemoryStore, worker_settings
@@ -128,7 +133,7 @@ def _raw(text=RUN, **changes):
 
 
 def _load(raw):
-    return candle_run_from_raw("run.toml", b"", raw, Overrides())
+    return candle_run_from_raw("run.toml", b"", raw, Overrides(), allow_multi=True)
 
 
 # AC-3: the run file ---------------------------------------------------------------------------
@@ -360,7 +365,7 @@ def test_a_two_coin_backtest_charges_each_coin_its_own_funding_and_reports_gaps_
     path = tmp_path / "run.toml"
     path.write_text(RUN, encoding="utf-8")
     store = MemoryStore()
-    loaded = load_candle_run(path, Overrides())
+    loaded = load_candle_run(path, Overrides(), allow_multi=True)
     assert backtest(worker_settings(tmp_path / "catalog", tmp_path / "reports", 1), loaded, store) == 0
 
     [bundle] = store.bundles
@@ -386,7 +391,7 @@ def test_the_same_two_coin_backtest_twice_gives_the_same_reports_and_bundle(tmp_
     _two_coin_day(tmp_path / "catalog")
     path = tmp_path / "run.toml"
     path.write_text(RUN, encoding="utf-8")
-    loaded = load_candle_run(path, Overrides())
+    loaded = load_candle_run(path, Overrides(), allow_multi=True)
     files = []
     for name in ("one", "two"):
         assert backtest(worker_settings(tmp_path / "catalog", tmp_path / name, 1), loaded, MemoryStore()) == 0
@@ -397,3 +402,141 @@ def test_the_same_two_coin_backtest_twice_gives_the_same_reports_and_bundle(tmp_
         )
     assert _differences(files[0], files[1]) == []
     assert files[0]["base.json"]["results"]["trade_count"] == 2
+
+
+# AC-9: the report -------------------------------------------------------------------------------
+
+
+def test_a_two_coin_report_has_each_coins_share_and_the_combined_figures(tmp_path):
+    _two_coin_day(tmp_path / "catalog")
+    path = tmp_path / "run.toml"
+    path.write_text(RUN, encoding="utf-8")
+    store = MemoryStore()
+    loaded = load_candle_run(path, Overrides(), allow_multi=True)
+    assert backtest(worker_settings(tmp_path / "catalog", tmp_path / "reports", 1), loaded, store) == 0
+
+    [folder] = list((tmp_path / "reports").iterdir())
+    report = json.loads((folder / "base.json").read_text(encoding="utf-8"))
+    results, candle = report["results"], report["candle"]
+    coins = candle["per_instrument"]
+    assert list(coins) == [ETH, BTC]
+    # The combined figures are the coins' sums, and each coin's own costs are its rows' only.
+    [bundle] = store.bundles
+    for key in ("net_pnl", "fees_total", "funding_total"):
+        assert sum(D(c[key]) for c in coins.values()) == D(results[key])
+    assert sum(c["trade_count"] for c in coins.values()) == results["trade_count"] == 2
+    for coin, c in coins.items():
+        assert D(c["fees_total"]) == sum((f.fee for f in bundle.fills if f.instrument_id == coin), D(0))
+        assert D(c["funding_total"]) == sum((f.amount for f in bundle.funding if f.instrument_id == coin), D(0))
+        assert c["long"]["trades"] == 1
+        assert c["short"]["trades"] == 0
+    assert sum(c["zero_volume_bars"] for c in coins.values()) == candle["zero_volume_bars"]
+    assert sum(c["carried_funding_charges"] for c in coins.values()) == candle["carried_funding_charges"]
+    # Gaps and the data quality block are per coin; the combined list holds every coin's.
+    assert coins[ETH]["gaps"] == [[T0 + 600 * MINUTE_NS, T0 + 610 * MINUTE_NS, 10]]
+    assert coins[BTC]["gaps"] == []
+    assert candle["gaps"] == coins[ETH]["gaps"]
+    assert [m["month"] for m in coins[ETH]["months"]] == ["2026-09"]
+    assert coins[ETH]["first_candle_ns"] == T0 + MINUTE_NS
+    assert coins[ETH]["events"] + coins[BTC]["events"] > 0
+    # The benchmark is the plain mean of the coins'; exposure is the union of open time.
+    assert D(candle["benchmark"]) == (D(coins[ETH]["benchmark"]) + D(coins[BTC]["benchmark"])) / 2
+    assert D(candle["exposure"]) >= max(D(c["exposure"]) for c in coins.values())
+
+    page = (folder / "base.md").read_text(encoding="utf-8")
+    assert "## Per coin" in page
+    assert f"| Measure | {ETH} | {BTC} |" in page
+    assert f"{ETH} per month touched:" in page
+    index = (folder / "index.md").read_text(encoding="utf-8")
+    assert "| Coins |" in index
+    assert "| PF_ETHUSD + PF_XBTUSD |" in index
+
+
+# AC-11: the benchmarks on several coins -----------------------------------------------------------
+
+BUY_AND_HOLD = str(Path(__file__).parents[1] / "runs" / "buy_and_hold.toml")
+DAY = date(2026, 9, 1)
+
+
+def test_a_single_coin_benchmark_keeps_the_files_notional():
+    bench = _benchmark_run(BUY_AND_HOLD, ((BTC,), D("0.0002"), D("0.0005")), DAY, DAY).run
+    assert bench.instruments == (BTC,)
+    assert not bench.multi
+    assert bench.strategy.config["notional_usd"] == "10000"
+
+
+def test_buy_and_hold_on_two_coins_opens_each_at_half_the_files_notional_and_never_trades_again(tmp_path):
+    _two_coin_day(tmp_path / "catalog")
+    loaded = _benchmark_run(BUY_AND_HOLD, ((ETH, BTC), D("0.0002"), D("0.0005")), DAY, DAY)
+    assert loaded.run.instruments == (ETH, BTC)
+    assert loaded.run.strategy.config["notional_usd"] == "5000"
+    store = MemoryStore()
+    assert backtest(worker_settings(tmp_path / "catalog", tmp_path / "reports", 1), loaded, store) == 0
+
+    [bundle] = store.bundles
+    assert sorted(p.instrument_id for p in bundle.positions) == [ETH, BTC]
+    for coin in (ETH, BTC):
+        fills = sorted((f for f in bundle.fills if f.instrument_id == coin), key=lambda f: f.filled_ns)
+        # One buy at the first hour close and one sell at the range end, nothing in between.
+        assert [f.side for f in fills] == [OrderSide.BUY, OrderSide.SELL]
+        notional = fills[0].quantity * fills[0].price
+        assert D(4900) < notional <= D(5000) * D("1.001"), (coin, notional)
+
+
+# AC-10: the single coin commands refuse a multi coin run file -------------------------------------
+
+
+def _exit_code(argv):
+    with pytest.raises(SystemExit) as raised:
+        main(argv)
+    return raised.value.code
+
+
+def test_the_loader_refuses_several_coins_unless_the_command_allows_them(tmp_path):
+    path = tmp_path / "run.toml"
+    path.write_text(RUN, encoding="utf-8")
+
+    with pytest.raises(RunFileError) as raised:
+        load_candle_run(path, Overrides())
+    assert raised.value.problems == [MULTI_REFUSED]
+    assert load_candle_run(path, Overrides(), allow_multi=True).run.multi
+
+
+def test_candle_parity_and_a_lookahead_check_refuse_several_coins_with_exit_64(tmp_path, capsys):
+    parity = Path(__file__).parents[1] / "runs" / "macd_parity.toml"
+    path = tmp_path / "parity.toml"
+    path.write_text(
+        parity.read_text(encoding="utf-8").replace(
+            'instrument_id = "PF_XBTUSD.KRAKEN"', f'instrument_ids = ["{BTC}", "{ETH}"]'
+        ),
+        encoding="utf-8",
+    )
+    assert _exit_code(["candle-parity", str(path)]) == 64
+    assert "instrument_ids" in capsys.readouterr().err
+
+    run = tmp_path / "run.toml"
+    run.write_text(RUN, encoding="utf-8")
+    assert _exit_code(["backtest", str(run), "--lookahead-check"]) == 64
+    assert f"--lookahead-check: {MULTI_REFUSED}" in capsys.readouterr().err
+
+
+def test_replay_refuses_several_coins_with_exit_64(tmp_path, capsys):
+    replay = Path(__file__).parents[1] / "runs" / "random_taker.toml"
+    path = tmp_path / "replay.toml"
+    path.write_text(
+        replay.read_text(encoding="utf-8").replace(
+            'instrument_id = "PF_XBTUSD.KRAKEN"', f'instrument_ids = ["{BTC}", "{ETH}"]'
+        ),
+        encoding="utf-8",
+    )
+    assert _exit_code(["replay", str(path)]) == 64
+    assert "instrument_ids" in capsys.readouterr().err
+
+
+def test_screen_refuses_a_multi_coin_study(monkeypatch, capsys):
+    study = SimpleNamespace(lab=StudyLab.CANDLE, plan={"run_file": {"instrument_ids": [ETH, BTC]}})
+    evidence = SimpleNamespace(study=study, inputs=SimpleNamespace(strategy_kind=StrategyKind.SCALPING))
+    monkeypatch.setattr("lab.screen.study_evidence", lambda session, name: evidence)
+
+    assert run_screen(worker_settings(Path("/nonexistent"), Path("/nonexistent"), 1), "pair", None) == EXIT_USAGE
+    assert MULTI_REFUSED in capsys.readouterr().err
