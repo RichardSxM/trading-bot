@@ -36,12 +36,13 @@ class StudyContext:
     # The studied strategy; a benchmark's own strategy (above) differs.
     study_strategy_name: str
     study_strategy_kind: StrategyKind
-    instrument: InstrumentRow
+    # Every coin of the run in sorted order; the bundle's ``instrument`` is the first (spec 0022 AC-12).
+    instruments: tuple[InstrumentRow, ...]
     grid_points: Mapping[str, int | None]
     versions: Mapping[str, StrategyVersionRow]
 
     def attach(self, bundle: RunBundle, variant: str) -> RunBundle:
-        """``bundle`` with the version, instrument, study, and its ``study_runs`` row (status from the run)."""
+        """``bundle`` with the version, instruments, study, and its ``study_runs`` row (status from the run)."""
         version = self.versions[variant]
         if version.frozen_hash is None:
             raise ValueError(f"version {version.id} has no frozen hash; a study run needs one")
@@ -50,7 +51,8 @@ class StudyContext:
             strategy_name=self.strategy_name,
             strategy_kind=self.strategy_kind,
             version=version,
-            instrument=self.instrument,
+            instrument=self.instruments[0],
+            instruments=self.instruments,
             study=self.study,
             study_strategy_name=self.study_strategy_name,
             study_strategy_kind=self.study_strategy_kind,

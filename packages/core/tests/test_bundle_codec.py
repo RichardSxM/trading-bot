@@ -1,5 +1,5 @@
 """covers: spec 0015 AC-7 (a bundle file parses back into the exact bundle; old bundles still parse; a
-large file is read in parts, never whole)."""
+large file is read in parts, never whole) and spec 0022 AC-12 (a bundle carries every coin's instrument)."""
 
 import json
 import tracemalloc
@@ -8,7 +8,7 @@ from typing import Any
 from uuid import uuid7
 
 import pytest
-from bundle_factory import study, study_bundle, version
+from bundle_factory import eth_instrument, instrument, study, study_bundle, version
 
 from trading_core.recording.bundle_codec import BundleFile, BundleFormatError, bundle_json, parse_bundle
 from trading_core.recording.rows import FillRow, RunBundle
@@ -38,6 +38,29 @@ def test_a_bundle_from_before_spec_0015_still_parses():
 
     assert parsed.study is None
     assert parsed.daily_equity == ()
+
+
+def test_every_coins_instrument_round_trips_and_the_head_carries_them(tmp_path):
+    strategy_id = uuid7()
+    bundle = replace(
+        study_bundle(study(strategy_id, "s1"), version(strategy_id, {})),
+        instruments=(eth_instrument(), instrument()),
+    )
+    text = bundle_json(bundle)
+
+    assert parse_bundle(text).instruments == (eth_instrument(), instrument())
+    assert _file(tmp_path, text).head().instruments == (eth_instrument(), instrument())
+
+
+def test_a_bundle_from_before_spec_0022_parses_with_no_instruments():
+    strategy_id = uuid7()
+    data = json.loads(bundle_json(study_bundle(study(strategy_id, "s1"), version(strategy_id, {}))))
+    data.pop("instruments")
+
+    parsed = parse_bundle(json.dumps(data))
+
+    assert parsed.instruments == ()
+    assert parsed.instrument == instrument()
 
 
 @pytest.mark.parametrize(

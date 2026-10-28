@@ -561,6 +561,9 @@ class RunBundle:
     strategy_kind: StrategyKind | None = None
     version: StrategyVersionRow | None = None
     instrument: InstrumentRow | None = None
+    # Spec 0022 AC-12: every coin of the run (``instrument`` is the first in sorted order). A tuple, not a
+    # row list, so ``BundleFile.head`` carries it; a bundle written before it loads with none.
+    instruments: tuple[InstrumentRow, ...] = ()
     study: StudyRow | None = None
     # The studied strategy (a benchmark run's own strategy differs), to map the study's strategy id.
     study_strategy_name: str | None = None

@@ -74,6 +74,13 @@ def instrument(tick: Decimal = Decimal(1)) -> InstrumentRow:
     )
 
 
+def eth_instrument(tick: Decimal = Decimal("0.1"), instrument_id: str = "PF_ETHUSD.KRAKEN") -> InstrumentRow:
+    """A second coin for multi coin bundles (spec 0022 AC-12); a test may give it its own id."""
+    return replace(
+        instrument(tick), instrument_id=instrument_id, symbol=instrument_id.split(".")[0], base_currency="ETH"
+    )
+
+
 def sha(text: str) -> str:
     """A stand in hash."""
     return hashlib.sha256(text.encode()).hexdigest()
