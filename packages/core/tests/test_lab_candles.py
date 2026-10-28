@@ -94,6 +94,15 @@ def test_a_volume_further_off_than_the_noise_is_bad():
     assert snap_volume(D("0.356601"), STEP) is None
 
 
+def test_a_large_volume_noise_scales_with_the_volume():
+    # PF_PEPEUSD (step 1000), 2024-02: float noise past 1e-8 on a volume in the hundreds of millions.
+    assert snap_volume(D("257548000.0000001"), D(1000)) == D("257548000")
+    assert snap_volume(D("3392918000.000001"), D(1000)) == D("3392918000")
+    assert snap_volume(D("257548000.001"), D(1000)) is None
+    # Small volumes keep the absolute bound.
+    assert snap_volume(D("1.50000002"), STEP) is None
+
+
 def test_build_candles_rounds_flags_quiet_and_dedupes():
     raw = [
         _raw(0, v="0.3565999999999999"),

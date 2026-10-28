@@ -32,6 +32,10 @@ FUNDING_CARRY_MAX_NS: Final = 3 * HOUR_NS
 CANDLE_STALE_CHECK_S: Final = 60
 # A volume this close to a multiple of the size step is float noise and is rounded to it (AC-1).
 VOLUME_NOISE: Final = Decimal("1e-8")
+# A large volume's float noise grows with it (a 64 bit float keeps about 16 digits), so the bound is
+# also at least this share of the volume: PEPE's 257548000.0000001 is noise. Under 10,000 units it
+# is below VOLUME_NOISE, so BTC and ETH volumes meet the same bound as before.
+VOLUME_NOISE_SHARE: Final = Decimal("1e-12")
 # A price this close to a tick is float noise and is snapped to it (AC-1), the same bound as volume.
 PRICE_NOISE: Final = Decimal("1e-8")
 # Five or more consecutive missing minutes make a gap row (AC-4).
@@ -137,10 +141,11 @@ def expected_charge_times(start_ns: int, end_ns: int) -> list[int]:
 
 def snap_volume(volume: Decimal, step: Decimal) -> Decimal | None:
     """The volume on the size step: itself when on it, the nearest step (``ROUND_HALF_EVEN``) when
-    within ``VOLUME_NOISE``, or ``None`` when further off (a bad row, AC-3)."""
+    within ``VOLUME_NOISE`` (or ``VOLUME_NOISE_SHARE`` of the volume, when larger), or ``None`` when
+    further off (a bad row, AC-3)."""
     snapped = (volume / step).quantize(Decimal(1), rounding=ROUND_HALF_EVEN) * step
     snapped = snapped.quantize(step)
-    if abs(snapped - volume) > VOLUME_NOISE:
+    if abs(snapped - volume) > max(VOLUME_NOISE, abs(volume) * VOLUME_NOISE_SHARE):
         return None
     return snapped
 
