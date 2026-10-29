@@ -15,7 +15,7 @@ Every single BTC rule so far has failed the gate. The best one, `donchian_4h`, c
 - As the trader, I want every existing single BTC study, run file, and verdict to stay exactly as it is, so past results stay valid.
 
 **Acceptance criteria**:
-- **AC-1** (hash baseline): before any code, `verify.md` records the sorted module hash list sha256 of every `trading_core.node` module at the commit this feature's branch starts from, from `scripts/spikes/hash_check.py` (spec 0020 AC-1 method). At close out (AC-18) the list on the branch matches it line for line, with no module added or edited: the multi coin wiring lives in `apps/lab`, never in a node.
+- **AC-1** (hash baseline): before any code, `verify.md` records the sorted module hash list sha256 of every `trading_core.node` module at the commit this feature's branch starts from, from `scripts/spikes/hash_check.py` (spec 0020 AC-1 method). At close out (AC-18) two things hold. First, no file under `packages/core/src/trading_core/node` is added or edited (`git diff --stat <base>..<close commit> -- packages/core/src/trading_core/node` is empty): the multi coin wiring lives in `apps/lab`, never in a node. Second, every closure line that differs from the baseline is explained by a module this spec names as changed. The one named module is `trading_core.recording.rows` (AC-12 adds `RunBundle.instruments` there, and it sits in 22 node closures), so a moved line counts as explained only when its closure contains `trading_core.recording.rows` and no other module changed since the base. `verify.md` lists each moved line with that reason; any other moved line fails AC-1. (Amended 2026-10-29: the first wording asked for a line for line match, which AC-12 made impossible; rationale.md, *Hash rule and shared modules*.)
 - **AC-2** (ETH instrument and data): `apps/lab/src/lab/instruments/PF_ETHUSD.KRAKEN.json` is copied from the VPS catalog's newest `PF_ETHUSD` crypto_perpetual row, with `maker_fee` `0.0002` and `taker_fee` `0.0005` written in by hand and a `_note` saying so (the BTC file's method). `lab fetch-candles` and `lab import-funding` gain `--instrument <id>` (default `PF_XBTUSD.KRAKEN`, so every existing command and script runs unchanged). The fetch builds the Kraken symbol from the id's symbol part, and the import reads member `exports/<symbol>.csv` and accepts only that tradeable. ETH candles and funding pass the same checks as BTC's (spec 0014 AC-1 to AC-3: rounding to the pinned tick and size step, quiet minutes, gap rows, manifests). An id with no pinned file exits 64. `verify.md` records ETH's first candle minute, its first whole month, per year its missing minutes, gap rows, and missing funding charges, and the pin's `margin_maint` (the liquidation input `guard` reads) next to Kraken's published value.
 - **AC-2a** (off tick open and close, amends spec 0014 AC-1 and AC-3 for every coin): Kraken's ETH candles hold two off tick closes, each repeated as the next minute's open (2023-08-17 22:55 and 2023-10-16 13:30 UTC; rationale.md, *Off tick ETH closes*). An open or close more than `1e-8` off the tick is no longer a bad row on its own. It is rounded to the nearest tick (`ROUND_HALF_EVEN`), and then, if that lies outside the candle's stored low to high (the highs and lows already rounded by spec 0014 AC-1), it is set to the nearer of the two, so no stored price lies beyond the range Kraken reported. `round_price` gives the nearest tick for an off tick open or close (no longer `None`), and `_store` clamps it once the high and low are stored; a field that is already a bad row skips the clamp. A repeated flat print: when a candle's four raw prices are equal and off the tick, its volume rounds to 0, and that raw price equals the previous candle's raw close, all four are stored as the previous candle's stored close (so it stays flat at the previous close for the quiet check). Any other candle whose stored low is then above its stored high (the whole candle inside one tick) is a bad row. After a clamp, a close and the next minute's open can differ by one tick (22:55 close 1660.6, 22:56 open 1660.7); no continuity check is added. The order stays spec 0014's: round all four prices first (now open and close too), then every other AC-3 check, the quiet decision, and the duplicate rule, all on the stored values (identical raw page edge copies stay identical). Such a candle counts once in `price_rounded_rows` and its open or close appears in `lab_candles_price_rounded` like a high or low; the manifest gains no field. A guard against a real tick change: a pre pass counts, per coin and per month, the candles whose raw open or close is more than `1e-8` off the tick (noise snaps excluded, candles bad for other reasons included). When that count is above `OFF_TICK_BODY_MAX` (10, a named constant in `trading_core/lab/candles.py`; a rule of thumb, since ETH shows at most 2 a month and a real tick change would put most candles off), each such open or close is one bad row entry (minute, field, raw value), listed with any other bad rows, and the month exits 1 as before. A `--refetch` does not recheck a month stored under the old rule (no ETH month was). No stored BTC candle has an off tick open or close (spec 0014 rationale), so no BTC month changes and none is fetched again. `trading_core/lab/candles.py` is outside every `trading_core.node` closure, so AC-1 holds.
 - **AC-3** (run file): a candle run file holds exactly one of `instrument_id` (a string, as today) or `instrument_ids` (a list of at least 2 distinct pinned ids, sorted on load); both, neither, a duplicate, a single item list, or an unpinned id exits 64. A single coin file loads, plans, and hashes exactly as before: for every committed study file, `LoadedStudy.plan_hash` and each grid point's strategy version config are byte identical to the base commit's (a test pins the `donchian_4h.toml` and `macd_baseline.toml` values). A multi coin run's `run_config` carries `instrument_ids` (sorted) and no `instrument_id`. The lab adds the key `instrument_ids` to the strategy version config (`{**[strategy.config], **grid_point}` today, which holds no instrument) only for a multi coin run, so `entry.frozen` hashes it and the frozen hash differs from any single coin version of the same rule. The run file model dumps `instrument_ids` only when it is set (excluded when `None`), which keeps every single coin dump, and so `plan_hash`, unchanged. Every command that takes a candle run file states whether it allows `instrument_ids`; the loader refuses it where not allowed (AC-10). The first whole month of the shared range is never before 2022-04-01 (BTC's floor).
@@ -145,10 +145,10 @@ Tracer Bullet: the thinnest real thread is two coins through one engine, on real
 5. [x] Bundles carry instruments, the importer upserts them, with tests; push the step 3 smoke bundle to a laptop gate import to prove it loads, satisfies **AC-12**
 6. [x] Gate: `instrument_id` on `TradeReturn`, `concentration_instrument`, thresholds v2, the v1 fixture parity test; dashboard coin share. Commit `feat(gate): concentration_instrument check, thresholds v2 (0022)`, satisfies **AC-13**, **AC-14**
 7. [x] Multi coin benchmarks in `lab holdout`, with the 50/50 split test, satisfies **AC-11**
-8. Checkpoint with the trader: show the thin thread results and the ETH data record, then commit the study file and rebuild `kfs/lab` with `GIT_COMMIT`, satisfies **AC-15**
-9. Run `lab study` and `lab holdout`. Then, each VPS step confirmed: deploy the gate and dashboard (thresholds v2), push the bundles, run `gate evaluate donchian_4h_pair` once, satisfies **AC-16**
-10. Write the Results and `verify.md` run log, commit `docs(specs): donchian_4h_pair verdict (0022)`, satisfies **AC-17**
-11. Close out: hash comparison again, scope tick, paper follow up only on a pass, satisfies **AC-18**
+8. [x] Checkpoint with the trader: show the thin thread results and the ETH data record, then commit the study file and rebuild `kfs/lab` with `GIT_COMMIT`, satisfies **AC-15**
+9. [x] Run `lab study` and `lab holdout`. Then, each VPS step confirmed: deploy the gate and dashboard (thresholds v2), push the bundles, run `gate evaluate donchian_4h_pair` once, satisfies **AC-16**
+10. [x] Write the Results and `verify.md` run log, commit `docs(specs): donchian_4h_pair verdict (0022)`, satisfies **AC-17**
+11. [x] Close out: hash comparison again, scope tick, paper follow up only on a pass, satisfies **AC-18**
 
 ## Consequences
 
@@ -180,4 +180,46 @@ Tracer Bullet: the thinnest real thread is two coins through one engine, on real
 
 ## Results
 
-Not run yet.
+**Verdict: `fail`.** Label: BTC holdout seen (spec 0020).
+
+| Field | Value |
+|---|---|
+| Study | `donchian_4h_pair` (study file committed 2026-10-28 in 7b9bffa, study batch `01a1836a-2351-750f-8132-3deb98238d18`, holdout batch `01a183f1-5637-73e4-8fa5-2d783971a080`, benchmarks `01a18407-3d20-708e-a685-b78aaa76109a` buy and hold and `01a18428-392c-74dc-9ab0-f9281bb0be34` MACD) |
+| Promotion id | `01a186a9-711e-76bb-b8d3-75e0b4f7bd5f` (VPS) |
+| Evaluation date | 2026-10-29 (07:56 UTC) |
+| Chosen grid point | grid-2 (`entry_bars` 20, `stop_atr` 3) |
+| Walk forward Sharpe | 0.337050 (5 folds; return +6.57%) |
+| Holdout Sharpe | 0.583230, against buy and hold −0.529686 and the MACD baseline −1.168661 |
+| Holdout return after costs | +5.60% (559.61 USD) |
+| Holdout marked max drawdown | 9.26% |
+| Deflated Sharpe probability | 0.000000 |
+| PBO | 0.253968 (`pbo_applicable` true) |
+| Holdout trades | 118 (58 long, 60 short; win rate 27.97%) |
+| Trial count N, trial pool | 31, 31 (`kind+lab`, VPS) |
+| Holdout gross per trade | 5.900 USD |
+| Holdout cost per trade | 1.158 USD (ratio 5.10) |
+
+Per coin, holdout:
+
+| Coin | Trades | Net P&L (USD) | Long / short (USD) | Buy and hold |
+|---|---|---|---|---|
+| PF_ETHUSD | 57 | 394.15 | 294.31 / 99.84 | −38.33% |
+| PF_XBTUSD | 61 | 165.46 | 229.80 / −64.34 | −24.10% |
+
+Coin share of profit (`instrument_share`): 0.704327, ETH.
+
+Walk forward folds (out of sample net, USD): 2023-04 to 2023-09 −414.63 (58 trades), 2023-10 to 2024-03 +1473.13 (50), 2024-04 to 2024-09 −21.49 (61), 2024-10 to 2025-03 −313.77 (59), 2025-04 to 2025-09 +35.04 (63).
+
+Reasons that failed (code, value, threshold):
+- `concentration_fold`: `failed`, 1.942729, 0.60
+- `bootstrap_lower_bound`: `failed`, −0.000341, 0
+- `deflated_sharpe`: `failed`, 0.000000, 0.95
+- `concentration_direction`: `failed`, 0.936571, 0.60
+- `concentration_top_trades`: `failed`, 3.534463, 0.60
+- `concentration_instrument`: `failed`, 0.704327, 0.60
+
+Every other check passed, among them the fee hurdle, holdout Sharpe above 0, beating both baselines, walk forward Sharpe above 0, PBO under 0.30, and the drawdown budget.
+
+Reading: adding ETH did what it was meant to on the count (118 holdout trades against 64 for BTC alone), and the edge per trade held up (5.90 USD gross against 1.16 USD of cost). It did not make the profit steadier. One walk forward half year made almost twice the total, longs made 94% of it, the top 5% of trades made 3.5 times it, and ETH made 70% of the holdout profit, so the new coin check fails too. The two coins move together, so the second coin added trades more than it added independent bets. The bootstrap lower bound still sits just below 0, and at N 31 the deflated Sharpe is 0. This is the same shape as `donchian_4h` alone: a few trend runs carry a rule that otherwise roughly breaks even.
+
+Close out (AC-18, 2026-10-29): the hash list on main f38e872 does **not** match the AC-1 baseline. No `trading_core.node` file was edited, but 22 of the 32 closures moved because they all import `trading_core.recording.rows`, and cf51e1e added the `instruments` field to `RunBundle` there (AC-12). The other 10 lines match. Details in `verify.md`. This is a recorded deviation from the first AC-1 wording, accepted 2026-10-29: AC-1 now asks for no node file edit plus every moved line explained by a named module, and both hold here. What it means: verdicts already stored stay valid, but a rerun of an older study on this code registers new strategy versions, because each version's code hash covers its closure. The deploy exit 4 on 2026-10-29 had the same cause.
