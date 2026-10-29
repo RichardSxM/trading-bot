@@ -452,7 +452,7 @@ spec [0022](../specs/0022-multi-coin-portfolio/index.md)
   - [x] Study, holdout, push, gate verdict, results record, close out (AC-15 to AC-18): verdict `fail` recorded 2026-10-29 (promotion `01a186a9`); hash check passes under the amended AC-1 (22 closures moved only through `recording/rows.py`, no node file edited), see spec 0022 `verify.md`
 - [x] Verify it: `/check verify multi coin portfolio`
 - [x] Test it: `/test multi coin portfolio`
-- [ ] Review it (fresh model): `/check review multi coin portfolio`
+- [x] Review it (fresh model): `/check review multi coin portfolio`
 - [ ] Document it: `/document multi coin portfolio`
 
 ### 17. Hour level strategy candidates · in-progress
