@@ -187,6 +187,7 @@ services:
       POSTGRES_USER: trader_app
       REDIS_USERNAME: trader
       # The paper loop (spec 0006): placeholder strategy, risk caps, sandbox, recording.
+      PAPER_STRATEGY: ${PAPER_STRATEGY:-placeholder_timed}
       PLACEHOLDER_INTERVAL_MIN: ${PLACEHOLDER_INTERVAL_MIN:-15}
       PLACEHOLDER_HOLD_MIN: ${PLACEHOLDER_HOLD_MIN:-10}
       PLACEHOLDER_LOOKBACK_MIN: ${PLACEHOLDER_LOOKBACK_MIN:-5}
