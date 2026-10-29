@@ -27,6 +27,7 @@ class BlockReason(StrEnum):
     LOSS_COOLDOWN = "loss_cooldown"
     LOSS_UNKNOWN = "loss_unknown"
     REGIME = "regime"
+    RECONCILING = "reconciling"
 
 
 PLAIN_WORDS: Final[dict[BlockReason, str]] = {
@@ -43,6 +44,7 @@ PLAIN_WORDS: Final[dict[BlockReason, str]] = {
     BlockReason.LOSS_COOLDOWN: "Cooling down after a losing trade",
     BlockReason.LOSS_UNKNOWN: "Today's loss is not known yet (waiting for the database)",
     BlockReason.REGIME: "The market is trending (ADX above the limit), entries wait",
+    BlockReason.RECONCILING: "Checking orders and positions against Kraken",
 }
 """What the dashboard shows for each reason."""
 
@@ -56,6 +58,7 @@ SELF_CLEARING: Final = frozenset(
         BlockReason.LOSS_COOLDOWN,
         BlockReason.LOSS_UNKNOWN,
         BlockReason.REGIME,
+        BlockReason.RECONCILING,
     }
 )
 """Reasons that clear by themselves; the rest hold until the trader restarts."""

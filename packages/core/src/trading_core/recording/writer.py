@@ -62,6 +62,8 @@ CALLS: Final[Mapping[WriteCall, WriteFn]] = {
     WriteCall.RECORD_ACCOUNT_SNAPSHOT: repository.record_account_snapshot,  # type: ignore[dict-item]
     WriteCall.RECORD_RISK_EVENT: repository.record_risk_event,  # type: ignore[dict-item]
     WriteCall.RECORD_FUNDING: repository.record_funding,  # type: ignore[dict-item]
+    WriteCall.RECORD_RECONCILIATION: repository.record_reconciliation,  # type: ignore[dict-item]
+    WriteCall.RECORD_RECONCILIATION_MISMATCH: repository.record_reconciliation_mismatch,  # type: ignore[dict-item]
 }
 """The repository function behind each call (``WriteItem`` guarantees the row type matches)."""
 

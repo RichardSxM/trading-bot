@@ -23,6 +23,7 @@ from dashboard.live.state import (
     BlockedReason,
     BlockedView,
     CommandView,
+    ReconcileView,
     collapse,
 )
 from dashboard.ui.format import num, pnl, ts
@@ -133,6 +134,14 @@ BLOCKED_SAMPLES: Final[dict[str, BlockedView]] = {
     "one": _blocked(BlockReason.STALE_FEED),
     "several": _blocked(BlockReason.PAUSED, BlockReason.RECORDING_UNHEALTHY, BlockReason.STOP_NOT_ACCEPTED),
 }
+CHECK_SAMPLES: Final[dict[str, ReconcileView]] = {
+    "clean": ReconcileView("clean · 12s", "ok"),
+    "checking": ReconcileView("checking", "warn"),
+    "mismatch": ReconcileView("mismatch", "bad"),
+    "halted": ReconcileView("halted", "bad"),
+    "unknown": ReconcileView("Kraken unknown", "bad"),
+    "lost": ReconcileView("no data", "lost"),
+}
 WINTER_TIME: Final = datetime(2026, 1, 15, 9, 30, 0, tzinfo=UTC)
 # Sample heartbeat ages for the tape, one a second; -1 is a second without a live link.
 PULSE_SAMPLE: Final = (
@@ -225,6 +234,7 @@ def styleguide_context() -> dict[str, object]:
         "command_samples": COMMAND_SAMPLES,
         "position_samples": POSITION_SAMPLES,
         "blocked_samples": BLOCKED_SAMPLES,
+        "check_samples": CHECK_SAMPLES,
         "kraken_url": "https://demo-futures.kraken.com/",  # the sample alerts link to the demo venue
         "alert_samples": [
             AlertView(

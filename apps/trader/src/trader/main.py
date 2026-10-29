@@ -76,6 +76,7 @@ from trading_core.node.kraken import BTC_PERP, futures_data_client, futures_exec
 from trading_core.node.loss_limits import LossLimitActor
 from trading_core.node.paper_snapshots import account_snapshot, paper_status, position_snapshot
 from trading_core.node.placeholder import PlaceholderConfig
+from trading_core.node.reconcile import ReconcileActor, SandboxExchangeView
 from trading_core.node.recording import RecordingActor
 from trading_core.node.sandbox import FeeSandboxExecClientFactory, sandbox_exec_client
 from trading_core.node.strategy import KfsStrategy, PauseGate
@@ -495,6 +496,18 @@ def run_node(
     # After the control actor (the halt is known) and the demo's abandoned close (start_paper_loop).
     losses = loss_limit_actor(settings, secrets, control.kill_switch, paper)
     node.trader.add_actor(losses)
+    # Before any strategy, so `reconciling` blocks entries until the start check is clean (spec 0023
+    # AC-1). Demo checks the sandbox (AC-23); live gets its Kraken view with spec 0023 task 2.
+    reconcile: ReconcileActor | None = None
+    if paper is not None:
+        reconcile = ReconcileActor(
+            env=Env(settings.trading_env),
+            exchange=SandboxExchangeView(lambda: FeeSandboxExecClientFactory.last_built, node.cache, time.time_ns),
+            blocks=paper.blocks,
+            record=paper.writer.put,
+            run_id=paper.run_id,
+        )
+        node.trader.add_actor(reconcile)
     paper_state: Callable[[], PaperStatus] | None = None
     snapshot_readers: list[tuple[str, Callable[[], Mapping[str, object] | None]]] = [
         ("heartbeat", lambda: heartbeat_state(node, settings)),
@@ -508,6 +521,7 @@ def run_node(
                 paper_state,
                 control.kill_switch,
                 losses.snapshot_fields,
+                None if reconcile is None else reconcile.snapshot_fields,
             ),
         ),
     ]

@@ -391,6 +391,14 @@ time[title] { text-decoration: underline dotted var(--edge); text-underline-offs
 .blocked__label { color: var(--faint); font-weight: 400; margin-right: var(--space-4); }
 [data-link="reconnecting"] .topbar__blocked, [data-link="lost"] .topbar__blocked { opacity: 0.5; }
 
+/* The Kraken check badge (spec 0023 AC-19): always shown; the alert colour when a check went wrong. */
+.check { white-space: nowrap; color: var(--muted); transition: color var(--motion-state), opacity var(--motion-state); }
+.check__label { color: var(--faint); margin-right: var(--space-4); }
+.check--warn { color: var(--warn); font-weight: 600; }
+.check--bad { color: var(--loss); font-weight: 600; }
+.check--lost { opacity: 0.6; }
+[data-link="reconnecting"] .topbar__check, [data-link="lost"] .topbar__check { opacity: 0.5; }
+
 /* Pause and Resume on System (spec 0005 AC-13): two forms side by side, the error above them. */
 .pause-area { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-12); }
 .pause-area__error { flex-basis: 100%; color: var(--loss); font-weight: 600; font-size: var(--type-caption-size); }

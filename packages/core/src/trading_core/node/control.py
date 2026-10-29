@@ -630,6 +630,7 @@ def trader_state(
     paper: Callable[[], PaperStatus] | None = None,
     kill_switch: KillSwitch | None = None,
     losses: Callable[[], Mapping[str, object]] | None = None,
+    reconcile: Callable[[], Mapping[str, object]] | None = None,
 ) -> Mapping[str, object] | None:
     """The ``trader_state`` snapshot data (AC-7) from the gate, the risk engine, and the cache.
 
@@ -637,7 +638,8 @@ def trader_state(
     With ``paper`` (demo) it adds the paper loop's status; without one the same fields hold only
     the pause, so the dashboard reads one shape in every env (spec 0006 AC-16). The halt, and the
     loss figures from ``losses`` (``LossLimitActor.snapshot_fields``), are spec 0010 AC-16's; without
-    ``losses`` every loss field is null, as before the seed lands.
+    ``losses`` every loss field is null, as before the seed lands. The check fields from ``reconcile``
+    (``ReconcileActor.snapshot_fields``) are spec 0023 AC-19's; without it they are null.
     """
     if not gate.loaded:
         return None
@@ -673,7 +675,12 @@ def trader_state(
         "halted_at": format_utc(halt_state.halted_at) if halt_state is not None else None,
         "flattening": kill_switch.flattening if kill_switch is not None else False,
         **(losses() if losses is not None else NO_LOSS_FIELDS),
+        **(reconcile() if reconcile is not None else NO_RECONCILE_FIELDS),
     }
+
+
+NO_RECONCILE_FIELDS: Final[Mapping[str, object]] = {"last_clean_check_ns": None, "last_check_outcome": None}
+"""The check fields of ``trader_state`` before any check finished (spec 0023 AC-19)."""
 
 
 NO_LOSS_FIELDS: Final[Mapping[str, object]] = {

@@ -447,6 +447,8 @@ def test_trader_state_reports_the_pause_and_the_counts():
         "trades_today": None,
         "max_trades_per_day": None,
         "cooldown_until": None,
+        "last_clean_check_ns": None,
+        "last_check_outcome": None,
     }
 
 

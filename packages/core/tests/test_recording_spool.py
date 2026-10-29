@@ -10,11 +10,14 @@ from decimal import Decimal
 import pytest
 
 from trading_core.recording.enums import (
+    ActionResult,
     Env,
     FundingSource,
     Granularity,
     Intent,
     Liquidity,
+    MismatchAction,
+    MismatchKind,
     OrderEventKind,
     OrderOrigin,
     OrderSide,
@@ -22,6 +25,8 @@ from trading_core.recording.enums import (
     OrderType,
     PositionSide,
     PositionStatus,
+    ReconcileOutcome,
+    ReconcileTrigger,
     RiskEventKind,
     RiskVerdict,
     Severity,
@@ -37,6 +42,8 @@ from trading_core.recording.rows import (
     OrderRow,
     PositionRow,
     PositionSnapshotRow,
+    ReconciliationMismatchRow,
+    ReconciliationRow,
     RiskEventRow,
 )
 from trading_core.recording.spool import (
@@ -195,6 +202,35 @@ def _samples():
             source=FundingSource.COMPUTED,
             external_id="ext-1",
             paid_ns=NS,
+        ),
+        WriteCall.RECORD_RECONCILIATION: ReconciliationRow(
+            env=Env.DEMO,
+            run_id=RUN,
+            trigger=ReconcileTrigger.START,
+            started_ns=NS,
+            finished_ns=NS + 5,
+            outcome=ReconcileOutcome.MISMATCH,
+            exchange_orders=1,
+            exchange_positions=0,
+            mismatch_count=1,
+            error="none",
+        ),
+        WriteCall.RECORD_RECONCILIATION_MISMATCH: ReconciliationMismatchRow(
+            env=Env.DEMO,
+            reconciliation_id=uuid.uuid7(),
+            kind=MismatchKind.UNKNOWN_ORDER,
+            instrument_id="PF_XBTUSD.KRAKEN",
+            client_order_id="O-9",
+            venue_order_id="KRAKEN-9",
+            order_id=uuid.uuid7(),
+            position_id=POSITION,
+            exchange_side="buy",
+            exchange_qty=Decimal("0.0001"),
+            local_side="sell",
+            local_qty=Decimal("0.0002"),
+            action=MismatchAction.CANCELLED,
+            action_result=ActionResult.PENDING,
+            details={"trigger": "start"},
         ),
     }
 

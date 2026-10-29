@@ -37,6 +37,7 @@ from dashboard.live.state import (
     NO_DATA,
     NOT_BLOCKED,
     PAUSE_NO_DATA,
+    RECONCILE_NO_DATA,
     ActivityRow,
     AgeView,
     AlertView,
@@ -45,6 +46,7 @@ from dashboard.live.state import (
     Entry,
     LossesView,
     PauseView,
+    ReconcileView,
     activity_row,
     alert_state,
     blocked_view,
@@ -53,6 +55,7 @@ from dashboard.live.state import (
     heartbeat_view,
     losses_view,
     pause_view,
+    reconcile_view,
 )
 from trading_core.control.messages import ControlMessage, Fields, field, to_fields
 
@@ -67,6 +70,7 @@ POSITION_EVENT: Final = "overview-position"
 BLOCKED_EVENT: Final = "topbar-blocked"
 BLOCKED_REASONS_EVENT: Final = "overview-blocked"
 LOSSES_EVENT: Final = "system-losses"
+CHECK_EVENT: Final = "topbar-check"
 MUTE_EVENT: Final = "overview-mute"
 ALERTS_REFRESH_S: Final = 10.0
 PNL_REFRESH_S: Final = 5.0
@@ -117,7 +121,9 @@ class Poller:
         read_alert_results: Callable[[], Awaitable[Sequence[Entry] | None]] | None = None,
         render_mute: Callable[[MuteView], str] | None = None,
         alerts_refresh_s: float = ALERTS_REFRESH_S,
+        render_check: Callable[[ReconcileView], str] | None = None,
     ) -> None:
+        self._render_check = render_check
         self._read_alerts = read_alerts
         self._read_alert_results = read_alert_results
         self._render_mute = render_mute
@@ -214,6 +220,8 @@ class Poller:
         }
         if self._render_losses is not None:
             partials[LOSSES_EVENT] = self._render_losses(losses_view(state, self._now()))
+        if self._render_check is not None:
+            partials[CHECK_EVENT] = self._render_check(reconcile_view(state, self._now()))
         if self._render_mute is not None:
             partials[MUTE_EVENT] = self._render_mute(mute_view(alert_results, self._now()))
         if self._render_position is not None:
@@ -236,6 +244,8 @@ class Poller:
         }
         if self._render_losses is not None:
             partials[LOSSES_EVENT] = self._render_losses(LOSSES_NO_DATA)
+        if self._render_check is not None:
+            partials[CHECK_EVENT] = self._render_check(RECONCILE_NO_DATA)
         if self._render_mute is not None:
             partials[MUTE_EVENT] = self._render_mute(MUTE_OFF)
         if self._render_position is not None:

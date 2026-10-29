@@ -168,6 +168,15 @@
   {%- endfor %}
 </section>
 
+<section class="sg-section" id="check" aria-labelledby="check-sample-h">
+  <h2 class="sg-h" id="check-sample-h">Kraken check</h2>
+  {%- for state, view in check_samples.items() %}
+  <div data-sample="check:{{ state }}">
+    <div class="status-strip"><span class="topbar__check">{% include "partials/topbar_check.html" %}</span></div>
+  </div>
+  {%- endfor %}
+</section>
+
 <section class="sg-section" id="stats" aria-labelledby="stats-h">
   <h2 class="sg-h" id="stats-h">Stats and freshness</h2>
   <div class="sg-stats">

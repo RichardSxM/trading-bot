@@ -1,7 +1,7 @@
 # 0023. Rebuild the trader's view from Kraken after every restart or outage, fix what is safe to fix, flatten and halt on the rest, and prove it with a live drill before go live
 
 **Date**: 2026-10-29
-**Status**: Proposed
+**Status**: In Progress
 
 ## Summary
 

@@ -38,6 +38,7 @@ from dashboard.live.state import (
     CommandView,
     LossesView,
     PauseView,
+    ReconcileView,
     collapse,
 )
 from dashboard.settings import DashboardSettings, normalize_seed
@@ -170,6 +171,7 @@ def create_app(
     blocked_reasons_template = templates.get_template("partials/overview_blocked.html")
     mute_template = templates.get_template("partials/overview_mute.html")
     losses_template = templates.get_template("partials/system_losses.html")
+    check_template = templates.get_template("partials/topbar_check.html")
     position_key = snapshot_key(settings.trading_env, "position")
     account_key = snapshot_key(settings.trading_env, "account")
     heartbeat_key = snapshot_key(settings.trading_env, "heartbeat")
@@ -212,6 +214,9 @@ def create_app(
     def render_mute(view: MuteView) -> str:
         return mute_template.render(view=view)
 
+    def render_check(view: ReconcileView) -> str:
+        return check_template.render(view=view)
+
     context = AppContext(
         settings=settings,
         templates=templates,
@@ -251,6 +256,7 @@ def create_app(
             read_alerts=lambda: asyncio.to_thread(alerts_reader),
             read_alert_results=lambda: client.xrevrange(alert_results, count=RESULTS_SEARCHED),
             render_mute=render_mute,
+            render_check=render_check,
         ),
         redis=client,
         clock=clock,

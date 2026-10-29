@@ -25,6 +25,7 @@ Kraken's real top of book, so filling them in full at the best price is the fait
 import asyncio
 import logging
 from decimal import Decimal
+from typing import ClassVar
 
 from nautilus_trader.adapters.kraken import KRAKEN
 from nautilus_trader.adapters.sandbox.config import SandboxExecutionClientConfig
@@ -208,7 +209,13 @@ class FeeSandboxExecutionClient(SandboxExecutionClient):
 
 
 class FeeSandboxExecClientFactory(LiveExecClientFactory):
-    """Builds ``FeeSandboxExecutionClient`` for the node (registered under ``env_guard.SANDBOX``)."""
+    """Builds ``FeeSandboxExecutionClient`` for the node (registered under ``env_guard.SANDBOX``).
+
+    ``last_built`` is the client it built last, so the demo reconciliation check can read the
+    simulated exchange (spec 0023 AC-23): the execution engine has no public way to hand it out.
+    """
+
+    last_built: ClassVar[FeeSandboxExecutionClient | None] = None
 
     @staticmethod
     def create(  # type: ignore[override]  # the base types config as LiveExecClientConfig
@@ -220,10 +227,12 @@ class FeeSandboxExecClientFactory(LiveExecClientFactory):
         cache: Cache,
         clock: LiveClock,
     ) -> FeeSandboxExecutionClient:
-        """Create the client; ``name`` is unused, the client id is the venue."""
-        return FeeSandboxExecutionClient(
+        """Create the client and remember it as ``last_built``; ``name`` is unused, the client id is the venue."""
+        client = FeeSandboxExecutionClient(
             loop=loop, portfolio=portfolio, msgbus=msgbus, cache=cache, clock=clock, config=config
         )
+        FeeSandboxExecClientFactory.last_built = client
+        return client
 
 
 # NautilusTrader 1.231's node builder passes ``portfolio`` only to a factory whose class name is
