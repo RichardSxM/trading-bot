@@ -13,22 +13,19 @@ from typing import NoReturn
 from pydantic import ValidationError
 
 from trader.main import EXIT_CONFIG, TraderSettings
-from trading_core import versioning
-from trading_core.node.placeholder import STRATEGY_NAME, PlaceholderTimed
-from trading_core.recording.enums import StrategyKind
+from trader.paper_strategy import paper_version
 from trading_core.recording.rows import JsonObject, normalize_json
 
 
 def describe(settings: TraderSettings) -> JsonObject:
     """The version the trader records at start: its strategy, kind, config, both hashes, and the image's commit."""
-    config = settings.strategy_config()
-    frozen = versioning.freeze(PlaceholderTimed.__module__, config)
+    version = paper_version(settings)
     return {
-        "strategy": STRATEGY_NAME,
-        "kind": StrategyKind.SCALPING.value,
-        "config": normalize_json(config),
-        "code_hash": frozen.code_hash,
-        "frozen_hash": frozen.frozen_hash,
+        "strategy": version.name,
+        "kind": version.kind.value,
+        "config": normalize_json(version.config),
+        "code_hash": version.frozen.code_hash,
+        "frozen_hash": version.frozen.frozen_hash,
         "git_commit": settings.git_commit,
     }
 

@@ -1,9 +1,9 @@
 """Trader entry point. Runs a node on public Kraken data.
 
-In demo it runs the paper loop (spec 0006): the ``placeholder_timed`` strategy on the sandbox
-execution client, the recording actor writing to Postgres off the event loop, and the
-``position`` and ``account`` snapshots. In live it runs the Kraken execution client with its
-startup key check (spec 0003; allowed by the env guard from feature 19) and no strategy yet.
+In demo it runs the paper loop (spec 0006): the ``PAPER_STRATEGY`` strategy (``placeholder_timed`` by
+default, see ``trader.paper_strategy``) on the sandbox execution client, the recording actor writing to
+Postgres off the event loop, and the ``position`` and ``account`` snapshots. In live it runs the Kraken
+execution client with its startup key check (spec 0003; allowed by the env guard from feature 19) and no strategy yet.
 
 Every env runs the control actor (pause and unpause, spec 0005) and writes the heartbeat and
 ``trader_state`` snapshots. SIGTERM stops the node gracefully: entry orders are cancelled,
@@ -46,8 +46,10 @@ from redis.asyncio import Redis
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from trader import paper_strategy
+from trader.paper_strategy import StrategySettings, build_paper_strategy, paper_version
 from trader.snapshot_writer import log_writer_crash, write_heartbeats
-from trading_core import env_guard, versioning
+from trading_core import env_guard
 from trading_core.boot import boot
 from trading_core.control.consumer import ControlConsumer
 from trading_core.control.halt import halt_key
@@ -73,12 +75,12 @@ from trading_core.node.key_check import watch_key_check
 from trading_core.node.kraken import BTC_PERP, futures_data_client, futures_exec_client
 from trading_core.node.loss_limits import LossLimitActor
 from trading_core.node.paper_snapshots import account_snapshot, paper_status, position_snapshot
-from trading_core.node.placeholder import STRATEGY_NAME, PlaceholderConfig, PlaceholderTimed
+from trading_core.node.placeholder import PlaceholderConfig
 from trading_core.node.recording import RecordingActor
 from trading_core.node.sandbox import FeeSandboxExecClientFactory, sandbox_exec_client
 from trading_core.node.strategy import KfsStrategy, PauseGate
 from trading_core.recording import repository
-from trading_core.recording.enums import Env, RunMode, RunStatus, StrategyKind
+from trading_core.recording.enums import Env, RunMode, RunStatus
 from trading_core.recording.errors import PromotionRequiredError
 from trading_core.recording.queries import LossSeed, loss_seed, run_funding_total
 from trading_core.recording.rows import JsonObject
@@ -91,7 +93,7 @@ from trading_core.secrets import (
     POSTGRES_PASSWORD,
     REDIS_PASSWORD,
 )
-from trading_core.settings import ContextSettings, LossLimitSettings, PaperLoopSettings, Settings
+from trading_core.settings import LossLimitSettings, PaperLoopSettings, Settings
 from trading_core.snapshot.envelope import snapshot_key
 from trading_core.strategy.blocks import EntryBlocks
 
@@ -115,7 +117,7 @@ EXIT_CONFIG: Final = 78
 KrakenUrls = tuple[str, str]
 
 
-class TraderSettings(PaperLoopSettings, ContextSettings, LossLimitSettings):
+class TraderSettings(StrategySettings, LossLimitSettings):
     # UTC date the live Kraken key was created; required in live (spec 0003 AC-9).
     kraken_key_rotated_on: date | None = None
     # How long a live start waits for an authenticated Kraken account (spec 0003 AC-8).
@@ -331,14 +333,9 @@ def start_paper_loop(settings: TraderSettings, secrets: Mapping[str, SecretStr],
     # The version commits on its own, so a start refused for a missing paper promotion still leaves
     # the version row behind for `gate promote --manual --version <id>` (spec 0015 AC-15).
     with sessions.begin() as session:
-        config = settings.strategy_config()
+        version = paper_version(settings)
         version_id = repository.ensure_strategy_version(
-            session,
-            STRATEGY_NAME,
-            StrategyKind.SCALPING,
-            None,
-            config,
-            versioning.freeze(PlaceholderTimed.__module__, config),
+            session, version.name, version.kind, None, version.config, version.frozen
         )
     with sessions.begin() as session:
         run_id = repository.start_run(
@@ -396,40 +393,8 @@ def finish_paper_loop(paper: PaperLoop, settings: PaperLoopSettings, positions_o
 
 
 def placeholder_config(settings: TraderSettings, run_id: UUID) -> PlaceholderConfig:
-    """The strategy's config from the ``PLACEHOLDER_*``, ``RISK_*``, and ``CONTEXT_*`` settings, under ``run_id``.
-
-    The placeholder reads the market context and logs it once per bar (spec 0009 AC-11). The guard
-    sizes with the sandbox's own taker fee, the fee each demo fill pays (spec 0011). Live has no fee
-    source yet (feature 19), so it refuses rather than size with Kraken's published 0.
-    """
-    if settings.trading_env != "demo":
-        raise ValueError("the guard's live taker fee source is not decided yet (spec 0011, feature 19)")
-    return PlaceholderConfig(
-        env=settings.trading_env,
-        run_id=str(run_id),
-        instrument_id=BTC_PERP,
-        interval_min=settings.placeholder_interval_min,
-        hold_min=settings.placeholder_hold_min,
-        lookback_min=settings.placeholder_lookback_min,
-        stop_pct=settings.placeholder_stop_pct,
-        max_order_notional_usd=settings.risk_max_order_notional_usd,
-        max_leverage=settings.risk_max_leverage,
-        max_total_exposure_usd=settings.risk_max_total_exposure_usd,
-        risk_per_trade=settings.risk_per_trade,
-        maintenance_margin_rate=settings.risk_maintenance_margin_rate,
-        min_liq_distance_pct=settings.risk_min_liq_distance_pct,
-        liq_stop_multiple=settings.risk_liq_stop_multiple,
-        stop_slippage_bps=settings.risk_stop_slippage_bps,
-        taker_fee=settings.sandbox_taker_fee,
-        stale_quote_s=settings.risk_stale_quote_s,
-        stop_accept_timeout_s=settings.stop_accept_timeout_s,
-        use_market_context=True,
-        context_max_age_mark_s=settings.context_max_age_mark_s,
-        context_max_age_index_s=settings.context_max_age_index_s,
-        context_max_age_open_interest_s=settings.context_max_age_open_interest_s,
-        context_max_age_funding_s=settings.context_max_age_funding_s,
-        context_liquidation_window_s=settings.context_liquidation_window_s,
-    )
+    """The placeholder's config on BTC under ``run_id`` (``trader.paper_strategy.placeholder_config``)."""
+    return paper_strategy.placeholder_config(settings, run_id, BTC_PERP)
 
 
 def loss_limits(settings: LossLimitSettings) -> LossLimits:
@@ -563,8 +528,8 @@ def run_node(
                 ledger=paper.ledger,
             )
         )
-        strategy = PlaceholderTimed(
-            placeholder_config(settings, paper.run_id), control.gate, paper.blocks, record, paper.ledger
+        strategy, view = build_paper_strategy(
+            settings, paper.run_id, BTC_PERP, control.gate, paper.blocks, record, paper.ledger
         )
         node.trader.add_strategy(strategy)
         control.kill_switch.attach(
@@ -573,11 +538,11 @@ def run_node(
         writer, blocks = paper.writer, paper.blocks
 
         def paper_state() -> PaperStatus:
-            return paper_status(control.gate, blocks, writer.backlog, strategy)
+            return paper_status(control.gate, blocks, writer.backlog, view)
 
         usd = Currency.from_str("USD")
         snapshot_readers += [
-            ("position", lambda: position_snapshot(node.cache, instrument_id, strategy)),
+            ("position", lambda: position_snapshot(node.cache, instrument_id, view)),
             ("account", lambda: account_snapshot(node.portfolio, node.cache, instrument_id, usd)),
         ]
     failed: list[bool] = []

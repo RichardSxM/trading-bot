@@ -7,19 +7,43 @@ writer skips that round.
 
 from collections.abc import Mapping
 from decimal import Decimal
+from typing import Protocol
 
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.model.enums import PositionSide
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.objects import Currency
+from nautilus_trader.model.orders import Order
 from nautilus_trader.portfolio.portfolio import Portfolio
 
 from trading_core.node.control import PaperStatus
-from trading_core.node.placeholder import PlaceholderTimed
 from trading_core.node.recording import position_facts
 from trading_core.node.strategy import PauseGate
 from trading_core.recording.mappers import weighted_avg
 from trading_core.strategy.blocks import EntryBlocks, entries_blocked
+
+
+class PaperStrategyView(Protocol):
+    """What the snapshots read from the paper strategy: ``PlaceholderTimed`` itself, or a view of another one."""
+
+    @property
+    def exiting(self) -> bool:
+        """True while the exit loop runs."""
+        ...
+
+    @property
+    def position_opened_ns(self) -> int | None:
+        """When the open position opened (UTC ns), None while flat."""
+        ...
+
+    @property
+    def exit_due_ns(self) -> int | None:
+        """When the timed exit is due (UTC ns), None when there is none."""
+        ...
+
+    def stop_order(self) -> Order | None:
+        """The protective stop of the current round trip, if one was submitted."""
+        ...
 
 
 def _mid(cache: Cache, instrument_id: InstrumentId) -> Decimal | None:
@@ -46,7 +70,7 @@ def _unrealized(cache: Cache, instrument_id: InstrumentId, mark: Decimal) -> Dec
 
 
 def position_snapshot(
-    cache: Cache, instrument_id: InstrumentId, strategy: PlaceholderTimed
+    cache: Cache, instrument_id: InstrumentId, strategy: PaperStrategyView
 ) -> Mapping[str, object] | None:
     """``{env}:snapshot:position``: the open position with its stop and exit time, or flat with the mark."""
     mark = _mid(cache, instrument_id)
@@ -74,7 +98,7 @@ def position_snapshot(
     }
 
 
-def paper_status(gate: PauseGate, blocks: EntryBlocks, backlog: int, strategy: PlaceholderTimed) -> PaperStatus:
+def paper_status(gate: PauseGate, blocks: EntryBlocks, backlog: int, strategy: PaperStrategyView) -> PaperStatus:
     """The paper loop's ``trader_state`` fields: blocks plus pause, the recording backlog, the exit state."""
     return PaperStatus(
         entries_blocked=entries_blocked(blocks, gate.paused, gate.halted),
