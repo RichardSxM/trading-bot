@@ -1,5 +1,6 @@
-"""covers: ``PAPER_STRATEGY`` picks the demo paper strategy (``placeholder_timed`` by default, or ``donchian_4h``
-at the ``donchian_4h_pair`` study's chosen point), with its own strategy version."""
+"""covers: ``PAPER_STRATEGY`` picks the demo paper strategy (``placeholder_timed`` by default, ``donchian_4h``
+at the ``donchian_4h_pair`` study's chosen point, or ``donchian_scalp``, that point on 5 minute bars), with its
+own strategy version."""
 
 from decimal import Decimal
 from uuid import uuid4
@@ -12,10 +13,12 @@ from trader.paper_strategy import (
     BarRuleView,
     build_paper_strategy,
     donchian_config,
+    donchian_scalp_config,
     paper_version,
 )
 from trading_core import versioning
 from trading_core.node.donchian_4h import Donchian4h
+from trading_core.node.donchian_scalp import DonchianScalp
 from trading_core.node.funding import FundingLedger
 from trading_core.node.kraken import BTC_PERP
 from trading_core.node.placeholder import PlaceholderTimed
@@ -66,6 +69,34 @@ def test_donchian_4h_runs_the_chosen_grid_point(demo, monkeypatch):
     assert isinstance(strategy, Donchian4h)
     assert isinstance(view, BarRuleView)
     assert str(strategy.bar_type) == f"{BTC_PERP}-4-HOUR-LAST-INTERNAL"
+
+
+def test_donchian_scalp_runs_the_same_point_on_5_minute_bars(demo, monkeypatch):
+    monkeypatch.setenv("PAPER_STRATEGY", "donchian_4h")
+    four_hour = paper_version(TraderSettings())
+    monkeypatch.setenv("PAPER_STRATEGY", "donchian_scalp")
+    settings = TraderSettings()
+
+    version = paper_version(settings)
+    strategy, view = _build(settings)
+
+    assert version.name == "donchian_scalp"
+    assert version.kind.value == "scalping"
+    assert version.config["bar_spec"] == "5-MINUTE-LAST"
+    assert (version.config["entry_bars"], version.config["stop_atr"]) == (20, "3")
+    assert version.frozen == versioning.freeze(DonchianScalp.__module__, version.config)
+    assert version.frozen.code_hash != four_hour.frozen.code_hash
+    assert isinstance(strategy, DonchianScalp)
+    assert isinstance(view, BarRuleView)
+    assert str(strategy.bar_type) == f"{BTC_PERP}-5-MINUTE-LAST-INTERNAL"
+
+
+def test_donchian_scalp_is_refused_outside_demo(demo, monkeypatch):
+    monkeypatch.setenv("PAPER_STRATEGY", "donchian_scalp")
+    settings = TraderSettings().model_copy(update={"trading_env": "live"})
+
+    with pytest.raises(ValueError, match="live taker fee"):
+        donchian_scalp_config(settings, uuid4(), BTC_PERP)
 
 
 def test_donchian_sizes_with_the_sandbox_fee_and_the_risk_settings(demo, monkeypatch):

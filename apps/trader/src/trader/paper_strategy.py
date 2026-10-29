@@ -2,10 +2,10 @@
 
 ``placeholder_timed`` (the default) is the spec 0006 thread: it enters every interval and exits on a timer.
 ``donchian_4h`` is the candle lab's best rule (spec 0020.3), at the grid point the ``donchian_4h_pair`` study
-chose (spec 0022 *Results*). It failed the gate, so on demo it paper trades only after a manual
-``candidate → paper`` promote; live never runs it (``placeholder_config`` and ``donchian_config`` refuse).
-It builds its own 4 hour bars from trades, so it needs about 21 bars (3.5 days) after every start before
-its first entry.
+chose (spec 0022 *Results*). ``donchian_scalp`` is the same rule and point on 5 minute bars, for quicker
+trades. Neither passed the gate, so on demo each paper trades only after a manual ``candidate → paper``
+promote; live never runs them (the config builders refuse). Both build their own bars from trades, so they
+need about 21 bars after every start before the first entry (3.5 days on 4 hours, under 2 hours on 5 minutes).
 """
 
 from collections.abc import Callable
@@ -18,9 +18,10 @@ from nautilus_trader.model.enums import OrderType
 from nautilus_trader.model.orders import Order
 
 from trading_core import versioning
-from trading_core.node import donchian_4h, placeholder
+from trading_core.node import donchian_4h, donchian_scalp, placeholder
 from trading_core.node.bar_rule import BarRuleStrategy, Phase
 from trading_core.node.donchian_4h import Donchian4h, Donchian4hConfig
+from trading_core.node.donchian_scalp import DonchianScalp, DonchianScalpConfig
 from trading_core.node.funding import FundingLedger
 from trading_core.node.paper_snapshots import PaperStrategyView
 from trading_core.node.placeholder import PlaceholderConfig, PlaceholderTimed
@@ -32,9 +33,9 @@ from trading_core.settings import ContextSettings, PaperLoopSettings
 from trading_core.strategy.blocks import EntryBlocks
 from trading_core.versioning import FrozenHashes
 
-type PaperStrategyName = Literal["placeholder_timed", "donchian_4h"]
+type PaperStrategyName = Literal["placeholder_timed", "donchian_4h", "donchian_scalp"]
 
-# The donchian_4h_pair study's chosen grid point (spec 0022 Results: grid-2).
+# The donchian_4h_pair study's chosen grid point (spec 0022 Results: grid-2), also used by donchian_scalp.
 DONCHIAN_ENTRY_BARS: Final = 20
 DONCHIAN_STOP_ATR: Final = Decimal(3)
 # Its fixed settings, as in apps/lab/studies/donchian_4h.toml.
@@ -61,22 +62,30 @@ class PaperVersion:
 
 def paper_version(settings: StrategySettings) -> PaperVersion:
     """The version for ``PAPER_STRATEGY``; ``placeholder_timed``'s config is unchanged by this setting."""
+    if settings.paper_strategy == donchian_scalp.STRATEGY_NAME:
+        config = _donchian_version_config(settings, donchian_scalp.STRATEGY_NAME, donchian_scalp.BAR_SPEC)
+        frozen = versioning.freeze(DonchianScalp.__module__, config)
+        return PaperVersion(donchian_scalp.STRATEGY_NAME, StrategyKind.SCALPING, config, frozen)
     if settings.paper_strategy == donchian_4h.STRATEGY_NAME:
-        config: JsonObject = {
-            "paper_strategy": donchian_4h.STRATEGY_NAME,
-            "bar_spec": donchian_4h.BAR_SPEC,
-            "entry_bars": DONCHIAN_ENTRY_BARS,
-            "stop_atr": str(DONCHIAN_STOP_ATR),
-            "atr_period": DONCHIAN_ATR_PERIOD,
-            "atr_floor_mult": str(DONCHIAN_ATR_FLOOR_MULT),
-            "time_stop_bars": DONCHIAN_TIME_STOP_BARS,
-            **{name: value for name, value in settings.strategy_config().items() if name.startswith("risk_")},
-        }
+        config = _donchian_version_config(settings, donchian_4h.STRATEGY_NAME, donchian_4h.BAR_SPEC)
         frozen = versioning.freeze(Donchian4h.__module__, config)
         return PaperVersion(donchian_4h.STRATEGY_NAME, StrategyKind.HOUR_LEVEL, config, frozen)
     placeholder_config_json: JsonObject = dict(settings.strategy_config())
     frozen = versioning.freeze(PlaceholderTimed.__module__, placeholder_config_json)
     return PaperVersion(placeholder.STRATEGY_NAME, StrategyKind.SCALPING, placeholder_config_json, frozen)
+
+
+def _donchian_version_config(settings: StrategySettings, name: str, bar_spec: str) -> JsonObject:
+    return {
+        "paper_strategy": name,
+        "bar_spec": bar_spec,
+        "entry_bars": DONCHIAN_ENTRY_BARS,
+        "stop_atr": str(DONCHIAN_STOP_ATR),
+        "atr_period": DONCHIAN_ATR_PERIOD,
+        "atr_floor_mult": str(DONCHIAN_ATR_FLOOR_MULT),
+        "time_stop_bars": DONCHIAN_TIME_STOP_BARS,
+        **{key: value for key, value in settings.strategy_config().items() if key.startswith("risk_")},
+    }
 
 
 def _demo_only(settings: StrategySettings) -> None:
@@ -156,6 +165,41 @@ def donchian_config(settings: StrategySettings, run_id: UUID, instrument_id: str
     )
 
 
+def donchian_scalp_config(settings: StrategySettings, run_id: UUID, instrument_id: str) -> DonchianScalpConfig:
+    """``donchian_scalp`` (the same point on 5 minute bars) with the ``RISK_*`` and ``CONTEXT_*`` settings.
+
+    Raises ``ValueError`` outside demo.
+    """
+    _demo_only(settings)
+    return DonchianScalpConfig(
+        env=settings.trading_env,
+        run_id=str(run_id),
+        instrument_id=instrument_id,
+        bar_spec=donchian_scalp.BAR_SPEC,
+        entry_bars=DONCHIAN_ENTRY_BARS,
+        stop_atr=DONCHIAN_STOP_ATR,
+        atr_period=DONCHIAN_ATR_PERIOD,
+        atr_floor_mult=DONCHIAN_ATR_FLOOR_MULT,
+        time_stop_bars=DONCHIAN_TIME_STOP_BARS,
+        max_order_notional_usd=settings.risk_max_order_notional_usd,
+        max_leverage=settings.risk_max_leverage,
+        max_total_exposure_usd=settings.risk_max_total_exposure_usd,
+        risk_per_trade=settings.risk_per_trade,
+        maintenance_margin_rate=settings.risk_maintenance_margin_rate,
+        min_liq_distance_pct=settings.risk_min_liq_distance_pct,
+        liq_stop_multiple=settings.risk_liq_stop_multiple,
+        stop_slippage_bps=settings.risk_stop_slippage_bps,
+        taker_fee=settings.sandbox_taker_fee,
+        stale_quote_s=settings.risk_stale_quote_s,
+        use_market_context=True,
+        context_max_age_mark_s=settings.context_max_age_mark_s,
+        context_max_age_index_s=settings.context_max_age_index_s,
+        context_max_age_open_interest_s=settings.context_max_age_open_interest_s,
+        context_max_age_funding_s=settings.context_max_age_funding_s,
+        context_liquidation_window_s=settings.context_liquidation_window_s,
+    )
+
+
 class BarRuleView:
     """``PaperStrategyView`` over a ``BarRuleStrategy``, read from its phase and the cache.
 
@@ -199,6 +243,9 @@ def build_paper_strategy(
     ledger: FundingLedger,
 ) -> tuple[KfsStrategy, PaperStrategyView]:
     """The ``PAPER_STRATEGY`` strategy and the view the snapshots read from it."""
+    if settings.paper_strategy == donchian_scalp.STRATEGY_NAME:
+        scalp = DonchianScalp(donchian_scalp_config(settings, run_id, instrument_id), gate, blocks, record)
+        return scalp, BarRuleView(scalp)
     if settings.paper_strategy == donchian_4h.STRATEGY_NAME:
         donchian = Donchian4h(donchian_config(settings, run_id, instrument_id), gate, blocks, record)
         return donchian, BarRuleView(donchian)
