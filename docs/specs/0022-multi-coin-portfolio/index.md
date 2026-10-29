@@ -145,10 +145,10 @@ Tracer Bullet: the thinnest real thread is two coins through one engine, on real
 5. [x] Bundles carry instruments, the importer upserts them, with tests; push the step 3 smoke bundle to a laptop gate import to prove it loads, satisfies **AC-12**
 6. [x] Gate: `instrument_id` on `TradeReturn`, `concentration_instrument`, thresholds v2, the v1 fixture parity test; dashboard coin share. Commit `feat(gate): concentration_instrument check, thresholds v2 (0022)`, satisfies **AC-13**, **AC-14**
 7. [x] Multi coin benchmarks in `lab holdout`, with the 50/50 split test, satisfies **AC-11**
-8. Checkpoint with the trader: show the thin thread results and the ETH data record, then commit the study file and rebuild `kfs/lab` with `GIT_COMMIT`, satisfies **AC-15**
-9. Run `lab study` and `lab holdout`. Then, each VPS step confirmed: deploy the gate and dashboard (thresholds v2), push the bundles, run `gate evaluate donchian_4h_pair` once, satisfies **AC-16**
-10. Write the Results and `verify.md` run log, commit `docs(specs): donchian_4h_pair verdict (0022)`, satisfies **AC-17**
-11. Close out: hash comparison again, scope tick, paper follow up only on a pass, satisfies **AC-18**
+8. [x] Checkpoint with the trader: show the thin thread results and the ETH data record, then commit the study file and rebuild `kfs/lab` with `GIT_COMMIT`, satisfies **AC-15**
+9. [x] Run `lab study` and `lab holdout`. Then, each VPS step confirmed: deploy the gate and dashboard (thresholds v2), push the bundles, run `gate evaluate donchian_4h_pair` once, satisfies **AC-16**
+10. [x] Write the Results and `verify.md` run log, commit `docs(specs): donchian_4h_pair verdict (0022)`, satisfies **AC-17**
+11. [ ] Close out: hash comparison again, scope tick, paper follow up only on a pass, satisfies **AC-18**
 
 ## Consequences
 
@@ -180,4 +180,46 @@ Tracer Bullet: the thinnest real thread is two coins through one engine, on real
 
 ## Results
 
-Not run yet.
+**Verdict: `fail`.** Label: BTC holdout seen (spec 0020).
+
+| Field | Value |
+|---|---|
+| Study | `donchian_4h_pair` (study file committed 2026-10-28 in 7b9bffa, study batch `01a1836a-2351-750f-8132-3deb98238d18`, holdout batch `01a183f1-5637-73e4-8fa5-2d783971a080`, benchmarks `01a18407-3d20-708e-a685-b78aaa76109a` buy and hold and `01a18428-392c-74dc-9ab0-f9281bb0be34` MACD) |
+| Promotion id | `01a186a9-711e-76bb-b8d3-75e0b4f7bd5f` (VPS) |
+| Evaluation date | 2026-10-29 (07:56 UTC) |
+| Chosen grid point | grid-2 (`entry_bars` 20, `stop_atr` 3) |
+| Walk forward Sharpe | 0.337050 (5 folds; return +6.57%) |
+| Holdout Sharpe | 0.583230, against buy and hold −0.529686 and the MACD baseline −1.168661 |
+| Holdout return after costs | +5.60% (559.61 USD) |
+| Holdout marked max drawdown | 9.26% |
+| Deflated Sharpe probability | 0.000000 |
+| PBO | 0.253968 (`pbo_applicable` true) |
+| Holdout trades | 118 (58 long, 60 short; win rate 27.97%) |
+| Trial count N, trial pool | 31, 31 (`kind+lab`, VPS) |
+| Holdout gross per trade | 5.900 USD |
+| Holdout cost per trade | 1.158 USD (ratio 5.10) |
+
+Per coin, holdout:
+
+| Coin | Trades | Net P&L (USD) | Long / short (USD) | Buy and hold |
+|---|---|---|---|---|
+| PF_ETHUSD | 57 | 394.15 | 294.31 / 99.84 | −38.33% |
+| PF_XBTUSD | 61 | 165.46 | 229.80 / −64.34 | −24.10% |
+
+Coin share of profit (`instrument_share`): 0.704327, ETH.
+
+Walk forward folds (out of sample net, USD): 2023-04 to 2023-09 −414.63 (58 trades), 2023-10 to 2024-03 +1473.13 (50), 2024-04 to 2024-09 −21.49 (61), 2024-10 to 2025-03 −313.77 (59), 2025-04 to 2025-09 +35.04 (63).
+
+Reasons that failed (code, value, threshold):
+- `concentration_fold`: `failed`, 1.942729, 0.60
+- `bootstrap_lower_bound`: `failed`, −0.000341, 0
+- `deflated_sharpe`: `failed`, 0.000000, 0.95
+- `concentration_direction`: `failed`, 0.936571, 0.60
+- `concentration_top_trades`: `failed`, 3.534463, 0.60
+- `concentration_instrument`: `failed`, 0.704327, 0.60
+
+Every other check passed, among them the fee hurdle, holdout Sharpe above 0, beating both baselines, walk forward Sharpe above 0, PBO under 0.30, and the drawdown budget.
+
+Reading: adding ETH did what it was meant to on the count (118 holdout trades against 64 for BTC alone), and the edge per trade held up (5.90 USD gross against 1.16 USD of cost). It did not make the profit steadier. One walk forward half year made almost twice the total, longs made 94% of it, the top 5% of trades made 3.5 times it, and ETH made 70% of the holdout profit, so the new coin check fails too. The two coins move together, so the second coin added trades more than it added independent bets. The bootstrap lower bound still sits just below 0, and at N 31 the deflated Sharpe is 0. This is the same shape as `donchian_4h` alone: a few trend runs carry a rule that otherwise roughly breaks even.
+
+Close out (AC-18, 2026-10-29): the hash list on main f38e872 does **not** match the AC-1 baseline. No `trading_core.node` file was edited, but 22 of the 32 closures moved because they all import `trading_core.recording.rows`, and cf51e1e added the `instruments` field to `RunBundle` there (AC-12). The other 10 lines match. Details in `verify.md`.

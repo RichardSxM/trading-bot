@@ -446,10 +446,10 @@ spec [0022](../specs/0022-multi-coin-portfolio/index.md)
 
 - [x] Design it (spec): `/architect multi coin portfolio`
 - [ ] Build it: `/develop multi coin portfolio`
-  - [ ] ETH data: hash baseline, pinned `PF_ETHUSD`, `--instrument` on fetch and funding import, data quality record (AC-1, AC-2)
-  - [ ] Thin thread: two coins in one engine and account, merged stream, shared recorder and ruin, per coin funding, report, refusals (AC-3 to AC-10)
-  - [ ] Plumbing to the gate: bundles carry instruments, `concentration_instrument` with thresholds v2, coin share on the dashboard, multi coin benchmarks (AC-11 to AC-14)
-  - [ ] Study, holdout, push, gate verdict, results record, close out (AC-15 to AC-18)
+  - [x] ETH data: hash baseline, pinned `PF_ETHUSD`, `--instrument` on fetch and funding import, data quality record (AC-1, AC-2)
+  - [x] Thin thread: two coins in one engine and account, merged stream, shared recorder and ruin, per coin funding, report, refusals (AC-3 to AC-10)
+  - [x] Plumbing to the gate: bundles carry instruments, `concentration_instrument` with thresholds v2, coin share on the dashboard, multi coin benchmarks (AC-11 to AC-14)
+  - [ ] Study, holdout, push, gate verdict, results record, close out (AC-15 to AC-18): verdict `fail` recorded 2026-10-29 (promotion `01a186a9`); close out hash check does not match (22 closures moved through `recording/rows.py`, no node file edited), owed a call, see spec 0022 `verify.md`
 - [ ] Verify it: `/check verify multi coin portfolio`
 - [ ] Test it: `/test multi coin portfolio`
 - [ ] Review it (fresh model): `/check review multi coin portfolio`

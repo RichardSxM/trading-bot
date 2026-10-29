@@ -1,4 +1,4 @@
-# Verify: multi coin portfolio · spec 0022 · updated 2026-10-28
+# Verify: multi coin portfolio · spec 0022 · updated 2026-10-29
 
 ## AC-1 hash baseline (2026-10-28)
 
@@ -50,3 +50,30 @@ Built in 6fc8fe1 (AC-9, AC-10), cf51e1e (AC-12), fc49bb9 (AC-13, AC-14), and 305
 - **AC-12**: a bundle carries `instruments`, and `gate import` upserts each coin before its rows. The integration tests cover the upsert (an equal row is a no op) and the refusal when a stored coin has other specs. **One deviation**: the plan said to import the step 3 smoke bundle on a laptop gate. That bundle has no study version, so `gate import` refuses it by design (`MissingParentError`). The proof is the integration tests here, and the real study bundle in task 9.
 - **AC-13, AC-14**: thresholds v2 adds `instrument_max_share = 0.60`, and v1 files still load with the same verdicts (the v1 fixture parity test). `concentration_instrument` is skipped with fewer than 2 coins or a total net at or below 0. The dashboard shows "Coin share of profit".
 - **AC-11**: on several coins, a benchmark file's `notional_usd` is split evenly, so `buy_and_hold` on BTC plus ETH opens each coin at 5000 USD of the file's 10,000 USD and never trades again. A single coin benchmark keeps the file's notional.
+
+## AC-15 and AC-16 study, holdout, and verdict (2026-10-28 to 2026-10-29)
+
+- **AC-15**: `apps/lab/studies/donchian_4h_pair.toml` committed in 7b9bffa before its first run, and `kfs/lab:dev` rebuilt with `GIT_COMMIT` there. Shared first whole month 2022-04-01.
+- **Laptop runs** (`LAB_WORKERS=2`, through `lab study` and `lab holdout` only): study 2026-10-28 16:47 to 19:16 UTC (8913 s), batch `01a1836a-2351-750f-8132-3deb98238d18`; holdout 19:16 to 20:30 UTC (4454 s), batches `01a183f1-5637-73e4-8fa5-2d783971a080` (grid-2), `01a18407-3d20-708e-a685-b78aaa76109a` (buy and hold), `01a18428-392c-74dc-9ab0-f9281bb0be34` (MACD).
+- **Study, development period** (net USD, trades): grid-1 +3520.47 (432), grid-2 +2728.67 (406), grid-3 +1353.90 (243), grid-4 +396.94 (230). Buy and hold +76.85%. No liquidations.
+- **Deploy**: PR #106 merged f38e872 and deployed 2026-10-29 01:38 UTC with thresholds v2. The deploy's promotion check exited 4, because the `rows.py` change in cf51e1e moved the `placeholder` frozen hash (see AC-18 below). Fixed by a manual promote of the new version (`01a1854a`). Moving `RISK_TOTAL_LOSS_SINCE` to 2026-10-29 in `/etc/kfs/kfs.env` (the demo trader had hit its total loss limit) made another version, promoted by hand as `01a18558`; the trader resumed at 01:51 UTC.
+- **Push**: `scripts/push-bundles.sh` on the four batches, 01:40 to 03:14 UTC: loaded 7, already there 49, refused 0.
+- **AC-16**: `gate evaluate donchian_4h_pair` run once, 07:56 UTC: `fail`, promotion `01a186a9-711e-76bb-b8d3-75e0b4f7bd5f`, N 31. Full record in the spec's Results.
+
+## AC-18 close out (2026-10-29)
+
+`scripts/spikes/hash_check.py` in `kfs/lab:dev` against a `git archive` of main f38e872 (the merged feature): 32 modules, list sha256 `b4045424f5875ddbee01211728f7218e8efcc093ca2738d1d18f42824b69465a`. Rerun on bed1415 the same way gives the baseline `9c8c2a41…` again, so the method is unchanged.
+
+**Does not match.** No module was added, and no file under `trading_core/node/` changed (`git diff bed1415 f38e872 -- packages/core/src/trading_core/node` is empty). 22 lines differ: `bar_rule`, `bollinger_rsi`, `book_imbalance`, `buy_and_hold`, `connors_rsi`, `control`, `delta_divergence`, `donchian_4h`, `donchian_4h_r1`, `ema_pullback`, `imbalance_fade`, `loss_limits`, `macd_baseline`, `maker_probe`, `noise_breakout`, `paper_snapshots`, `placeholder`, `random_taker`, `recording`, `scalp_base`, `stale`, `vwap_retest`. These are exactly the 22 closures that contain `trading_core.recording.rows`, and the only change there is the `instruments` field on `RunBundle` (cf51e1e, AC-12). Of the other core files the feature changed, none is in any node closure. The 10 lines that match are the closures without `rows`.
+
+What it means: every strategy version recorded before f38e872 now has a different frozen hash in the image than the one on its gate row. Old verdicts stay in the table, but a re-run of an old study would make new versions. The `placeholder` side already showed this at deploy (exit 4, fixed by hand). Spec 0022's own study is not affected: it was run at 7b9bffa, after cf51e1e.
+
+## PEPE side test (exploratory, outside this spec and the gate)
+
+Asked for by the trader on 2026-10-28. It adds 1 trial outside the gate (no `gate evaluate`); its bundles were pushed to the VPS 2026-10-29 as a record only.
+
+- 676e17c: pinned `PF_PEPEUSD.KRAKEN` (tick 1e-10, step 1000, margin 0.02 initial and 0.01 maintenance, listed 2023-05-25) and `studies/donchian_4h_pepe.toml` (PEPE alone, from 2023-06-01, slippage 5 bps).
+- f91e400: PEPE volumes run into the billions, so their float noise (257548000.0000001) was past the absolute `VOLUME_NOISE` 1e-8 and the 2024-02 fetch stopped. The bound is now the larger of 1e-8 and 1e-12 of the volume. Under 10,000 units it is unchanged, so no BTC or ETH month changes. `trading_core.lab.candles` is in no node closure.
+- Laptop runs 2026-10-28 21:01 to 22:49 UTC. Study batch `01a1845e-d4ac-764f-90fb-c872bb054c3d` (net USD, trades): grid-1 +2661.97 (157), grid-2 +2063.27 (143), grid-3 +2372.36 (90), grid-4 +1739.75 (81); buy and hold +435.72%.
+- Holdout batch `01a18491-2a66-72ff-b336-a83ea6540713`, grid-3: +323.53 USD (+3.24%), 32 trades, marked max drawdown 5.45%, against buy and hold −31.89% before costs (`01a1849f-593c-7355-a1d5-3403701627be`) and MACD −52.66% (`01a184af-4a06-72b2-80a3-fb1e3dd645cf`).
+- Reading: profitable, but 32 holdout trades is fewer than BTC alone, so on its own it would fail the same luck checks. It is a hint for the "More instruments" follow up, not evidence.
