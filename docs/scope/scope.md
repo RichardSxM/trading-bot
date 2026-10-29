@@ -253,7 +253,7 @@ After a crash, restart, or dropped connection, the bot rebuilds its view from th
 - **Dashboard:** show desired, internal, and exchange confirmed state apart, so a submitted flatten never looks like a confirmed flat.
 - **Runbook:** recovering from a crash or network loss with a position open.
 - **Order (decided 2026-10-17):** this feature must be done before feature 19, not before the research features 13, 15, 16, and 17.
-spec [0023](../specs/0023-restart-outage-safety/index.md)
+spec [0023](../specs/0023-restart-outage-safety/index.md) · code in `packages/core/src/trading_core/reconcile`, `packages/core/src/trading_core/node/reconcile.py`
 - [x] Design it (spec): `/architect restart & outage safety`
 - [ ] Build it: `/develop restart & outage safety`
   - [ ] Thin thread in demo, then live wiring that fails closed: migration 0012, pure `reconcile/` compare, `ReconcileActor` start check with the `reconciling` block and report row, `KrakenExchangeView`, pre build fetch with heartbeat, startup watchdog, 60 s, reconnect, and `recheck` (AC-1 to AC-5, AC-17, AC-20, AC-23)
