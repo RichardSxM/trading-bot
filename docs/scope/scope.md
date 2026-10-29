@@ -23,7 +23,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 21 | Recorder buffered writer | Slice 3 | done |
 | 9 | Kill switch & loss limits | Slice 4 | done |
 | 10 | Leverage & liquidation guard | Slice 4 | done |
-| 11 | Restart & outage safety | Slice 4 | planned |
+| 11 | Restart & outage safety | Slice 4 | in-progress |
 | 12 | Phone alerts & health checks | Slice 5 | done |
 | 13 | Candle backtest lab | Slice 6 | done |
 | 14 | Scalping simulator | Slice 6 | done |
@@ -239,7 +239,7 @@ code in [packages/core/src/trading_core/risk/check.py](../../packages/core/src/t
 - [x] Review it (fresh model): `/check review leverage & liquidation guard`
 - [x] Document it: `/document leverage & liquidation guard`
 
-### 11. Restart & outage safety · needs a decision
+### 11. Restart & outage safety · in-progress
 After a crash, restart, or dropped connection, the bot rebuilds its view from the exchange's real positions and orders before doing anything else, and never sends a duplicate order.
 **Done when:** killing the bot or the network mid trade, then restarting, leaves positions and stops correct with no duplicates, and a stale data feed pauses new entries.
 **Carried over from specs 0005 and 0006:**
@@ -253,7 +253,18 @@ After a crash, restart, or dropped connection, the bot rebuilds its view from th
 - **Dashboard:** show desired, internal, and exchange confirmed state apart, so a submitted flatten never looks like a confirmed flat.
 - **Runbook:** recovering from a crash or network loss with a position open.
 - **Order (decided 2026-10-17):** this feature must be done before feature 19, not before the research features 13, 15, 16, and 17.
-- [ ] Design it (spec): `/architect restart & outage safety`
+spec [0023](../specs/0023-restart-outage-safety/index.md)
+- [x] Design it (spec): `/architect restart & outage safety`
+- [ ] Build it: `/develop restart & outage safety`
+  - [ ] Thin thread in demo, then live wiring that fails closed: migration 0012, pure `reconcile/` compare, `ReconcileActor` start check with the `reconciling` block and report row, `KrakenExchangeView`, pre build fetch with heartbeat, startup watchdog, 60 s, reconnect, and `recheck` (AC-1 to AC-5, AC-17, AC-20, AC-23)
+  - [ ] Findings and actions: all seven finding kinds, `ReconcileExecutor`, stop replace, flatten and halt through the kill switch, quiet compare with a confirming fetch, report only while flattening or halted (AC-6 to AC-13, AC-27, AC-28)
+  - [ ] Duplicates and resume: `order_unresolved`, the fresh signal rule, `resume_position` in every strategy base (AC-14 to AC-16)
+  - [ ] Dashboard and alerts: intent, three state card, badge, Reconciliation page, stuck block alerts (AC-18, AC-19, AC-21)
+  - [ ] Drill mode and proof: `LIVE_MODE=drill`, `reconcile_drill`, `trader.drill`, `restart-drill.sh` D1 to D12, the runbook, the live drill on the VPS (AC-22, AC-24 to AC-26)
+- [ ] Verify it: `/check verify restart & outage safety`
+- [ ] Test it: `/test restart & outage safety`
+- [ ] Review it (fresh model): `/check review restart & outage safety`
+- [ ] Document it: `/document restart & outage safety`
 
 ## Slice 5: Stay informed
 
