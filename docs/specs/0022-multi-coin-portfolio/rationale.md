@@ -72,3 +72,17 @@ A cross check on another model (2026-10-28) confirmed AC-1 holds (`trading_core/
 AC-8 first said `FundingSample` gains `instrument_id`. The build found that `trading_core.node.recording` imports `trading_core.lab.funding`, so that module is in the code closure of `recording` and of every node module that imports it, and editing it would break AC-1.
 
 **Decision (your pick, with its runner up): a per coin map in the lab.** `FundingSample` stays as it is. The lab's `UnitRows` and `CandleUnitResult` hold the samples as a map from instrument id to that coin's samples, and the funding pass runs once per coin on its own entry, so the coin of a sample is its map key and a position cannot take another coin's rate. Runner up: a lab side wrapper type pairing an id with a sample in one flat list, grouped before the funding pass. It gives the same result with one more type and a grouping step.
+
+## Hash rule and shared modules (2026-10-29)
+
+The first AC-1 asked the closure hash list to match the baseline line for line. Each line hashes a node module together with every module it imports, so a change to any shared module moves it. AC-12 asked for `RunBundle.instruments` in `trading_core.recording.rows`, which 22 of the 32 node closures import, so the spec asked for two things that could not both hold. The close out found exactly that: 22 lines moved, all through `rows.py`, and no node file changed.
+
+What the rule protects is the trading code itself: no node module may change in a lab feature. A closure line moving because a shared data shape grew is expected, as long as the spec named that change in advance.
+
+### Options
+
+- **Amend AC-1 (chosen).** No node file edit, plus every moved line explained by a module the spec names as changed. It keeps the strict check on node files and makes shared module changes visible ahead of time instead of a surprise at close out.
+- **Keep the line for line rule and move `instruments` out of `rows.py`** (a separate lab only bundle file). Runner up. It keeps the old hashes but splits one bundle across two shapes, and every later lab feature that touches a shared row type would face the same wall.
+- **Drop the hash check.** Rejected: it is the cheap guard that caught this at all.
+
+For future specs: when a spec changes a module under `trading_core.recording`, `trading_core.lab`, or anything else a node imports, it names that module in its AC-1 equivalent. Changing it registers new strategy versions on the next deploy, which also trips the deploy's frozen hash check (exit 4) and needs the manual promote from spec 0015.

@@ -68,6 +68,8 @@ Built in 6fc8fe1 (AC-9, AC-10), cf51e1e (AC-12), fc49bb9 (AC-13, AC-14), and 305
 
 What it means: every strategy version recorded before f38e872 now has a different frozen hash in the image than the one on its gate row. Old verdicts stay in the table, but a re-run of an old study would make new versions. The `placeholder` side already showed this at deploy (exit 4, fixed by hand). Spec 0022's own study is not affected: it was run at 7b9bffa, after cf51e1e.
 
+**Amended AC-1 (2026-10-29): pass.** `/architect` amended AC-1 (rationale.md, *Hash rule and shared modules*): no node file edit, and every moved line explained by a module the spec names as changed (only `trading_core.recording.rows`, for AC-12). Rechecked on f38e872 with `code_closure` over the 9 core files changed since bed1415: `recording/rows` sits in exactly the 22 moved closures; `catalog/candles`, `gate/checks`, `gate/inputs`, `gate/thresholds`, `lab/candle_metrics`, `lab/candles`, `recording/gate_queries`, and `recording/repository` sit in none. The node diff is empty. So every moved line is explained, and AC-1 and AC-18 pass under the amended wording.
+
 ## PEPE side test (exploratory, outside this spec and the gate)
 
 Asked for by the trader on 2026-10-28. It adds 1 trial outside the gate (no `gate evaluate`); its bundles were pushed to the VPS 2026-10-29 as a record only.
