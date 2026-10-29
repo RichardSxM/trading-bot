@@ -1,4 +1,4 @@
-# Verify: restart & outage safety · spec 0023 · updated 2026-10-29
+# Verify: restart & outage safety · spec 0023 · updated 2026-10-30
 _Steps derived from spec 0023 acceptance criteria. `/check verify` runs these; `/test` locks the durable ones._
 
 ## Commands
@@ -9,13 +9,20 @@ _Steps derived from spec 0023 acceptance criteria. `/check verify` runs these; `
 - [ ] `docker compose run --rm --no-deps -T -w /app/packages/core trader pytest -q tests/test_reconcile_recover.py tests/test_node_reconcile_recover.py` → fills match by venue id, else client id; held trade ids are skipped; a full page inside the window is refused; through a real `LiveExecutionEngine` the fills land on our order with Kraken's price, time, and trade id, ending `FILLED` or `CANCELED` with the filled quantity → AC-11
 - [ ] `docker compose run --rm --no-deps -T -w /app/packages/core trader pytest -q tests/test_untrusted.py tests/test_reconcile_executor.py tests/test_kill_switch.py` → the untrusted set goes to memory before Redis; the residual close sends Kraken's fresh quantity reduce only with no position id, nothing when flat; the flatten skips the strategy's own close and the wait for flat reads Kraken → AC-8, AC-9
 - [ ] `docker compose run --rm --no-deps -T trader pytest -q tests/test_cache_reset.py` → `trader.cache reset` deletes only `trader-<id>:*` and the untrusted set, and refuses while the heartbeat snapshot is fresh → AC-8, AC-26
+- [ ] `docker compose run --rm --no-deps -T -w /app/packages/core trader pytest -q tests/test_reconcile_unresolved.py tests/test_node_reconcile_resume.py` → an entry with no answer from Kraken blocks entries with `order_unresolved` until answered; one the in flight check rejected (`UNKNOWN`, `ORDER_NOT_FOUND_AT_VENUE`) holds until the next clean check; a clean check that lifts `reconciling` hands its finish time to every strategy; `resume_position` runs once per open position on the first clean check, and a resume that raises flattens and halts → AC-14, AC-15, AC-16
+- [ ] `docker compose run --rm --no-deps -T -w /app/packages/core trader pytest -q tests/test_node_resume.py` → every strategy base ignores a signal older than the check, keeps the resting stop on resume, rebuilds its exit timers from `ts_opened`, exits at once when the hold is over, cancels resting entries; `BuyAndHold` keeps holding, `RandomTaker` uses its timed exit, the `ReconcileExecutor` closes → AC-15, AC-16
 
 ## UI / manual (laptop demo, after the manual promote)
 - [ ] Start the trader in demo with a `donchian_scalp` position open → periodic checks stay `clean`; the position's own stop counts as its stop → AC-6, AC-9, AC-23
 - [ ] In demo, place an order on the sandbox the cache does not hold (or wait for a real mismatch) → one `reconciliation_mismatches` row with `action = none`, one critical push, entries not blocked by it → AC-13, AC-23
+- [ ] Restart the trader in demo while flat → the start check is clean, no `position_resumed` (the sandbox restores no position, spec 0006), entries open again → AC-16 (resume itself is proven in D2 and D5)
+- [ ] After that restart, no `ENTER` decision from a bar that closed before the start check finished (`entry_skipped_stale_signal` if one arrives) → AC-15
 - [ ] Logs show `reconcile_not_quiet` only while orders are in flight, never a finding caused by a fill landing mid fetch → AC-27
 
 ## Live drill (task 9, VPS, `LIVE_MODE=drill`)
+- [ ] D2: resting entry across a kill → start check clean, the resume cancels it, one order ever on Kraken → AC-16
+- [ ] D3: `rest_order_and_die` → exactly one order on Kraken after the restart, `order_unresolved` until it resolves, no duplicate → AC-14, AC-15
+- [ ] D5: known position across a kill → adopted, stop unchanged, clean, `position_resumed` → AC-16
 - [ ] D4: `trader.drill foreign-order` → `unknown_order`, cancelled on Kraken within 60 s, critical push → AC-10, AC-13
 - [ ] D6: `trader.drill cancel-stop`, then restart → `missing_stop`, the stop re placed at the recorded trigger price → AC-9
 - [ ] D7: `trader.drill foreign-position` → `unknown_position`, `cache_fix: synced`, closed by `ReconcileExecutor`, halt `reconcile_mismatch`, Resume needed → AC-7
@@ -33,7 +40,10 @@ _Steps derived from spec 0023 acceptance criteria. `/check verify` runs these; `
 - [ ] Recovered fill: Kraken's `FillReport` price, venue time, and trade id as returned; a trade id the cache holds is skipped → AC-11
 - [ ] Residual close: Kraken's quantity and side from a fresh fetch right before each attempt, reduce only market, nothing when flat → AC-8
 - [ ] Stop check: `uses_stop` of the position's strategy; `BuyAndHold`, `RandomTaker`, and the `ReconcileExecutor` need none → AC-9
+- [ ] Unresolved entries: the cache's in flight entry orders at start plus entries the in flight check rejected since the last clean check; reduce only orders never count → AC-14
+- [ ] Check finish time: `reconciliations.finished_ns` of the clean check, compared with the bar's or quote's `ts_event` (a timer's scheduled tick) → AC-15
+- [ ] Exit timers on resume: the cached position's `ts_opened` plus the strategy's own config → AC-16
 - [ ] Wait for flat: an untrusted instrument is flat only when a fresh Kraken fetch says so; an error counts as not flat → AC-8
 
 ## Acceptance-criteria coverage
-- AC-6 compare tests, `local_view` test, value sourcing · AC-7 plan, actions, D7 · AC-8 plan, actions, untrusted, executor, kill switch, reset, drill step · AC-9 plan, actions, integration, D6, D12 · AC-10 compare, actions, D4 · AC-11 recover, plan, actions, real engine recover tests, drill step · AC-12 compare, plan · AC-13 actions, demo step · AC-23 plan, smoke, demo step · AC-27 actions, demo step · AC-26 reset tests, drill step · AC-28 plan, actions
+- AC-6 compare tests, `local_view` test, value sourcing · AC-7 plan, actions, D7 · AC-8 plan, actions, untrusted, executor, kill switch, reset, drill step · AC-9 plan, actions, integration, D6, D12 · AC-10 compare, actions, D4 · AC-11 recover, plan, actions, real engine recover tests, drill step · AC-12 compare, plan · AC-13 actions, demo step · AC-23 plan, smoke, demo step · AC-27 actions, demo step · AC-26 reset tests, drill step · AC-28 plan, actions · AC-14 unresolved, actor resume tests, D3 · AC-15 actor and base resume tests, demo step, D3 · AC-16 actor and base resume tests, D2, D5

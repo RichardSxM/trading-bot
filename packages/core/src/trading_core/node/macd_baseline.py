@@ -9,7 +9,9 @@ Once it fills, a reduce only stop market order rests ``stop_pct`` percent from t
 stop judged and the stop placed can differ by the fill's slippage. An exit signal cancels the stop and
 closes at market. A stop that is refused or not accepted in time blocks entries and closes the position
 (fail closed). A position closed from any source (its stop, its exit, the range end closer, the
-liquidation guard, the kill switch) cancels what rests and resets the strategy.
+liquidation guard, the kill switch) cancels what rests and resets the strategy. After a restart an
+entry signal from a bar older than the last check is ignored, and ``resume_position`` takes back a
+position under its resting stop (spec 0023 AC-15, AC-16).
 """
 
 import functools
@@ -44,7 +46,7 @@ from nautilus_trader.model.position import Position
 from trading_core.node import guard
 from trading_core.node.guard import GuardedConfig
 from trading_core.node.stale import StaleQuoteBlock
-from trading_core.node.strategy import KfsStrategy, PauseGate
+from trading_core.node.strategy import KfsStrategy, PauseGate, decision_of
 from trading_core.recording.enums import (
     Env,
     Intent,
@@ -180,6 +182,18 @@ class MacdBaseline(KfsStrategy, StaleQuoteBlock):
         self.phase = Phase.EXITING
         self._submit_exit()
 
+    def resume_position(self, position: Position, stop_order: Order | None) -> None:
+        """Take back ``position`` after a restart (spec 0023 AC-16): protected by ``stop_order``, out on the
+        rule's exit as before. It has no time stop. Without a stop it fails closed, as a stop not accepted."""
+        self._cancel_entries()
+        self.entry_decision = decision_of(self.cache.order(position.opening_order_id))
+        self._entry_id = position.opening_order_id
+        self.phase = Phase.PROTECTED
+        if stop_order is None:
+            self._stop_failed("no stop to resume with")
+            return
+        self._stop_id = stop_order.client_order_id
+
     # Bars -----------------------------------------------------------------------------------
 
     def on_bar(self, bar: Bar) -> None:
@@ -190,7 +204,8 @@ class MacdBaseline(KfsStrategy, StaleQuoteBlock):
         signal = self.rule.on_close(bar.close.as_decimal(), _side_of(position))
         try:
             if signal in (Signal.ENTER_LONG, Signal.ENTER_SHORT) and self.phase == Phase.FLAT and position is None:
-                self._decide_entry(bar, OrderSide.BUY if signal == Signal.ENTER_LONG else OrderSide.SELL)
+                if self.fresh_signal(bar.ts_event):
+                    self._decide_entry(bar, OrderSide.BUY if signal == Signal.ENTER_LONG else OrderSide.SELL)
             elif signal == Signal.EXIT and position is not None and self.phase in (Phase.ENTERING, Phase.PROTECTED):
                 self._decide_exit(bar, position)
         except Exception:

@@ -16,6 +16,7 @@ An Actor cannot submit orders, and no other strategy owns a position the check m
   never open or flip a position and never touches the wrong cached one. It sends nothing when
   Kraken is flat, and stops then. Through the kill switch, ``flatten_for`` starts it for every
   untrusted instrument and leaves the cached orphans on those instruments alone.
+- ``resume_position`` (AC-16): a position of its own found after a restart is closed at once.
 
 A close that is denied or rejected is sent again every second while its position is open, like the
 exit loop of spec 0010. A close already in flight for a position is never sent twice.
@@ -32,6 +33,7 @@ from nautilus_trader.model.enums import PositionSide as NautilusPositionSide
 from nautilus_trader.model.enums import TimeInForce, TriggerType
 from nautilus_trader.model.events import OrderAccepted, OrderDenied, OrderRejected
 from nautilus_trader.model.identifiers import ClientOrderId, InstrumentId, PositionId
+from nautilus_trader.model.orders.base import Order
 from nautilus_trader.model.position import Position
 
 from trading_core.node.strategy import KfsStrategy, KfsStrategyConfig, PauseGate
@@ -165,6 +167,10 @@ class ReconcileExecutor(KfsStrategy):
         position = self.cache.position(PositionId(position_id))
         if position is not None and position.is_open:
             self._close(position, [_ORIGIN])
+
+    def resume_position(self, position: Position, stop_order: Order | None) -> None:
+        """A position of this executor's after a restart (spec 0023 AC-16): it only ever closes, so close it."""
+        self.close(str(position.id))
 
     def flatten(self, halt_id: uuid.UUID) -> None:
         """Close every open position no loaded strategy owns, for the kill switch (idempotent)."""

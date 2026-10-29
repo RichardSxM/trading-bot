@@ -29,6 +29,7 @@ class BlockReason(StrEnum):
     REGIME = "regime"
     RECONCILING = "reconciling"
     EXCHANGE_UNKNOWN = "exchange_unknown"
+    ORDER_UNRESOLVED = "order_unresolved"
 
 
 PLAIN_WORDS: Final[dict[BlockReason, str]] = {
@@ -47,6 +48,7 @@ PLAIN_WORDS: Final[dict[BlockReason, str]] = {
     BlockReason.REGIME: "The market is trending (ADX above the limit), entries wait",
     BlockReason.RECONCILING: "Checking orders and positions against Kraken",
     BlockReason.EXCHANGE_UNKNOWN: "Kraken's orders and positions are unknown (retrying)",
+    BlockReason.ORDER_UNRESOLVED: "An entry order has no answer from Kraken yet",
 }
 """What the dashboard shows for each reason."""
 
@@ -62,6 +64,7 @@ SELF_CLEARING: Final = frozenset(
         BlockReason.REGIME,
         BlockReason.RECONCILING,
         BlockReason.EXCHANGE_UNKNOWN,
+        BlockReason.ORDER_UNRESOLVED,
     }
 )
 """Reasons that clear by themselves; the rest hold until the trader restarts."""

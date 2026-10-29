@@ -37,6 +37,13 @@ a missing stop. A cache that still holds more than Kraken after that (AC-8) puts
 the untrusted set and has the ``ReconcileExecutor`` close what Kraken holds; a clean ``start``
 check empties the set.
 
+Entries Kraken has not answered (AC-14) are tracked from the order events, plus the entries the
+cache loaded in flight: ``order_unresolved`` blocks entries until each is answered, and an entry
+Nautilus's in flight check rejected stays unresolved until the next clean check. A clean check that
+lifts ``reconciling`` tells every strategy its finish time, so none acts on a signal from older data
+(AC-15). The first clean check, after its stop fixes, hands each open position to the strategy that
+owns it, with its resting stop (``resume_position``, AC-16); a resume that raises flattens and halts.
+
 ``SandboxExchangeView`` is demo's exchange: the simulated exchange's open orders, and the cache's
 positions (the sandbox keeps no position book of its own). ``KrakenExchangeView`` is live's: the
 Kraken Futures HTTP client's open order, position, and fill reports, called directly, because the
@@ -64,6 +71,14 @@ from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.execution.reports import FillReport, OrderStatusReport, PositionStatusReport
 from nautilus_trader.model.enums import LiquiditySide, OrderStatus, OrderType
 from nautilus_trader.model.enums import PositionSide as NautilusPositionSide
+from nautilus_trader.model.events import (
+    OrderAccepted,
+    OrderCanceled,
+    OrderExpired,
+    OrderFilled,
+    OrderRejected,
+    OrderSubmitted,
+)
 from nautilus_trader.model.identifiers import AccountId, ClientOrderId, InstrumentId, TradeId, VenueOrderId
 from nautilus_trader.model.objects import Currency, Money, Quantity
 from nautilus_trader.model.orders.base import Order
@@ -88,6 +103,7 @@ from trading_core.reconcile.plan import (
     plan,
 )
 from trading_core.reconcile.recover import Recovery, recover, window_complete
+from trading_core.reconcile.unresolved import UnresolvedEntries
 from trading_core.reconcile.views import (
     CancelPort,
     ExchangePort,
@@ -294,6 +310,22 @@ def busy(cache: Cache) -> bool:
     if cache.orders_inflight():
         return True
     return any(order.is_pending_cancel or order.is_pending_update for order in cache.orders_open())
+
+
+def resting_stop(cache: Cache, position: Position) -> Order | None:
+    """The open reduce only stop market order closing ``position``, newest first; None when there is none.
+
+    After a clean check there is at most one (AC-9).
+    """
+    closing = OrderSide.SELL if position.side == NautilusPositionSide.LONG else OrderSide.BUY
+    stops = [
+        order
+        for order in cache.orders_open(instrument_id=position.instrument_id)
+        if order.order_type == OrderType.STOP_MARKET
+        and order.is_reduce_only
+        and OrderSide(order.side.name.lower()) is closing
+    ]
+    return max(stops, key=lambda order: order.ts_init, default=None)
 
 
 def report_order_view(report: OrderStatusReport) -> OrderView:
@@ -784,6 +816,18 @@ class UntrustedSet(Protocol):
         ...
 
 
+class Resumable(Protocol):
+    """What a check needs from a loaded strategy (``KfsStrategy``): the fresh signal time (AC-15) and the
+    resume of a known position (AC-16)."""
+
+    @property
+    def id(self) -> object: ...
+
+    def signals_after(self, finished_ns: int) -> None: ...
+
+    def resume_position(self, position: Position, stop_order: Order | None) -> None: ...
+
+
 class Halter(Protocol):
     """What a check needs from the kill switch (``KillSwitch``)."""
 
@@ -816,7 +860,8 @@ class ReconcileActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
     of the strategies whose orders are ours, ``stopless`` those of them that never place a stop,
     ``recorded`` is the Postgres fallback for a stop's trigger price, ``lookback_mins`` how far back
     fill recovery looks, and ``actions`` (live) lets a check act; ``local`` replaces the cache read
-    in tests.
+    in tests. ``strategies`` returns the loaded strategies, told when entries resume (AC-15) and
+    handed their positions after the first clean check (AC-16).
     """
 
     def __init__(
@@ -830,6 +875,7 @@ class ReconcileActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
         local: Callable[[Cache], LocalView] | None = None,
         owned: Callable[[], frozenset[str]] = frozenset,
         stopless: Callable[[], frozenset[str]] = frozenset,
+        strategies: Callable[[], Sequence[Resumable]] = lambda: (),
         recorded: StopTriggerLookup | None = None,
         actions: Actions | None = None,
         lookback_mins: int = 1440,
@@ -847,6 +893,9 @@ class ReconcileActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
         self._run_id = run_id
         self._owned = owned
         self._stopless = stopless
+        self._strategies = strategies
+        self._unresolved = UnresolvedEntries()
+        self._resumed = False
         self._recorded = recorded
         self._local = local or (lambda cache: local_view(cache, self._owned(), self._recorded, self._stopless()))
         self._actions = actions
@@ -888,6 +937,8 @@ class ReconcileActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
         self._blocks.add(BlockReason.RECONCILING)
         # Every order event (an acknowledgement, a fill) tells a check its fetch may be stale (AC-27).
         self.msgbus.subscribe(topic="events.order.*", handler=self.note_order_event)
+        # Entries the cache loaded in flight have had no answer yet (AC-14).
+        self._track_inflight()
         self.request_check(ReconcileTrigger.START)
 
     def act_with(self, actions: Actions) -> None:
@@ -895,8 +946,41 @@ class ReconcileActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
         self._actions = actions
 
     def note_order_event(self, event: object) -> None:
-        """Count an order event; a check whose fetch overlapped one fetches again."""
+        """Count an order event (a check whose fetch overlapped one fetches again), and track entries
+        with no answer from Kraken: ``order_unresolved`` blocks entries while there is one (AC-14)."""
         self._order_events += 1
+        match event:
+            case OrderSubmitted():
+                order = self.cache.order(event.client_order_id)
+                if order is not None and not order.is_reduce_only:
+                    self._unresolved.submitted(str(event.client_order_id), str(event.instrument_id))
+            case OrderRejected():
+                self._unresolved.rejected(str(event.client_order_id), str(event.reason))
+            case OrderAccepted() | OrderFilled() | OrderCanceled() | OrderExpired():
+                self._unresolved.answered(str(event.client_order_id))
+            case _:
+                return
+        self._show_unresolved()
+
+    def _track_inflight(self) -> None:
+        for order in self.cache.orders_inflight():
+            if not order.is_reduce_only:
+                self._unresolved.submitted(str(order.client_order_id), str(order.instrument_id))
+        self._show_unresolved()
+
+    def _show_unresolved(self) -> None:
+        if not self._unresolved.active:
+            self._blocks.clear(BlockReason.ORDER_UNRESOLVED)
+        elif self._blocks.add(BlockReason.ORDER_UNRESOLVED):
+            log.warning(
+                "an entry order has no answer from kraken, entries blocked",
+                extra={
+                    "fields": {
+                        "code": "order_unresolved",
+                        "instrument_ids": sorted(self._unresolved.instruments),
+                    }
+                },
+            )
 
     def on_stop(self) -> None:
         """Cancel the next check and a running one."""
@@ -1057,6 +1141,10 @@ class ReconcileActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
             exchange_positions=len(exchange.positions),
             mismatch_count=len(outcomes),
         )
+        if outcome is ReconcileOutcome.CLEAN and not self._resumed:
+            # After the stop fixes, before entries resume: each strategy takes back its positions (AC-16).
+            self._resumed = True
+            self._resume_positions(mode)
         self._finish(row, outcomes)
         if outcome is ReconcileOutcome.MISMATCH and mode is not Mode.DEMO:
             # Entries resume on the next clean check (a halt, if any, holds them past it).
@@ -1255,8 +1343,16 @@ class ReconcileActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
             if outcome is ReconcileOutcome.CLEAN:
                 self._last_clean_ns = row.finished_ns
         if outcome is ReconcileOutcome.CLEAN:
+            # Kraken holds nothing we do not know: only entries still in flight now stay unresolved (AC-14).
+            self._unresolved.clear()
+            self._track_inflight()
             unknown_cleared = self._blocks.clear(BlockReason.EXCHANGE_UNKNOWN)
-            if self._blocks.clear(BlockReason.RECONCILING) or unknown_cleared:
+            resumed = self._blocks.clear(BlockReason.RECONCILING)
+            if resumed:
+                # Entries resume: no strategy acts on a signal from data older than this check (AC-15).
+                for strategy in self._strategies():
+                    strategy.signals_after(row.finished_ns)
+            if resumed or unknown_cleared:
                 log.info(
                     "reconciliation clean, entries allowed",
                     extra={"fields": {"code": "reconcile_clean", "trigger": str(row.trigger)}},
@@ -1279,6 +1375,48 @@ class ReconcileActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
             },
         )
         self._report_findings(row, outcomes)
+
+    def _resume_positions(self, mode: Mode) -> None:
+        """Hand every open position to the strategy that owns it, with its one resting stop (AC-16).
+
+        A clean check proved every position belongs to a loaded strategy (AC-7 closes the rest). A
+        strategy whose resume raises leaves its position unmanaged, so the trader flattens and halts.
+        """
+        owners = {str(s.id): s for s in self._strategies()}
+        for position in self.cache.positions_open():
+            owner = owners.get(str(position.strategy_id))
+            if owner is None:
+                continue
+            stop = resting_stop(self.cache, position)
+            try:
+                owner.resume_position(position, stop)
+            except Exception:
+                log.critical(
+                    "a strategy could not resume its position",
+                    exc_info=True,
+                    extra={
+                        "fields": {
+                            "code": "resume_failed",
+                            "strategy_id": str(position.strategy_id),
+                            "position_id": str(position.id),
+                        }
+                    },
+                )
+                actions = self._actions
+                if mode is Mode.ACT and actions is not None:
+                    actions.kill_switch.halt_automatic(HaltReason.RECONCILE_MISMATCH, flatten=True)
+                continue
+            log.info(
+                "position resumed",
+                extra={
+                    "fields": {
+                        "code": "position_resumed",
+                        "strategy_id": str(position.strategy_id),
+                        "position_id": str(position.id),
+                        "stop_client_order_id": None if stop is None else str(stop.client_order_id),
+                    }
+                },
+            )
 
     def _report_findings(self, row: ReconciliationRow, outcomes: Iterable[FindingOutcome]) -> None:
         for done in outcomes:

@@ -15,6 +15,11 @@ is in the untrusted cache set (spec 0023 AC-8).
 
 With ``use_market_context`` on, the base class also subscribes the instrument's market context
 and folds every update into a ``ContextBook``; ``market_context()`` reads it (spec 0009 AC-11).
+
+After a restart (spec 0023), the reconciliation check calls ``signals_after`` on every strategy when
+entries resume, and an entry signal from data older than that check is ignored (``fresh_signal``,
+AC-15). After the first clean check it calls ``resume_position`` once per position the strategy owns
+(AC-16): every subclass implements it, rebuilding its exit timers from the position's open time.
 """
 
 import logging
@@ -31,6 +36,7 @@ from nautilus_trader.model.data import FundingRateUpdate, IndexPriceUpdate, Mark
 from nautilus_trader.model.identifiers import ClientId, InstrumentId, PositionId
 from nautilus_trader.model.orders.base import Order
 from nautilus_trader.model.orders.list import OrderList
+from nautilus_trader.model.position import Position
 from nautilus_trader.trading.strategy import Strategy
 
 from trading_core.control.halt import HaltState
@@ -38,6 +44,7 @@ from trading_core.control.pause import PauseState
 from trading_core.marketdata.context import ContextBook, ContextLookAheadError, Liquidation, MarketContext, MaxAges
 from trading_core.marketdata.hours import SECOND_NS
 from trading_core.node.context_types import LiquidationTick, OpenInterestUpdate, context_data_type
+from trading_core.recording.mappers import DECISION_TAG
 
 log = logging.getLogger(__name__)
 
@@ -154,6 +161,19 @@ class PauseGate:
             self._cancelled += count
 
 
+def decision_of(order: Order | None) -> uuid.UUID | None:
+    """The decision id an order was tagged with (``decision:<id>``), or None."""
+    if order is None:
+        return None
+    for tag in order.tags or ():
+        if tag.startswith(DECISION_TAG):
+            try:
+                return uuid.UUID(tag.removeprefix(DECISION_TAG))
+            except ValueError:
+                return None
+    return None
+
+
 def entry_orders(orders: Iterable[Order]) -> list[Order]:
     """The orders that are not reduce only, each once."""
     seen: set[object] = set()
@@ -173,7 +193,8 @@ class KfsStrategy(Strategy):  # type: ignore[misc]  # Strategy is Cython with no
     ``on_stop`` that touches orders or positions (call ``super().on_stop()`` if it overrides it).
     A subclass that overrides ``on_start`` or a market context handler calls ``super()`` first.
     A subclass that never places a protective stop sets ``uses_stop`` False, so the reconciliation
-    check does not ask its positions for one (spec 0023 AC-9).
+    check does not ask its positions for one (spec 0023 AC-9). Every subclass implements
+    ``resume_position`` and checks ``fresh_signal`` before it acts on an entry signal (AC-15, AC-16).
     """
 
     uses_stop: ClassVar[bool] = True
@@ -196,6 +217,7 @@ class KfsStrategy(Strategy):  # type: ignore[misc]  # Strategy is Cython with no
                 liquidations_available=config.context_liquidations_available,
             )
         self._clock_behind_logged_ns: int | None = None
+        self._signals_after_ns: int | None = None
 
     def on_start(self) -> None:
         """Subscribe the instrument's market context when ``use_market_context`` is on."""
@@ -291,6 +313,40 @@ class KfsStrategy(Strategy):  # type: ignore[misc]  # Strategy is Cython with no
                     },
                 )
             return self._context.snapshot(exc.latest_ns)
+
+    def signals_after(self, finished_ns: int) -> None:
+        """A start or reconnect check finished clean at ``finished_ns``: older signals are stale (AC-15)."""
+        self._signals_after_ns = finished_ns
+
+    def fresh_signal(self, ts_event: int) -> bool:
+        """True unless the bar, quote, or timer tick behind an entry signal is older than the last check that
+        let entries resume (AC-15); a stale one is logged and must be ignored, so a restart never fires
+        the same signal twice. Always True before any check (a replay)."""
+        after = self._signals_after_ns
+        if after is None or ts_event >= after:
+            return True
+        log.info(
+            "entry signal from before the check ignored",
+            extra={
+                "fields": {
+                    "code": "entry_skipped_stale_signal",
+                    "strategy_id": str(self.id),
+                    "ts_event": ts_event,
+                    "check_finished_ns": after,
+                }
+            },
+        )
+        return False
+
+    def resume_position(self, position: Position, stop_order: Order | None) -> None:
+        """Take back ``position`` after a restart, with ``stop_order`` its one resting stop (AC-16).
+
+        Called once per position this strategy owns, after the first clean check. A subclass rebuilds
+        its exit timers from ``position.ts_opened`` and its own config, keeps the stop, cancels any
+        resting entry, and from then on manages the position as if no restart happened; when its
+        maximum hold has already passed it exits at once. The base class has no rule, so it raises.
+        """
+        raise NotImplementedError(f"{type(self).__name__} cannot resume a position")
 
     def submit_order(
         self,

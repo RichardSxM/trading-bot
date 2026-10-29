@@ -86,7 +86,7 @@ class BookImbalance(ScalpStrategy):
             self.rule.on_trade(tick.ts_event, tick.size.as_decimal(), _AGGRESSORS.get(tick.aggressor_side, "none"))
 
     def _on_firing(self, event: TimeEvent) -> None:
-        self._on_signal_source(lambda: self._signal_at(event.ts_event // BUCKET_NS - 1))
+        self._on_signal_source(lambda: self._signal_at(event.ts_event // BUCKET_NS - 1), event.ts_event)
 
     def _signal_at(self, bucket: int) -> ScalpSignal | None:
         """The rule's signal on the firing that closes ``bucket``: no book yet reads as empty sides."""

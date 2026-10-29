@@ -6,6 +6,8 @@ sizes ``notional_usd`` at the mid, asks ``check_entry`` (every input sourced as 
 sources it), records the decision, and buys at market. A refusal is retried at the next bar close, at
 most ``max_entry_attempts`` times. It never sets a stop: the range end close or the liquidation guard
 ends the position, and any close resets it. The stale quote block comes from ``StaleQuoteBlock``.
+After a restart it ignores a bar older than the last check and keeps holding a resumed position
+(spec 0023 AC-15, AC-16).
 """
 
 import logging
@@ -31,12 +33,13 @@ from nautilus_trader.model.events import (
 from nautilus_trader.model.identifiers import ClientOrderId, InstrumentId
 from nautilus_trader.model.instruments import Instrument
 from nautilus_trader.model.objects import Currency
+from nautilus_trader.model.orders.base import Order
 from nautilus_trader.model.position import Position
 
 from trading_core.node import guard
 from trading_core.node.guard import GuardedConfig
 from trading_core.node.stale import StaleQuoteBlock
-from trading_core.node.strategy import KfsStrategy, PauseGate
+from trading_core.node.strategy import KfsStrategy, PauseGate, decision_of
 from trading_core.recording.enums import Env, Intent, OrderOrigin, OrderSide, RiskEventKind, RiskVerdict, Severity
 from trading_core.recording.mappers import DECISION_TAG, HALT_TAG, ORIGIN_TAG
 from trading_core.recording.rows import DecisionRow, JsonObject, RiskEventRow
@@ -145,13 +148,20 @@ class BuyAndHold(KfsStrategy, StaleQuoteBlock):
         self._exit_id = order.client_order_id
         self.submit_order(order)
 
+    def resume_position(self, position: Position, stop_order: Order | None) -> None:
+        """Take back ``position`` after a restart (spec 0023 AC-16): it keeps holding, as it always does."""
+        self._cancel_entries()
+        self.entry_decision = decision_of(self.cache.order(position.opening_order_id))
+        self._entry_id = position.opening_order_id
+        self.phase = Phase.HOLDING
+
     # Entry ----------------------------------------------------------------------------------
 
     def on_bar(self, bar: Bar) -> None:
         """At each bar close while flat and not given up, decide the entry."""
         if bar.bar_type != self.bar_type or self.phase != Phase.FLAT or self._attempts.abandoned:
             return
-        if self._position() is not None:
+        if self._position() is not None or not self.fresh_signal(bar.ts_event):
             return
         try:
             self._decide_entry(bar)

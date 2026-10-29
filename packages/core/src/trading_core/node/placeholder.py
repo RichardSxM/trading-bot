@@ -15,6 +15,9 @@ filled entry, a lost stop, or a lost exit runs (or keeps running) the exit loop.
 the one already running; every exit order after it carries the kill switch tags in place of a
 decision. Asked while an entry is in flight, it cancels the entry and remembers the request: a
 late fill still gets its stop, then the exit loop starts at once.
+
+After a restart (spec 0023) a boundary scheduled before the last check is skipped (AC-15), and
+``resume_position`` takes back a position under its stop, exiting ``hold_min`` after it opened (AC-16).
 """
 
 import functools
@@ -51,7 +54,7 @@ from trading_core.node import guard
 from trading_core.node.funding import FundingLedger
 from trading_core.node.guard import GuardedConfig
 from trading_core.node.stale import StaleQuoteBlock
-from trading_core.node.strategy import KfsStrategy, PauseGate
+from trading_core.node.strategy import KfsStrategy, PauseGate, decision_of
 from trading_core.recording.enums import (
     Env,
     Intent,
@@ -216,6 +219,34 @@ class PlaceholderTimed(KfsStrategy, StaleQuoteBlock):
             extra={"fields": {"code": "strategy_flatten", "halt_id": str(halt_id), "phase": self.phase.value}},
         )
 
+    def resume_position(self, position: Position, stop_order: Order | None) -> None:
+        """Take back ``position`` after a restart (spec 0023 AC-16): protected by ``stop_order``, out on time
+        ``hold_min`` after the position opened, at once when that has passed. Without a stop it fails
+        closed: entries blocked and the position closed, as a stop not accepted."""
+        self._cancel_entries()
+        self._entry_decision = decision_of(self.cache.order(position.opening_order_id))
+        self._entry_id = position.opening_order_id
+        self.position_opened_ns = position.ts_opened
+        self.exit_due_ns = position.ts_opened + self._cfg.hold_min * NS_PER_MIN
+        self.phase = Phase.PROTECTED
+        if stop_order is None:
+            self._blocks.add(BlockReason.STOP_NOT_ACCEPTED)
+            self._risk_event(
+                f"stop_not_accepted:{position.id}",
+                RiskEventKind.ORDER_REJECTED,
+                Severity.CRITICAL,
+                "no stop to resume with; closing the position",
+                self._entry_decision,
+                {"position_id": str(position.id)},
+            )
+            self._start_exit_loop()
+            return
+        self._stop_id = stop_order.client_order_id
+        if self.exit_due_ns <= self.clock.timestamp_ns():
+            self._on_hold_over(None)
+        else:
+            self._alert(_HOLD, self.exit_due_ns, self._on_hold_over)
+
     def on_quote_tick(self, tick: QuoteTick) -> None:
         """Quotes drive the sandbox and the stale check; nothing to do here."""
 
@@ -240,6 +271,8 @@ class PlaceholderTimed(KfsStrategy, StaleQuoteBlock):
         self._arm_boundary()
         if self.phase != Phase.FLAT or self.cache.positions_open(instrument_id=self._instrument_id):
             log.info("entry skipped, a round trip is open", extra={"fields": {"code": "entry_skipped_open"}})
+            return
+        if not self.fresh_signal(boundary + DECISION_DELAY_NS):
             return
         try:
             self._decide_entry(boundary)

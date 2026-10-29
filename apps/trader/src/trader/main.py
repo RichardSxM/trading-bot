@@ -640,6 +640,7 @@ def run_node(
         run_id=None if paper is None else paper.run_id,
         owned=owned,
         stopless=stopless,
+        strategies=lambda: [s for s in node.trader.strategies() if isinstance(s, KfsStrategy)],
         recorded=None if paper is None else stop_trigger_lookup(paper.sessions, Env(env)),
         lookback_mins=settings.reconcile_lookback_mins,
         interval_s=float(settings.reconcile_interval_s),
