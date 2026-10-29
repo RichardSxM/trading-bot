@@ -86,6 +86,7 @@ class RandomTakerConfig(GuardedConfig, frozen=True):
 class RandomTaker(KfsStrategy):
     """Enters at market on a random side every boundary while flat, exits at market after ``hold_s``."""
 
+    uses_stop = False  # it never places a stop (spec 0023 AC-9)
     # Timers of one round trip, cancelled when it ends (the boundary timer keeps running).
     _round_trip_timers: tuple[str, ...] = (_HOLD, _EXIT_RETRY)
 

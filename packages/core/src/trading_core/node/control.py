@@ -16,6 +16,7 @@ trader is paused or halted, else ``ACTIVE``. So no pause path can lift a halt's 
 
 import asyncio
 import logging
+import time
 import uuid
 from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -46,6 +47,8 @@ log = logging.getLogger(__name__)
 PROTECTIVE_TYPES: Final = (OrderType.STOP_MARKET, OrderType.STOP_LIMIT)
 # How often the kill switch looks at the cache while it waits for flat (spec 0010 AC-3).
 FLAT_POLL_S: Final = 0.25
+# How often the wait for flat asks Kraken about an untrusted instrument (spec 0023 AC-8).
+EXCHANGE_FLAT_POLL_S: Final = 1.0
 # A trader that starts halted flattens again this long after start (spec 0010 AC-7).
 RESTART_FLATTEN_DELAY: Final = timedelta(seconds=5)
 _RESTART_FLATTEN_ALERT: Final = "kill_switch_restart_flatten"
@@ -181,6 +184,17 @@ def load_pause(controller: PauseController, raw: str | bytes | None) -> None:
     )
 
 
+class Untrusted(Protocol):
+    """The untrusted cache set the kill switch reads (``UntrustedCache``, spec 0023 AC-8)."""
+
+    @property
+    def instruments(self) -> frozenset[str]: ...
+
+
+# A fresh Kraken fetch: True when Kraken holds no position on the instrument; an error is False.
+type ExchangeFlat = Callable[[str], Awaitable[bool]]
+
+
 class LossStatus(Protocol):
     """What ``resume`` needs from the loss limits (spec 0010 AC-4): seeded yet, and the total under its limit."""
 
@@ -201,6 +215,11 @@ class KillSwitch:
     The halt is applied in memory before any I/O, so a Redis failure can only leave the trader
     more halted, never less. ``attach`` hands it the strategies and the recording callable once
     they exist; with none (live) flat is judged from the cache alone and events are only logged.
+
+    For an instrument in ``untrusted`` (spec 0023 AC-8) every flatten goes through each strategy's
+    ``flatten_for``, which skips the owning strategy's own close, and the wait for flat asks
+    ``exchange_flat`` (a fresh Kraken fetch, at most every ``EXCHANGE_FLAT_POLL_S``) instead of the
+    cache, so it never times out on the wrong cache.
     """
 
     def __init__(
@@ -213,6 +232,7 @@ class KillSwitch:
         cache: Cache,
         flat_timeout_s: float,
         poll_s: float = FLAT_POLL_S,
+        untrusted: Untrusted | None = None,
     ) -> None:
         self._gate = gate
         self._risk_engine = risk_engine
@@ -233,6 +253,18 @@ class KillSwitch:
         self._halts = 0  # every halt applied, new or not, so resume sees one that lands during its delete
         self._tasks: set[asyncio.Task[object]] = set()
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._untrusted = untrusted
+        self._exchange_flat: ExchangeFlat | None = None
+        self._exchange_checked: tuple[float, bool] | None = None  # (monotonic time, flat) of the last ask
+
+    @property
+    def untrusted(self) -> frozenset[str]:
+        """The instruments whose cached position is wrong (spec 0023 AC-8)."""
+        return frozenset() if self._untrusted is None else self._untrusted.instruments
+
+    def watch_exchange(self, exchange_flat: ExchangeFlat) -> None:
+        """Let the wait for flat ask Kraken about an untrusted instrument (live)."""
+        self._exchange_flat = exchange_flat
 
     def attach(self, strategies: Sequence[KfsStrategy], record: Record | None, run_id: uuid.UUID | None) -> None:
         """Hand over the strategies to flatten and where events go, once they exist (``main``)."""
@@ -451,14 +483,36 @@ class KillSwitch:
         return True
 
     def _flatten_all(self, flatten_id: uuid.UUID) -> None:
+        untrusted = self.untrusted
         for strategy in self._strategies:
-            strategy.flatten(flatten_id)
+            strategy.flatten_for(flatten_id, untrusted)
+
+    async def _flat_for_wait(self) -> bool:
+        """``is_flat``, except that an untrusted instrument is flat when Kraken says so (an error is not flat)."""
+        untrusted = self.untrusted
+        if not untrusted or self._exchange_flat is None:
+            return self.is_flat()
+        if any(str(p.instrument_id) not in untrusted for p in self._cache.positions_open()):
+            return False
+        if entry_orders([*self._cache.orders_open(), *self._cache.orders_inflight()]):
+            return False
+        checked = self._exchange_checked
+        now = time.monotonic()
+        if checked is not None and now - checked[0] < EXCHANGE_FLAT_POLL_S:
+            return checked[1]
+        flat = True
+        for instrument_id in sorted(untrusted):
+            if not await self._exchange_flat(instrument_id):
+                flat = False
+                break
+        self._exchange_checked = (now, flat)
+        return flat
 
     async def _wait_flat(self, flatten_id: uuid.UUID, started: datetime) -> bool:
-        """Poll the cache until flat, re-flattening as positions appear; False after the timeout."""
+        """Poll until flat, re-flattening as positions appear; False after the timeout."""
         self._flattening += 1
         try:
-            while not self.is_flat():
+            while not await self._flat_for_wait():
                 if self._now() - started >= self._flat_timeout:
                     self._event(
                         f"flatten_timeout:{flatten_id}",
@@ -474,9 +528,10 @@ class KillSwitch:
                     )
                     return False
                 await asyncio.sleep(self._poll_s)
+                untrusted = self.untrusted
                 for strategy in self._strategies:
                     if strategy.has_open_positions():
-                        strategy.flatten(flatten_id)
+                        strategy.flatten_for(flatten_id, untrusted)
             return True
         finally:
             self._flattening -= 1
@@ -544,8 +599,9 @@ def control_execute(
 class ControlActor(Actor):  # type: ignore[misc]  # Actor is Cython with no stubs
     """Halts and pauses at start when the keys say so, then reads control commands until stopped.
 
-    The halt key is read first, then the pause key, and the trading state is applied once. A
-    trader that starts halted flattens again 5 s later, once its strategies run (spec 0010 AC-7).
+    The halt key is read first, then the untrusted cache set (spec 0023 AC-8; unreadable halts),
+    then the pause key, and the trading state is applied once. A trader that starts halted
+    flattens again 5 s later, once its strategies run (spec 0010 AC-7).
     """
 
     def __init__(
@@ -555,6 +611,7 @@ class ControlActor(Actor):  # type: ignore[misc]  # Actor is Cython with no stub
         read_pause_key: Callable[[], str | bytes | None],
         read_halt_key: Callable[[], str | bytes | None],
         consume: Callable[[], Awaitable[None]],
+        load_untrusted: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(ActorConfig(component_id="ControlActor"))
         self._controller = controller
@@ -562,6 +619,7 @@ class ControlActor(Actor):  # type: ignore[misc]  # Actor is Cython with no stub
         self._read_pause_key = read_pause_key
         self._read_halt_key = read_halt_key
         self._consume = consume
+        self._load_untrusted = load_untrusted
         self._task: asyncio.Task[None] | None = None
 
     def on_start(self) -> None:
@@ -575,6 +633,16 @@ class ControlActor(Actor):  # type: ignore[misc]  # Actor is Cython with no stub
             self._kill_switch.halt_unknown()
         else:
             self._kill_switch.load(raw_halt)
+        if self._load_untrusted is not None:
+            try:
+                self._load_untrusted()
+            except (RedisError, OSError, TimeoutError) as exc:
+                # Which cached positions are wrong is unknown: fail closed.
+                log.critical(
+                    "untrusted cache set unreadable, starting halted",
+                    extra={"fields": {"code": "cache_untrusted_unreadable", "error": type(exc).__name__}},
+                )
+                self._kill_switch.halt_unknown()
         try:
             raw = self._read_pause_key()
         except (RedisError, OSError, TimeoutError) as exc:

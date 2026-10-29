@@ -98,6 +98,9 @@ from trading_core.node.reconcile_executor import ReconcileExecutor, ReconcileExe
 from trading_core.node.recording import RecordingActor
 from trading_core.node.sandbox import FeeSandboxExecClientFactory, sandbox_exec_client
 from trading_core.node.strategy import KfsStrategy, PauseGate
+from trading_core.node.untrusted import UntrustedCache
+from trading_core.reconcile.recover import cache_untrusted_key
+from trading_core.reconcile.views import ExchangePort, ExchangeUnavailable
 from trading_core.recording import repository
 from trading_core.recording.enums import Env, RunMode, RunStatus
 from trading_core.recording.errors import PromotionRequiredError
@@ -245,6 +248,19 @@ def exec_engine_config(settings: TraderSettings) -> LiveExecEngineConfig:
     )
 
 
+def exchange_flat(exchange: ExchangePort) -> Callable[[str], Awaitable[bool]]:
+    """Is Kraken flat on an instrument, from a fresh fetch; an error counts as not flat (spec 0023 AC-8)."""
+
+    async def flat(instrument_id: str) -> bool:
+        try:
+            view = await exchange.fetch()
+        except ExchangeUnavailable:
+            return False
+        return not any(p.instrument_id == instrument_id and p.quantity > 0 for p in view.positions)
+
+    return flat
+
+
 def kraken_exchange_view(
     settings: ReconcileSettings, secrets: Mapping[str, SecretStr], base_url: str | None = None
 ) -> KrakenExchangeView:
@@ -335,6 +351,7 @@ class ControlParts:
     risk_engine: RiskEngine
     shutdown_counts: Callable[[], Mapping[str, int]]
     gate: PauseGate = field(default_factory=PauseGate)
+    untrusted: UntrustedCache | None = None
 
 
 def control_parts(
@@ -372,7 +389,10 @@ def control_parts(
         return datetime.now(UTC)
 
     controller = PauseController(gate, risk_engine, client, env, now)
-    kill_switch = KillSwitch(gate, risk_engine, client, env, now, node.cache, settings.kill_switch_flat_timeout_s)
+    untrusted = UntrustedCache(client, env)
+    kill_switch = KillSwitch(
+        gate, risk_engine, client, env, now, node.cache, settings.kill_switch_flat_timeout_s, untrusted=untrusted
+    )
     execute = control_execute(controller, kill_switch, recheck)
     consumer = ControlConsumer(client, env, execute, PostgresCommandRecorder(engine, Env(env)), now)
 
@@ -383,9 +403,21 @@ def control_parts(
 
         return read
 
+    def load_untrusted() -> None:
+        members = start_client.smembers(cache_untrusted_key(env))
+        untrusted.load(members if isinstance(members, set) else ())
+
     return ControlParts(
-        actor=ControlActor(controller, kill_switch, read_key(pause_key(env)), read_key(halt_key(env)), consumer.run),
+        actor=ControlActor(
+            controller,
+            kill_switch,
+            read_key(pause_key(env)),
+            read_key(halt_key(env)),
+            consumer.run,
+            load_untrusted=load_untrusted,
+        ),
         kill_switch=kill_switch,
+        untrusted=untrusted,
         risk_engine=risk_engine,
         shutdown_counts=lambda: shutdown_counts(gate, node.cache),
         gate=gate,
@@ -594,6 +626,10 @@ def run_node(
         # Every loaded trader strategy, the ReconcileExecutor included: their orders are ours (AC-6).
         return frozenset(str(s.id) for s in node.trader.strategies() if isinstance(s, KfsStrategy))
 
+    def stopless() -> frozenset[str]:
+        # The loaded strategies that never place a stop: no stop check for their positions (AC-9).
+        return frozenset(str(s.id) for s in node.trader.strategies() if isinstance(s, KfsStrategy) and not s.uses_stop)
+
     reconcile = ReconcileActor(
         env=Env(env),
         exchange=exchange
@@ -603,7 +639,9 @@ def run_node(
         record=None if paper is None else paper.writer.put,
         run_id=None if paper is None else paper.run_id,
         owned=owned,
+        stopless=stopless,
         recorded=None if paper is None else stop_trigger_lookup(paper.sessions, Env(env)),
+        lookback_mins=settings.reconcile_lookback_mins,
         interval_s=float(settings.reconcile_interval_s),
         retry_s=float(settings.reconcile_retry_s),
         stale_quote_s=float(settings.risk_stale_quote_s),
@@ -614,15 +652,23 @@ def run_node(
     if exchange is not None:
         # Live: the check acts through the executor and the kill switch (the control parts answer recheck
         # through the check, so it is handed its actions once they exist); demo only reports (AC-23).
-        executor = ReconcileExecutor(ReconcileExecutorConfig(instrument_id=BTC_PERP), control.gate, owned)
+        untrusted = control.untrusted
+        if untrusted is None:
+            raise ValueError("a live node needs the untrusted cache set (spec 0023 AC-8)")
+        executor = ReconcileExecutor(
+            ReconcileExecutorConfig(instrument_id=BTC_PERP), control.gate, owned, exchange=exchange
+        )
         reconcile.act_with(
             Actions(
                 executor=executor,
                 cancel=exchange,
                 reports=ExecEngineReports(node.kernel.exec_engine, node.cache),
                 kill_switch=control.kill_switch,
+                fills=exchange,
+                untrusted=untrusted,
             )
         )
+        control.kill_switch.watch_exchange(exchange_flat(exchange))
     node.trader.add_actor(control.actor)
     node.trader.add_actor(HeartbeatActor(HeartbeatConfig(path=str(heartbeat_path()))))
     # Open interest and liquidations for the strategies' market context (spec 0009 AC-12). The trader

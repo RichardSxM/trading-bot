@@ -21,7 +21,8 @@ class ExchangeUnavailable(Exception):
 class OrderView:
     """One open order: matched on ``venue_order_id``, falling back to ``client_order_id`` (prices are not compared).
 
-    ``strategy_id`` and ``ts_init`` are known only for a local order; the exchange reports neither.
+    ``strategy_id``, ``ts_init``, ``filled_qty``, and ``trade_ids`` (the fills the cache already holds)
+    are known only for a local order; the exchange reports none of them.
     """
 
     instrument_id: str
@@ -34,6 +35,8 @@ class OrderView:
     reduce_only: bool = False
     strategy_id: str | None = None
     ts_init: int = 0
+    filled_qty: Decimal = Decimal(0)
+    trade_ids: frozenset[str] = frozenset()
 
     @property
     def is_stop(self) -> bool:
@@ -96,7 +99,8 @@ class LocalView:
     rounding both to it. An instrument without one is compared exactly. ``owned_strategies`` are
     the strategy ids whose orders are ours (the loaded strategies and the ``ReconcileExecutor``).
     ``stop_triggers`` maps an instrument to the recorded trigger price of its position's stop
-    (spec 0023 *Value sourcing*); an instrument without one has none.
+    (spec 0023 *Value sourcing*); an instrument without one has none. ``stopless_strategies`` are the
+    owned strategy ids that never place a stop (``KfsStrategy.uses_stop`` false, AC-9).
     """
 
     orders: tuple[OrderView, ...]
@@ -104,6 +108,28 @@ class LocalView:
     size_increments: Mapping[str, Decimal] = field(default_factory=dict)
     owned_strategies: frozenset[str] = frozenset()
     stop_triggers: Mapping[str, Decimal] = field(default_factory=dict)
+    stopless_strategies: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True, kw_only=True)
+class FillView:
+    """One fill as the exchange reported it (AC-11): what an order filled, at what price and venue time.
+
+    ``client_order_id`` is the exchange's, which may be missing or not ours; ``commission`` is in
+    ``commission_currency``, and ``liquidity_side`` is ``maker``, ``taker``, or ``no_liquidity_side``.
+    """
+
+    trade_id: str
+    instrument_id: str
+    venue_order_id: str
+    client_order_id: str | None
+    side: OrderSide
+    quantity: Decimal
+    price: Decimal
+    ts_event: int
+    commission: Decimal = Decimal(0)
+    commission_currency: str = "USD"
+    liquidity_side: str = "no_liquidity_side"
 
 
 def exchange_snapshot_data(view: ExchangeView | None, fetched_ns: int) -> dict[str, object]:
@@ -138,6 +164,14 @@ class ExchangePort(Protocol):
 
     async def fetch(self) -> ExchangeView:
         """The exchange's open orders and positions, or ``ExchangeUnavailable``."""
+        ...
+
+
+class FillPort(Protocol):
+    """Fetches the exchange's fills; raises ``ExchangeUnavailable`` on any failure (AC-11)."""
+
+    async def fills(self, since_ns: int) -> tuple[FillView, ...]:
+        """Every fill since ``since_ns``, or ``ExchangeUnavailable`` when they cannot all be fetched."""
         ...
 
 

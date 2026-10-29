@@ -17,11 +17,15 @@ import pytest
 
 pytest.importorskip("nautilus_trader")
 
+from nautilus_trader.core.uuid import UUID4
+from nautilus_trader.execution.reports import FillReport
+from nautilus_trader.model.currencies import USD
 from nautilus_trader.model.data import QuoteTick
-from nautilus_trader.model.enums import OrderStatus
+from nautilus_trader.model.enums import LiquiditySide, OrderStatus
+from nautilus_trader.model.enums import OrderSide as NautilusOrderSide
 from nautilus_trader.model.enums import PositionSide as NautilusPositionSide
-from nautilus_trader.model.identifiers import ClientOrderId, StrategyId
-from nautilus_trader.model.objects import Price, Quantity
+from nautilus_trader.model.identifiers import AccountId, ClientOrderId, StrategyId, TradeId, VenueOrderId
+from nautilus_trader.model.objects import Money, Price, Quantity
 from nautilus_trader.test_kit.stubs.execution import TestExecStubs
 from test_node_placeholder import INSTRUMENT
 from test_node_reconcile import BTC, EMPTY, FOREIGN, FakeExchange, _actor, _rows
@@ -30,6 +34,7 @@ from test_reconcile_compare import OURS, TRIGGER, _held, _local, _order, _positi
 from trading_core.control.halt import HaltReason
 from trading_core.node.reconcile import (
     NOT_QUIET,
+    RECOVERY_INCOMPLETE,
     Actions,
     ExecEngineReports,
     KrakenExchangeView,
@@ -37,11 +42,13 @@ from trading_core.node.reconcile import (
     is_generated,
     local_view,
 )
-from trading_core.reconcile.views import ExchangeUnavailable, ExchangeView, PositionView
+from trading_core.reconcile.recover import KRAKEN_FILLS_PAGE
+from trading_core.reconcile.views import ExchangeUnavailable, ExchangeView, FillView, PositionView
 from trading_core.recording.enums import (
     ActionResult,
     MismatchAction,
     MismatchKind,
+    OrderSide,
     PositionSide,
     ReconcileOutcome,
     ReconcileTrigger,
@@ -68,6 +75,9 @@ class FakeExecutor:
     def close(self, position_id):
         self.journal.calls.append(("close", position_id))
 
+    def close_residual(self, instrument_id):
+        self.journal.calls.append(("close_residual", instrument_id))
+
 
 class FakeCancel:
     def __init__(self, journal, fail=()):
@@ -81,13 +91,45 @@ class FakeCancel:
 
 class FakeReportSink:
     def __init__(self, journal):
-        self.journal = journal
+        self.journal, self.recovered = journal, []
 
     def mark_canceled(self, order):
         self.journal.calls.append(("mark_canceled", order.client_order_id))
 
     def sync_position(self, instrument_id, exchange):
         self.journal.calls.append(("sync_position", instrument_id, exchange))
+
+    def recover(self, recovery):
+        self.journal.calls.append(("recover", recovery.order.client_order_id, [f.trade_id for f in recovery.fills]))
+        self.recovered.append(recovery)
+
+
+class FakeFills:
+    """Hands out the given fills, or raises the given error."""
+
+    def __init__(self, fills=()):
+        self.fills_or_error, self.since = fills, []
+
+    async def fills(self, since_ns):
+        self.since.append(since_ns)
+        if isinstance(self.fills_or_error, Exception):
+            raise self.fills_or_error
+        return tuple(self.fills_or_error)
+
+
+class FakeUntrusted:
+    def __init__(self, journal, ok=True):
+        self.journal, self.ok, self.instruments = journal, ok, set()
+
+    async def add(self, instrument_id):
+        self.journal.calls.append(("untrusted_add", instrument_id))
+        self.instruments.add(instrument_id)
+        return self.ok
+
+    async def clear(self):
+        self.journal.calls.append(("untrusted_clear",))
+        self.instruments.clear()
+        return True
 
 
 class FakeKillSwitch:
@@ -99,13 +141,28 @@ class FakeKillSwitch:
         return uuid.uuid7()
 
 
-def _acting(exchange, local, *, accept=True, fail=(), flattening=False, halted=False, **kwargs):
-    journal = Journal()
+def _acting(
+    exchange,
+    local,
+    *,
+    accept=True,
+    fail=(),
+    flattening=False,
+    halted=False,
+    fills=(),
+    untrusted_ok=True,
+    sink=None,
+    journal=None,
+    **kwargs,
+):
+    journal = journal or Journal()
     actions = Actions(
         executor=FakeExecutor(journal, accept),
         cancel=FakeCancel(journal, fail),
-        reports=FakeReportSink(journal),
+        reports=sink or FakeReportSink(journal),
         kill_switch=FakeKillSwitch(journal, flattening, halted),
+        fills=fills if isinstance(fills, FakeFills) else FakeFills(fills),
+        untrusted=FakeUntrusted(journal, untrusted_ok),
     )
     kwargs.setdefault("stale_quote_s", 0.05)
     actor, blocks, records = _actor(exchange, local=local, actions=actions, quiet_wait_s=0, **kwargs)
@@ -189,19 +246,75 @@ def test_actions_run_in_the_fixed_order_then_the_halt():
     assert by_kind[MismatchKind.UNKNOWN_POSITION].details["cache_fix"] == "synced"
 
 
-def test_a_cache_position_kraken_lacks_halts_without_a_flatten():
-    """AC-8, with the cache fix owed to /architect (Nautilus 1.231.0 cannot shrink a strategy's position)."""
+def test_a_cache_position_kraken_lacks_marks_it_untrusted_closes_kraken_and_halts():
+    """AC-8: Nautilus 1.231.0 cannot shrink a strategy's position, so the cache waits for a hand reset."""
     actor, _, records, journal = _acting(FakeExchange(EMPTY), _local(positions=[_held()]))
 
     _check(actor)
 
-    assert journal.calls == [("halt", HaltReason.RECONCILE_MISMATCH, False)]
+    assert journal.calls == [
+        ("untrusted_add", BTC),
+        ("close_residual", BTC),
+        ("halt", HaltReason.RECONCILE_MISMATCH, True),
+    ]
     (row,) = _mismatches(records)
-    assert (row.kind, row.action, row.details["cache_fix"]) == (
+    assert (row.kind, row.action, row.action_result, row.details["cache_fix"]) == (
         MismatchKind.POSITION_MISMATCH,
         MismatchAction.NONE,
-        "owed",
+        ActionResult.PENDING,
+        "manual",
     )
+
+
+def test_a_cache_larger_than_kraken_closes_only_kraken_s_position():
+    """AC-8: the executor closes what Kraken holds, the action says flattened."""
+    actor, _, records, journal = _acting(
+        FakeExchange(_view(positions=[_position(qty="0.001")])), _local(positions=[_held(qty="0.003")])
+    )
+
+    _check(actor)
+
+    assert ("close_residual", BTC) in journal.calls
+    (row,) = _mismatches(records)
+    assert (row.action, row.details["cache_fix"]) == (MismatchAction.FLATTENED, "manual")
+
+
+def test_an_untrusted_set_redis_refused_reports_the_finding_failed():
+    """Fail closed: the skip still holds in memory, but the row says the write failed."""
+    actor, _, records, journal = _acting(FakeExchange(EMPTY), _local(positions=[_held()]), untrusted_ok=False)
+
+    _check(actor)
+
+    (row,) = _mismatches(records)
+    assert row.action_result is ActionResult.FAILED
+    assert "untrusted" in row.details["error"]
+    assert ("halt", HaltReason.RECONCILE_MISMATCH, True) in journal.calls
+
+
+def test_while_halted_a_cache_larger_than_kraken_still_closes_kraken_but_never_halts_again():
+    """AC-28."""
+    actor, _, _, journal = _acting(FakeExchange(EMPTY), _local(positions=[_held()]), halted=True)
+
+    _check(actor)
+
+    assert journal.calls == [("untrusted_add", BTC), ("close_residual", BTC)]
+
+
+def test_a_clean_start_check_empties_the_untrusted_set():
+    """AC-8."""
+    actor, _, _, journal = _acting(FakeExchange(EMPTY), _local())
+
+    _check(actor, ReconcileTrigger.START)
+
+    assert journal.calls == [("untrusted_clear",)]
+
+
+def test_a_clean_periodic_check_keeps_the_untrusted_set():
+    actor, _, _, journal = _acting(FakeExchange(EMPTY), _local())
+
+    _check(actor)
+
+    assert journal.calls == []
 
 
 def test_a_missing_stop_is_placed_and_nothing_halts():
@@ -290,6 +403,155 @@ def test_a_quote_that_arrives_while_it_waits_is_used():
     asyncio.run(run())
 
     assert journal.calls == [("place_stop", Decimal("0.001"), TRIGGER)]
+
+
+# Fill recovery (AC-11) ------------------------------------------------------------------------
+
+
+def _fill(trade="T-1", venue="VS-1", client="S-1", qty="0.001", side=OrderSide.SELL, ts=1):
+    return FillView(
+        trade_id=trade,
+        instrument_id=BTC,
+        venue_order_id=venue,
+        client_order_id=client,
+        side=side,
+        quantity=Decimal(qty),
+        price=Decimal("60000"),
+        ts_event=ts,
+    )
+
+
+def _recovering(exchange, before, after, **kwargs):
+    """An actor whose cache reads ``before`` until the sink recovered something, then ``after``."""
+    journal = Journal()
+    sink = FakeReportSink(journal)
+    actor, blocks, records, _ = _acting(
+        exchange, lambda _cache: after if sink.recovered else before, sink=sink, journal=journal, **kwargs
+    )
+    return actor, blocks, records, journal
+
+
+def test_a_missed_stop_fill_is_recovered_and_nothing_halts():
+    """AC-11: the stop filled while the trader was down; the compare after it finds the cache flat too."""
+    stop = _stop()
+    actor, blocks, records, journal = _recovering(
+        FakeExchange(EMPTY), _local([stop], [_held()]), _local(), fills=[_fill(), _fill("T-other", "V-other")]
+    )
+
+    result = _check(actor)
+
+    assert result.outcome is ReconcileOutcome.MISMATCH
+    assert journal.calls == [("recover", "S-1", ["T-1"])]
+    (row,) = _mismatches(records)
+    assert (row.kind, row.action, row.action_result) == (
+        MismatchKind.LOCAL_ONLY_ORDER,
+        MismatchAction.ADOPTED,
+        ActionResult.OK,
+    )
+    assert (row.details["cache_fix"], row.details["order_status"], row.details["fills"]) == ("recovered", "filled", "1")
+    assert BlockReason.RECONCILING in blocks.active()  # entries wait for the next clean check
+    (check_row,) = _rows(records, ReconciliationRow)
+    assert check_row.mismatch_count == 1
+
+
+def test_a_partly_filled_local_only_order_is_recovered_canceled():
+    stop = _stop()
+    actor, _, records, _ = _recovering(
+        FakeExchange(_view(positions=[_position(qty="0.0005")])),
+        _local([stop], [_held()]),
+        _local(positions=[_held(qty="0.0005")]),
+        fills=[_fill(qty="0.0005")],
+    )
+    _quote(actor, 65000)
+
+    _check(actor)
+
+    by_kind = {r.kind: r for r in _mismatches(records)}
+    assert by_kind[MismatchKind.LOCAL_ONLY_ORDER].details["order_status"] == "canceled"
+    assert by_kind[MismatchKind.LOCAL_ONLY_ORDER].details["filled_qty"] == "0.0005"
+
+
+def test_a_local_only_order_with_no_fill_is_marked_canceled_without_a_second_compare():
+    exchange = FakeExchange(EMPTY)
+    actor, _, records, journal = _acting(exchange, _local([_order("L-1", "VL-1")]), fills=[_fill()])
+
+    _check(actor)
+
+    assert journal.calls == [("mark_canceled", "L-1")]
+    assert exchange.fetches == 2  # the compare and its confirming fetch, no recovery pass
+    (row,) = _mismatches(records)
+    assert row.action is MismatchAction.MARKED_CANCELED
+
+
+def test_a_fill_fetch_error_fails_the_check_exchange_unknown():
+    """AC-11, AC-4: an error is never "no fills"."""
+    actor, blocks, _, journal = _acting(
+        FakeExchange(EMPTY), _local([_order("L-1", "VL-1")]), fills=ExchangeUnavailable("fills timed out")
+    )
+
+    result = _check(actor)
+
+    assert (result.outcome, result.error) == (ReconcileOutcome.FAILED, "fills timed out")
+    assert journal.calls == []
+    assert BlockReason.EXCHANGE_UNKNOWN in blocks.active()
+
+
+def test_a_second_pass_that_still_finds_orders_to_recover_fails_the_check():
+    """AC-11: only one recovery pass per check."""
+    stop = _stop()
+    actor, blocks, records, journal = _acting(FakeExchange(EMPTY), _local([stop], [_held()]), fills=[_fill()])
+
+    result = _check(actor)
+
+    assert (result.outcome, result.error) == (ReconcileOutcome.FAILED, RECOVERY_INCOMPLETE)
+    assert journal.calls == [("recover", "S-1", ["T-1"])]  # no halt, no untrusted set
+    (row,) = _mismatches(records)
+    assert row.action is MismatchAction.ADOPTED
+    assert BlockReason.RECONCILING in blocks.active()
+
+
+def test_recovery_that_leaves_the_cache_below_kraken_takes_the_synced_path():
+    """AC-8: the cache holding less than Kraken after recovery is AC-7's case."""
+    entry = _order("E-2", "VE-2", side=OrderSide.BUY)
+    kraken = _position(qty="0.003")
+    actor, _, records, journal = _recovering(
+        FakeExchange(_view(positions=[kraken])),
+        _local([entry], [_held()]),
+        _local(positions=[_held(qty="0.002")]),
+        fills=[_fill("T-2", "VE-2", "E-2", side=OrderSide.BUY)],
+    )
+
+    _check(actor)
+
+    assert journal.calls == [
+        ("recover", "E-2", ["T-2"]),
+        ("sync_position", BTC, kraken),
+        ("halt", HaltReason.RECONCILE_MISMATCH, True),
+    ]
+    by_kind = {r.kind: r for r in _mismatches(records)}
+    assert by_kind[MismatchKind.POSITION_MISMATCH].details["cache_fix"] == "synced"
+
+
+def test_while_halted_missed_fills_are_still_recovered():
+    """AC-28: recovery only corrects the books."""
+    actor, _, _, journal = _recovering(
+        FakeExchange(EMPTY), _local([_stop()], [_held()]), _local(), fills=[_fill()], halted=True
+    )
+
+    _check(actor)
+
+    assert journal.calls == [("recover", "S-1", ["T-1"])]
+
+
+def test_fills_are_fetched_over_the_lookback():
+    fills = FakeFills([_fill()])
+    actor, _, _, _ = _recovering(
+        FakeExchange(EMPTY), _local([_stop()], [_held()]), _local(), fills=fills, lookback_mins=10
+    )
+
+    _check(actor)
+
+    assert fills.since == [actor.clock.timestamp_ns() - 10 * 60 * 1_000_000_000]
 
 
 # Report only (AC-23, AC-28) -------------------------------------------------------------------
@@ -475,10 +737,71 @@ class CancelReports:
     async def position_reports(self):
         return []
 
+    async def fill_reports(self):
+        return []
+
     async def cancel(self, order):
         if self.error is not None:
             raise self.error
         self.cancelled.append(order)
+
+
+class FillReports(CancelReports):
+    def __init__(self, fills=(), error=None):
+        super().__init__(error)
+        self.fills = list(fills)
+
+    async def fill_reports(self):
+        if self.error is not None:
+            raise self.error
+        return list(self.fills)
+
+
+def _fill_report(trade="T-1", ts=100, client=None):
+    return FillReport(
+        account_id=AccountId("KRAKEN-UNIFIED"),
+        instrument_id=INSTRUMENT.id,
+        venue_order_id=VenueOrderId("V-1"),
+        trade_id=TradeId(trade),
+        order_side=NautilusOrderSide.SELL,
+        last_qty=Quantity.from_str("0.0010"),
+        last_px=Price.from_str("60123.5"),
+        commission=Money(Decimal("0.03"), USD),
+        liquidity_side=LiquiditySide.TAKER,
+        report_id=UUID4(),
+        ts_event=ts,
+        ts_init=ts,
+        client_order_id=None if client is None else ClientOrderId(client),
+    )
+
+
+def test_kraken_fills_come_as_kraken_returned_them_inside_the_window():
+    """AC-11: price, venue time, trade id, commission; fills before the window are dropped."""
+    reports = FillReports([_fill_report("T-1", ts=100, client="S-1"), _fill_report("T-0", ts=10)])
+
+    (fill,) = asyncio.run(KrakenExchangeView(reports, 1.0).fills(since_ns=50))
+
+    assert (fill.trade_id, fill.venue_order_id, fill.client_order_id, fill.side) == (
+        "T-1",
+        "V-1",
+        "S-1",
+        OrderSide.SELL,
+    )
+    assert (fill.quantity, fill.price, fill.ts_event) == (Decimal("0.0010"), Decimal("60123.5"), 100)
+    assert (fill.commission, fill.commission_currency, fill.liquidity_side) == (Decimal("0.03"), "USD", "taker")
+
+
+def test_a_kraken_fill_fetch_error_is_never_no_fills():
+    with pytest.raises(ExchangeUnavailable):
+        asyncio.run(KrakenExchangeView(FillReports(error=RuntimeError("HTTP 503")), 1.0).fills(since_ns=0))
+
+
+def test_a_full_page_of_kraken_fills_inside_the_window_is_refused():
+    """AC-11: Kraken returns its newest 100 fills and the adapter cannot page, so fills may be missing."""
+    reports = FillReports([_fill_report(f"T-{i}", ts=100 + i) for i in range(KRAKEN_FILLS_PAGE)])
+
+    with pytest.raises(ExchangeUnavailable, match="full page"):
+        asyncio.run(KrakenExchangeView(reports, 1.0).fills(since_ns=50))
 
 
 def test_kraken_cancel_raises_unless_kraken_confirmed():

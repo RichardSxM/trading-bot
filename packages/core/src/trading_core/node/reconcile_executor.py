@@ -10,6 +10,12 @@ An Actor cannot submit orders, and no other strategy owns a position the check m
 - ``flatten``: part of the kill switch's flatten. It closes every open position no loaded strategy
   owns (``EXTERNAL`` ones Nautilus added during reconciliation, or one of a strategy that is not
   loaded), tagged ``origin:kill_switch`` and ``halt:<halt_id>``.
+- ``close_residual`` (AC-8): for an instrument whose cached position is wrong (the untrusted set),
+  close what Kraken holds. Right before each attempt it fetches Kraken's view and sends a reduce
+  only market order for Kraken's quantity on the closing side, with no position id, so it can
+  never open or flip a position and never touches the wrong cached one. It sends nothing when
+  Kraken is flat, and stops then. Through the kill switch, ``flatten_for`` starts it for every
+  untrusted instrument and leaves the cached orphans on those instruments alone.
 
 A close that is denied or rejected is sent again every second while its position is open, like the
 exit loop of spec 0010. A close already in flight for a position is never sent twice.
@@ -29,7 +35,9 @@ from nautilus_trader.model.identifiers import ClientOrderId, InstrumentId, Posit
 from nautilus_trader.model.position import Position
 
 from trading_core.node.strategy import KfsStrategy, KfsStrategyConfig, PauseGate
+from trading_core.reconcile.compare import closing_side
 from trading_core.reconcile.plan import PlaceStop
+from trading_core.reconcile.views import ExchangePort, ExchangeUnavailable, PositionView
 from trading_core.recording.enums import OrderOrigin, OrderSide
 from trading_core.recording.mappers import HALT_TAG, ORIGIN_TAG, PARENT_TAG
 
@@ -39,6 +47,8 @@ STRATEGY_NAME: Final = "reconcile_executor"
 # How long Kraken gets to accept a replacement stop before it counts as rejected (AC-9).
 ACCEPT_TIMEOUT_S: Final = 10.0
 CLOSE_RETRY_NS: Final = 1_000_000_000
+# The wait between attempts of a residual close (AC-8), like the exit loop's.
+RESIDUAL_RETRY_S: Final = 1.0
 _ORIGIN: Final = f"{ORIGIN_TAG}{OrderOrigin.RECONCILIATION}"
 
 
@@ -52,16 +62,29 @@ class ReconcileExecutor(KfsStrategy):
     """Sends the check's stops and closes (see the module docstring).
 
     ``loaded`` returns the ids of the loaded strategies; a position none of the others owns is this
-    executor's to close on a flatten.
+    executor's to close on a flatten. ``exchange`` is Kraken's view, which the residual close reads.
     """
 
-    def __init__(self, config: ReconcileExecutorConfig, gate: PauseGate, loaded: Callable[[], frozenset[str]]) -> None:
+    uses_stop = False  # its positions are always being closed (spec 0023 AC-9)
+
+    def __init__(
+        self,
+        config: ReconcileExecutorConfig,
+        gate: PauseGate,
+        loaded: Callable[[], frozenset[str]],
+        exchange: ExchangePort | None = None,
+        residual_retry_s: float = RESIDUAL_RETRY_S,
+    ) -> None:
         super().__init__(config, gate)
         self._accept_timeout_s = config.accept_timeout_s
         self._loaded = loaded
+        self._exchange = exchange
+        self._residual_retry_s = residual_retry_s
         self._accepts: dict[ClientOrderId, asyncio.Future[bool]] = {}
         self._closes: dict[PositionId, ClientOrderId] = {}
         self._close_tags: dict[PositionId, list[str]] = {}
+        self._residuals: dict[str, asyncio.Task[None]] = {}
+        self._residual_orders: dict[str, ClientOrderId] = {}
 
     # Stops ----------------------------------------------------------------------------------
 
@@ -149,9 +172,130 @@ class ReconcileExecutor(KfsStrategy):
         for position in self._orphans():
             self._close(position, tags)
 
+    def flatten_for(self, halt_id: uuid.UUID, untrusted: frozenset[str]) -> None:
+        """``flatten``, except on an untrusted instrument: there it closes what Kraken holds (AC-8).
+
+        The cached orphans on an untrusted instrument are left alone, since their size is wrong.
+        """
+        tags = [f"{ORIGIN_TAG}{OrderOrigin.KILL_SWITCH}", f"{HALT_TAG}{halt_id}"]
+        for position in self._orphans():
+            if str(position.instrument_id) not in untrusted:
+                self._close(position, tags)
+        for instrument_id in sorted(untrusted):
+            self.close_residual(instrument_id, tags)
+
     def has_open_positions(self) -> bool:
-        """True while a position no loaded strategy owns is open."""
-        return bool(self._orphans())
+        """True while a position no loaded strategy owns is open, or a residual close still runs."""
+        return bool(self._orphans()) or any(not task.done() for task in self._residuals.values())
+
+    def on_stop(self) -> None:
+        """Stop the residual closes too; Kraken's position stays, as every position does on a stop."""
+        super().on_stop()
+        for task in self._residuals.values():
+            task.cancel()
+        self._residuals.clear()
+
+    # Residual closes (AC-8) -------------------------------------------------------------------
+
+    def close_residual(self, instrument_id: str, tags: list[str] | None = None) -> None:
+        """Close what Kraken holds on ``instrument_id``, reduce only and without a position id (idempotent).
+
+        It runs as a task until Kraken is flat on the instrument; a call while one runs does nothing.
+        """
+        running = self._residuals.get(instrument_id)
+        if running is not None and not running.done():
+            return
+        task = asyncio.get_running_loop().create_task(self._residual(instrument_id, tags or [_ORIGIN]))
+        self._residuals[instrument_id] = task
+        task.add_done_callback(self._residual_done)
+
+    def residual_running(self, instrument_id: str) -> bool:
+        """True while a residual close runs for ``instrument_id``."""
+        task = self._residuals.get(instrument_id)
+        return task is not None and not task.done()
+
+    async def _residual(self, instrument_id: str, tags: list[str]) -> None:
+        exchange = self._exchange
+        if exchange is None:
+            log.critical(
+                "residual close not possible, no exchange view",
+                extra={"fields": {"code": "reconcile_residual_no_exchange", "instrument_id": instrument_id}},
+            )
+            return
+        while True:
+            previous = self._residual_orders.get(instrument_id)
+            if previous is not None:
+                order = self.cache.order(previous)
+                if order is not None and not order.is_closed:
+                    await asyncio.sleep(self._residual_retry_s)
+                    continue
+            try:
+                view = await exchange.fetch()
+            except ExchangeUnavailable as exc:
+                log.warning(
+                    "residual close waits, Kraken's view unavailable",
+                    extra={
+                        "fields": {
+                            "code": "reconcile_residual_fetch_failed",
+                            "instrument_id": instrument_id,
+                            "error": str(exc),
+                        }
+                    },
+                )
+                await asyncio.sleep(self._residual_retry_s)
+                continue
+            held = next((p for p in view.positions if p.instrument_id == instrument_id and p.quantity > 0), None)
+            if held is None:
+                log.warning(
+                    "residual close done, Kraken is flat",
+                    extra={"fields": {"code": "reconcile_residual_flat", "instrument_id": instrument_id}},
+                )
+                return
+            if not self._send_residual(held, tags):
+                return
+            await asyncio.sleep(self._residual_retry_s)
+
+    def _send_residual(self, held: PositionView, tags: list[str]) -> bool:
+        instrument_id = held.instrument_id
+        instrument = self.cache.instrument(InstrumentId.from_str(instrument_id))
+        if instrument is None:
+            log.critical(
+                "residual close not possible, instrument not in the cache",
+                extra={"fields": {"code": "reconcile_residual_no_instrument", "instrument_id": instrument_id}},
+            )
+            return False
+        closing = closing_side(held.side)
+        order = self.order_factory.market(
+            instrument.id,
+            NautilusOrderSide.SELL if closing is OrderSide.SELL else NautilusOrderSide.BUY,
+            instrument.make_qty(held.quantity),
+            time_in_force=TimeInForce.GTC,
+            reduce_only=True,
+            tags=tags,
+        )
+        self._residual_orders[instrument_id] = order.client_order_id
+        log.critical(
+            "reconciliation closing Kraken's position on an untrusted instrument",
+            extra={
+                "fields": {
+                    "code": "reconcile_residual_close",
+                    "instrument_id": instrument_id,
+                    "quantity": str(held.quantity),
+                    "client_order_id": str(order.client_order_id),
+                }
+            },
+        )
+        # No position id: the cached position is wrong, and reduce only keeps it from opening one.
+        self.submit_order(order)
+        return True
+
+    def _residual_done(self, task: asyncio.Task[None]) -> None:
+        if not task.cancelled() and task.exception() is not None:
+            log.critical(
+                "residual close crashed",
+                exc_info=task.exception(),
+                extra={"fields": {"code": "reconcile_residual_crashed"}},
+            )
 
     def _orphans(self) -> list[Position]:
         others = self._loaded() - {str(self.id)}

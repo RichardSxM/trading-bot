@@ -26,13 +26,20 @@ else it fetches again, and after ``QUIET_TRIES`` it ends ``failed`` with ``not_q
 count only when a second quiet fetch finds them too (AC-27). ``plan`` then decides each finding's
 action. In demo (no ``Actions``) nothing is acted on (AC-23); while the kill switch flattens or the
 trader is halted only unknown entry orders are cancelled (AC-28). Otherwise the steps run in their
-fixed order (cancel, mark, align the cache, fix stops) and a halting finding latches a
+fixed order (cancel, recover, mark, align the cache, fix stops) and a halting finding latches a
 ``reconcile_mismatch`` halt through the kill switch last (AC-7 to AC-12). A mismatch that does not
 halt keeps entries blocked with ``reconciling`` until the next clean check (live only).
 
+A local only order first gets its missed fills back (AC-11): the check fetches Kraken's fills,
+feeds the matching ones to Nautilus (``ExecEngineReports.recover``), and, when any landed, compares
+once more before it plans the position and stop findings, so a recovered stop fill never reads as
+a missing stop. A cache that still holds more than Kraken after that (AC-8) puts the instrument in
+the untrusted set and has the ``ReconcileExecutor`` close what Kraken holds; a clean ``start``
+check empties the set.
+
 ``SandboxExchangeView`` is demo's exchange: the simulated exchange's open orders, and the cache's
 positions (the sandbox keeps no position book of its own). ``KrakenExchangeView`` is live's: the
-Kraken Futures HTTP client's open order and position reports, called directly, because the
+Kraken Futures HTTP client's open order, position, and fill reports, called directly, because the
 adapter's own report methods turn errors into empty lists. ``local_view`` reads the cache.
 ``wait_for_exchange`` is the live start fetch before the node is built (AC-5), and
 ``watch_start`` the watchdog that stops a node whose trader never started.
@@ -54,10 +61,11 @@ from nautilus_trader.common.actor import Actor
 from nautilus_trader.common.config import ActorConfig
 from nautilus_trader.core import nautilus_pyo3
 from nautilus_trader.core.uuid import UUID4
-from nautilus_trader.execution.reports import OrderStatusReport, PositionStatusReport
-from nautilus_trader.model.enums import OrderStatus, OrderType
+from nautilus_trader.execution.reports import FillReport, OrderStatusReport, PositionStatusReport
+from nautilus_trader.model.enums import LiquiditySide, OrderStatus, OrderType
 from nautilus_trader.model.enums import PositionSide as NautilusPositionSide
-from nautilus_trader.model.identifiers import AccountId, ClientOrderId, InstrumentId, VenueOrderId
+from nautilus_trader.model.identifiers import AccountId, ClientOrderId, InstrumentId, TradeId, VenueOrderId
+from nautilus_trader.model.objects import Currency, Money, Quantity
 from nautilus_trader.model.orders.base import Order
 from nautilus_trader.model.position import Position
 
@@ -68,20 +76,26 @@ from trading_core.reconcile.compare import Comparison, Finding, compare
 from trading_core.reconcile.plan import (
     CancelOrder,
     CloseAtMarket,
+    CloseResidual,
     MarkCanceled,
+    MarkUntrusted,
     Mode,
     PlaceStop,
     Plan,
+    RecoverFills,
     Step,
     SyncPosition,
     plan,
 )
+from trading_core.reconcile.recover import Recovery, recover, window_complete
 from trading_core.reconcile.views import (
     CancelPort,
     ExchangePort,
     ExchangeUnavailable,
     ExchangeView,
     FillOrder,
+    FillPort,
+    FillView,
     HeldPosition,
     LocalView,
     OrderView,
@@ -93,6 +107,7 @@ from trading_core.recording.enums import (
     ControlOutcome,
     Env,
     MismatchAction,
+    MismatchKind,
     OrderSide,
     PositionSide,
     ReconcileOutcome,
@@ -130,6 +145,10 @@ LOCAL_ONLY_VENUE_PREFIX: Final = "RECON-"
 QUIET_TRIES: Final = 3
 QUIET_WAIT_S: Final = 0.5
 NOT_QUIET: Final = "not_quiet"
+# AC-11: the compare after a recovery pass still found local only orders.
+RECOVERY_INCOMPLETE: Final = "recovery_incomplete"
+# The findings the first pass of a check with fill recovery handles (AC-11).
+_ORDER_KINDS: Final = frozenset({MismatchKind.UNKNOWN_ORDER, MismatchKind.LOCAL_ONLY_ORDER})
 # How often a stop fix looks for a fresh quote while it waits (AC-9).
 QUOTE_POLL_S: Final = 0.25
 STOP_REFUSED: Final = "stop_refused"
@@ -152,6 +171,8 @@ def order_view(order: Order) -> OrderView:
         reduce_only=bool(order.is_reduce_only),
         strategy_id=str(order.strategy_id),
         ts_init=order.ts_init,
+        filled_qty=order.filled_qty.as_decimal(),
+        trade_ids=frozenset(str(trade_id) for trade_id in order.trade_ids),
     )
 
 
@@ -220,10 +241,14 @@ StopTriggerLookup = Callable[[str], Decimal | None]
 
 
 def local_view(
-    cache: Cache, owned: frozenset[str] = frozenset(), recorded: StopTriggerLookup | None = None
+    cache: Cache,
+    owned: frozenset[str] = frozenset(),
+    recorded: StopTriggerLookup | None = None,
+    stopless: frozenset[str] = frozenset(),
 ) -> LocalView:
     """The cache's open orders of ours and its open positions, with each instrument's size increment and the
-    recorded trigger price of each position's stop (spec 0023 *Value sourcing*)."""
+    recorded trigger price of each position's stop (spec 0023 *Value sourcing*). ``stopless`` are the
+    owned strategy ids that never place a stop (AC-9)."""
     orders = tuple(
         order_view(order)
         for order in cache.orders_open()
@@ -244,7 +269,12 @@ def local_view(
         if instrument is not None:
             increments[instrument_id] = instrument.size_increment.as_decimal()
     return LocalView(
-        orders=orders, positions=positions, size_increments=increments, owned_strategies=owned, stop_triggers=triggers
+        orders=orders,
+        positions=positions,
+        size_increments=increments,
+        owned_strategies=owned,
+        stop_triggers=triggers,
+        stopless_strategies=stopless,
     )
 
 
@@ -294,6 +324,24 @@ def report_position_view(report: PositionStatusReport) -> PositionView | None:
     )
 
 
+def fill_view(report: FillReport) -> FillView:
+    """A Kraken fill report as plain values, exactly as Kraken returned it (AC-11)."""
+    client_order_id = report.client_order_id
+    return FillView(
+        trade_id=str(report.trade_id),
+        instrument_id=str(report.instrument_id),
+        venue_order_id=str(report.venue_order_id),
+        client_order_id=None if client_order_id is None else str(client_order_id),
+        side=OrderSide(report.order_side.name.lower()),
+        quantity=report.last_qty.as_decimal(),
+        price=report.last_px.as_decimal(),
+        ts_event=report.ts_event,
+        commission=report.commission.as_decimal(),
+        commission_currency=report.commission.currency.code,
+        liquidity_side=report.liquidity_side.name.lower(),
+    )
+
+
 class SandboxExchangeView:
     """Demo's exchange view: the simulated exchange's open orders and the cache's open positions (AC-23).
 
@@ -318,7 +366,7 @@ class SandboxExchangeView:
 
 
 class FuturesReports(Protocol):
-    """The two Kraken Futures report calls a ``KrakenExchangeView`` makes."""
+    """The Kraken Futures report calls a ``KrakenExchangeView`` makes."""
 
     async def order_reports(self) -> Sequence[OrderStatusReport]:
         """Kraken's open orders."""
@@ -326,6 +374,10 @@ class FuturesReports(Protocol):
 
     async def position_reports(self) -> Sequence[PositionStatusReport]:
         """Kraken's positions."""
+        ...
+
+    async def fill_reports(self) -> Sequence[FillReport]:
+        """Kraken's newest fills, one page (``KRAKEN_FILLS_PAGE``), on every instrument."""
         ...
 
     async def cancel(self, order: OrderView) -> None:
@@ -359,6 +411,13 @@ class PyO3FuturesReports:
         await self._load_instruments()
         reports = await self._http.request_position_status_reports(account_id=self._account_id)
         return [PositionStatusReport.from_pyo3(report) for report in reports]
+
+    async def fill_reports(self) -> Sequence[FillReport]:
+        """Kraken's newest fills, as Nautilus reports. Unfiltered: the 1.231.0 adapter fetches one page and
+        filters it on the client side, so the caller filters and checks the page is complete."""
+        await self._load_instruments()
+        reports = await self._http.request_fill_reports(account_id=self._account_id)
+        return [FillReport.from_pyo3(report) for report in reports]
 
     async def cancel(self, order: OrderView) -> None:
         """Cancel one order on Kraken by its venue order id, else its client order id."""
@@ -416,6 +475,18 @@ class KrakenExchangeView:
         positions = tuple(p for p in reported if p is not None)
         return ExchangeView(orders=orders, positions=positions, fetched_ns=self._now_ns())
 
+    async def fills(self, since_ns: int) -> tuple[FillView, ...]:
+        """Kraken's fills since ``since_ns`` (AC-11), or ``ExchangeUnavailable``, also when the one page Kraken
+        returns may have left some out (``window_complete``): never "no fills"."""
+        try:
+            async with asyncio.timeout(self._timeout_s):
+                fetched = tuple(fill_view(r) for r in await self._reports.fill_reports())
+        except Exception as exc:  # fail closed: the fills are unknown
+            raise ExchangeUnavailable(_describe(exc)) from exc
+        if not window_complete(fetched, since_ns):
+            raise ExchangeUnavailable(f"kraken returned a full page of {len(fetched)} fills inside the window")
+        return tuple(f for f in fetched if f.ts_event >= since_ns)
+
     async def cancel(self, order: OrderView) -> None:
         """Cancel ``order`` on Kraken directly (also one the cache does not hold); ``ExchangeUnavailable`` unless
         Kraken confirmed it."""
@@ -426,8 +497,8 @@ class KrakenExchangeView:
             raise ExchangeUnavailable(_describe(exc)) from exc
 
 
-class LiveExchange(ExchangePort, CancelPort, Protocol):
-    """Live's exchange: fetches the view and cancels orders directly (``KrakenExchangeView``)."""
+class LiveExchange(ExchangePort, CancelPort, FillPort, Protocol):
+    """Live's exchange: fetches the view and the fills, and cancels orders directly (``KrakenExchangeView``)."""
 
 
 class ReportSink(Protocol):
@@ -441,6 +512,11 @@ class ReportSink(Protocol):
         """Make the cache's net position on the instrument match the exchange's (None: flat)."""
         ...
 
+    def recover(self, recovery: Recovery) -> None:
+        """Feed a local only order's missed fills, then its terminal status (AC-11); raises
+        ``ReconcileActionError`` unless every fill landed on the order."""
+        ...
+
 
 class ReconcileActionError(Exception):
     """A reconciliation action could not be applied."""
@@ -449,11 +525,18 @@ class ReconcileActionError(Exception):
 class ReconcilingEngine(Protocol):
     """The one ``LiveExecutionEngine`` call the sink makes."""
 
-    def reconcile_execution_report(self, report: OrderStatusReport | PositionStatusReport) -> bool: ...
+    def reconcile_execution_report(self, report: OrderStatusReport | PositionStatusReport | FillReport) -> bool: ...
 
 
 class ExecEngineReports:
-    """``ReportSink`` through the live execution engine's ``reconcile_execution_report``."""
+    """``ReportSink`` through the live execution engine's ``reconcile_execution_report``.
+
+    ``recover`` feeds a fill only to a cached order that has a venue order id (Nautilus 1.231.0
+    finds the order through it), so an order that never got one is first reported ``ACCEPTED``
+    with the fills' venue order id. Each fill goes in as Kraken returned it, under the cached
+    order's client order id; then the order is reported ``FILLED``, or ``CANCELED`` with its filled
+    quantity, since Kraken no longer has it.
+    """
 
     def __init__(self, engine: ReconcilingEngine, cache: Cache, now_ns: Callable[[], int] = time.time_ns) -> None:
         self._engine = engine
@@ -461,35 +544,106 @@ class ExecEngineReports:
         self._now_ns = now_ns
         self._account_id = AccountId(KRAKEN_ACCOUNT_ID)
 
-    def mark_canceled(self, order: OrderView) -> None:
-        """Feed a ``CANCELED`` order status report for the cached order."""
-        if order.client_order_id is None:
+    def _cached(self, client_order_id: str | None) -> Order:
+        if client_order_id is None:
             raise ReconcileActionError("a local order without a client order id")
-        cached = self._cache.order(ClientOrderId(order.client_order_id))
+        cached = self._cache.order(ClientOrderId(client_order_id))
         if cached is None:
-            raise ReconcileActionError(f"order {order.client_order_id} not in the cache")
-        now = self._now_ns()
-        venue_order_id = cached.venue_order_id or VenueOrderId(f"{LOCAL_ONLY_VENUE_PREFIX}{order.client_order_id}")
-        report = OrderStatusReport(
+            raise ReconcileActionError(f"order {client_order_id} not in the cache")
+        return cached
+
+    def _status(
+        self,
+        cached: Order,
+        venue_order_id: VenueOrderId,
+        status: OrderStatus,
+        filled_qty: Quantity,
+        now: int,
+        cancel_reason: str | None = None,
+    ) -> OrderStatusReport:
+        return OrderStatusReport(
             account_id=cached.account_id or self._account_id,
             instrument_id=cached.instrument_id,
             venue_order_id=venue_order_id,
             order_side=cached.side,
             order_type=cached.order_type,
             time_in_force=cached.time_in_force,
-            order_status=OrderStatus.CANCELED,
+            order_status=status,
             quantity=cached.quantity,
-            filled_qty=cached.filled_qty,
+            filled_qty=filled_qty,
             report_id=UUID4(),
             ts_accepted=cached.ts_init,
             ts_last=now,
             ts_init=now,
             client_order_id=cached.client_order_id,
             reduce_only=bool(cached.is_reduce_only),
-            cancel_reason="reconcile_local_only",
+            cancel_reason=cancel_reason,
         )
+
+    def _feed(self, report: OrderStatusReport | FillReport, what: str) -> None:
         if not self._engine.reconcile_execution_report(report):
-            raise ReconcileActionError(f"Nautilus did not reconcile order {order.client_order_id}")
+            raise ReconcileActionError(f"Nautilus did not reconcile {what}")
+
+    def mark_canceled(self, order: OrderView) -> None:
+        """Feed a ``CANCELED`` order status report for the cached order."""
+        cached = self._cached(order.client_order_id)
+        venue_order_id = cached.venue_order_id or VenueOrderId(f"{LOCAL_ONLY_VENUE_PREFIX}{order.client_order_id}")
+        report = self._status(
+            cached, venue_order_id, OrderStatus.CANCELED, cached.filled_qty, self._now_ns(), "reconcile_local_only"
+        )
+        self._feed(report, f"order {order.client_order_id}")
+
+    def recover(self, recovery: Recovery) -> None:
+        """Feed the missed fills and the terminal status (see the class docstring), then check they landed."""
+        cached = self._cached(recovery.order.client_order_id)
+        instrument = self._cache.instrument(cached.instrument_id)
+        if instrument is None:
+            raise ReconcileActionError(f"instrument {cached.instrument_id} not in the cache")
+        side = OrderSide(cached.side.name.lower())
+        venue_ids = {f.venue_order_id for f in recovery.fills}
+        if any(f.side is not side for f in recovery.fills) or len(venue_ids) != 1:
+            raise ReconcileActionError(f"the fills of order {cached.client_order_id} disagree with it")
+        now = self._now_ns()
+        venue_order_id = cached.venue_order_id
+        if venue_order_id is None:
+            venue_order_id = VenueOrderId(venue_ids.pop())
+            accepted = self._status(cached, venue_order_id, OrderStatus.ACCEPTED, cached.filled_qty, now)
+            self._feed(accepted, f"the acceptance of order {cached.client_order_id}")
+        elif self._cache.client_order_id(venue_order_id) is None:
+            # Nautilus finds a fill's order only through this index; make sure it is there.
+            self._cache.add_venue_order_id(cached.client_order_id, venue_order_id)
+        for fill in recovery.fills:
+            report = FillReport(
+                account_id=cached.account_id or self._account_id,
+                instrument_id=cached.instrument_id,
+                venue_order_id=venue_order_id,
+                trade_id=TradeId(fill.trade_id),
+                order_side=cached.side,
+                last_qty=instrument.make_qty(fill.quantity),
+                last_px=instrument.make_price(fill.price),
+                commission=Money(fill.commission, Currency.from_str(fill.commission_currency)),
+                liquidity_side=LiquiditySide[fill.liquidity_side.upper()],
+                report_id=UUID4(),
+                ts_event=fill.ts_event,
+                ts_init=now,
+                client_order_id=cached.client_order_id,
+            )
+            self._feed(report, f"fill {fill.trade_id} of order {cached.client_order_id}")
+        if recovery.complete:
+            terminal = self._status(cached, venue_order_id, OrderStatus.FILLED, cached.quantity, now)
+        else:
+            filled = instrument.make_qty(recovery.filled_qty)
+            terminal = self._status(cached, venue_order_id, OrderStatus.CANCELED, filled, now, "reconcile_recovered")
+        self._feed(terminal, f"the status of order {cached.client_order_id}")
+        landed = self._cached(recovery.order.client_order_id)
+        held = {str(trade_id) for trade_id in landed.trade_ids}
+        missing = [f.trade_id for f in recovery.fills if f.trade_id not in held]
+        if missing or landed.is_open:
+            raise ReconcileActionError(
+                f"order {cached.client_order_id} still lacks fills {missing}"
+                if missing
+                else f"order {cached.client_order_id} is still open after its recovery"
+            )
 
     def sync_position(self, instrument_id: str, exchange: PositionView | None) -> None:
         """Feed a position status report with the exchange's side and size."""
@@ -613,6 +767,22 @@ class Executor(Protocol):
         """Close one position at market, reduce only, retrying while it stays open."""
         ...
 
+    def close_residual(self, instrument_id: str) -> None:
+        """Close what the exchange holds on an untrusted instrument, from a fresh fetch, reduce only (AC-8)."""
+        ...
+
+
+class UntrustedSet(Protocol):
+    """The untrusted cache set (``UntrustedCache``, AC-8)."""
+
+    async def add(self, instrument_id: str) -> bool:
+        """Add an instrument; False when Redis did not take it (it is still skipped in memory)."""
+        ...
+
+    async def clear(self) -> bool:
+        """Empty the set; False when Redis did not take it."""
+        ...
+
 
 class Halter(Protocol):
     """What a check needs from the kill switch (``KillSwitch``)."""
@@ -634,6 +804,8 @@ class Actions:
     cancel: CancelPort
     reports: ReportSink
     kill_switch: Halter
+    fills: FillPort
+    untrusted: UntrustedSet
 
 
 class ReconcileActor(Actor):  # type: ignore[misc]  # Actor is Cython with no stubs
@@ -641,8 +813,10 @@ class ReconcileActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
 
     ``record`` and ``run_id`` are the paper loop's (demo); without them (live) checks are only logged.
     ``publish`` writes the exchange snapshot; it handles its own errors. ``owned`` returns the ids
-    of the strategies whose orders are ours, ``recorded`` is the Postgres fallback for a stop's
-    trigger price, and ``actions`` (live) lets a check act; ``local`` replaces the cache read in tests.
+    of the strategies whose orders are ours, ``stopless`` those of them that never place a stop,
+    ``recorded`` is the Postgres fallback for a stop's trigger price, ``lookback_mins`` how far back
+    fill recovery looks, and ``actions`` (live) lets a check act; ``local`` replaces the cache read
+    in tests.
     """
 
     def __init__(
@@ -655,8 +829,10 @@ class ReconcileActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
         run_id: UUID | None = None,
         local: Callable[[Cache], LocalView] | None = None,
         owned: Callable[[], frozenset[str]] = frozenset,
+        stopless: Callable[[], frozenset[str]] = frozenset,
         recorded: StopTriggerLookup | None = None,
         actions: Actions | None = None,
+        lookback_mins: int = 1440,
         interval_s: float = 60.0,
         retry_s: float = 5.0,
         stale_quote_s: float = 10.0,
@@ -670,9 +846,11 @@ class ReconcileActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
         self._record = record
         self._run_id = run_id
         self._owned = owned
+        self._stopless = stopless
         self._recorded = recorded
-        self._local = local or (lambda cache: local_view(cache, self._owned(), self._recorded))
+        self._local = local or (lambda cache: local_view(cache, self._owned(), self._recorded, self._stopless()))
         self._actions = actions
+        self._lookback_ns = lookback_mins * 60 * 1_000_000_000
         self._stale_quote_s = stale_quote_s
         self._quiet_wait_s = quiet_wait_s
         self._order_events = 0
@@ -815,53 +993,59 @@ class ReconcileActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
         The compare runs only on a quiet fetch (AC-27), and findings count only when a second quiet
         fetch finds them too. Then ``plan`` decides each finding's action for this check's ``Mode``,
         and the steps run in their fixed order; a halting finding latches a halt last.
+
+        With local only orders and actions (AC-11), the order findings go first: Kraken's fills are
+        fetched and matched, and the cancel, recover, and mark steps run. When a fill was
+        recovered, the quiet compare and its confirming fetch run once more and the position and
+        stop findings come from that compare; one that still finds a local only order ends the
+        check ``failed`` (``recovery_incomplete``). A fill fetch that fails ends it ``failed`` with
+        ``exchange_unknown`` (AC-4).
         """
         started_ns = self.clock.timestamp_ns()
         try:
-            exchange, local = await self._quiet_fetch()
-            comparison = compare(exchange, local)
-            if not comparison.clean:
-                exchange, local = await self._quiet_fetch()
-                comparison = _confirmed(comparison, compare(exchange, local))
+            exchange, local, comparison = await self._compare()
         except NotQuiet:
-            return self._not_quiet(trigger, started_ns)
+            return self._failed(trigger, started_ns, NOT_QUIET, ())
         except ExchangeUnavailable as exc:
-            await self._publish_view(None)
-            row = ReconciliationRow(
-                env=self._env,
-                run_id=self._run_id or _NO_RUN,
-                trigger=trigger,
-                started_ns=started_ns,
-                finished_ns=self.clock.timestamp_ns(),
-                outcome=ReconcileOutcome.FAILED,
-                error=str(exc) or type(exc).__name__,
-            )
-            if self._blocks.add(BlockReason.EXCHANGE_UNKNOWN):
-                log.warning(
-                    "kraken's orders and positions are unknown, entries blocked",
-                    extra={"fields": {"code": "exchange_unknown", "trigger": str(trigger), "error": row.error}},
-                )
-            log.warning(
-                "reconciliation check failed, the exchange view is unknown",
-                extra={
-                    "fields": {
-                        "code": "reconcile_failed",
-                        "trigger": str(trigger),
-                        "error": row.error,
-                        "retry_s": self._next_retry_s,
-                    }
-                },
-            )
-            self._finish(row, ())
-            return CheckResult(ReconcileOutcome.FAILED, row.id, row.error)
+            return await self._unknown(trigger, started_ns, exc, ())
         await self._publish_view(exchange)
         mode = self._mode()
+        clean = comparison.clean
+        outcomes: list[FindingOutcome] = []
+        actions = self._actions
+        if actions is not None and any(f.kind is MismatchKind.LOCAL_ONLY_ORDER for f in comparison.findings):
+            first = Comparison(tuple(f for f in comparison.findings if f.kind in _ORDER_KINDS))
+            handled = {f.key for f in first.findings}
+            since_ns = self.clock.timestamp_ns() - self._lookback_ns
+            try:
+                fills = await actions.fills.fills(since_ns)
+            except ExchangeUnavailable as exc:
+                return await self._unknown(trigger, started_ns, exc, ())
+            orders = [f.orders[0] for f in first.findings if f.kind is MismatchKind.LOCAL_ONLY_ORDER]
+            recoveries = {
+                r.order.client_order_id: r for r in recover(orders, fills, since_ns) if r.order.client_order_id
+            }
+            first_plan = plan(first, local, mode, recoveries=recoveries)
+            outcomes += await self._act(first_plan, mode)
+            if first_plan.recovers:
+                try:
+                    exchange, local, again = await self._compare()
+                except NotQuiet:
+                    return self._failed(trigger, started_ns, NOT_QUIET, outcomes)
+                except ExchangeUnavailable as exc:
+                    return await self._unknown(trigger, started_ns, exc, outcomes)
+                await self._publish_view(exchange)
+                if any(f.kind is MismatchKind.LOCAL_ONLY_ORDER for f in again.findings):
+                    return self._failed(trigger, started_ns, RECOVERY_INCOMPLETE, outcomes)
+                comparison = Comparison(tuple(f for f in again.findings if f.key not in handled))
+            else:
+                comparison = Comparison(tuple(f for f in comparison.findings if f.key not in handled))
         the_plan = plan(comparison, local, mode, self._mids(comparison))
         if the_plan.awaiting_quote:
             await self._await_quotes(the_plan.awaiting_quote)
             the_plan = plan(comparison, local, mode, self._mids(comparison), quote_waited=True)
-        outcomes = await self._act(the_plan, mode)
-        outcome = ReconcileOutcome.CLEAN if comparison.clean else ReconcileOutcome.MISMATCH
+        outcomes += await self._act(the_plan, mode)
+        outcome = ReconcileOutcome.CLEAN if clean else ReconcileOutcome.MISMATCH
         row = ReconciliationRow(
             env=self._env,
             run_id=self._run_id or _NO_RUN,
@@ -871,15 +1055,18 @@ class ReconcileActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
             outcome=outcome,
             exchange_orders=len(exchange.orders),
             exchange_positions=len(exchange.positions),
-            mismatch_count=len(comparison.findings),
+            mismatch_count=len(outcomes),
         )
         self._finish(row, outcomes)
         if outcome is ReconcileOutcome.MISMATCH and mode is not Mode.DEMO:
             # Entries resume on the next clean check (a halt, if any, holds them past it).
             self._blocks.add(BlockReason.RECONCILING)
+        if outcome is ReconcileOutcome.CLEAN and trigger is ReconcileTrigger.START and actions is not None:
+            # A clean start check proves the cache matches Kraken: nothing is untrusted any more (AC-8).
+            await actions.untrusted.clear()
         halt = mode is Mode.ACT and any(o.halts for o in outcomes)
-        if halt and self._actions is not None:
-            halt_id = self._actions.kill_switch.halt_automatic(
+        if halt and actions is not None:
+            halt_id = actions.kill_switch.halt_automatic(
                 HaltReason.RECONCILE_MISMATCH, flatten=any(o.flattens for o in outcomes)
             )
             log.critical(
@@ -887,6 +1074,73 @@ class ReconcileActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
                 extra={"fields": {"code": "reconcile_halt", "reconciliation_id": str(row.id), "halt_id": str(halt_id)}},
             )
         return CheckResult(outcome, row.id)
+
+    async def _compare(self) -> tuple[ExchangeView, LocalView, Comparison]:
+        """A quiet compare, confirmed by a second quiet fetch when it found something (AC-27)."""
+        exchange, local = await self._quiet_fetch()
+        comparison = compare(exchange, local)
+        if not comparison.clean:
+            exchange, local = await self._quiet_fetch()
+            comparison = _confirmed(comparison, compare(exchange, local))
+        return exchange, local, comparison
+
+    async def _unknown(
+        self, trigger: ReconcileTrigger, started_ns: int, exc: ExchangeUnavailable, outcomes: Sequence[FindingOutcome]
+    ) -> CheckResult:
+        """End a check ``failed`` because Kraken could not be read: entries blocked ``exchange_unknown`` (AC-4)."""
+        await self._publish_view(None)
+        error = str(exc) or type(exc).__name__
+        if self._blocks.add(BlockReason.EXCHANGE_UNKNOWN):
+            log.warning(
+                "kraken's orders and positions are unknown, entries blocked",
+                extra={"fields": {"code": "exchange_unknown", "trigger": str(trigger), "error": error}},
+            )
+        log.warning(
+            "reconciliation check failed, the exchange view is unknown",
+            extra={
+                "fields": {
+                    "code": "reconcile_failed",
+                    "trigger": str(trigger),
+                    "error": error,
+                    "retry_s": self._next_retry_s,
+                }
+            },
+        )
+        return self._end_failed(trigger, started_ns, error, outcomes)
+
+    def _failed(
+        self, trigger: ReconcileTrigger, started_ns: int, error: str, outcomes: Sequence[FindingOutcome]
+    ) -> CheckResult:
+        """End a check ``failed`` for ``not_quiet``, or for ``recovery_incomplete``, which also blocks entries."""
+        if error == NOT_QUIET:
+            log.warning(
+                "reconciliation check failed, orders kept moving",
+                extra={"fields": {"code": "reconcile_not_quiet", "trigger": str(trigger), "tries": QUIET_TRIES}},
+            )
+        else:
+            log.critical(
+                "reconciliation check failed, orders still to recover after the recovery pass",
+                extra={"fields": {"code": "reconcile_recovery_incomplete", "trigger": str(trigger)}},
+            )
+            # The cache is still wrong: no entries until a clean check.
+            self._blocks.add(BlockReason.RECONCILING)
+        return self._end_failed(trigger, started_ns, error, outcomes)
+
+    def _end_failed(
+        self, trigger: ReconcileTrigger, started_ns: int, error: str, outcomes: Sequence[FindingOutcome]
+    ) -> CheckResult:
+        row = ReconciliationRow(
+            env=self._env,
+            run_id=self._run_id or _NO_RUN,
+            trigger=trigger,
+            started_ns=started_ns,
+            finished_ns=self.clock.timestamp_ns(),
+            outcome=ReconcileOutcome.FAILED,
+            error=error,
+            mismatch_count=len(outcomes),
+        )
+        self._finish(row, outcomes)
+        return CheckResult(ReconcileOutcome.FAILED, row.id, error)
 
     async def _quiet_fetch(self) -> tuple[ExchangeView, LocalView]:
         """A fetch and a cache read with nothing of ours in flight and no order event in between (AC-27)."""
@@ -901,23 +1155,6 @@ class ReconcileActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
             if events == self._order_events and not busy(self.cache):
                 return exchange, local
         raise NotQuiet
-
-    def _not_quiet(self, trigger: ReconcileTrigger, started_ns: int) -> CheckResult:
-        row = ReconciliationRow(
-            env=self._env,
-            run_id=self._run_id or _NO_RUN,
-            trigger=trigger,
-            started_ns=started_ns,
-            finished_ns=self.clock.timestamp_ns(),
-            outcome=ReconcileOutcome.FAILED,
-            error=NOT_QUIET,
-        )
-        log.warning(
-            "reconciliation check failed, orders kept moving",
-            extra={"fields": {"code": "reconcile_not_quiet", "trigger": str(trigger), "tries": QUIET_TRIES}},
-        )
-        self._finish(row, ())
-        return CheckResult(ReconcileOutcome.FAILED, row.id, NOT_QUIET)
 
     def _mode(self) -> Mode:
         actions = self._actions
@@ -986,6 +1223,16 @@ class ReconcileActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
             case SyncPosition():
                 actions.reports.sync_position(step.instrument_id, step.exchange)
                 return ActionResult.OK
+            case RecoverFills():
+                actions.reports.recover(step.recovery)
+                return ActionResult.OK
+            case MarkUntrusted():
+                if not await actions.untrusted.add(step.instrument_id):
+                    raise ReconcileActionError("the untrusted cache set was not written to Redis")
+                return ActionResult.OK
+            case CloseResidual():
+                actions.executor.close_residual(step.instrument_id)
+                return ActionResult.PENDING
             case PlaceStop():
                 if not await actions.executor.place_stop(step):
                     raise ReconcileActionError("replacement stop refused or not accepted in time")

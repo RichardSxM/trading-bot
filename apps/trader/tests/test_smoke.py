@@ -205,6 +205,9 @@ class KillSwitch:
     def watch_losses(self, losses):
         self.losses = losses
 
+    def watch_exchange(self, exchange_flat):
+        self.exchange_flat = exchange_flat
+
 
 def _fake_control_parts(node, settings, secrets, recheck=None):
     from trader.main import ControlParts
@@ -215,6 +218,7 @@ def _fake_control_parts(node, settings, secrets, recheck=None):
         kill_switch=cast(Any, node.kill_switch),
         risk_engine=cast(Any, object()),
         shutdown_counts=lambda: {"cancelled": 0, "unacknowledged_cancels": 0, "positions_kept": 0, "stops_kept": 0},
+        untrusted=cast(Any, object()),
     )
 
 

@@ -85,6 +85,8 @@ class BuyAndHoldConfig(GuardedConfig, frozen=True, kw_only=True):
 class BuyAndHold(KfsStrategy, StaleQuoteBlock):
     """Buys once at the first bar close and holds (see the module docstring)."""
 
+    uses_stop = False  # it never places a stop (spec 0023 AC-9)
+
     def __init__(self, config: BuyAndHoldConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> None:
         super().__init__(config, gate)
         self._cfg = config

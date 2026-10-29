@@ -9,7 +9,9 @@ It never cancels a reduce only order and never closes a position.
 
 The kill switch calls ``flatten(halt_id)`` on every strategy (spec 0010 AC-1): the base class
 cancels the entry orders; a strategy that holds positions overrides it to close them through
-its own exit loop, tagging those orders ``origin:kill_switch`` and ``halt:<halt_id>``.
+its own exit loop, tagging those orders ``origin:kill_switch`` and ``halt:<halt_id>``. The kill
+switch calls it through ``flatten_for``, which only cancels entries while the strategy's instrument
+is in the untrusted cache set (spec 0023 AC-8).
 
 With ``use_market_context`` on, the base class also subscribes the instrument's market context
 and folds every update into a ``ContextBook``; ``market_context()`` reads it (spec 0009 AC-11).
@@ -20,7 +22,7 @@ import threading
 import uuid
 from collections.abc import Iterable
 from decimal import Decimal
-from typing import Final
+from typing import ClassVar, Final
 
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.config import StrategyConfig
@@ -170,7 +172,11 @@ class KfsStrategy(Strategy):  # type: ignore[misc]  # Strategy is Cython with no
     A subclass must mark every exit and protective stop reduce only, and add nothing to
     ``on_stop`` that touches orders or positions (call ``super().on_stop()`` if it overrides it).
     A subclass that overrides ``on_start`` or a market context handler calls ``super()`` first.
+    A subclass that never places a protective stop sets ``uses_stop`` False, so the reconciliation
+    check does not ask its positions for one (spec 0023 AC-9).
     """
+
+    uses_stop: ClassVar[bool] = True
 
     def __init__(self, config: KfsStrategyConfig, gate: PauseGate) -> None:
         super().__init__(config)
@@ -327,6 +333,15 @@ class KfsStrategy(Strategy):  # type: ignore[misc]  # Strategy is Cython with no
         The base class only cancels entries; a strategy that opens positions overrides it.
         """
         self._cancel_entries()
+
+    def flatten_for(self, halt_id: uuid.UUID, untrusted: frozenset[str]) -> None:
+        """``flatten`` for the kill switch, skipping the close while this strategy's instrument is untrusted
+        (spec 0023 AC-8): its cached size is wrong, so it only cancels its entries and the
+        ``ReconcileExecutor`` closes what Kraken holds."""
+        if str(self._context_instrument) in untrusted:
+            self._cancel_entries()
+            return
+        self.flatten(halt_id)
 
     def has_open_positions(self) -> bool:
         """True while a position this strategy must close on a flatten is open (the kill switch re-flattens it)."""

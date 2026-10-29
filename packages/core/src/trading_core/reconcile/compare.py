@@ -10,8 +10,9 @@ increment. A held position is *known* when it is the only one on its instrument,
 the exchange's, and every order that filled into it is ours (AC-6). An exchange position with no
 held one is ``unknown_position``; anything else that is not known is ``position_mismatch``.
 
-Every known position needs exactly one reduce only stop of ours on the exchange, closing the full
-size at the recorded trigger price (AC-9): none is ``missing_stop``, anything else ``stop_size_mismatch``.
+Every known position of a strategy that uses a stop needs exactly one reduce only stop of ours on
+the exchange, closing the full size at the recorded trigger price (AC-9): none is ``missing_stop``,
+anything else ``stop_size_mismatch``.
 
 Findings come out in a fixed order: unknown orders, local only orders, duplicates, positions,
 stops, each sorted.
@@ -273,6 +274,8 @@ def compare(exchange: ExchangeView, local: LocalView) -> Comparison:
         elif instrument_id not in duplicated:
             known.append(held[instrument_id][0])
     for position in known:
+        if position.strategy_id in local.stopless_strategies:
+            continue  # a strategy that never places a stop (AC-9)
         stop_finding = _stop_finding(position, exchange, local)
         if stop_finding is not None:
             findings.append(stop_finding)

@@ -485,6 +485,9 @@ class _StuckStrategy:
     def flatten(self, halt_id):
         pass
 
+    def flatten_for(self, halt_id, untrusted):
+        pass
+
     def has_open_positions(self):
         return True
 

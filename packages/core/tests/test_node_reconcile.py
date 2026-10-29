@@ -83,7 +83,7 @@ class FakeExchange:
 
 def _actor(exchange, *, record=True, local=None, **kwargs):
     if local is not None:
-        kwargs["local"] = lambda _cache: local
+        kwargs["local"] = local if callable(local) else (lambda _cache: local)
     engine = BacktestEngine(BacktestEngineConfig(logging=LoggingConfig(bypass_logging=True)))
     engine.add_venue(Venue("KRAKEN"), OmsType.NETTING, AccountType.MARGIN, starting_balances=[Money(1000, USD)])
     engine.add_instrument(INSTRUMENT)
@@ -511,6 +511,9 @@ class FakeReports:
 
     async def position_reports(self):
         return list(self.positions)
+
+    async def fill_reports(self):
+        return []
 
     async def cancel(self, order):
         raise AssertionError("a fetch never cancels")

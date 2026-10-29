@@ -1,21 +1,28 @@
 """covers: spec 0023 AC-7 to AC-12 (what each finding's action is), AC-9 (the stop replace rules), AC-23 (demo never
-acts), AC-28 (while flattening or halted only unknown entries are cancelled), for the pure ``plan``."""
+acts), AC-28 (while flattening or halted only unknown entries are cancelled, fills are still recovered, and Kraken
+is still closed for an untrusted instrument), AC-8 (``cache_fix: manual``), AC-11 (fill recovery), for the pure
+``plan``."""
 
 from decimal import Decimal
 
-from test_reconcile_compare import BTC, OURS, TRIGGER, _exchange, _held, _local, _order, _position, _stop
+from test_reconcile_compare import BTC, ETH, OURS, TRIGGER, _exchange, _held, _local, _order, _position, _stop
 
 from trading_core.reconcile.compare import compare
 from trading_core.reconcile.plan import (
     CancelOrder,
     CloseAtMarket,
+    CloseResidual,
     MarkCanceled,
+    MarkUntrusted,
     Mode,
     Phase,
     PlaceStop,
+    RecoverFills,
     SyncPosition,
     plan,
 )
+from trading_core.reconcile.recover import recover
+from trading_core.reconcile.views import FillView
 from trading_core.recording.enums import MismatchAction, MismatchKind, OrderSide, PositionSide
 
 ABOVE = {BTC: Decimal("65000")}  # a long's stop at 60000 is not crossed
@@ -76,22 +83,54 @@ def test_more_on_the_exchange_than_in_the_cache_is_synced_too():
     assert planned.flattens
 
 
-def test_a_cache_position_the_exchange_does_not_have_halts_without_a_flatten():
-    """AC-8: Nautilus 1.231.0 cannot shrink a strategy's position by report, and there is nothing to close."""
+def test_a_cache_position_the_exchange_does_not_have_is_marked_untrusted_and_halts():
+    """AC-8: Nautilus 1.231.0 cannot shrink a strategy's position by report, so the cache waits for a hand reset."""
     planned = _one(_plan(_exchange(), _local(positions=[_held()])))
 
-    assert planned.action is MismatchAction.NONE
-    assert planned.steps == ()
-    assert (planned.halts, planned.flattens) == (True, False)
-    assert planned.details == {"cache_fix": "owed"}
+    assert planned.action is MismatchAction.NONE  # Kraken holds nothing to close
+    assert planned.steps == (MarkUntrusted(instrument_id=BTC), CloseResidual(instrument_id=BTC))
+    assert (planned.halts, planned.flattens) == (True, True)
+    assert planned.details == {"cache_fix": "manual"}
 
 
-def test_less_on_the_exchange_than_in_the_cache_halts_and_flattens_what_is_there():
+def test_less_on_the_exchange_than_in_the_cache_closes_what_kraken_holds_and_halts():
     planned = _one(_plan(_exchange(positions=[_position(qty="0.0005")]), _local(positions=[_held()])))
 
-    assert planned.steps == ()
+    assert planned.action is MismatchAction.FLATTENED
+    assert planned.steps == (MarkUntrusted(instrument_id=BTC), CloseResidual(instrument_id=BTC))
     assert (planned.halts, planned.flattens) == (True, True)
-    assert planned.details == {"cache_fix": "owed"}
+    assert planned.details == {"cache_fix": "manual"}
+
+
+def test_the_other_side_on_the_exchange_is_manual_too():
+    exchange = _exchange(positions=[_position(side=PositionSide.SHORT)])
+
+    planned = _one(_plan(exchange, _local(positions=[_held()])))
+
+    assert planned.details == {"cache_fix": "manual"}
+
+
+def test_a_local_only_order_with_missed_fills_is_recovered():
+    """AC-11."""
+    order = _order()
+    fill = _fill()
+    (recovery,) = recover([order], [fill], since_ns=0)
+
+    planned = _one(_plan(_exchange(), _local([order]), recoveries={"O-1": recovery}))
+
+    assert planned.action is MismatchAction.ADOPTED
+    assert planned.steps == (RecoverFills(recovery=recovery),)
+    assert planned.details == {"cache_fix": "recovered", "fills": "1", "filled_qty": "0.001", "order_status": "filled"}
+    assert not planned.halts
+
+
+def test_a_partly_filled_recovery_ends_canceled():
+    order = _order()
+    (recovery,) = recover([order], [_fill(qty="0.0004")], since_ns=0)
+
+    planned = _one(_plan(_exchange(), _local([order]), recoveries={"O-1": recovery}))
+
+    assert (planned.details["order_status"], planned.details["filled_qty"]) == ("canceled", "0.0004")
 
 
 def test_a_position_that_is_not_ours_but_adds_up_is_flattened_with_no_sync():
@@ -230,6 +269,17 @@ def test_steps_run_in_phase_order():
     assert phases == [Phase.CANCEL, Phase.MARK, Phase.SYNC]
 
 
+def test_recovery_runs_after_the_cancels_and_before_the_marks():
+    foreign = _order("F-1", "VF-1", strategy_id=None)
+    recovered, marked = _order("R-1", "VR-1"), _order("L-1", "VL-1", ETH)
+    (recovery,) = recover([recovered], [_fill(venue="VR-1")], since_ns=0)
+
+    the_plan = _plan(_exchange([foreign]), _local([marked, recovered]), recoveries={"R-1": recovery})
+
+    assert [step.phase for _, step in the_plan.steps()] == [Phase.CANCEL, Phase.RECOVER, Phase.MARK]
+    assert the_plan.recovers
+
+
 def test_demo_never_acts():
     """AC-23."""
     the_plan = _plan(_exchange([_order("F-1", "VF-1")], [_position()]), _local(), mode=Mode.DEMO)
@@ -248,3 +298,30 @@ def test_while_flattening_or_halted_only_unknown_entries_are_cancelled():
     acted = [(p.finding.kind, p.finding.client_order_id) for p in the_plan.planned if p.steps]
     assert acted == [(MismatchKind.UNKNOWN_ORDER, "F-1")]
     assert not the_plan.halts
+
+
+def test_while_halted_fills_are_still_recovered_and_kraken_still_closed():
+    """AC-28: recovery and the residual close only correct the books and Kraken; nothing halts again."""
+    order = _order()
+    (recovery,) = recover([order], [_fill()], since_ns=0)
+    exchange = _exchange(positions=[_position(qty="0.0005")])
+
+    the_plan = _plan(exchange, _local([order], [_held()]), mode=Mode.REPORT, recoveries={"O-1": recovery})
+
+    steps = {p.finding.kind: p.steps for p in the_plan.planned}
+    assert steps[MismatchKind.LOCAL_ONLY_ORDER] == (RecoverFills(recovery=recovery),)
+    assert steps[MismatchKind.POSITION_MISMATCH] == (MarkUntrusted(instrument_id=BTC), CloseResidual(instrument_id=BTC))
+    assert not the_plan.halts
+
+
+def _fill(venue="V-1", qty="0.001"):
+    return FillView(
+        trade_id="T-1",
+        instrument_id=BTC,
+        venue_order_id=venue,
+        client_order_id=None,
+        side=OrderSide.BUY,
+        quantity=Decimal(qty),
+        price=Decimal("60000"),
+        ts_event=1,
+    )
