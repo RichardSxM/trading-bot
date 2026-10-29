@@ -211,7 +211,8 @@ def test_a_clean_periodic_check_writes_no_row_but_moves_the_last_clean_time():
 
 
 def test_a_periodic_mismatch_and_a_reconnect_check_write_rows():
-    actor, _, records = _actor(FakeExchange(ExchangeView(orders=(FOREIGN,), positions=(), fetched_ns=1), EMPTY))
+    mismatch = ExchangeView(orders=(FOREIGN,), positions=(), fetched_ns=1)
+    actor, _, records = _actor(FakeExchange(mismatch, mismatch, EMPTY))  # a finding is fetched twice (AC-27)
 
     asyncio.run(actor.check(ReconcileTrigger.PERIODIC))
     asyncio.run(actor.check(ReconcileTrigger.RECONNECT))
@@ -267,7 +268,7 @@ def test_checks_never_overlap_and_a_trigger_during_one_is_queued_once():
 
 def test_a_mismatch_after_a_failed_fetch_keeps_exchange_unknown_until_a_clean_check():
     mismatch = ExchangeView(orders=(FOREIGN,), positions=(), fetched_ns=1)
-    actor, blocks, _ = _actor(FakeExchange(ExchangeUnavailable("timeout"), mismatch, EMPTY))
+    actor, blocks, _ = _actor(FakeExchange(ExchangeUnavailable("timeout"), mismatch, mismatch, EMPTY))
 
     asyncio.run(actor.check(ReconcileTrigger.START))
     asyncio.run(actor.check(ReconcileTrigger.PERIODIC))
@@ -447,10 +448,8 @@ def test_every_fetch_publishes_the_exchange_snapshot_unknown_when_it_failed():
     async def publish(data):
         published.append(data)
 
-    actor, _, _ = _actor(
-        FakeExchange(ExchangeView(orders=(FOREIGN,), positions=(), fetched_ns=7), ExchangeUnavailable("down")),
-        publish=publish,
-    )
+    view = ExchangeView(orders=(FOREIGN,), positions=(), fetched_ns=7)
+    actor, _, _ = _actor(FakeExchange(view, view, ExchangeUnavailable("down")), publish=publish)
 
     asyncio.run(actor.check(ReconcileTrigger.START))
     asyncio.run(actor.check(ReconcileTrigger.PERIODIC))
@@ -512,6 +511,9 @@ class FakeReports:
 
     async def position_reports(self):
         return list(self.positions)
+
+    async def cancel(self, order):
+        raise AssertionError("a fetch never cancels")
 
 
 def test_kraken_view_turns_reports_into_plain_values_and_drops_flat_positions():

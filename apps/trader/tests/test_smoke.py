@@ -29,6 +29,9 @@ class _UnreachableExchange:
     async def fetch(self):
         raise ExchangeUnavailable("not in tests")
 
+    async def cancel(self, order):
+        raise ExchangeUnavailable("not in tests")
+
 
 EXCHANGE = _UnreachableExchange()
 
@@ -175,6 +178,8 @@ class _FakeNode:
             @staticmethod
             def check_connected():
                 return True
+
+        exec_engine = None  # live hands it to the reconciliation's report sink (spec 0023)
 
 
 class _FakeRedis:
@@ -395,6 +400,8 @@ def test_live_run_adds_the_key_age_actor_and_exec_factory_and_a_failed_check_exi
     assert "stop" in node.calls
     assert ("add_actor", "KeyAgeActor") in node.calls
     assert ("exec_factory", "KRAKEN") in node.calls
+    # Live only: the executor that sends the check's orders (spec 0023 AC-7).
+    assert ("add_strategy", "ReconcileExecutor") in node.calls
     assert node.calls[-1] == "dispose"
 
 
@@ -405,6 +412,7 @@ def test_demo_run_has_no_key_actors_and_exits_0(fake_main):
     assert code == 0
     assert ("add_actor", "KeyAgeActor") not in node.calls
     assert ("exec_factory", "KRAKEN") not in node.calls
+    assert ("add_strategy", "ReconcileExecutor") not in node.calls  # demo only reports (spec 0023 AC-23)
 
 
 def _cache_with_kraken_account(ts_init):

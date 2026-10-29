@@ -351,6 +351,7 @@ HALT_WORDS: Final = {
     "manual_stop": "manual stop",
     "daily_loss_limit": "daily loss limit",
     "total_loss_limit": "total loss limit",
+    "reconcile_mismatch": "reconciliation mismatch",
     "unknown": "unknown reason",
 }
 

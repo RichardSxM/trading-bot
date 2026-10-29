@@ -353,6 +353,24 @@ def fills_page(session: Session, env: Env, page: int, size: int = PAGE_SIZE) -> 
     ]
 
 
+def recorded_stop_trigger(session: Session, env: Env, parent_client_order_id: str) -> Decimal | None:
+    """The trigger price of the newest recorded reduce only stop market order whose parent is
+    ``parent_client_order_id`` (a position's opening order), or None (spec 0023 *Value sourcing*, AC-9)."""
+    order = models.Order
+    return session.scalars(
+        select(order.trigger_price)
+        .where(
+            order.env == env,
+            order.parent_client_order_id == parent_client_order_id,
+            order.order_type == OrderType.STOP_MARKET,
+            order.reduce_only.is_(True),
+            order.trigger_price.is_not(None),
+        )
+        .order_by(order.created_at.desc(), order.id.desc())
+        .limit(1)
+    ).first()
+
+
 def control_command_outcome(session: Session, command_id: UUID) -> ControlOutcome | None:
     """The recorded outcome of the control command ``command_id``, or None when it was never
     recorded (spec 0005 AC-6). ``received`` means it was never finished."""

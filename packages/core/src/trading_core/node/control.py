@@ -378,20 +378,28 @@ class KillSwitch:
         self._flatten_all(flatten_id)
         self._spawn(self._wait_flat(flatten_id, self._now()))
 
-    def halt_automatic(self, reason: HaltReason) -> uuid.UUID:
-        """Halt for a loss limit (spec 0010 AC-9, AC-10): in memory now, then key, event, and flat wait as a task.
+    @property
+    def halted(self) -> bool:
+        """True while the trader is halted."""
+        return self._gate.halted
+
+    def halt_automatic(self, reason: HaltReason, *, flatten: bool = True) -> uuid.UUID:
+        """Halt for a loss limit or a reconciliation finding (spec 0010 AC-9, AC-10, spec 0023 AC-7):
+        in memory now, then key, event, and flat wait as a task.
 
         Returns the new ``halt_id`` (a UUID7). There is no command to answer, so a timeout only
-        writes its ``flatten_timeout`` event.
+        writes its ``flatten_timeout`` event. ``flatten=False`` halts without closing anything (a
+        position the cache holds but the exchange does not, which no order can close).
         """
         state = HaltState(reason, HaltSource.TRADER, self._now(), uuid.uuid7())
         newly = self._apply_halt(state)
-        self._spawn(self._halt_automatic(state, newly))
+        self._spawn(self._halt_automatic(state, newly, flatten))
         return state.halt_id
 
-    async def _halt_automatic(self, state: HaltState, newly: bool) -> None:
-        await self._after_halt(state, newly, flatten_id=state.halt_id)
-        await self._wait_flat(state.halt_id, self._now())
+    async def _halt_automatic(self, state: HaltState, newly: bool, flatten: bool) -> None:
+        await self._after_halt(state, newly, flatten_id=state.halt_id if flatten else None)
+        if flatten:
+            await self._wait_flat(state.halt_id, self._now())
 
     def _apply_halt(self, state: HaltState) -> bool:
         """Halt in memory and set the trading state, before any I/O; True when newly halted."""
@@ -404,10 +412,11 @@ class KillSwitch:
         """Halt in memory, then write the key while flattening; False when the key could not be written."""
         return await self._after_halt(state, self._apply_halt(state), flatten_id)
 
-    async def _after_halt(self, state: HaltState, newly: bool, flatten_id: uuid.UUID) -> bool:
+    async def _after_halt(self, state: HaltState, newly: bool, flatten_id: uuid.UUID | None) -> bool:
         current = self._gate.halt_state or state
         write = None if self._key_written else asyncio.ensure_future(self._write_key(current))
-        self._flatten_all(flatten_id)  # before the write runs: a slow Redis never delays the close
+        if flatten_id is not None:
+            self._flatten_all(flatten_id)  # before the write runs: a slow Redis never delays the close
         if newly:
             self._event(
                 f"halt:{state.halt_id}",
@@ -466,7 +475,7 @@ class KillSwitch:
                     return False
                 await asyncio.sleep(self._poll_s)
                 for strategy in self._strategies:
-                    if self._cache.positions_open(strategy_id=strategy.id):
+                    if strategy.has_open_positions():
                         strategy.flatten(flatten_id)
             return True
         finally:

@@ -485,6 +485,9 @@ class _StuckStrategy:
     def flatten(self, halt_id):
         pass
 
+    def has_open_positions(self):
+        return True
+
 
 def _kill_switch(gate, risk, cache):
     return KillSwitch(gate, risk, FakeRedis(), "demo", lambda: NOW, cache, 20, poll_s=0.001)

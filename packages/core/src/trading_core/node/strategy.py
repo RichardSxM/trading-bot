@@ -328,6 +328,10 @@ class KfsStrategy(Strategy):  # type: ignore[misc]  # Strategy is Cython with no
         """
         self._cancel_entries()
 
+    def has_open_positions(self) -> bool:
+        """True while a position this strategy must close on a flatten is open (the kill switch re-flattens it)."""
+        return bool(self.cache.positions_open(strategy_id=self.id))
+
     def cancel_entry_orders(self) -> int:
         """Cancel this strategy's open and in flight orders that are not reduce only; returns how many."""
         count = self._cancel_entries()

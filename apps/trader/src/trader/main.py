@@ -22,6 +22,7 @@ import time
 from collections.abc import Awaitable, Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Final, Protocol, Self
 from uuid import UUID
@@ -48,6 +49,7 @@ from pydantic import Field, SecretStr, field_validator, model_validator
 from redis import Redis as SyncRedis
 from redis.asyncio import Redis
 from sqlalchemy import create_engine
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from trader import paper_strategy
@@ -81,21 +83,25 @@ from trading_core.node.loss_limits import LossLimitActor
 from trading_core.node.paper_snapshots import account_snapshot, paper_status, position_snapshot
 from trading_core.node.placeholder import PlaceholderConfig
 from trading_core.node.reconcile import (
+    Actions,
+    ExecEngineReports,
     KrakenExchangeView,
+    LiveExchange,
     ReconcileActor,
     SandboxExchangeView,
+    StopTriggerLookup,
     kraken_futures_reports,
     wait_for_exchange,
     watch_start,
 )
+from trading_core.node.reconcile_executor import ReconcileExecutor, ReconcileExecutorConfig
 from trading_core.node.recording import RecordingActor
 from trading_core.node.sandbox import FeeSandboxExecClientFactory, sandbox_exec_client
 from trading_core.node.strategy import KfsStrategy, PauseGate
-from trading_core.reconcile.views import ExchangePort
 from trading_core.recording import repository
 from trading_core.recording.enums import Env, RunMode, RunStatus
 from trading_core.recording.errors import PromotionRequiredError
-from trading_core.recording.queries import LossSeed, loss_seed, run_funding_total
+from trading_core.recording.queries import LossSeed, loss_seed, recorded_stop_trigger, run_funding_total
 from trading_core.recording.rows import JsonObject
 from trading_core.recording.writer import RecordingWriter, deadletter_path, replay_spool, spool_path
 from trading_core.redis_check import redis_reachable
@@ -251,6 +257,24 @@ def kraken_exchange_view(
         base_url,
     )
     return KrakenExchangeView(reports, float(settings.reconcile_fetch_timeout_s))
+
+
+def stop_trigger_lookup(sessions: Callable[[], Session], env: Env) -> StopTriggerLookup:
+    """The Postgres fallback for a stop's trigger price (spec 0023 AC-9). A database error reads as no
+    price, which fails closed: a stop fix with no price flattens and halts."""
+
+    def lookup(parent_client_order_id: str) -> Decimal | None:
+        try:
+            with sessions() as session:
+                return recorded_stop_trigger(session, env, parent_client_order_id)
+        except SQLAlchemyError as exc:
+            log.error(
+                "recorded stop trigger unreadable",
+                extra={"fields": {"code": "reconcile_trigger_unreadable", "error": type(exc).__name__}},
+            )
+            return None
+
+    return lookup
 
 
 def heartbeat_path() -> Path:
@@ -532,7 +556,7 @@ def run_node(
     secrets: Mapping[str, SecretStr],
     fail_backoff_s: float = KEY_CHECK_FAIL_BACKOFF_S,
     paper: PaperLoop | None = None,
-    exchange: ExchangePort | None = None,
+    exchange: LiveExchange | None = None,
     loop: asyncio.AbstractEventLoop | None = None,
 ) -> int:
     """Build and run the node until it stops; return the process exit code.
@@ -566,6 +590,10 @@ def run_node(
     async def publish_exchange(data: Mapping[str, object]) -> None:
         await write_snapshot(snapshots, exchange_key, data, exchange_ttl_s)
 
+    def owned() -> frozenset[str]:
+        # Every loaded trader strategy, the ReconcileExecutor included: their orders are ours (AC-6).
+        return frozenset(str(s.id) for s in node.trader.strategies() if isinstance(s, KfsStrategy))
+
     reconcile = ReconcileActor(
         env=Env(env),
         exchange=exchange
@@ -574,11 +602,27 @@ def run_node(
         blocks=EntryBlocks() if paper is None else paper.blocks,
         record=None if paper is None else paper.writer.put,
         run_id=None if paper is None else paper.run_id,
+        owned=owned,
+        recorded=None if paper is None else stop_trigger_lookup(paper.sessions, Env(env)),
         interval_s=float(settings.reconcile_interval_s),
         retry_s=float(settings.reconcile_retry_s),
+        stale_quote_s=float(settings.risk_stale_quote_s),
         publish=publish_exchange,
     )
     control = control_parts(node, settings, secrets, reconcile.recheck_outcome)
+    executor: ReconcileExecutor | None = None
+    if exchange is not None:
+        # Live: the check acts through the executor and the kill switch (the control parts answer recheck
+        # through the check, so it is handed its actions once they exist); demo only reports (AC-23).
+        executor = ReconcileExecutor(ReconcileExecutorConfig(instrument_id=BTC_PERP), control.gate, owned)
+        reconcile.act_with(
+            Actions(
+                executor=executor,
+                cancel=exchange,
+                reports=ExecEngineReports(node.kernel.exec_engine, node.cache),
+                kill_switch=control.kill_switch,
+            )
+        )
     node.trader.add_actor(control.actor)
     node.trader.add_actor(HeartbeatActor(HeartbeatConfig(path=str(heartbeat_path()))))
     # Open interest and liquidations for the strategies' market context (spec 0009 AC-12). The trader
@@ -649,6 +693,10 @@ def run_node(
             ("position", lambda: position_snapshot(node.cache, instrument_id, view)),
             ("account", lambda: account_snapshot(node.portfolio, node.cache, instrument_id, usd)),
         ]
+    if executor is not None:
+        # Live only, and part of the kill switch's flatten: it closes what no loaded strategy owns (AC-7).
+        node.trader.add_strategy(executor)
+        control.kill_switch.attach([s for s in node.trader.strategies() if isinstance(s, KfsStrategy)], None, None)
     failed: list[bool] = []
     # The live start guards (key check, watchdog), cancelled and awaited on the way out.
     guards: list[asyncio.Task[object]] = []

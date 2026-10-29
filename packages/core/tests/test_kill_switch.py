@@ -98,6 +98,9 @@ class FakeStrategy:
         if not self.stuck:
             self.cache.positions.pop(self.id, None)
 
+    def has_open_positions(self):
+        return bool(self.cache.positions_open(strategy_id=self.id))
+
 
 class Clock:
     def __init__(self, step=timedelta(0)):
@@ -554,6 +557,32 @@ def test_an_automatic_halt_writes_the_key_flattens_and_records_one_critical_even
     [event] = _events(records)
     assert (event.event_key, event.kind, event.severity) == (f"halt:{halt_id}", RiskEventKind.HALT, Severity.CRITICAL)
     assert event.details == {"reason": "total_loss_limit", "source": "trader"}
+
+
+def test_a_reconcile_halt_without_a_flatten_writes_the_key_and_event_but_closes_nothing():
+    """covers: spec 0023 AC-8 (a cache position Kraken does not have: nothing an order could close)"""
+    cache = FakeCache()
+    cache.positions = {"S-1": ["p"]}
+    ks, gate, risk, redis, cache, records = _kill_switch(cache)
+    strategy = FakeStrategy(cache)
+    ks.attach([strategy], records.append, uuid.uuid4())
+
+    async def run():
+        halt_id = ks.halt_automatic(HaltReason.RECONCILE_MISMATCH, flatten=False)
+        await asyncio.sleep(0.01)
+        return halt_id
+
+    halt_id = asyncio.run(run())
+
+    assert gate.halted
+    assert risk.trading_state == TradingState.REDUCING
+    assert halt.decode(redis.values[HALT_KEY]).reason is HaltReason.RECONCILE_MISMATCH
+    assert strategy.flattened == []
+    assert cache.positions_open() == ["p"]
+    assert not ks.flattening
+    [event] = _events(records)
+    assert event.event_key == f"halt:{halt_id}"
+    assert event.details == {"reason": "reconcile_mismatch", "source": "trader"}
 
 
 def test_a_limit_that_trips_while_halted_keeps_the_first_halt_and_writes_no_second_event():
