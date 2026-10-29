@@ -92,6 +92,11 @@ Added after the cross check (another model read the draft):
 - **Report only in demo, and while flattening or halted.** The sandbox view can only produce false findings, and acting during a flatten would race the kill switch.
 - **Heartbeat during the start retry.** The node healthcheck has a 90 s start period, so without it autoheal would kill the 300 s start retry at about two minutes.
 
+Added after the task 3 build (2026-10-29), when the build found that AC-8 as written cannot work in 1.231.0:
+- **Recover missed fills, else halt and reset by hand.** A netting fill goes to `{instrument}-{strategy_id}` (`execution/engine.pyx:1561`), so a flat or smaller position report makes Nautilus add an opposite `EXTERNAL` position instead of shrinking ours. The usual reason the cache holds more is a missed fill of our own order, most often the stop. Feeding Kraken's real fill for that order to Nautilus closes the strategy's own position the normal way, and it also stops AC-11 from marking a filled stop canceled. The adapter already does this itself for a single order (`_generate_futures_filled_status_report`, a 5 minute window); we use the same `request_fill_reports` call with the full lookback. What recovery cannot explain is rare and halts. You reset the cache by hand, and the next start rebuilds it from Kraken. Runners up: a made up closing fill on the strategy's order (fully automatic, but it records a fill that never happened and wrong P&L), and halt plus a hand reset every time (it halts on every missed stop fill).
+- **The executor closes Kraken's real size, reduce only.** When the cache is wrong, the strategy's own close would send the cache's size. A reduce only order for Kraken's quantity can never open or flip a position. Runner up: halt and close by hand.
+- **`uses_stop` on the strategy.** `BuyAndHold` and `RandomTaker` never place a stop by design, so AC-9 would flag every check. The owning strategy now declares whether its positions carry a stop. Runners up: giving them stops (it changes how they trade), and refusing them in live (it keeps a critical alert every minute in demo).
+
 ## Evidence: the code and engine facts this decision rests on
 
 Checked on 2026-10-29 in the trader image (NautilusTrader 1.231.0):
