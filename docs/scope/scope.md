@@ -256,7 +256,7 @@ After a crash, restart, or dropped connection, the bot rebuilds its view from th
 spec [0023](../specs/0023-restart-outage-safety/index.md) · code in `packages/core/src/trading_core/reconcile`, `packages/core/src/trading_core/node/reconcile.py`
 - [x] Design it (spec): `/architect restart & outage safety`
 - [ ] Build it: `/develop restart & outage safety`
-  - [ ] Thin thread in demo, then live wiring that fails closed: migration 0012, pure `reconcile/` compare, `ReconcileActor` start check with the `reconciling` block and report row, `KrakenExchangeView`, pre build fetch with heartbeat, startup watchdog, 60 s, reconnect, and `recheck` (AC-1 to AC-5, AC-17, AC-20, AC-23)
+  - [x] Thin thread in demo, then live wiring that fails closed: migration 0012, pure `reconcile/` compare, `ReconcileActor` start check with the `reconciling` block and report row, `KrakenExchangeView`, pre build fetch with heartbeat, startup watchdog, 60 s, reconnect, and `recheck` (AC-1 to AC-5, AC-17, AC-20, AC-23)
   - [ ] Findings and actions: all seven finding kinds, `ReconcileExecutor`, stop replace, flatten and halt through the kill switch, quiet compare with a confirming fetch, report only while flattening or halted (AC-6 to AC-13, AC-27, AC-28)
   - [ ] Duplicates and resume: `order_unresolved`, the fresh signal rule, `resume_position` in every strategy base (AC-14 to AC-16)
   - [ ] Dashboard and alerts: intent, three state card, badge, Reconciliation page, stuck block alerts (AC-18, AC-19, AC-21)
