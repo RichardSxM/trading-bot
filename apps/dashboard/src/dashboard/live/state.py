@@ -122,6 +122,8 @@ FAILURE_WORDS: Final = {
     "pause_key_write_failed": "pause not saved",
     "pause_key_delete_failed": "pause not cleared",
     "not_implemented": "not implemented",
+    "exchange_unknown": "Kraken unknown",
+    "not_available": "not available",
     "error": "error in the trader",
 }
 

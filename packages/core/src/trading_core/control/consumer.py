@@ -52,10 +52,12 @@ FINISHED_KEPT: Final = 1000
 
 @dataclass(frozen=True)
 class Outcome:
-    """What executing a command did: ``executed`` or ``failed`` with a ``reason``."""
+    """What executing a command did: ``executed`` or ``failed`` with a ``reason``, plus any ``details`` it
+    answers with."""
 
     outcome: ControlOutcome
     reason: str | None = None
+    details: Mapping[str, str] | None = None
 
 
 Execute = Callable[[ControlMessage], Awaitable[Outcome]]
@@ -198,7 +200,7 @@ class ControlConsumer:
                 extra={"fields": {"code": "control_execute_failed", "id": str(msg.id), "cmd": msg.cmd.value}},
             )
             outcome = Outcome(ControlOutcome.FAILED, "error")
-        await self._finish(ControlResult(msg.id, outcome.outcome, self._now(), outcome.reason))
+        await self._finish(ControlResult(msg.id, outcome.outcome, self._now(), outcome.reason, outcome.details))
 
     async def _finish(self, result: ControlResult) -> None:
         self._remember(result)

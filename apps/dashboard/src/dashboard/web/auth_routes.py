@@ -26,6 +26,7 @@ LOST_NOTICES: Final = {
     "pause": "Your pause was NOT sent. Log in and tap Pause again.",
     "resume": "Your resume was NOT sent. Log in and tap Resume again.",
     "flatten": "Your flatten was NOT sent. Log in and tap Flatten again.",
+    "recheck": "Your recheck was NOT sent. Log in and tap Recheck again.",
 }
 
 Reason = Literal["bad_password", "bad_code", "replayed_code", "locked"]

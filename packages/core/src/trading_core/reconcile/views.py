@@ -62,6 +62,33 @@ class LocalView:
     size_increments: Mapping[str, Decimal] = field(default_factory=dict)
 
 
+def exchange_snapshot_data(view: ExchangeView | None, fetched_ns: int) -> dict[str, object]:
+    """The ``{env}:snapshot:exchange`` data: ``ok`` with what the exchange reported, or ``unknown`` when ``view``
+    is None (the fetch failed), with no orders or positions."""
+    if view is None:
+        return {"status": "unknown", "fetched_ns": fetched_ns}
+    return {
+        "status": "ok",
+        "fetched_ns": view.fetched_ns,
+        "positions": [
+            {"instrument_id": p.instrument_id, "side": str(p.side), "quantity": str(p.quantity)} for p in view.positions
+        ],
+        "orders": [
+            {
+                "client_order_id": o.client_order_id,
+                "venue_order_id": o.venue_order_id,
+                "instrument_id": o.instrument_id,
+                "side": str(o.side),
+                "order_type": o.order_type,
+                "quantity": str(o.quantity),
+                "trigger_price": None if o.trigger_price is None else str(o.trigger_price),
+                "reduce_only": o.reduce_only,
+            }
+            for o in view.orders
+        ],
+    }
+
+
 class ExchangePort(Protocol):
     """Fetches the exchange's view; raises ``ExchangeUnavailable`` on any failure."""
 

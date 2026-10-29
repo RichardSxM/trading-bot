@@ -3,7 +3,7 @@
 from decimal import Decimal
 
 from trading_core.reconcile.compare import compare, rounded
-from trading_core.reconcile.views import ExchangeView, LocalView, OrderView, PositionView
+from trading_core.reconcile.views import ExchangeView, LocalView, OrderView, PositionView, exchange_snapshot_data
 from trading_core.recording.enums import MismatchKind, OrderSide, PositionSide
 
 BTC = "PF_XBTUSD.KRAKEN"
@@ -159,3 +159,42 @@ def test_rounded_snaps_to_the_nearest_multiple():
     assert rounded(Decimal("0.00025"), Decimal("0.0001")) == Decimal("0.0002")  # half even
     assert rounded(Decimal("7"), Decimal("5")) == Decimal("5")
     assert rounded(Decimal("0.123"), None) == Decimal("0.123")
+
+
+def test_the_exchange_snapshot_lists_what_the_exchange_reported():
+    # covers: spec 0023 data model, ``{env}:snapshot:exchange``.
+    order = OrderView(
+        instrument_id="PF_XBTUSD.KRAKEN",
+        client_order_id=None,
+        venue_order_id="V-1",
+        side=OrderSide.SELL,
+        order_type="stop_market",
+        quantity=Decimal("0.0010"),
+        trigger_price=Decimal("60000.0"),
+        reduce_only=True,
+    )
+    position = PositionView(instrument_id="PF_XBTUSD.KRAKEN", side=PositionSide.LONG, quantity=Decimal("0.0010"))
+
+    data = exchange_snapshot_data(ExchangeView(orders=(order,), positions=(position,), fetched_ns=5), 9)
+
+    assert data == {
+        "status": "ok",
+        "fetched_ns": 5,
+        "positions": [{"instrument_id": "PF_XBTUSD.KRAKEN", "side": "long", "quantity": "0.0010"}],
+        "orders": [
+            {
+                "client_order_id": None,
+                "venue_order_id": "V-1",
+                "instrument_id": "PF_XBTUSD.KRAKEN",
+                "side": "sell",
+                "order_type": "stop_market",
+                "quantity": "0.0010",
+                "trigger_price": "60000.0",
+                "reduce_only": True,
+            }
+        ],
+    }
+
+
+def test_a_failed_fetch_snapshot_is_unknown_with_no_orders_or_positions():
+    assert exchange_snapshot_data(None, 9) == {"status": "unknown", "fetched_ns": 9}

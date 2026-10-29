@@ -11,6 +11,7 @@ from pydantic import SecretStr
 from trader.main import TraderSettings, build_config
 from trading_core.boot import Boot
 from trading_core.naming import NodeIdMismatch
+from trading_core.reconcile.views import ExchangeUnavailable
 from trading_core.recording.errors import PromotionRequiredError
 from trading_core.settings import TradingEnv
 
@@ -20,6 +21,16 @@ SECRETS = {
     "kraken_api_key": SecretStr("k" * 32),
     "kraken_api_secret": SecretStr("s" * 32),
 }
+
+
+class _UnreachableExchange:
+    """Kraken's view for a live run_node: never reached in these tests (spec 0023)."""
+
+    async def fetch(self):
+        raise ExchangeUnavailable("not in tests")
+
+
+EXCHANGE = _UnreachableExchange()
 
 
 def _settings(env: TradingEnv) -> TraderSettings:
@@ -152,6 +163,9 @@ class _FakeNode:
     def stop(self):
         self.calls.append("stop")
 
+    # What the startup watchdog reads (spec 0023 AC-5).
+    is_running = True
+
     # What the heartbeat snapshot reads (spec 0004 AC-8).
     class state:
         name = "RUNNING"
@@ -187,7 +201,7 @@ class KillSwitch:
         self.losses = losses
 
 
-def _fake_control_parts(node, settings, secrets):
+def _fake_control_parts(node, settings, secrets, recheck=None):
     from trader.main import ControlParts
 
     node.kill_switch = KillSwitch()
@@ -366,7 +380,12 @@ def test_live_run_adds_the_key_age_actor_and_exec_factory_and_a_failed_check_exi
     fake_main.TradingNode = NoAccountNode
     try:
         code = fake_main.run_node(
-            build_config(_settings("live"), SECRETS), _settings("live"), 0.1, SECRETS, fail_backoff_s=0
+            build_config(_settings("live"), SECRETS),
+            _settings("live"),
+            0.1,
+            SECRETS,
+            fail_backoff_s=0,
+            exchange=EXCHANGE,
         )
     finally:
         fake_main.TradingNode = original
@@ -444,7 +463,12 @@ def test_an_account_reloaded_from_a_previous_run_still_fails_the_check(fake_main
     fake_main.TradingNode = StaleAccountNode
     try:
         code = fake_main.run_node(
-            build_config(_settings("live"), SECRETS), _settings("live"), 0.1, SECRETS, fail_backoff_s=0
+            build_config(_settings("live"), SECRETS),
+            _settings("live"),
+            0.1,
+            SECRETS,
+            fail_backoff_s=0,
+            exchange=EXCHANGE,
         )
     finally:
         fake_main.TradingNode = original
@@ -466,7 +490,12 @@ def test_a_crashing_key_check_stops_the_node(fake_main):
     fake_main.TradingNode = BrokenCacheNode
     try:
         code = fake_main.run_node(
-            build_config(_settings("live"), SECRETS), _settings("live"), 5.0, SECRETS, fail_backoff_s=0
+            build_config(_settings("live"), SECRETS),
+            _settings("live"),
+            5.0,
+            SECRETS,
+            fail_backoff_s=0,
+            exchange=EXCHANGE,
         )
     finally:
         fake_main.TradingNode = original
@@ -496,7 +525,9 @@ def test_every_env_writes_the_heartbeat_snapshot_while_the_node_runs(fake_main, 
             self.get_event_loop().run_until_complete(asyncio.sleep(0.05))
 
     monkeypatch.setattr(fake_main, "TradingNode", RunningNode)
-    fake_main.run_node(build_config(_settings(env), SECRETS), _settings(env), 5.0, SECRETS, fail_backoff_s=0)
+    fake_main.run_node(
+        build_config(_settings(env), SECRETS), _settings(env), 5.0, SECRETS, fail_backoff_s=0, exchange=EXCHANGE
+    )
 
     key, value, ex = next(w for w in redis.writes if w[0].endswith(":heartbeat"))
     assert (key, ex) == (f"{env}:snapshot:heartbeat", 30)
@@ -981,3 +1012,70 @@ def test_the_loss_limit_defaults_match_the_spec(monkeypatch):
         settings.kill_switch_flat_timeout_s,
     ) == (Decimal(20), Decimal(100), 50, 600, 20)
     assert "risk_daily_loss_limit_usd" in settings.strategy_config()
+
+
+# spec 0023: reconciliation ------------------------------------------------------------------
+
+
+def test_demo_keeps_nautilus_reconciliation_off():
+    engine = build_config(_settings("demo"), SECRETS).exec_engine
+
+    assert engine.reconciliation is False
+
+
+def test_live_reconciles_with_kraken_at_start_and_runs_no_periodic_checks_of_its_own():
+    # covers: spec 0023 *Where the views come from*, the LiveExecEngineConfig table.
+    config = build_config(_settings("live"), SECRETS)
+    engine = config.exec_engine
+
+    assert engine.reconciliation is True
+    assert engine.reconciliation_lookback_mins == 1440
+    assert engine.open_check_interval_secs is None
+    assert engine.position_check_interval_secs is None
+    assert engine.generate_missing_orders is True
+    assert (engine.inflight_check_interval_ms, engine.inflight_check_threshold_ms) == (2000, 5000)
+    assert config.timeout_reconciliation == 30
+
+
+def test_a_live_node_without_krakens_view_refuses_to_build(fake_main):
+    with pytest.raises(ValueError, match="exchange view"):
+        fake_main.run_node(build_config(_settings("live"), SECRETS), _settings("live"), 5.0, SECRETS)
+
+    assert _FakeNode.instances == []
+
+
+@pytest.mark.parametrize("env", ["demo", "live"])
+def test_every_env_registers_the_reconcile_actor_before_any_strategy(fake_main, env):
+    fake_main.run_node(
+        build_config(_settings(env), SECRETS), _settings(env), 5.0, SECRETS, fail_backoff_s=0, exchange=EXCHANGE
+    )
+
+    (node,) = _FakeNode.instances
+    actors = [name for kind, name in (c for c in node.calls if isinstance(c, tuple)) if kind == "add_actor"]
+    assert "ReconcileActor" in actors
+
+
+def test_a_live_trader_that_never_runs_is_stopped_by_the_watchdog(fake_main, monkeypatch):
+    # covers: spec 0023 AC-5, the startup watchdog.
+    class NeverRunningNode(_FakeNode):
+        is_running = False
+
+        class cache:
+            @staticmethod
+            def account_for_venue(venue):
+                return None
+
+        def run(self):
+            self.calls.append("run")
+            self.get_event_loop().run_until_complete(asyncio.sleep(0.3))
+
+    monkeypatch.setattr(fake_main, "TradingNode", NeverRunningNode)
+    settings = _settings("live").model_copy(update={"reconcile_nautilus_timeout_s": 1})
+    monkeypatch.setattr(fake_main, "WATCHDOG_GRACE_S", -1)  # a 0 s watchdog, so it fires inside run()
+
+    code = fake_main.run_node(
+        build_config(settings, SECRETS), settings, 60.0, SECRETS, fail_backoff_s=0, exchange=EXCHANGE
+    )
+
+    assert code == 1
+    assert "stop" in _FakeNode.instances[0].calls

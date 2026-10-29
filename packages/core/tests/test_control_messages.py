@@ -185,3 +185,30 @@ def test_a_failed_result_carries_its_reason_and_round_trips():
     assert "reason" not in result_to_fields(executed)
     assert result_from_fields(result_to_fields(failed)) == failed
     assert result_from_fields(result_to_fields(executed)) == executed
+
+
+def test_a_result_round_trips_its_details_as_one_json_field():
+    # covers: spec 0023 AC-20.
+    result = ControlResult(
+        uuid.UUID(ID), ControlOutcome.EXECUTED, NOW, None, {"outcome": "clean", "reconciliation_id": "r"}
+    )
+
+    fields = result_to_fields(result)
+
+    assert fields["details"] == '{"outcome":"clean","reconciliation_id":"r"}'
+    assert result_from_fields(fields) == result
+
+
+def test_a_result_without_details_has_no_details_field():
+    fields = result_to_fields(ControlResult(uuid.UUID(ID), ControlOutcome.EXECUTED, NOW))
+
+    assert "details" not in fields
+    assert result_from_fields(fields).details is None
+
+
+@pytest.mark.parametrize("details", ["not json", "[1]", '{"outcome": 1}'])
+def test_malformed_details_are_a_format_error(details):
+    fields = result_to_fields(ControlResult(uuid.UUID(ID), ControlOutcome.EXECUTED, NOW)) | {"details": details}
+
+    with pytest.raises(ControlFormatError):
+        result_from_fields(fields)

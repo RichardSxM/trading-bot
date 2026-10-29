@@ -5,6 +5,7 @@ appends what happened to each one to ``{env}:control:results``. Every field is a
 fields are. Timestamps are ISO 8601 UTC with a ``Z`` suffix.
 """
 
+import json
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -42,12 +43,15 @@ class ControlResult:
     """One outcome on ``{env}:control:results`` for the command with the same ``id``.
 
     ``reason`` explains a ``failed`` outcome (e.g. ``not_implemented``); it is None otherwise.
+    ``details`` carries what a command answered with (``recheck``: its outcome and report id), as
+    the JSON text field ``details``; None for most commands.
     """
 
     id: uuid.UUID
     outcome: ControlOutcome
     outcome_at: datetime
     reason: str | None = None
+    details: Mapping[str, str] | None = None
 
 
 def control_stream(env: TradingEnv) -> str:
@@ -114,6 +118,8 @@ def result_to_fields(result: ControlResult) -> dict[str, str]:
     }
     if result.reason is not None:
         fields["reason"] = result.reason
+    if result.details is not None:
+        fields["details"] = json.dumps(dict(result.details), separators=(",", ":"), sort_keys=True)
     return fields
 
 
@@ -148,8 +154,25 @@ def result_from_fields(fields: Fields) -> ControlResult:
     except ValueError:
         raise ControlFormatError(f"unknown control outcome {values['outcome']!r}") from None
     return ControlResult(
-        parse_uuid(values["id"]), outcome, parse_utc(values["outcome_at"], "outcome_at"), field(fields, "reason")
+        parse_uuid(values["id"]),
+        outcome,
+        parse_utc(values["outcome_at"], "outcome_at"),
+        field(fields, "reason"),
+        parse_details(field(fields, "details")),
     )
+
+
+def parse_details(text: str | None) -> dict[str, str] | None:
+    """The ``details`` field (a JSON object of strings) or None when absent; raises ``ControlFormatError``."""
+    if text is None:
+        return None
+    try:
+        value = json.loads(text)
+    except ValueError:
+        raise ControlFormatError("control details is not JSON") from None
+    if not isinstance(value, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in value.items()):
+        raise ControlFormatError("control details is not an object of strings")
+    return value
 
 
 def field(fields: Fields, name: str) -> str | None:

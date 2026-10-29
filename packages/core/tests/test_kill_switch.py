@@ -18,6 +18,7 @@ from nautilus_trader.model.enums import TradingState
 from redis.exceptions import ConnectionError as RedisConnectionError
 
 from trading_core.control import halt
+from trading_core.control.consumer import Outcome
 from trading_core.control.halt import HaltReason, HaltSource
 from trading_core.control.messages import command
 from trading_core.node.control import KillSwitch, PauseController, control_execute
@@ -597,3 +598,23 @@ def test_control_execute_routes_flatten_and_resume_to_the_kill_switch():
     resumed = asyncio.run(execute(command(ControlCmd.RESUME, NOW, 60)))
 
     assert (flattened.outcome, resumed.outcome) == (ControlOutcome.EXECUTED, ControlOutcome.EXECUTED)
+
+
+def test_control_execute_routes_recheck_to_the_reconciliation_check():
+    # covers: spec 0023 AC-20.
+    ks, gate, risk, redis, *_ = _kill_switch()
+    pause = PauseController(gate, risk, redis, "demo", lambda: NOW)
+    answer = Outcome(ControlOutcome.EXECUTED, None, {"outcome": "clean"})
+
+    async def recheck():
+        return answer
+
+    with_check = control_execute(pause, ks, recheck)
+    without = control_execute(pause, ks)
+
+    assert asyncio.run(with_check(command(ControlCmd.RECHECK, NOW, 60, ControlSource.CLI))) is answer
+    assert asyncio.run(without(command(ControlCmd.RECHECK, NOW, 60, ControlSource.CLI))) == Outcome(
+        ControlOutcome.FAILED, "not_available"
+    )
+    assert not gate.paused
+    assert not gate.halted

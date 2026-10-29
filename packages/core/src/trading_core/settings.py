@@ -213,6 +213,23 @@ class LossLimitSettings(Settings):
         return self
 
 
+class ReconcileSettings(Settings):
+    """The reconciliation check settings (spec 0023 *Configuration required*); the trader's settings subclass it."""
+
+    # The periodic check.
+    reconcile_interval_s: int = Field(default=60, gt=0)
+    # The first retry after a failed fetch, doubling up to 60 s.
+    reconcile_retry_s: int = Field(default=5, gt=0)
+    # How long a live start retries the fetch before exit 1.
+    reconcile_start_timeout_s: int = Field(default=300, gt=0)
+    # Per Kraken request.
+    reconcile_fetch_timeout_s: int = Field(default=10, gt=0)
+    # Nautilus's fill lookback at start.
+    reconcile_lookback_mins: int = Field(default=1440, gt=0)
+    # Nautilus's ``timeout_reconciliation``.
+    reconcile_nautilus_timeout_s: int = Field(default=30, gt=0)
+
+
 class AlertSettings(Settings):
     """The alerter's settings (spec 0013, *Configuration required*).
 

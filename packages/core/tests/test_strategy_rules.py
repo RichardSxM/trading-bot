@@ -126,3 +126,41 @@ def test_each_reason_keeps_when_it_became_active():
     assert blocks.since() == {"exit_failed": 200}
     blocks.add(BlockReason.STALE_FEED)
     assert blocks.since() == {"exit_failed": 200, "stale_feed": 300}
+
+
+def test_block_listeners_hear_each_change_once_after_it_happened():
+    # covers: spec 0023 AC-3, the reconnect check listens for the stale feed.
+    blocks = EntryBlocks()
+    heard = []
+    blocks.subscribe(lambda reason, active: heard.append((reason, active, blocks.active())))
+
+    blocks.add(BlockReason.STALE_FEED)
+    blocks.add(BlockReason.STALE_FEED)  # already on: no change, no call
+    blocks.clear(BlockReason.STALE_FEED)
+    blocks.clear(BlockReason.STALE_FEED)
+
+    assert heard == [
+        (BlockReason.STALE_FEED, True, (BlockReason.STALE_FEED,)),
+        (BlockReason.STALE_FEED, False, ()),
+    ]
+
+
+def test_a_listener_may_change_the_blocks_itself():
+    blocks = EntryBlocks()
+
+    def follow(reason, active):
+        if reason is BlockReason.STALE_FEED and active:
+            blocks.add(BlockReason.RECONCILING)
+
+    blocks.subscribe(follow)
+    blocks.add(BlockReason.STALE_FEED)
+
+    assert blocks.active() == (BlockReason.RECONCILING, BlockReason.STALE_FEED)
+
+
+def test_exchange_unknown_clears_by_itself_and_has_plain_words():
+    blocks = EntryBlocks()
+    blocks.add(BlockReason.EXCHANGE_UNKNOWN)
+
+    assert blocks.clear(BlockReason.EXCHANGE_UNKNOWN) is True
+    assert "Kraken" in PLAIN_WORDS[BlockReason.EXCHANGE_UNKNOWN]

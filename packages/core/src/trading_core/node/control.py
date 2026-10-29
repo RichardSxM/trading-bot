@@ -512,10 +512,15 @@ class KillSwitch:
         self._record(WriteItem(WriteCall.RECORD_RISK_EVENT, row))
 
 
-def control_execute(pause: PauseController, kill_switch: KillSwitch) -> Execute:
-    """The consumer's ``execute``: ``stop``, ``flatten``, and ``resume`` to the kill switch, the rest to the pause."""
+def control_execute(
+    pause: PauseController, kill_switch: KillSwitch, recheck: Callable[[], Awaitable[Outcome]] | None = None
+) -> Execute:
+    """The consumer's ``execute``: ``stop``, ``flatten``, and ``resume`` to the kill switch, ``recheck`` to the
+    reconciliation check (spec 0023 AC-20; ``failed: not_available`` without one), the rest to the pause."""
 
     async def execute(msg: ControlMessage) -> Outcome:
+        if msg.cmd is ControlCmd.RECHECK:
+            return Outcome(ControlOutcome.FAILED, "not_available") if recheck is None else await recheck()
         if msg.cmd is ControlCmd.STOP:
             return await kill_switch.stop(msg)
         if msg.cmd is ControlCmd.FLATTEN:

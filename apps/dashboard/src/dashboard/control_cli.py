@@ -9,6 +9,7 @@ dashboard container.
     python -m dashboard.control_cli stop --wait-result 30
     python -m dashboard.control_cli flatten --wait-result 30
     python -m dashboard.control_cli resume --wait-result 30
+    python -m dashboard.control_cli recheck --wait-result 60
 
 Runs with the dashboard's settings and its own Redis login (the ``dashboard`` ACL user), so it
 needs no new grant. stdout carries exactly one JSON line, the result; anything else goes to
@@ -22,6 +23,8 @@ stderr. Exit codes:
 - ``stop``, ``flatten``, ``resume`` (spec 0010 AC-19, sent with ``source = cli``): 0 on ``executed``,
   1 on ``failed``, ``expired``, or ``duplicate`` (the reason is printed), 2 when Redis cannot be
   reached or no result came in time.
+- ``recheck`` (spec 0023 AC-20, ``source = cli``): runs a reconciliation check now; the same codes, with
+  the check's ``outcome`` and ``reconciliation_id`` printed under ``details``.
 """
 
 import argparse
@@ -45,6 +48,7 @@ from dashboard.web.control_routes import STREAM_MAXLEN
 from trading_core.control.messages import (
     ControlFormatError,
     ControlMessage,
+    ControlResult,
     command,
     control_stream,
     result_from_fields,
@@ -160,17 +164,19 @@ async def send_and_wait(
         else:
             error = None
         if outcome is not None:
-            result, reason = outcome
-            line = base | {"status": result.value} | ({"reason": reason} if reason else {})
-            return Result(0 if result is ControlOutcome.EXECUTED else 1, line)
+            line = (
+                base
+                | {"status": outcome.outcome.value}
+                | ({"reason": outcome.reason} if outcome.reason else {})
+                | ({"details": dict(outcome.details)} if outcome.details else {})
+            )
+            return Result(0 if outcome.outcome is ControlOutcome.EXECUTED else 1, line)
         if monotonic() >= deadline:
             return Result(1, base | {"status": "no_result"} | ({"error": error} if error else {}))
         await asyncio.sleep(poll_s)
 
 
-async def _final_outcome(
-    client: ControlClient, stream: str, msg: ControlMessage
-) -> tuple[ControlOutcome, str | None] | None:
+async def _final_outcome(client: ControlClient, stream: str, msg: ControlMessage) -> ControlResult | None:
     entries = await client.xrevrange(stream, count=RESULTS_SCAN)
     if not isinstance(entries, list):
         return None
@@ -182,7 +188,7 @@ async def _final_outcome(
         except ControlFormatError:
             continue
         if result.id == msg.id and result.outcome in FINAL_OUTCOMES:
-            return result.outcome, result.reason
+            return result
     return None
 
 
@@ -253,6 +259,8 @@ async def _with_client(settings: DashboardSettings, run: Callable[[ControlClient
 
 # The kill switch commands (spec 0010 AC-19) and their exit code when the command never got an answer.
 KILL_SWITCH_CMDS: Final = {"stop": ControlCmd.STOP, "flatten": ControlCmd.FLATTEN, "resume": ControlCmd.RESUME}
+# Sent as cli with the same exit codes: the kill switch commands plus the reconciliation recheck (spec 0023 AC-20).
+CLI_CMDS: Final = KILL_SWITCH_CMDS | {"recheck": ControlCmd.RECHECK}
 EXIT_NO_ANSWER: Final = 2
 
 
@@ -273,8 +281,8 @@ def _run(args: argparse.Namespace, settings: DashboardSettings) -> Result:
         cmd = ControlCmd.PAUSE if args.command == "pause" else ControlCmd.UNPAUSE
         msg = command(cmd, datetime.now(UTC), args.ttl, ControlSource(args.source))
         return asyncio.run(_with_client(settings, lambda client: send_and_wait(client, msg, env, args.wait_result)))
-    if args.command in KILL_SWITCH_CMDS:
-        msg = command(KILL_SWITCH_CMDS[args.command], datetime.now(UTC), args.ttl, ControlSource.CLI)
+    if args.command in CLI_CMDS:
+        msg = command(CLI_CMDS[args.command], datetime.now(UTC), args.ttl, ControlSource.CLI)
         return asyncio.run(_with_client(settings, lambda client: send_kill_switch(client, msg, env, args.wait_result)))
     key = snapshot_key(env, "trader_state")
     return asyncio.run(_with_client(settings, lambda client: wait_flat(client, key, args.timeout)))
@@ -296,9 +304,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         cmd.add_argument("--source", choices=[s.value for s in ControlSource], default=ControlSource.DEPLOY.value)
         cmd.add_argument("--wait-result", type=float, default=30.0, metavar="SECONDS")
         cmd.add_argument("--ttl", type=int, default=COMMAND_TTL_S, metavar="SECONDS")
-    for name in KILL_SWITCH_CMDS:
+    for name in CLI_CMDS:
         cmd = sub.add_parser(name, help=f"send {name} as cli and wait for the trader's answer; exit 0 on executed")
-        cmd.add_argument("--wait-result", type=float, default=30.0, metavar="SECONDS")
+        # A recheck may wait out two Kraken timeouts before it answers.
+        cmd.add_argument("--wait-result", type=float, default=60.0 if name == "recheck" else 30.0, metavar="SECONDS")
         cmd.add_argument("--ttl", type=int, default=COMMAND_TTL_S, metavar="SECONDS")
     flat = sub.add_parser("wait-flat", help="wait until the paused trader holds no position and no entry order")
     flat.add_argument("--timeout", type=parse_duration, default=parse_duration("15m"), metavar="DURATION")
