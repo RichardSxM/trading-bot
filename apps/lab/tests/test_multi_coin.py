@@ -23,7 +23,7 @@ from lab.main import main
 from lab.runfile import MULTI_REFUSED, LoadedCandleRun, Overrides, RunFileError, candle_run_from_raw, load_candle_run
 from lab.screen import EXIT_USAGE, run_screen
 from lab.strategies import MarketContextValues, registry_entry
-from lab.study import _benchmark_run, load_study
+from lab.study import _benchmark_run, last_complete_day, load_study
 from trading_core.lab.candles import MINUTE_NS, CandleGap, CandleRow, FundingRow, Month, MonthManifest
 from trading_core.marketdata.hours import HOUR_NS
 from trading_core.recording.enums import Intent, OrderSide, RiskVerdict, StrategyKind, StudyLab
@@ -547,3 +547,32 @@ def test_screen_refuses_a_multi_coin_study(monkeypatch, capsys):
         == EXIT_USAGE
     )
     assert MULTI_REFUSED in capsys.readouterr().err
+
+
+# AC-11, AC-15: the study's last day over several coins ---------------------------------------
+
+
+def _manifest_ending(catalog: Path, coin: str, last_ts_ns: int) -> None:
+    candle_tree(catalog, coin).write_manifest(
+        MonthManifest(str(SEP), 1, 0, 0, 0, 0, 0, [], T0, last_ts_ns, 0, 0, 0, False, "2026-10-01T00:00:00Z")
+    )
+
+
+def test_the_last_complete_day_of_two_coins_is_the_earlier_one(tmp_path):
+    day = 86_400 * 1_000_000_000
+    _manifest_ending(tmp_path, BTC, T0 + 20 * day + 12 * HOUR_NS)
+    _manifest_ending(tmp_path, ETH, T0 + 15 * day + 3 * HOUR_NS)
+    settings = worker_settings(tmp_path, tmp_path / "reports", 1)
+
+    assert last_complete_day(settings, [BTC], date(2026, 9, 1)) == date(2026, 9, 20)
+    assert last_complete_day(settings, [ETH], date(2026, 9, 1)) == date(2026, 9, 15)
+    assert last_complete_day(settings, [BTC, ETH], date(2026, 9, 1)) == date(2026, 9, 15)
+    assert last_complete_day(settings, [ETH, BTC], date(2026, 9, 1)) == date(2026, 9, 15)
+
+
+def test_the_last_complete_day_is_none_when_a_coin_has_no_manifest(tmp_path):
+    _manifest_ending(tmp_path, BTC, T0 + 5 * 86_400 * 1_000_000_000)
+    settings = worker_settings(tmp_path, tmp_path / "reports", 1)
+
+    assert last_complete_day(settings, [BTC, ETH], date(2026, 9, 1)) is None
+    assert last_complete_day(settings, [], date(2026, 9, 1)) is None

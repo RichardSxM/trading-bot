@@ -32,7 +32,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 22 | Intraday swing candidates | Slice 7 | in-progress |
 | 23 | Intraday trend candidates | Slice 7 | in-progress |
 | 24 | Imbalance fade candidate | Slice 7 | done |
-| 25 | Multi coin portfolio | Slice 7 | in-progress |
+| 25 | Multi coin portfolio | Slice 7 | done |
 | 17 | Hour level strategy candidates | Slice 7 | in-progress |
 | 18 | Trade journal export | Slice 8 | planned |
 | 19 | Go live with small capital | Slice 9 | planned |
@@ -439,7 +439,7 @@ spec [0021](../specs/0021-imbalance-fade-candidate/index.md)
 - [x] Review it (fresh model): `/check review imbalance fade candidate`
 - [x] Document it: `/document imbalance fade candidate`
 
-### 25. Multi coin portfolio · in-progress
+### 25. Multi coin portfolio · done
 `donchian_4h`, the best single BTC candle rule, run on BTC and ETH together in one backtest with one shared margin account, through a fresh grid study and the gate. From spec 0021's follow up: more trades and a second market before any more BTC only rules. The gate gains one stricter check (no coin above 60% of the profit); the BTC holdout was already seen, so the result is labelled that way.
 **Done when:** the lab runs a rule on several coins in one shared account with ETH candles and funding, single coin results stay byte identical, and `donchian_4h_pair` has a recorded gate verdict; no node file changes and every moved hash line is explained by a named module at close out.
 spec [0022](../specs/0022-multi-coin-portfolio/index.md)
@@ -450,10 +450,10 @@ spec [0022](../specs/0022-multi-coin-portfolio/index.md)
   - [x] Thin thread: two coins in one engine and account, merged stream, shared recorder and ruin, per coin funding, report, refusals (AC-3 to AC-10)
   - [x] Plumbing to the gate: bundles carry instruments, `concentration_instrument` with thresholds v2, coin share on the dashboard, multi coin benchmarks (AC-11 to AC-14)
   - [x] Study, holdout, push, gate verdict, results record, close out (AC-15 to AC-18): verdict `fail` recorded 2026-10-29 (promotion `01a186a9`); hash check passes under the amended AC-1 (22 closures moved only through `recording/rows.py`, no node file edited), see spec 0022 `verify.md`
-- [ ] Verify it: `/check verify multi coin portfolio`
-- [ ] Test it: `/test multi coin portfolio`
-- [ ] Review it (fresh model): `/check review multi coin portfolio`
-- [ ] Document it: `/document multi coin portfolio`
+- [x] Verify it: `/check verify multi coin portfolio`
+- [x] Test it: `/test multi coin portfolio`
+- [x] Review it (fresh model): `/check review multi coin portfolio`
+- [x] Document it: `/document multi coin portfolio` (CHANGELOG, 2026-10-29)
 
 ### 17. Hour level strategy candidates · in-progress
 The fallback set: trend following and mean reversion on 1h to 4h candles, tested in the candle lab.

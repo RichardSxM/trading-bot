@@ -1,7 +1,7 @@
 # 0022. Multi coin portfolio: `donchian_4h` on BTC and ETH in one shared account, through a fresh study and the gate
 
 **Date**: 2026-10-28
-**Status**: In Progress
+**Status**: Accepted
 
 ## Summary
 
