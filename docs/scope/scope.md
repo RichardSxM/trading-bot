@@ -30,7 +30,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 15 | Strategy scoring & promotion gate | Slice 6 | done |
 | 16 | Scalping strategy candidates | Slice 7 | done |
 | 22 | Intraday swing candidates | Slice 7 | in-progress |
-| 23 | Intraday trend candidates | Slice 7 | in-progress |
+| 23 | Intraday trend candidates | Slice 7 | done |
 | 24 | Imbalance fade candidate | Slice 7 | done |
 | 25 | Multi coin portfolio | Slice 7 | done |
 | 17 | Hour level strategy candidates | Slice 7 | in-progress |
@@ -407,7 +407,7 @@ spec [0019](../specs/0019-intraday-swing-candidates/index.md)
 - [ ] Review it (fresh model): `/check review intraday swing candidates`
 - [ ] Document it: `/document intraday swing candidates`
 
-### 23. Intraday trend candidates · in-progress
+### 23. Intraday trend candidates · done
 Trend following with no fixed target, so a winner can be many times the round trip cost: a noise area breakout on 30 minute candles, its time of day variant, and a turtle style Donchian channel on 4 hour candles. Same shared base, family, and gate as features 17 and 22.
 **Done when:** each candidate run has a recorded verdict with its gross and cost per trade and its exit reason shares, and every study has been judged again with the final family N.
 spec [0020](../specs/0020-intraday-trend-candidates/index.md)
@@ -418,10 +418,10 @@ spec [0020](../specs/0020-intraday-trend-candidates/index.md)
   - [ ] Time of day variant, only if the checkpoint says run it: `noise_breakout_tod` to a recorded verdict (AC-6, AC-8 to AC-11). Skipped: the checkpoint on 2026-10-26 said skip (`noise_breakout` far below cost per trade).
   - [x] Multi day trend: `donchian_4h` to a recorded verdict (AC-7 to AC-10)
   - [x] Revisions and close out: at most one revision per failed candidate, evaluate every study again with the final family N, scope tick (AC-12, AC-13). One revision, `donchian_4h_r1` on 1 hour bars; all three studies `fail` at final family N 27 (2026-10-27).
-- [ ] Verify it: `/check verify intraday trend candidates`
-- [ ] Test it: `/test intraday trend candidates`
-- [ ] Review it (fresh model): `/check review intraday trend candidates`
-- [ ] Document it: `/document intraday trend candidates`
+- [x] Verify it: `/check verify intraday trend candidates` (PASS 2026-10-27, on main bed1415)
+- [x] Test it: `/test intraday trend candidates` (2026-10-27: 63 core and 31 lab tests pass; added boundary cases for the node configs)
+- [x] Review it (fresh model): `/check review intraday trend candidates` (2026-10-27: approve with nits, sonnet, [review](../reviews/2026-10-27-feat-0020-close-gates.md))
+- [x] Document it: `/document intraday trend candidates`
 
 ### 24. Imbalance fade candidate · done
 `book_imbalance`'s exact mirror: the same lopsided book signal, the opposite side, post only in and out, in the replay lab. From spec 0017's negative gross per trade and research finding that maker orders work against the book imbalance. A 4 day pre check decides whether the full study runs.

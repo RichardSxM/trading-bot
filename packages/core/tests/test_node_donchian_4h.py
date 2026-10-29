@@ -62,3 +62,9 @@ def test_the_node_subscribes_to_4_hour_internal_bars_and_builds_the_rule_from_th
 def test_a_bad_setting_is_refused(change, problem):
     with pytest.raises(ValueError, match=problem):
         _config(**change)
+
+
+def test_the_smallest_allowed_settings_are_accepted():
+    # The look ahead test's loose config (spec 0020 AC-2) relies on entry_bars 2.
+    config = _config(entry_bars=2, stop_atr=D(1))
+    assert (config.entry_bars, config.stop_atr) == (2, D(1))

@@ -93,3 +93,13 @@ The trader saw the `noise_breakout` verdict (`fail`) with its holdout gross per 
 
 - `gate evaluate` again on the VPS at 07:34 to 07:35 UTC (08:34 to 08:35 Amsterdam): `noise_breakout` `fail` (promotion 01a17c48-bc35), `donchian_4h` `fail` (promotion 01a17c48-d7ed), both with final family N 27, pool 27. `donchian_4h_r1` was not run again: its first evaluation at 07:32 UTC already used N 27 and nothing ran after it, so a second run would only write an identical row. `noise_breakout_tod` was skipped at the checkpoint, so it has no study. No pass, so no paper follow up.
 - Hash check (AC-1): `scripts/spikes/hash_check.py` ran in `kfs/lab:s0020` (built at d799ce5; later commits change only docs) against the branch's own `trading_core`. It printed 31 modules. With the 3 new ones removed (`noise_breakout`, `donchian_4h`, `donchian_4h_r1`), the 28 remaining lines have sha256 `1b7e0a32a5c4ce62066c560872ed47d05bc76080ae197c9128374800b134dbc9`, the same as the AC-1 baseline on main 02a0cc5, so 0 existing hashes changed.
+
+## /check verify (2026-10-27)
+
+Run on main bed1415 (after PR #104), images rebuilt there (`kfs/lab:s0020v` with `GIT_COMMIT`). Verdict PASS.
+
+- AC-1: `scripts/spikes/hash_check.py` printed 32 modules. Without the 3 spec 0020 modules and `imbalance_fade`, the 28 lines give `1b7e0a32…dbc9` (the baseline); without only `imbalance_fade`, the 31 give `4982f569…26c2` (spec 0021's baseline). No frozen hash changed.
+- AC-2 to AC-7: core tests for `noise_area`, `noise_breakout`, `donchian` and their nodes, 59 passed; lab `test_intraday_trend_candidates.py` and `test_lookahead.py`, 31 passed.
+- AC-4: building the configs directly (not through `lab study`, so N is unchanged) refused a wrong `bar_spec`, `band_mult` 0, `lookback_days` 0, `entry_bars` 1 and `stop_atr` 0, each with a `ValueError`.
+- AC-8: each study file's adding commit is earlier than its batch's UUIDv7 time (UTC): `noise_breakout` 08:46 vs 08:55 on 2026-10-26, `donchian_4h` 15:49 vs 15:52, `donchian_4h_r1` 00:28 vs 02:04 on 2026-10-27.
+- AC-9 to AC-13: the checkpoint choice, every results field, the skipped `noise_breakout_tod`, the single revision, and the final family N lines are recorded above and in the child specs.
