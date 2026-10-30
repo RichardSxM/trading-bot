@@ -2,8 +2,30 @@
 {% from "components/table.html" import table %}
 {% from "components/pager.html" import pager %}
 {% from "components/states.html" import error_state %}
+{% from "components/button.html" import button %}
 {% block page %}
 <div class="board">
+  {% set jf = journal_form %}
+  <section class="region region--wide" aria-labelledby="journal-h">
+    <header class="region__head"><h2 class="region__title" id="journal-h">Export journal</h2><span class="region__meta">every fill, fee, and funding payment · EUR at the ECB rate · Amsterdam dates, the end inclusive</span></header>
+    <form class="journal-form" method="get" action="/trades/journal.csv">
+      <div class="field">
+        <label class="field__label" for="journal-start">Start</label>
+        <input class="input" id="journal-start" name="start" type="date" value="{{ jf.start }}" max="{{ jf.end }}" required>
+      </div>
+      <div class="field">
+        <label class="field__label" for="journal-end">End</label>
+        <input class="input" id="journal-end" name="end" type="date" value="{{ jf.end }}" max="{{ jf.end }}" required>
+      </div>
+      <div class="field">
+        <label class="field__label" for="journal-mode">Mode</label>
+        <select class="input" id="journal-mode" name="mode">
+          {% for m in jf.modes %}<option value="{{ m }}"{% if m == jf.mode %} selected{% endif %}>{{ m }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="journal-form__actions">{{ button("Download journal.csv", kind="primary", type="submit", glyph="download") }}</div>
+    </form>
+  </section>
   {% if trades_error %}
   <section class="region region--wide" aria-labelledby="trades-h">
     <header class="region__head"><h2 class="region__title" id="trades-h">Trades</h2></header>

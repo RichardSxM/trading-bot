@@ -21,6 +21,7 @@ from dashboard.auth.session import Session
 from dashboard.data.strategies import StrategiesView
 from dashboard.live.poller import Event, Poller
 from dashboard.web.context import AppContext, app_context
+from dashboard.web.journal import journal_form
 from dashboard.web.reconciliations import reconciliations_context
 from dashboard.web.session import SessionDep, session_end_cue
 from dashboard.web.strategies import detail_context, log_context, strategies_context
@@ -54,13 +55,17 @@ PAGE_DATA: Final[dict[str, Callable[[], Mapping[str, object]]]] = {
 
 
 async def trades_data(context: AppContext, page: int = 1, fills_page: int = 1) -> Mapping[str, object]:
-    """The Trades lists for these pages, or ``trades_error`` when Postgres cannot be read (logged)."""
+    """The Trades lists for these pages, or ``trades_error`` when Postgres cannot be read (logged).
+
+    The journal export form (spec 0024 AC-1) renders either way: it reads nothing until you submit it.
+    """
+    form = journal_form(context)
     try:
         view = await context.read_trades(page, fills_page)
     except SQLAlchemyError as exc:
         log.warning("trades read failed", extra={"fields": {"code": "trades_read_failed", "error": type(exc).__name__}})
-        return {"trades_error": True}
-    return trades_context(view, page, fills_page)
+        return {"trades_error": True, **form}
+    return {**trades_context(view, page, fills_page), **form}
 
 
 async def render_page(

@@ -13,11 +13,13 @@ from dashboard.auth.lockout import Lockout
 from dashboard.auth.password import PasswordChecker
 from dashboard.auth.session import SessionCodec
 from dashboard.auth.totp import TotpGuard
+from dashboard.data.journal import JournalExport
 from dashboard.data.strategies import StrategiesView
 from dashboard.data.trades import TradesView
 from dashboard.live.poller import Poller
 from dashboard.live.state import Entry
 from dashboard.settings import DashboardSettings
+from trading_core.journal.bounds import JournalRange
 from trading_core.recording.gate_queries import PromotionLine, StudyDetail
 from trading_core.recording.queries import ReconciliationLine
 
@@ -50,7 +52,8 @@ class AppContext:
     ``read_trades(page, fills_page)`` reads the two Trades lists from Postgres in a thread, and
     ``read_strategies()`` the strategy ranking and paper progress, ``read_study(id)`` one study, and
     ``read_promotions(page)`` the promotion log (spec 0015 AC-18 to AC-21), ``read_reconciliations(page)``
-    the reported Kraken checks (spec 0023 AC-19).
+    the reported Kraken checks (spec 0023 AC-19). ``open_journal(range)`` opens a journal export's snapshot
+    and runs its refusal pass (spec 0024).
     ``trusted_peers`` are the socket peers besides loopback whose client headers key the lockout.
     """
 
@@ -68,6 +71,7 @@ class AppContext:
     read_study: Callable[[UUID], Awaitable[StudyDetail | None]]
     read_promotions: Callable[[int], Awaitable[Sequence[PromotionLine]]]
     read_reconciliations: Callable[[int], Awaitable[Sequence[ReconciliationLine]]]
+    open_journal: Callable[[JournalRange], Awaitable[JournalExport]]
     trusted_peers: frozenset[str] = frozenset()
 
 

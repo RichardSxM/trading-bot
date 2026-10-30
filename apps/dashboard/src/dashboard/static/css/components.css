@@ -578,3 +578,11 @@ time[title] { text-decoration: underline dotted var(--edge); text-underline-offs
 .losses__row dt { color: var(--muted); }
 .losses__row dd { margin: 0; font-variant-numeric: tabular-nums; }
 .losses__unknown, .losses__lost { color: var(--muted); }
+
+/* ---------- Journal export (spec 0024 AC-1) ---------- */
+.journal-form {
+  display: grid; gap: var(--space-16); align-items: end;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  max-width: 56rem; margin-top: var(--space-12);
+}
+.journal-form__actions { display: flex; gap: var(--space-12); }
