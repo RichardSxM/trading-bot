@@ -51,3 +51,32 @@ trading_core.node.vwap_retest 44083de39ddf9f1b452b041dc81f1017ea3ee070315104e413
 - AC-7 on real data: `warmup_seed()` in the same image at 17:25:19 UTC fetched 600 complete candles in 0.78 s, the last closing 17:25:00 UTC (the in progress candle dropped). Fed into `DonchianMidlineRule(20, 3, 200)` and ATR(14), the rule was ready with `ema` 77786.33, `midline` 77326.0, `entry_high` 77592.0, `entry_low` 77060.
 - Not yet run: the laptop trader start (tasks 2 and 5 smoke). On demo it needs a manual `candidate → paper` promote of r1's version first, which `gate promote --manual` takes only from a person at a terminal.
 - Build order note: the spread check and the seed join were written into the node module before the screens ran, so the screens record the node's final code hash (filter off and an empty seed in the lab, so the screened behavior is the same).
+
+## Lab screens (task 3, AC-13), 2026-10-30
+
+Both studies ran on `kfs/lab:s0025` (built at fbba014) from the main checkout's lab catalog, 1,297 days of 5 minute candles from 2022-04-01, `LAB_WORKERS=2`. The studies took 1,892 s and 1,990 s; the screens took 17 s and 16 s. Batches: baseline `01a18dd7-6d03-7668-9ec2-aa9180411daa`, r1 `01a18df4-8d0e-7032-9c1f-958271e3eed2`. "Daily Sharpe" is the screen's annualized walk forward Sharpe over the development runs (`candle_walk_forward_sharpe`).
+
+| Figure | donchian_scalp | donchian_scalp_r1 | r1 minus baseline |
+|---|---|---|---|
+| Screen verdict | fail (walk_forward_sharpe, fee_hurdle, trades_per_day) | fail (walk_forward_sharpe, fee_hurdle, trades_per_day) | same |
+| Trades | 5,382 | 5,002 | −380 |
+| Trades per day (minimum 17) | 4.15 | 3.86 | −0.29 |
+| Net P&L (USD, from 10,000) | −9,996.02 (−99.96 %) | −9,991.05 (−99.91 %) | +4.97 |
+| Gross P&L per trade (USD) | −1.0636 | −1.0031 | +0.0605 |
+| Cost per trade, round trip (USD) | 0.7940 | 0.9953 | +0.2013 |
+| Daily Sharpe (walk forward) | −3.9288 | −5.0948 | −1.1660 |
+| Max drawdown | 99.96 % | 99.91 % | −0.05 points |
+| Win rate | 20.94 % | 18.79 % | −2.15 points |
+| Fees total (USD) | 4,273.41 | 4,978.65 | +705.24 |
+| Profit factor | 0.368 | 0.420 | +0.052 |
+
+Buy and hold over the same span, before costs: +135.13 %.
+
+Read this with care: both accounts were drained to near zero long before the end of the span, so most of the late period has no trades and the totals mostly describe 2022 to 2023.
+
+- Baseline: sizing first returned zero quantity on 2023-03-12. From 2023-10-15 a stop rejected as "in the market" set a permanent `blocked:stop_not_accepted`, and the node refused every entry after that.
+- r1: zero quantity first on 2023-06-30, and the same permanent block from 2023-10-15.
+
+So the r1 minus baseline column compares two strategies that each lost the account. It does not measure the EMA filter and the midline exit over a full span. Neither change turned the gross edge per trade positive. The fee hurdle (gross per trade must exceed 1.5 times cost) fails by a wide margin for both.
+
+AC-13a (spread filter skip rate on the VPS quote ticks) is not run yet. Task 3 stays open until it is.
