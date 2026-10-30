@@ -31,6 +31,13 @@ _Steps derived from spec 0023 acceptance criteria. `/check verify` runs these; `
 - [ ] Overview with a demo position open → the card's top reads Wanted `hold`, Trader and Kraken the same side and size, Kraken with its age under 60 s → AC-18
 - [ ] Stop the trader for 3 minutes (or block its Redis writes) → Kraken reads `Kraken unknown` in red once the exchange snapshot is older than 180 s or gone, never `flat` → AC-18
 - [ ] Click the `kraken check` badge → the Reconciliation page lists the start check and any reconnect check, newest first, each finding with its action → AC-19
+## Demo drill (task 8, laptop, `scripts/restart-drill.sh demo`)
+Ran 2026-10-30 at 9a3e2d0, `placeholder_timed` (version 01a18bf6, promotion 01a18c0c), `MAX_CLOCK_OFFSET_MS=5000`. All five pass.
+- [x] D1: clean restart while flat → start check clean (0 orders, 0 positions, 0 mismatches), one `reconciliations` row `start clean`, `reconciling` clears → AC-1, AC-17, AC-23
+- [x] D8: Kraken cut for 90 s → `stale_feed` and `reconciling` during the cut, a `reconnect` check `clean` when back, `reconciling` clears → AC-3, AC-4
+- [x] D9: Kraken cut across a restart → Nautilus times out connecting, the startup watchdog exits 1 (`reconcile_start_watchdog`) with no backoff, Docker restarts it, a clean check once Kraken is back, healthy → AC-5. The first two runs failed here: before 9a3e2d0 the watchdog ran only in live, then it slept the key check's 300 s before exiting.
+- [x] D10: halted restart → comes back halted, `trader_starts_halted` and `restart_flatten` logged, the start check clean and still halted, Resume lifts it → AC-1, spec 0010
+- [x] D11: `control recheck` → answers executed, `clean` → AC-20
 ## Live drill (task 9, VPS, `LIVE_MODE=drill`)
 - [ ] With `LIVE_MODE=off`, `docker compose run --rm trader python -m trader.drill show` exits 1 naming `LIVE_MODE=drill`, and a live trader refuses to start → AC-22
 - [ ] With `LIVE_MODE=drill`, `control drill-step rest_order` from the dashboard container → one post only buy of the drill size far below the mark on Kraken; the same step again answers `order_open`; `flatten` cancels it → AC-22
