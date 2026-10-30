@@ -64,3 +64,29 @@ Sub decisions, each chosen in the design conversation:
 - **Spread check after the gate and blocks.** A halted or paused trader with a wide spread would otherwise record `spread_wide` and hide the real reason in the journal.
 - **Cold start time stop risk accepted, not fixed.** Running the time stop while the rule warms up would mean overriding the base's `on_bar` exit logic, the riskiest code. The case needs a seed failure and a restart with an open position together, and the ATR stop still protects that position.
 - **Build order: lab screens before the spread filter and the seed.** The screens need only the rule. Running them early answers the fee hurdle question before more code is built. Demo follows whatever the verdict, so nothing is skipped.
+
+## Amendment: two coins (2026-10-30)
+
+*Cross check (Sonnet, read only) found 14 gaps; all fixed as recommended.* The main one: each strategy's frozen stale check adds and clears the shared `STALE_FEED` block for its own coin, so a fresh BTC would clear a stale PEPE's block every second. A trader side wrapper per coin fixes this without touching the frozen `stale.py`. The others: PEPE's average entry price rounded to cents (0.00), the hardcoded `BTC` unit on the card, the card's mixed and `unknown` states, `sides` per row, funding and liquidation details for two coins, a start check for a coin missing from the instrument cache, PEPE sizing tests, the AC-25 outcome, a PEPE flatten test, the demo rollback wording, `order_id_tag` kept out of the version, and the shared trade cap as a risk.
+
+### Context
+
+After both screens failed, you still wanted r1 on the demo, and also on PEPE. The trader was built around one coin: `BTC_PERP` was fixed in `trader/main.py` for the paper strategy, the recording actor, the snapshots, the per order cap, the context feed, and the seed URL. Much of the rest already worked for many coins: the data client loads every instrument, the sandbox sets fees on every instrument, the kill switch attaches every strategy, the loss limits and the guard's exposure sum every position, and every row that needs a coin has `instrument_id`. The frozen strategy code (`node/bar_rule.py` and its closure) takes one `instrument_id` per instance, which fits one instance per coin.
+
+### Options considered
+
+- **One trader, one strategy per coin, shared account (chosen by you).** Pros: one stack, one paper account, one run, and both coins on one dashboard. The frozen strategy code is untouched, because each instance is still single coin. Cons: the trader side modules (recording actor, snapshots) change, and so does the hash check rule. The coins share blocks and budgets.
+- **A second trader service for PEPE only.** Pros: no trader code change beyond the seed URL, and per coin blocks come for free. Cons: a second Compose service, its own Redis keys, paper account, run, and dashboard view; two sandboxes that do not see each other's exposure; and more on the VPS to operate.
+- **One version per coin.** Pros: clean per coin promotions and stats. Cons: two promotes and two run ids on one shared account, which the run and journal model does not expect.
+- **Coin list outside the version.** Pros: simplest. Cons: the record would no longer say which coins a paper run traded, which breaks the rule that a version names what ran.
+
+### Rationale
+
+- **The coin list sits in r1's version only.** Other strategies stay single coin, so their versions and hashes do not move. A change to the set is visible in the promotions, like any other config change.
+- **The full 0.5% per coin, not a split.** Splitting would need a per coin risk value through the frozen sizing, or a trader side override of it. The account wide exposure cap and the loss limits already bound the combined risk, and each coin's trades read like a standalone run.
+- **Shared blocks.** Per coin blocks would mean one `EntryBlocks` per coin, and the dashboard and alerts would have to say which coin is blocked. Failing closed on both is the safer side for a first two coin run. It stays a follow up if PEPE's stale quotes stop BTC too often.
+- **One `positions` snapshot with a list, not a key per coin.** Snapshot names cannot hold a colon (`snapshot_key`), and one key keeps one age check for the whole card. Every row in it keeps today's per position logic.
+- **One recording actor for all coins.** Order, position, and account events are subscribed by topic, so a second actor would record every event twice. Its component id is also fixed.
+- **A PEPE screen after the guard fix.** The off tick check was silently off for PEPE (spec 0022 review). A screen on candles the check never looked at would be weaker evidence. One hundredth of the tick leaves every coin with a tick of `1e-6` or more exactly as today.
+- **The same 0.1 spread value for PEPE, measured once there is data.** Without recorded PEPE quotes, any other value would be a guess. AC-25 sets the rule for amending it.
+- **Both coins in one deploy.** The version holds the coin set, so going BTC first and adding PEPE later would mean two promotes for no extra safety on demo.

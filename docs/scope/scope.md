@@ -468,8 +468,8 @@ spec [0022](../specs/0022-multi-coin-portfolio/index.md)
 - [x] Document it: `/document multi coin portfolio` (CHANGELOG, 2026-10-29)
 
 ### 26. Donchian scalp r1 · in-progress
-`donchian_scalp` plus three ideas from the Donchian blueprint you shared on 2026-10-30: trade only with the 200 bar EMA, exit when a close crosses the channel middle, and skip an entry when the spread is wide against the ATR. It is a new variant, so the frozen `donchian_scalp` stays as the baseline. A seed from Kraken's 5 minute candles makes it ready right after a deploy. Two lab screens compare it with the baseline, then it runs on demo whatever their verdict.
-**Done when:** both screens are recorded with gross and cost per trade, the real spread to ATR distribution is recorded, no existing strategy's hash moved, and the VPS demo runs `donchian_scalp_r1` with a working seed.
+`donchian_scalp` plus three ideas from the Donchian blueprint you shared on 2026-10-30: trade only with the 200 bar EMA, exit when a close crosses the channel middle, and skip an entry when the spread is wide against the ATR. It is a new variant, so the frozen `donchian_scalp` stays as the baseline. A seed from Kraken's 5 minute candles makes it ready right after a deploy. Two lab screens compare it with the baseline, then it runs on demo whatever their verdict. Amended 2026-10-30: one trader runs it on both BTC and PEPE (`PAPER_INSTRUMENTS`), with a PEPE screen too.
+**Done when:** the BTC and PEPE screens are recorded with gross and cost per trade, the real spread to ATR distribution is recorded for both coins, no existing strategy's hash moved, and the VPS demo runs `donchian_scalp_r1` on BTC and PEPE with a working seed for each.
 spec [0025](../specs/0025-donchian-scalp-r1/index.md) · code in [donchian_midline.py](../../packages/core/src/trading_core/strategy/donchian_midline.py), [donchian_scalp_r1.py](../../packages/core/src/trading_core/node/donchian_scalp_r1.py), [trader/warmup.py](../../apps/trader/src/trader/warmup.py)
 
 - [x] Design it (spec): `/architect donchian scalp r1`
@@ -477,7 +477,12 @@ spec [0025](../specs/0025-donchian-scalp-r1/index.md) · code in [donchian_midli
   - [ ] Thin thread: hash baseline, midline rule, r1 node and config, paper wiring, laptop smoke (AC-1 to AC-5, AC-11, AC-12)
   - [ ] Lab screens: registry, two study files, `lab study` and `lab screen`, real spread query, `verify.md` table (AC-13, AC-13a)
   - [ ] Spread filter and warmup seed: entry override, seed checks, fetch, first bar join, alert rule (AC-6 to AC-10)
-  - [ ] Close out and demo: hash comparison, deploy, manual promote, `PAPER_STRATEGY` switch, first decisions checked (AC-5, AC-14)
+  - [ ] Two coin thread: `PAPER_INSTRUMENTS`, one r1 per coin, blocks wrapper, version, recording, risk caps (AC-15 to AC-19)
+  - [ ] Seed per coin (AC-20)
+  - [ ] Snapshots and dashboard: `positions` snapshot, a card row per coin (AC-21)
+  - [ ] Lab: off tick guard per coin, PEPE screen (AC-23, AC-24)
+  - [ ] Close out and demo: hash comparison, deploy, manual promote of the two coin version, `PAPER_STRATEGY`, `PAPER_INSTRUMENTS` and `RECORDER_INSTRUMENTS`, first decisions checked for both coins (AC-5, AC-13a, AC-14, AC-22)
+  - [ ] PEPE spread check after 7 recorded days (AC-25)
 - [ ] Verify it: `/check verify donchian scalp r1`
 - [ ] Test it: `/test donchian scalp r1`
 - [ ] Review it (fresh model): `/check review donchian scalp r1`
