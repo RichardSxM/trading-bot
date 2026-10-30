@@ -1,5 +1,6 @@
 """covers: spec 0025 AC-7 (the fetch window and a good seed), AC-9 (retries, then an empty seed and one
-``warmup_seed_failed`` warning the alert rule catches; it never raises).
+``warmup_seed_failed`` warning the alert rule catches; it never raises), AC-20 (one fetch per coin from that
+coin's candles, the coin on the warning, and a failed coin leaving the others seeded).
 
 The fetch is scripted: no request leaves the test.
 """
@@ -12,13 +13,16 @@ from email.message import Message
 
 import pytest
 
-from trader.warmup import CHARTS_URL, SEED_BARS, warmup_seed
+from trader.warmup import SEED_BARS, warmup_seed, warmup_seeds
 from trading_core.alerts.model import Observation
 from trading_core.alerts.rules import first_match
 
 INTERVAL_MS = 300_000
 NOW_S = int(datetime(2026, 10, 30, 12, 2, 30, tzinfo=UTC).timestamp())
 NOW_NS = NOW_S * 1_000_000_000
+BTC = "PF_XBTUSD.KRAKEN"
+PEPE = "PF_PEPEUSD.KRAKEN"
+BTC_URL = "https://futures.kraken.com/api/charts/v1/trade/PF_XBTUSD/5m"
 
 
 def _body(count=620, more=False):
@@ -57,12 +61,12 @@ class _Script:
         self.waits.append(seconds)
 
 
-def _seed(script):
-    return warmup_seed(lambda: NOW_NS, script.get, script.sleep)
+def _seed(script, coin=BTC):
+    return warmup_seed(coin, lambda: NOW_NS, script.get, script.sleep)
 
 
 def _http(code):
-    return urllib.error.HTTPError(CHARTS_URL, code, "x", Message(), None)
+    return urllib.error.HTTPError(BTC_URL, code, "x", Message(), None)
 
 
 def _failures(caplog):
@@ -77,7 +81,7 @@ def test_a_good_fetch_gives_the_latest_600_complete_candles_from_one_request():
     assert len(seed) == SEED_BARS
     assert seed[-1].ts_ns == (NOW_S - 150) * 1_000_000_000  # the 11:55 candle, closed at 12:00
     [(url, timeout)] = script.urls
-    assert url == f"{CHARTS_URL}?from={NOW_S - 620 * 300}&to={NOW_S}"
+    assert url == f"{BTC_URL}?from={NOW_S - 620 * 300}&to={NOW_S}"
     assert timeout == 5.0
 
 
@@ -99,6 +103,7 @@ def test_a_fetch_that_times_out_every_try_starts_without_a_seed_and_warns_once(c
     [warning] = _failures(caplog)
     assert warning.levelname == "WARNING"
     assert warning.fields["reason"] == "fetch_failed"
+    assert warning.fields["instrument"] == BTC
     obs = Observation(
         source="log:trader",
         service="trader",
@@ -143,6 +148,28 @@ def test_an_unexpected_error_never_leaves_startup(caplog):
         raise RuntimeError("boom")
 
     with caplog.at_level(logging.WARNING):
-        assert warmup_seed(lambda: NOW_NS, broken, lambda s: None) == ()
+        assert warmup_seed(BTC, lambda: NOW_NS, broken, lambda s: None) == ()
 
     assert [r.fields["reason"] for r in _failures(caplog)] == ["fetch_failed"]
+
+
+def test_a_coin_fetches_its_own_candles():
+    script = _Script(_body())
+
+    assert len(_seed(script, PEPE)) == SEED_BARS
+    [(url, _)] = script.urls
+    assert url == f"https://futures.kraken.com/api/charts/v1/trade/PF_PEPEUSD/5m?from={NOW_S - 620 * 300}&to={NOW_S}"
+
+
+def test_each_coin_is_fetched_in_turn_and_a_failed_coin_alone_starts_without_a_seed(caplog):
+    # PEPE (first in the list) is refused, BTC still fetches after it.
+    script = _Script(b"<html>busy</html>", _body())
+
+    with caplog.at_level(logging.WARNING):
+        seeds = warmup_seeds([PEPE, BTC], lambda coin: _seed(script, coin))
+
+    assert [url.split("/")[-2] for url, _ in script.urls] == ["PF_PEPEUSD", "PF_XBTUSD"]
+    assert seeds[PEPE] == ()
+    assert len(seeds[BTC]) == SEED_BARS
+    [warning] = _failures(caplog)
+    assert (warning.fields["instrument"], warning.fields["reason"]) == (PEPE, "not_json")

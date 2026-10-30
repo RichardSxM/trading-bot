@@ -478,7 +478,7 @@ spec [0025](../specs/0025-donchian-scalp-r1/index.md) · code in [donchian_midli
   - [ ] Lab screens: registry, two study files, `lab study` and `lab screen`, real spread query, `verify.md` table (AC-13, AC-13a)
   - [ ] Spread filter and warmup seed: entry override, seed checks, fetch, first bar join, alert rule (AC-6 to AC-10)
   - [x] Two coin thread: `PAPER_INSTRUMENTS`, one r1 per coin, blocks wrapper, version, recording, risk caps (AC-15 to AC-19)
-  - [ ] Seed per coin (AC-20)
+  - [x] Seed per coin (AC-20)
   - [ ] Snapshots and dashboard: `positions` snapshot, a card row per coin (AC-21)
   - [ ] Lab: off tick guard per coin, PEPE screen (AC-23, AC-24)
   - [ ] Close out and demo: hash comparison, deploy, manual promote of the two coin version, `PAPER_STRATEGY`, `PAPER_INSTRUMENTS` and `RECORDER_INSTRUMENTS`, first decisions checked for both coins (AC-5, AC-13a, AC-14, AC-22)

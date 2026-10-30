@@ -59,7 +59,7 @@ from trader.coin_blocks import coin_blocks
 from trader.instrument_check import InstrumentCheck
 from trader.paper_strategy import StrategySettings, build_paper_strategy, paper_version
 from trader.snapshot_writer import log_writer_crash, write_heartbeats, write_snapshot
-from trader.warmup import warmup_seed
+from trader.warmup import warmup_seeds
 from trading_core import env_guard
 from trading_core.boot import boot
 from trading_core.control.consumer import ControlConsumer, Execute, Outcome
@@ -1041,7 +1041,7 @@ def main() -> None:
 
     # Before the node exists, never on its event loop; a failure is an empty seed and a warning (spec 0025 AC-9).
     r1 = paper is not None and settings.paper_strategy == donchian_scalp_r1.STRATEGY_NAME
-    seeds = {BTC_PERP: warmup_seed()} if r1 else {}
+    seeds = warmup_seeds(settings.instrument_list) if r1 else {}
 
     code = run_node(
         config,

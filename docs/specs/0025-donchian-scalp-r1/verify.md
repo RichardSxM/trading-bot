@@ -52,6 +52,7 @@ trading_core.node.vwap_retest 44083de39ddf9f1b452b041dc81f1017ea3ee070315104e413
 - Not yet run: the laptop trader start (tasks 2 and 5 smoke). On demo it needs a manual `candidate → paper` promote of r1's version first, which `gate promote --manual` takes only from a person at a terminal.
 - Build order note: the spread check and the seed join were written into the node module before the screens ran, so the screens record the node's final code hash (filter off and an empty seed in the lab, so the screened behavior is the same).
 - Task 7 closure check (AC-5 amendment): `code_closure` over every `trading_core.node` module shows `node/recording.py`, `node/paper_snapshots.py`, `node/context_feed.py` and `lab/candles.py` in no strategy's closure. They appear only in the closures of `node.recording` and `node.paper_snapshots`, the trader side actors. Tests after task 7: core 2,057 passed, 5 skipped (10 new two coin node tests); trader 161 passed; lab 317 passed; mypy strict clean.
+- Task 8 (AC-20): `warmup_seeds` fetches each coin's candles from its own symbol, one coin after another; a coin that fails gets an empty seed while the others still seed, and `warmup_seed_failed` names the `instrument`. Trader 163 passed (2 new seed tests); mypy strict clean.
 
 ## Lab screens (task 3, AC-13), 2026-10-30
 
