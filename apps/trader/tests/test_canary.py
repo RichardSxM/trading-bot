@@ -39,6 +39,8 @@ def run(tmp_path_factory):
         "PATH": os.environ["PATH"],
         "HOME": str(folder),
         "TRADING_ENV": "live",
+        # A live node runs only in drill mode (spec 0023 AC-22).
+        "LIVE_MODE": "drill",
         "PROCESS_NAME": "trader",
         "LOG_LEVEL": "DEBUG",
         "SECRETS_DIR_IN_CONTAINER": str(folder),
