@@ -1,6 +1,6 @@
 """covers: ``PAPER_STRATEGY`` picks the demo paper strategy (``placeholder_timed`` by default, ``donchian_4h``
-at the ``donchian_4h_pair`` study's chosen point, or ``donchian_scalp``, that point on 5 minute bars), with its
-own strategy version."""
+at the ``donchian_4h_pair`` study's chosen point, ``donchian_scalp``, that point on 5 minute bars, or
+``donchian_scalp_r1``, spec 0025 AC-11), with its own strategy version."""
 
 from decimal import Decimal
 from uuid import uuid4
@@ -14,15 +14,18 @@ from trader.paper_strategy import (
     build_paper_strategy,
     donchian_config,
     donchian_scalp_config,
+    donchian_scalp_r1_config,
     paper_version,
 )
 from trading_core import versioning
 from trading_core.node.donchian_4h import Donchian4h
 from trading_core.node.donchian_scalp import DonchianScalp
+from trading_core.node.donchian_scalp_r1 import DonchianScalpR1
 from trading_core.node.funding import FundingLedger
 from trading_core.node.kraken import BTC_PERP
 from trading_core.node.placeholder import PlaceholderTimed
 from trading_core.node.strategy import PauseGate
+from trading_core.strategy.bar_rule import BarInput
 from trading_core.strategy.blocks import EntryBlocks
 
 
@@ -31,9 +34,9 @@ def demo(monkeypatch):
     monkeypatch.setenv("TRADING_ENV", "demo")
 
 
-def _build(settings):
+def _build(settings, seed=()):
     return build_paper_strategy(
-        settings, uuid4(), BTC_PERP, PauseGate(), EntryBlocks(), lambda item: None, FundingLedger(Decimal(0))
+        settings, uuid4(), BTC_PERP, PauseGate(), EntryBlocks(), lambda item: None, FundingLedger(Decimal(0)), seed
     )
 
 
@@ -132,3 +135,58 @@ def test_donchian_is_refused_outside_demo(demo, monkeypatch):
 
     with pytest.raises(ValueError, match="live taker fee"):
         donchian_config(settings, uuid4(), BTC_PERP)
+
+
+def test_donchian_scalp_r1_records_every_setting_and_takes_the_seed(demo, monkeypatch):
+    monkeypatch.setenv("PAPER_STRATEGY", "donchian_scalp")
+    scalp = paper_version(TraderSettings())
+    monkeypatch.setenv("PAPER_STRATEGY", "donchian_scalp_r1")
+    settings = TraderSettings()
+    seed = [BarInput(300_000_000_000, Decimal(1), Decimal(2), Decimal(1), Decimal(1), Decimal(1))]
+
+    version = paper_version(settings)
+    strategy, view = _build(settings, seed)
+
+    assert version.name == "donchian_scalp_r1"
+    assert version.kind.value == "scalping"
+    assert {key: version.config[key] for key in scalp.config if not key.startswith("risk_")} == {
+        **{key: value for key, value in scalp.config.items() if not key.startswith("risk_")},
+        "paper_strategy": "donchian_scalp_r1",
+    }
+    assert (version.config["ema_period"], version.config["spread_max_atr"]) == (200, "0.1")
+    assert version.config["risk_per_trade"] == str(settings.risk_per_trade)
+    assert version.frozen == versioning.freeze(DonchianScalpR1.__module__, version.config)
+    assert version.frozen.code_hash != scalp.frozen.code_hash
+    assert isinstance(strategy, DonchianScalpR1)
+    assert isinstance(view, BarRuleView)
+    assert str(strategy.bar_type) == f"{BTC_PERP}-5-MINUTE-LAST-INTERNAL"
+    assert strategy._seed == tuple(seed)
+
+
+def test_donchian_scalp_r1_builds_the_demo_config(demo, monkeypatch):
+    monkeypatch.setenv("PAPER_STRATEGY", "donchian_scalp_r1")
+    settings = TraderSettings()
+
+    config = donchian_scalp_r1_config(settings, uuid4(), BTC_PERP)
+
+    assert (config.entry_bars, config.stop_atr, config.time_stop_bars) == (20, Decimal(3), 60)
+    assert (config.ema_period, config.spread_max_atr) == (200, Decimal("0.1"))
+    assert config.taker_fee == settings.sandbox_taker_fee
+
+
+def test_donchian_scalp_r1_is_refused_outside_demo(demo, monkeypatch):
+    monkeypatch.setenv("PAPER_STRATEGY", "donchian_scalp_r1")
+    settings = TraderSettings().model_copy(update={"trading_env": "live"})
+
+    with pytest.raises(ValueError, match="live taker fee"):
+        donchian_scalp_r1_config(settings, uuid4(), BTC_PERP)
+
+
+def test_only_r1_takes_a_seed(demo, monkeypatch):
+    monkeypatch.setenv("PAPER_STRATEGY", "donchian_scalp")
+    seed = [BarInput(300_000_000_000, Decimal(1), Decimal(2), Decimal(1), Decimal(1), Decimal(1))]
+
+    strategy, _ = _build(TraderSettings(), seed)
+
+    assert isinstance(strategy, DonchianScalp)
+    assert not hasattr(strategy, "_seed")

@@ -3,12 +3,14 @@
 ``placeholder_timed`` (the default) is the spec 0006 thread: it enters every interval and exits on a timer.
 ``donchian_4h`` is the candle lab's best rule (spec 0020.3), at the grid point the ``donchian_4h_pair`` study
 chose (spec 0022 *Results*). ``donchian_scalp`` is the same rule and point on 5 minute bars, for quicker
-trades. Neither passed the gate, so on demo each paper trades only after a manual ``candidate → paper``
-promote; live never runs them (the config builders refuse). Both build their own bars from trades, so they
-need about 21 bars after every start before the first entry (3.5 days on 4 hours, under 2 hours on 5 minutes).
+trades. ``donchian_scalp_r1`` (spec 0025) adds an EMA 200 trend filter, a midline exit, and a spread check,
+and is seeded from Kraken's candles at start (``trader.warmup``). None passed the gate, so on demo each paper
+trades only after a manual ``candidate → paper`` promote; live never runs them (the config builders refuse).
+They build their own bars from trades, so without a seed they need about 21 bars after every start before
+the first entry (3.5 days on 4 hours, under 2 hours on 5 minutes), and r1 about 200 (17 hours).
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Final, Literal
@@ -18,10 +20,11 @@ from nautilus_trader.model.enums import OrderType
 from nautilus_trader.model.orders import Order
 
 from trading_core import versioning
-from trading_core.node import donchian_4h, donchian_scalp, placeholder
+from trading_core.node import donchian_4h, donchian_scalp, donchian_scalp_r1, placeholder
 from trading_core.node.bar_rule import BarRuleStrategy, Phase
 from trading_core.node.donchian_4h import Donchian4h, Donchian4hConfig
 from trading_core.node.donchian_scalp import DonchianScalp, DonchianScalpConfig
+from trading_core.node.donchian_scalp_r1 import DonchianScalpR1, DonchianScalpR1Config
 from trading_core.node.funding import FundingLedger
 from trading_core.node.paper_snapshots import PaperStrategyView
 from trading_core.node.placeholder import PlaceholderConfig, PlaceholderTimed
@@ -30,10 +33,11 @@ from trading_core.recording.enums import StrategyKind
 from trading_core.recording.rows import JsonObject
 from trading_core.recording.spool import WriteItem
 from trading_core.settings import ContextSettings, PaperLoopSettings
+from trading_core.strategy.bar_rule import BarInput
 from trading_core.strategy.blocks import EntryBlocks
 from trading_core.versioning import FrozenHashes
 
-type PaperStrategyName = Literal["placeholder_timed", "donchian_4h", "donchian_scalp"]
+type PaperStrategyName = Literal["placeholder_timed", "donchian_4h", "donchian_scalp", "donchian_scalp_r1"]
 
 # The donchian_4h_pair study's chosen grid point (spec 0022 Results: grid-2), also used by donchian_scalp.
 DONCHIAN_ENTRY_BARS: Final = 20
@@ -42,6 +46,9 @@ DONCHIAN_STOP_ATR: Final = Decimal(3)
 DONCHIAN_ATR_PERIOD: Final = 14
 DONCHIAN_ATR_FLOOR_MULT: Final = Decimal(1)
 DONCHIAN_TIME_STOP_BARS: Final = 60
+# donchian_scalp_r1's additions (spec 0025): the trend EMA, and the demo's spread limit in ATRs.
+R1_EMA_PERIOD: Final = 200
+R1_SPREAD_MAX_ATR: Final = Decimal("0.1")
 
 
 class StrategySettings(PaperLoopSettings, ContextSettings):
@@ -62,6 +69,14 @@ class PaperVersion:
 
 def paper_version(settings: StrategySettings) -> PaperVersion:
     """The version for ``PAPER_STRATEGY``; ``placeholder_timed``'s config is unchanged by this setting."""
+    if settings.paper_strategy == donchian_scalp_r1.STRATEGY_NAME:
+        r1_config: JsonObject = {
+            **_donchian_version_config(settings, donchian_scalp_r1.STRATEGY_NAME, donchian_scalp_r1.BAR_SPEC),
+            "ema_period": R1_EMA_PERIOD,
+            "spread_max_atr": str(R1_SPREAD_MAX_ATR),
+        }
+        frozen = versioning.freeze(DonchianScalpR1.__module__, r1_config)
+        return PaperVersion(donchian_scalp_r1.STRATEGY_NAME, StrategyKind.SCALPING, r1_config, frozen)
     if settings.paper_strategy == donchian_scalp.STRATEGY_NAME:
         config = _donchian_version_config(settings, donchian_scalp.STRATEGY_NAME, donchian_scalp.BAR_SPEC)
         frozen = versioning.freeze(DonchianScalp.__module__, config)
@@ -200,6 +215,43 @@ def donchian_scalp_config(settings: StrategySettings, run_id: UUID, instrument_i
     )
 
 
+def donchian_scalp_r1_config(settings: StrategySettings, run_id: UUID, instrument_id: str) -> DonchianScalpR1Config:
+    """``donchian_scalp_r1`` (spec 0025) with the EMA 200, the 0.1 ATR spread limit, and the ``RISK_*`` settings.
+
+    Raises ``ValueError`` outside demo.
+    """
+    _demo_only(settings)
+    return DonchianScalpR1Config(
+        env=settings.trading_env,
+        run_id=str(run_id),
+        instrument_id=instrument_id,
+        bar_spec=donchian_scalp_r1.BAR_SPEC,
+        entry_bars=DONCHIAN_ENTRY_BARS,
+        stop_atr=DONCHIAN_STOP_ATR,
+        atr_period=DONCHIAN_ATR_PERIOD,
+        atr_floor_mult=DONCHIAN_ATR_FLOOR_MULT,
+        time_stop_bars=DONCHIAN_TIME_STOP_BARS,
+        ema_period=R1_EMA_PERIOD,
+        spread_max_atr=R1_SPREAD_MAX_ATR,
+        max_order_notional_usd=settings.risk_max_order_notional_usd,
+        max_leverage=settings.risk_max_leverage,
+        max_total_exposure_usd=settings.risk_max_total_exposure_usd,
+        risk_per_trade=settings.risk_per_trade,
+        maintenance_margin_rate=settings.risk_maintenance_margin_rate,
+        min_liq_distance_pct=settings.risk_min_liq_distance_pct,
+        liq_stop_multiple=settings.risk_liq_stop_multiple,
+        stop_slippage_bps=settings.risk_stop_slippage_bps,
+        taker_fee=settings.sandbox_taker_fee,
+        stale_quote_s=settings.risk_stale_quote_s,
+        use_market_context=True,
+        context_max_age_mark_s=settings.context_max_age_mark_s,
+        context_max_age_index_s=settings.context_max_age_index_s,
+        context_max_age_open_interest_s=settings.context_max_age_open_interest_s,
+        context_max_age_funding_s=settings.context_max_age_funding_s,
+        context_liquidation_window_s=settings.context_liquidation_window_s,
+    )
+
+
 class BarRuleView:
     """``PaperStrategyView`` over a ``BarRuleStrategy``, read from its phase and the cache.
 
@@ -241,8 +293,12 @@ def build_paper_strategy(
     blocks: EntryBlocks,
     record: Callable[[WriteItem], None],
     ledger: FundingLedger,
+    seed: Sequence[BarInput] = (),
 ) -> tuple[KfsStrategy, PaperStrategyView]:
-    """The ``PAPER_STRATEGY`` strategy and the view the snapshots read from it."""
+    """The ``PAPER_STRATEGY`` strategy and the view the snapshots read from it; only r1 takes the ``seed``."""
+    if settings.paper_strategy == donchian_scalp_r1.STRATEGY_NAME:
+        r1 = DonchianScalpR1(donchian_scalp_r1_config(settings, run_id, instrument_id), gate, blocks, record, seed)
+        return r1, BarRuleView(r1)
     if settings.paper_strategy == donchian_scalp.STRATEGY_NAME:
         scalp = DonchianScalp(donchian_scalp_config(settings, run_id, instrument_id), gate, blocks, record)
         return scalp, BarRuleView(scalp)
