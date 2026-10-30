@@ -1,9 +1,11 @@
 """covers: spec 0023 Interface surface, ``python -m trader.drill`` (drills D4, D6, D7, D12): it refuses unless
 ``TRADING_ENV=live`` and ``LIVE_MODE=drill``; ``foreign-order`` rests a post only buy of the drill size far below
 the mark and ``foreign-position`` buys the drill size at market, both under a ``drill-foreign-<ns>`` id the trader
-never saw; ``cancel-stop`` cancels the resting reduce only stops; ``show`` prints Kraken's view."""
+never saw; ``cancel-stop`` cancels the resting reduce only stops; ``extra-stop`` rests a second full size stop below the
+lowest one (D12); ``show`` prints Kraken's view."""
 
 import asyncio
+from dataclasses import replace
 from decimal import Decimal
 
 import pytest
@@ -41,7 +43,7 @@ class FakeKraken:
     def __init__(self, orders=(), positions=(), minimum=None):
         self._orders, self._positions = list(orders), list(positions)
         self._spec = InstrumentSpec(Decimal("0.0001"), minimum, Decimal(1))
-        self.bought, self.cancelled = [], []
+        self.bought, self.cancelled, self.stopped = [], [], []
 
     async def spec(self, instrument_id):
         return self._spec
@@ -57,6 +59,9 @@ class FakeKraken:
 
     async def buy(self, instrument_id, client_order_id, quantity, price):
         self.bought.append((instrument_id, client_order_id, quantity, price))
+
+    async def sell_stop(self, instrument_id, client_order_id, quantity, trigger):
+        self.stopped.append((instrument_id, client_order_id, quantity, trigger))
 
     async def cancel(self, order):
         self.cancelled.append(order.venue_order_id)
@@ -77,7 +82,7 @@ def test_it_refuses_outside_live_drill_mode(env, mode, action):
 
     with pytest.raises(DrillRefused, match="LIVE_MODE=drill"):
         _run(action, kraken, _settings(env, mode))
-    assert (kraken.bought, kraken.cancelled) == ([], [])
+    assert (kraken.bought, kraken.cancelled, kraken.stopped) == ([], [], [])
 
 
 def test_the_key_files_are_read_only_in_drill_mode():
@@ -137,6 +142,30 @@ def test_cancel_stop_cancels_only_the_reduce_only_stops():
 def test_cancel_stop_with_no_stop_is_refused():
     with pytest.raises(DrillRefused, match="no reduce only stop"):
         _run("cancel-stop", FakeKraken(orders=[ENTRY]))
+
+
+def test_extra_stop_rests_a_second_full_size_stop_below_the_lowest_one():
+    lower = replace(STOP, client_order_id="O-1-stop-2", trigger_price=Decimal(74_000))
+    kraken = FakeKraken(orders=[STOP, lower, ENTRY], positions=[HELD])
+
+    result = _run("extra-stop", kraken)
+
+    # 74 000 x 0.98 = 72 520 on the 1 USD tick, for Kraken's whole position.
+    assert kraken.stopped == [(BTC_PERP, f"drill-foreign-{NS}", Decimal("0.0001"), Decimal(72520))]
+    assert result["trigger_price"] == "72520"
+    assert (kraken.bought, kraken.cancelled) == ([], [])
+
+
+@pytest.mark.parametrize(
+    ("orders", "positions", "reason"),
+    [([STOP], [], "no long position"), ([ENTRY], [HELD], "no reduce only stop")],
+)
+def test_extra_stop_needs_a_long_position_and_a_stop(orders, positions, reason):
+    kraken = FakeKraken(orders=orders, positions=positions)
+
+    with pytest.raises(DrillRefused, match=reason):
+        _run("extra-stop", kraken)
+    assert kraken.stopped == []
 
 
 def test_show_prints_kraken_s_orders_and_positions():

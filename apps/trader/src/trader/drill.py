@@ -1,4 +1,4 @@
-"""``python -m trader.drill <foreign-order|foreign-position|cancel-stop|show>``: the live drill's hand tools
+"""``python -m trader.drill <foreign-order|foreign-position|cancel-stop|extra-stop|show>``: the live drill's hand tools
 (spec 0023 Interface surface, drills D4, D6, D7, D12).
 
 It talks to Kraken directly through the Kraken Futures HTTP client, with the keys from the secret
@@ -10,6 +10,9 @@ files, behind the trader's back, so the trader meets orders and positions it nev
   Refused while Kraken already holds a position on the instrument, so the drill never holds two.
 - ``cancel-stop``: cancels every reduce only stop resting on the instrument (D6, D12). Exits 1 when
   there is none.
+- ``extra-stop``: a second reduce only sell stop for Kraken's whole long position, ``DRILL_STOP_PCT`` below the
+  lowest stop already resting, client order id ``drill-foreign-<ns>`` (D12: AC-9 counts extra stops as
+  ``stop_size_mismatch``, and the drill size is too small to halve). Exits 1 without a long position and a stop.
 - ``show``: Kraken's open orders and positions.
 
 Each prints one JSON line of what Kraken returned. It refuses, exit 1, unless ``TRADING_ENV=live`` and
@@ -36,12 +39,13 @@ from trading_core.node.reconcile import (
     report_order_view,
     report_position_view,
 )
-from trading_core.reconcile.drill import drill_size, rest_price
+from trading_core.reconcile.drill import drill_size, rest_price, stop_trigger
 from trading_core.reconcile.views import OrderView, PositionView
+from trading_core.recording.enums import PositionSide
 from trading_core.secrets import KRAKEN_API_KEY, KRAKEN_API_SECRET
 from trading_core.settings import ReconcileSettings
 
-ACTIONS: Final = ("foreign-order", "foreign-position", "cancel-stop", "show")
+ACTIONS: Final = ("foreign-order", "foreign-position", "cancel-stop", "extra-stop", "show")
 USAGE: Final = f"usage: python -m trader.drill <{'|'.join(ACTIONS)}>"
 FOREIGN_PREFIX: Final = "drill-foreign-"
 STOP_TYPES: Final = frozenset({"stop_market", "stop_limit"})
@@ -77,6 +81,10 @@ class DrillKraken(Protocol):
 
     async def buy(self, instrument_id: str, client_order_id: str, quantity: Decimal, price: Decimal | None) -> None:
         """A post only limit buy at ``price``, or a market buy when it is None."""
+        ...
+
+    async def sell_stop(self, instrument_id: str, client_order_id: str, quantity: Decimal, trigger: Decimal) -> None:
+        """A reduce only stop market sell triggered at ``trigger``."""
         ...
 
     async def cancel(self, order: OrderView) -> None: ...
@@ -150,6 +158,21 @@ class PyO3DrillKraken:
             post_only=price is not None,
         )
 
+    async def sell_stop(self, instrument_id: str, client_order_id: str, quantity: Decimal, trigger: Decimal) -> None:
+        """A reduce only stop market sell triggered at ``trigger``."""
+        await self._load()
+        await self._http.submit_order(
+            self._account_id,
+            nautilus_pyo3.InstrumentId.from_str(instrument_id),
+            nautilus_pyo3.ClientOrderId(client_order_id),
+            nautilus_pyo3.OrderSide.SELL,
+            nautilus_pyo3.OrderType.STOP_MARKET,
+            nautilus_pyo3.Quantity.from_str(str(quantity)),
+            nautilus_pyo3.TimeInForce.GTC,
+            trigger_price=nautilus_pyo3.Price.from_str(str(trigger)),
+            reduce_only=True,
+        )
+
     async def cancel(self, order: OrderView) -> None:
         """Cancel one order by its venue order id."""
         await self._reports.cancel(order)
@@ -187,18 +210,49 @@ async def foreign_position(kraken: DrillKraken, now_ns: int, instrument_id: str 
     return {"sent": "market_buy", "client_order_id": client_order_id, "quantity": str(size)}
 
 
-async def cancel_stop(kraken: DrillKraken, instrument_id: str = BTC_PERP) -> dict[str, object]:
-    """Cancel every reduce only stop resting on ``instrument_id`` (D6); ``DrillRefused`` when there is none."""
-    stops = [
+async def _resting_stops(kraken: DrillKraken, instrument_id: str) -> list[OrderView]:
+    return [
         o
         for o in await kraken.orders()
         if o.instrument_id == instrument_id and o.reduce_only and o.order_type in STOP_TYPES
     ]
+
+
+async def cancel_stop(kraken: DrillKraken, instrument_id: str = BTC_PERP) -> dict[str, object]:
+    """Cancel every reduce only stop resting on ``instrument_id`` (D6); ``DrillRefused`` when there is none."""
+    stops = await _resting_stops(kraken, instrument_id)
     if not stops:
         raise DrillRefused(f"no reduce only stop rests on {instrument_id}")
     for stop in stops:
         await kraken.cancel(stop)
     return {"cancelled": [_order(o) for o in stops]}
+
+
+async def extra_stop(
+    kraken: DrillKraken, settings: ReconcileSettings, now_ns: int, instrument_id: str = BTC_PERP
+) -> dict[str, object]:
+    """Rest a second reduce only sell stop for Kraken's whole long position, ``DRILL_STOP_PCT`` below the lowest
+    stop already there (D12); ``DrillRefused`` without a long position or without a stop."""
+    held = [
+        p
+        for p in await kraken.positions()
+        if p.instrument_id == instrument_id and p.side is PositionSide.LONG and p.quantity > 0
+    ]
+    if not held:
+        raise DrillRefused(f"Kraken holds no long position on {instrument_id}: run the open_position step first")
+    triggers = [o.trigger_price for o in await _resting_stops(kraken, instrument_id) if o.trigger_price is not None]
+    if not triggers:
+        raise DrillRefused(f"no reduce only stop rests on {instrument_id} to add a second one below")
+    spec = await kraken.spec(instrument_id)
+    trigger = stop_trigger(min(triggers), settings.drill_stop_pct, spec.price_increment)
+    client_order_id = foreign_id(now_ns)
+    await kraken.sell_stop(instrument_id, client_order_id, held[0].quantity, trigger)
+    return {
+        "sent": "stop_market_sell",
+        "client_order_id": client_order_id,
+        "quantity": str(held[0].quantity),
+        "trigger_price": str(trigger),
+    }
 
 
 async def show(kraken: DrillKraken) -> dict[str, object]:
@@ -237,6 +291,8 @@ async def run(
         return await foreign_position(kraken, now_ns())
     if action == "cancel-stop":
         return await cancel_stop(kraken)
+    if action == "extra-stop":
+        return await extra_stop(kraken, settings, now_ns())
     if action == "show":
         return await show(kraken)
     raise DrillRefused(USAGE)
