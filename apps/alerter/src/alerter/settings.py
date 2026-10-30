@@ -1,6 +1,10 @@
 """The alerter's settings and the secrets it loads, which depend on the delivery mode (spec 0013 AC-20)."""
 
+from datetime import UTC, date, datetime
 from pathlib import Path
+from urllib.parse import urlsplit
+
+from pydantic import Field, field_validator
 
 from trading_core.alerts.engine import EngineConfig
 from trading_core.secrets import (
@@ -23,6 +27,26 @@ class AlerterSettings(AlertSettings):
 
     alerts_docker_url: str = "http://docker-proxy:2375"
     alerts_host_log_dir: Path = Path("/host/kfs-log")
+    # The daily ECB rate (spec 0024 AC-15, AC-17): where to fetch it, the first date to backfill,
+    # and how many calendar days old the newest rate may get before ``fx_rates_stale`` opens.
+    fx_ecb_url: str = "https://data-api.ecb.europa.eu/service/data/EXR/D.USD.EUR.SP00.A"
+    fx_history_from: date = date(2026, 1, 1)
+    fx_stale_days: int = Field(default=6, ge=1, le=14)
+
+    @field_validator("fx_ecb_url")
+    @classmethod
+    def _https(cls, value: str) -> str:
+        parts = urlsplit(value)
+        if parts.scheme != "https" or not parts.netloc or parts.query:
+            raise ValueError("FX_ECB_URL must be an https URL without a query")
+        return value
+
+    @field_validator("fx_history_from")
+    @classmethod
+    def _not_future(cls, value: date) -> date:
+        if value > datetime.now(UTC).date():
+            raise ValueError("FX_HISTORY_FROM must not be in the future")
+        return value
 
 
 def alerter_secrets(settings: AlerterSettings) -> tuple[str, ...]:

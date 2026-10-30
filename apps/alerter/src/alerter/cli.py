@@ -16,13 +16,14 @@ import httpx
 from sqlalchemy.exc import SQLAlchemyError
 
 from alerter.delivery import Deliverer
-from alerter.main import deliverer, repository, serve
+from alerter.main import deliverer, serve, sessions
 from alerter.service import ALL_TIERS, utc_now
 from alerter.settings import AlerterSettings, alerter_secrets, engine_config
 from alerter.store import EpisodeStore
 from trading_core.alerts.engine import AlertEngine
 from trading_core.alerts.model import Delivery, Tier
 from trading_core.boot import boot
+from trading_core.recording.alerts import AlertRepository
 from trading_core.recording.errors import RecordingError
 
 
@@ -74,7 +75,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             return await send_tests(
                 AlertEngine(engine_config(settings)),
                 deliverer(settings, secrets, http),
-                repository(settings, secrets),
+                AlertRepository(sessions(settings, secrets)),
                 tiers,
             )
 

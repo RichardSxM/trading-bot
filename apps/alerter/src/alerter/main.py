@@ -9,10 +9,11 @@ import httpx
 from pydantic import SecretStr
 from redis.asyncio import Redis
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
 from alerter.commands import MuteKey
 from alerter.delivery import Deliverer, LogDelivery, PushoverDelivery
+from alerter.fx import FxFetcher, FxRepository
 from alerter.pushover import PushoverClient
 from alerter.service import Alerter, utc_now
 from alerter.settings import AlerterSettings, engine_config
@@ -53,16 +54,16 @@ def watchdog(settings: AlerterSettings, secrets: Mapping[str, SecretStr], http: 
     return None
 
 
-def repository(settings: AlerterSettings, secrets: Mapping[str, SecretStr]) -> AlertRepository:
-    """``AlertRepository`` as ``alerter_app``, with a short connect timeout so a down Postgres fails fast."""
+def sessions(settings: AlerterSettings, secrets: Mapping[str, SecretStr]) -> sessionmaker[Session]:
+    """Sessions as ``alerter_app``, with a short connect timeout so a down Postgres fails fast."""
     engine = create_engine(
         settings.database_url(secrets[POSTGRES_PASSWORD]),
         pool_size=1,
-        max_overflow=1,
+        max_overflow=2,
         pool_pre_ping=True,
         connect_args={"connect_timeout": DB_CONNECT_TIMEOUT_S},
     )
-    return AlertRepository(sessionmaker(engine))
+    return sessionmaker(engine)
 
 
 def redis_client(settings: AlerterSettings, password: SecretStr) -> Redis:
@@ -103,7 +104,8 @@ async def serve(started: Boot[AlerterSettings]) -> None:
     # httpx logs every request URL at INFO: the Docker poll is noisy and the ping URL holds a secret.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     engine = AlertEngine(engine_config(settings))
-    store = StoreWriter(repository(settings, secrets), engine, utc_now)
+    db = sessions(settings, secrets)
+    store = StoreWriter(AlertRepository(db), engine, utc_now)
     redis = redis_client(settings, secrets[REDIS_PASSWORD])
     host = host_files(settings)
     async with httpx.AsyncClient() as http:
@@ -124,6 +126,7 @@ async def serve(started: Boot[AlerterSettings]) -> None:
             mute=MuteKey(redis, settings.trading_env),
             daily_at=settings.alerts_daily_at,
             daily_tz=settings.alerts_daily_tz,
+            fx=FxFetcher(http, FxRepository(db), settings.fx_ecb_url, settings.fx_history_from, utc_now),
         )
         log.info(
             "alerter running",

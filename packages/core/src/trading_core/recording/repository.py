@@ -66,6 +66,7 @@ from trading_core.recording.rows import (
     DecisionRow,
     FillRow,
     FundingRow,
+    FxRateRow,
     InstrumentRow,
     JsonObject,
     JsonValue,
@@ -276,6 +277,16 @@ def upsert_instrument(session: Session, row: InstrumentRow) -> None:
     deliberate update, so the trader fails closed.
     """
     _insert_or_compare(session, models.Instrument, column_values(row), ["instrument_id"])
+
+
+def write_fx_rates(session: Session, rows: Iterable[FxRateRow]) -> int:
+    """Insert ECB reference rates (spec 0024 AC-15); returns how many were new.
+
+    An equal stored row is a no-op. A stored row with a different rate or source raises
+    ``RecordConflictError`` and is kept: ECB reference rates are final, so a change is an error.
+    """
+    key = ["rate_date", "base_currency", "quote_currency"]
+    return sum(_insert_or_compare(session, models.FxRate, column_values(row), key) for row in rows)
 
 
 def ensure_strategy_version(

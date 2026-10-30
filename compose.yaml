@@ -431,6 +431,9 @@ services:
       ALERTS_DAILY_AT: ${ALERTS_DAILY_AT:-08:00}
       ALERTS_DAILY_TZ: ${ALERTS_DAILY_TZ:-Europe/Amsterdam}
       ALERTS_DOCKER_URL: http://docker-proxy:2375
+      FX_ECB_URL: ${FX_ECB_URL:-https://data-api.ecb.europa.eu/service/data/EXR/D.USD.EUR.SP00.A}
+      FX_HISTORY_FROM: ${FX_HISTORY_FROM:-2026-01-01}
+      FX_STALE_DAYS: ${FX_STALE_DAYS:-6}
     # The default network for Postgres and Redis; dockerproxy only to reach the socket proxy.
     networks:
       - default

@@ -73,6 +73,14 @@ class JournalRow:
     fx_missing: bool
 
 
+def newest_fx_date(session: Session) -> date | None:
+    """The newest stored EUR/USD ``rate_date``, or None when ``fx_rates`` holds none (spec 0024 AC-5, AC-15)."""
+    fx = models.FxRate
+    return session.execute(
+        select(func.max(fx.rate_date)).where(fx.base_currency == "EUR", fx.quote_currency == _FX_CURRENCY)
+    ).scalar_one()
+
+
 def _utc_ns(name: str, value: datetime) -> int:
     if value.tzinfo is None or value.utcoffset() != timedelta(0):
         raise ValueError(f"{name} must be a UTC aware datetime, got {value!r}")

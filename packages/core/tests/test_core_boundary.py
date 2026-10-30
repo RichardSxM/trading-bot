@@ -4,7 +4,8 @@ Only ``node/`` and ``catalog/`` carry the ``node`` extra: ``nautilus_trader`` is
 two, ``pyarrow`` and ``numpy`` only in ``catalog/``. The pure ``alerts/`` folder (spec 0013)
 imports no I/O package and, of core, only itself, ``strategy``, and ``secrets`` (the redaction
 registry every push text passes). The pure ``reconcile/`` folder (spec 0023) imports, of core, only
-itself and the recording enums. The files are parsed, never imported, so the check runs on any
+itself and the recording enums. The pure ``fx/`` folder (spec 0024) imports, of core, only itself and
+the recording rows. The files are parsed, never imported, so the check runs on any
 host.
 """
 
@@ -26,6 +27,7 @@ ALLOWED = {
 PURE = {
     "alerts": {"trading_core.strategy", "trading_core.secrets"},
     "reconcile": {"trading_core.recording.enums"},
+    "fx": {"trading_core.recording.rows"},
 }
 # packages that mean I/O, a framework, or an ORM
 IO = {

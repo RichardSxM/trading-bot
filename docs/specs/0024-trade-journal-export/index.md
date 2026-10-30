@@ -1,7 +1,7 @@
 # 0024. Export the trade journal as CSV from the Trades page, with EUR amounts from a daily ECB rate fetch
 
 **Date**: 2026-10-30
-**Status**: Proposed
+**Status**: In Progress
 
 ## Summary
 
@@ -134,15 +134,15 @@ All three are fields of the alerter's settings class in `apps/alerter/src/alerte
 
 Tracer Bullet: first one thin real thread from ECB to `fx_rates` to a downloaded CSV, then thicken it with the check, the balances, and the summary.
 
-1. Migration `0013_alerter_fx_rates`, `trading_core.fx.ecb` parser with a fixture test, and `repository.write_fx_rates`, satisfies **AC-15, AC-16, AC-18**.
-2. Alerter `fx.py` hourly fetch step and the three settings, wired into `service.py`'s supervised `_every` loops; on the laptop, the first start backfills from `FX_HISTORY_FROM`. Satisfies **AC-15, AC-18**.
-3. Extend `journal_rows` (modes, new fields) with its integration tests, keeping every spec 0002 AC-14 test green, satisfies **AC-13**.
-4. Thin thread: `trading_core.journal.bounds` and the CSV half of `export.py`, `/trades/journal.csv` with the refusal checks, and the bare form on `/trades` with a direct link (no panel yet), satisfies **AC-1 (form part), AC-2, AC-3, AC-4, AC-5, AC-6**.
-5. `JournalTotals`, `balances_at`, `journal_check_positions`, the check verdict, the HTMX panel (`/trades/journal/check`), and `summary.csv`, satisfies **AC-1, AC-7, AC-8, AC-9, AC-10, AC-11**.
-6. Monthly chunking with the two pass stream, the logging, the auth tests, and a 200 000 row memory test, satisfies **AC-12, AC-14**.
-7. `fx_rates_stale` rule and check in core, wired into the alerter, satisfies **AC-17**.
-8. Styleguide samples for the panel's states (match, mismatch, not comparable, refused) per `DESIGN.md`, and the dashboard and alerter `AGENTS.md` lines via `/sync`, satisfies **AC-1, AC-9**.
-9. VPS check: after the deploy, confirm `fx_fetched` backfilled 2026, then export the demo paper range since the 0f12982 deploy (mode `paper`) and save the panel result and both files' sums in `verify.md`, satisfies **AC-5, AC-9, AC-11, AC-15**.
+1. [x] Migration `0013_alerter_fx_rates`, `trading_core.fx.ecb` parser with a fixture test, and `repository.write_fx_rates`, satisfies **AC-15, AC-16, AC-18**.
+2. [x] Alerter `fx.py` hourly fetch step and the three settings, wired into `service.py`'s supervised `_every` loops; on the laptop, the first start backfills from `FX_HISTORY_FROM`. Satisfies **AC-15, AC-18**.
+3. [ ] Extend `journal_rows` (modes, new fields) with its integration tests, keeping every spec 0002 AC-14 test green, satisfies **AC-13**.
+4. [ ] Thin thread: `trading_core.journal.bounds` and the CSV half of `export.py`, `/trades/journal.csv` with the refusal checks, and the bare form on `/trades` with a direct link (no panel yet), satisfies **AC-1 (form part), AC-2, AC-3, AC-4, AC-5, AC-6**.
+5. [ ] `JournalTotals`, `balances_at`, `journal_check_positions`, the check verdict, the HTMX panel (`/trades/journal/check`), and `summary.csv`, satisfies **AC-1, AC-7, AC-8, AC-9, AC-10, AC-11**.
+6. [ ] Monthly chunking with the two pass stream, the logging, the auth tests, and a 200 000 row memory test, satisfies **AC-12, AC-14**.
+7. [ ] `fx_rates_stale` rule and check in core, wired into the alerter, satisfies **AC-17**.
+8. [ ] Styleguide samples for the panel's states (match, mismatch, not comparable, refused) per `DESIGN.md`, and the dashboard and alerter `AGENTS.md` lines via `/sync`, satisfies **AC-1, AC-9**.
+9. [ ] VPS check: after the deploy, confirm `fx_fetched` backfilled 2026, then export the demo paper range since the 0f12982 deploy (mode `paper`) and save the panel result and both files' sums in `verify.md`, satisfies **AC-5, AC-9, AC-11, AC-15**.
 
 ## Consequences
 

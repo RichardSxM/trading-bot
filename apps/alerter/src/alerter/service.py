@@ -1,5 +1,6 @@
 """The alerter's loops (spec 0013): heartbeat, entry blocks, logs, host lines, containers, disk,
-Postgres, tick, retry, store, ping, the daily note, the liveness file, and the alert commands.
+Postgres, tick, retry, store, ping, the daily note, the liveness file, the alert commands, and the
+hourly ECB rate fetch (spec 0024).
 
 Every loop runs supervised: a crash logs ``alerter_task_crashed`` and restarts it. Pushes run as
 their own tasks, so a push retrying for two minutes never stalls a check.
@@ -19,6 +20,7 @@ from redis.exceptions import RedisError
 from alerter.commands import AlertCommands, MuteKey
 from alerter.daily import DailyNote
 from alerter.delivery import Deliverer, Outcome
+from alerter.fx import FX_S, FxFetcher
 from alerter.sources.containers import backup_health, container_checks
 from alerter.sources.disk import free_bytes
 from alerter.sources.docker_api import DockerApiError
@@ -99,6 +101,7 @@ class Alerter:
         daily_at: str = "08:00",
         daily_tz: str = "Europe/Amsterdam",
         load_wait_s: float = LOAD_WAIT_S,
+        fx: FxFetcher | None = None,
     ) -> None:
         self._env = env
         self._sleep = sleep
@@ -110,6 +113,7 @@ class Alerter:
         self._state_key = snapshot_key(env, "trader_state")
         self._trader_down_s = trader_down_s
         self._load_wait_s = load_wait_s
+        self._fx = fx
         self._watchdog = watchdog
         self._docker = docker
         self._host = host
@@ -428,7 +432,9 @@ class Alerter:
                 group.create_task(_supervise(name, _every(step, every)))
 
     def _loops(self) -> list[tuple[str, Callable[[], Awaitable[None]], float]]:
+        fx = [] if self._fx is None else [("fx", self._fx.step, FX_S)]
         return [
+            *fx,
             ("heartbeat", self.check_heartbeat, CHECK_S),
             ("entry_blocks", self.check_entry_blocks, BLOCKS_S),
             ("logs", self.read_logs, LOGS_S),
