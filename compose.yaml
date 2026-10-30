@@ -188,6 +188,8 @@ services:
       REDIS_USERNAME: trader
       # The paper loop (spec 0006): placeholder strategy, risk caps, sandbox, recording.
       PAPER_STRATEGY: ${PAPER_STRATEGY:-placeholder_timed}
+      # The coins it trades (spec 0025 AC-15); more than one only for donchian_scalp_r1.
+      PAPER_INSTRUMENTS: ${PAPER_INSTRUMENTS:-PF_XBTUSD.KRAKEN}
       PLACEHOLDER_INTERVAL_MIN: ${PLACEHOLDER_INTERVAL_MIN:-15}
       PLACEHOLDER_HOLD_MIN: ${PLACEHOLDER_HOLD_MIN:-10}
       PLACEHOLDER_LOOKBACK_MIN: ${PLACEHOLDER_LOOKBACK_MIN:-5}

@@ -14,11 +14,15 @@ At every top of the UTC hour it books demo funding for each position open across
 AC-13): the rate from its own ``FundingRateUpdate`` subscription, the mid from the cache. Each
 payment is queued once, added to the ``FundingLedger``, and published on ``FUNDING_BOOKED_TOPIC``.
 Boundaries missed while the trader was down are never booked.
+
+It serves every paper coin (spec 0025 AC-18): an instrument row and a funding subscription per
+coin, one funding boundary for all of them, and each event still recorded once (events come by
+topic, not by coin). A coin with no mid yet is left out of another coin's liquidation estimate.
 """
 
 import logging
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from decimal import Decimal
 from typing import Final
 from uuid import UUID
@@ -38,7 +42,7 @@ from nautilus_trader.model.events import (
     OrderRejected,
     PositionEvent,
 )
-from nautilus_trader.model.identifiers import InstrumentId, Venue
+from nautilus_trader.model.identifiers import InstrumentId, PositionId, Venue
 from nautilus_trader.model.instruments import Instrument
 from nautilus_trader.model.objects import Currency
 from nautilus_trader.model.orders.base import Order
@@ -216,7 +220,7 @@ class RecordingActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
         *,
         env: Env,
         run_id: UUID,
-        instrument_id: InstrumentId,
+        instrument_ids: Sequence[InstrumentId],
         record: Record,
         blocks: EntryBlocks,
         maintenance_margin_rate: Decimal,
@@ -227,8 +231,11 @@ class RecordingActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
         super().__init__(ActorConfig(component_id="RecordingActor"))
         self._env = env
         self._run_id = run_id
-        self._instrument_id = instrument_id
-        self._venue: Venue = instrument_id.venue
+        if not instrument_ids:
+            raise ValueError("the recording actor needs at least one instrument")
+        self._instrument_ids = tuple(instrument_ids)
+        # Every paper coin trades on the one venue, so one account holds them all.
+        self._venue: Venue = instrument_ids[0].venue
         self._record = record
         self._blocks = blocks
         self._position_ids: dict[tuple[str, int], UUID] = {}
@@ -238,20 +245,22 @@ class RecordingActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
         self._liq_alarmed: set[UUID] = set()
         self._stale_quote_ns = int(stale_quote_s * NS_PER_S)
         self._ledger = ledger
-        self._rates: list[FundingRate] = []
+        self._rates: dict[InstrumentId, list[FundingRate]] = {i: [] for i in self._instrument_ids}
         self._funding_boundary_ns = 0
 
     def on_start(self) -> None:
-        """Queue the instrument, subscribe to every order, position, and account event, and start the snapshot timer.
+        """Queue the instruments, subscribe to every order, position, and account event, and start the snapshot timer.
 
-        The instrument goes first so every order row after it has its parent (AC-11).
+        The instruments go first so every order row after them has its parent (AC-11).
         """
-        self._guarded(self._record_instrument)(None)
+        for instrument_id in self._instrument_ids:
+            self._guarded(self._record_instrument)(instrument_id)
         self.msgbus.subscribe(topic="events.order.*", handler=self._guarded(self._on_order_event))
         self.msgbus.subscribe(topic="events.position.*", handler=self._guarded(self._on_position_event))
         self.msgbus.subscribe(topic="events.account.*", handler=self._guarded(self._on_account_state))
         self.clock.set_timer_ns(_SNAPSHOT_TIMER, SNAPSHOT_INTERVAL_NS, 0, 0, self._guarded(self._on_snapshot_timer))
-        self.subscribe_funding_rates(self._instrument_id)
+        for instrument_id in self._instrument_ids:
+            self.subscribe_funding_rates(instrument_id)
         self._arm_funding(next_boundary_ns(self.clock.timestamp_ns()))
 
     def on_stop(self) -> None:
@@ -261,11 +270,12 @@ class RecordingActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
                 self.clock.cancel_timer(name)
 
     def on_funding_rate(self, update: FundingRateUpdate) -> None:
-        """Keep the latest funding rates with the ``ts_init`` they became known at (spec 0011 AC-13)."""
-        if update.instrument_id != self._instrument_id:
+        """Keep each coin's latest funding rates with the ``ts_init`` they became known at (spec 0011 AC-13)."""
+        kept = self._rates.get(update.instrument_id)
+        if kept is None:
             return
-        rates = [*self._rates, FundingRate(update.ts_init, Decimal(str(update.rate)))]
-        self._rates = sorted(rates, key=lambda r: r.ts_ns)[-_RATES_KEPT:]
+        rates = [*kept, FundingRate(update.ts_init, Decimal(str(update.rate)))]
+        self._rates[update.instrument_id] = sorted(rates, key=lambda r: r.ts_ns)[-_RATES_KEPT:]
 
     def _guarded(self, handler: Callable[[object], None]) -> Callable[[object], None]:
         def run(event: object) -> None:
@@ -281,10 +291,12 @@ class RecordingActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
 
         return run
 
-    def _record_instrument(self, event: object) -> None:
-        instrument = self.cache.instrument(self._instrument_id)
+    def _record_instrument(self, instrument_id: object) -> None:
+        if not isinstance(instrument_id, InstrumentId):
+            raise TypeError(f"not an instrument id: {instrument_id!r}")
+        instrument = self.cache.instrument(instrument_id)
         if instrument is None:
-            raise LookupError(f"instrument {self._instrument_id} not in the cache at start")
+            raise LookupError(f"instrument {instrument_id} not in the cache at start")
         self._put(WriteCall.UPSERT_INSTRUMENT, instrument_row(instrument))
 
     # Orders ---------------------------------------------------------------------------------
@@ -349,10 +361,11 @@ class RecordingActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
 
     def _on_snapshot_timer(self, event: object) -> None:
         self._account_snapshot()
-        for position in self.cache.positions_open(instrument_id=self._instrument_id):
-            row_id = self._position_ids.get((position.id.value, position.ts_opened))
-            if row_id is not None:
-                self._position_snapshot(position, row_id)
+        for instrument_id in self._instrument_ids:
+            for position in self.cache.positions_open(instrument_id=instrument_id):
+                row_id = self._position_ids.get((position.id.value, position.ts_opened))
+                if row_id is not None:
+                    self._position_snapshot(position, row_id)
 
     def _account_snapshot(self) -> None:
         account = self.portfolio.account(self._venue)
@@ -411,7 +424,7 @@ class RecordingActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
         balance = None if account is None else account.balance_total(currency)
         if balance is None:
             return None
-        equity: Decimal = balance.as_decimal() + guard.unrealized(self.cache) + self._ledger.run_total
+        equity: Decimal = balance.as_decimal() + _unrealized_with_mid(self.cache) + self._ledger.run_total
         return equity
 
     def _liquidation_px(
@@ -427,12 +440,12 @@ class RecordingActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
                 abs(position.signed_decimal_qty()),
                 mark,
                 equity,
-                guard.open_notional(self.cache, exclude=position.id),
+                _open_notional_with_mid(self.cache, exclude=position.id),
                 Decimal(0),
                 maintenance_rate(guard.margin_maint(instrument), self._maintenance_floor),
             )
         except InvalidRiskInput:
-            return None  # another open instrument has no mid yet
+            return None  # the inputs cannot be judged
 
     def _liq_near(self, row_id: UUID, mark: Decimal, liq_px: Decimal | None, distance: Decimal) -> None:
         key = f"liq_near:{row_id}"
@@ -472,19 +485,29 @@ class RecordingActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
         self._book_funding(boundary)
 
     def _book_funding(self, boundary_ns: int) -> None:
+        # One pass for every coin, with at most one unbooked event for the pass (spec 0025 AC-18).
+        unbooked: list[tuple[InstrumentId, bool, bool]] = []
+        for instrument_id in self._instrument_ids:
+            missing = self._book_coin_funding(instrument_id, boundary_ns)
+            if missing is not None:
+                unbooked.append((instrument_id, *missing))
+        if unbooked:
+            self._funding_unbooked(boundary_ns, unbooked)
+
+    def _book_coin_funding(self, instrument_id: InstrumentId, boundary_ns: int) -> tuple[bool, bool] | None:
+        """Book one coin's funding at ``boundary_ns``; ``(rate missing, quote missing)`` when it cannot."""
         positions = [
             p
-            for p in self.cache.positions(instrument_id=self._instrument_id)
+            for p in self.cache.positions(instrument_id=instrument_id)
             if charged(p.ts_opened, p.ts_closed if p.is_closed else None, boundary_ns)
         ]
         if not positions:
-            return
-        rate = usable_rate(self._rates, boundary_ns)
-        quote = self.cache.quote_tick(self._instrument_id)
+            return None
+        rate = usable_rate(self._rates[instrument_id], boundary_ns)
+        quote = self.cache.quote_tick(instrument_id)
         fresh = quote is not None and boundary_ns - quote.ts_event < self._stale_quote_ns
         if rate is None or quote is None or not fresh:
-            self._funding_unbooked(boundary_ns, rate is None, not fresh)
-            return
+            return rate is None, not fresh
         mid = (quote.bid_price.as_decimal() + quote.ask_price.as_decimal()) / 2
         for position in positions:
             row_id = self._position_ids.get((position.id.value, position.ts_opened))
@@ -505,7 +528,7 @@ class RecordingActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
                     env=self._env,
                     run_id=self._run_id,
                     position_id=row_id,
-                    instrument_id=self._instrument_id.value,
+                    instrument_id=instrument_id.value,
                     amount=amount,
                     currency=position.settlement_currency.code,
                     rate=rate,
@@ -516,15 +539,20 @@ class RecordingActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
             self._ledger.add(amount)
             self.msgbus.publish(
                 topic=FUNDING_BOOKED_TOPIC,
-                msg=FundingBooked(self._instrument_id.value, boundary_ns, row_id, amount),
+                msg=FundingBooked(instrument_id.value, boundary_ns, row_id, amount),
             )
             log.info(
                 "funding booked",
                 extra={"fields": {"code": "funding_booked", "paid_ns": boundary_ns, "amount": str(amount)}},
             )
+        return None
 
-    def _funding_unbooked(self, boundary_ns: int, rate_missing: bool, quote_missing: bool) -> None:
-        key = f"funding_unbooked:{self._instrument_id.value}:{boundary_ns}"
+    def _funding_unbooked(self, boundary_ns: int, unbooked: list[tuple[InstrumentId, bool, bool]]) -> None:
+        # One coin keeps the spec 0011 key and details; more coins are named in the one key, comma separated.
+        coins = ",".join(i.value for i, _, _ in unbooked)
+        rate_missing = any(rate for _, rate, _ in unbooked)
+        quote_missing = any(quote for _, _, quote in unbooked)
+        key = f"funding_unbooked:{coins}:{boundary_ns}"
         self._put(
             WriteCall.RECORD_RISK_EVENT,
             RiskEventRow(
@@ -542,3 +570,24 @@ class RecordingActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
 
     def _put(self, call: WriteCall, row: QueuedRow) -> None:
         self._record(WriteItem(call, row))
+
+
+def _open_notional_with_mid(cache: Cache, exclude: PositionId) -> Decimal:
+    """``guard.open_notional``, but a position whose coin has no mid yet is left out (spec 0025 AC-18)."""
+    total = Decimal(0)
+    for position in cache.positions_open():
+        price = guard.mid(cache, position.instrument_id)
+        if position.id != exclude and price is not None:
+            total += abs(position.signed_decimal_qty()) * price
+    return total
+
+
+def _unrealized_with_mid(cache: Cache) -> Decimal:
+    """``guard.unrealized``, but a position whose coin has no mid yet is left out (spec 0025 AC-18)."""
+    total = Decimal(0)
+    for position in cache.positions_open():
+        price = guard.mid(cache, position.instrument_id)
+        instrument = cache.instrument(position.instrument_id)
+        if price is not None and instrument is not None:
+            total += position.unrealized_pnl(instrument.make_price(price)).as_decimal()
+    return total

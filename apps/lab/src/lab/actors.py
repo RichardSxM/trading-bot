@@ -155,12 +155,12 @@ class LabRecorder(RecordingActor):
         bar_types: Sequence[BarType] = (),
     ) -> None:
         # The stale quote age and the ledger feed only the snapshots and the booked funding, which
-        # the lab never starts (it samples funding at ``funding_boundaries`` instead). The instrument
-        # given here feeds only those and the instrument row, so the first coin does.
+        # the lab never starts (it samples funding at ``funding_boundaries`` instead), and the lab's
+        # own on_start replaces the base one, so the coins given here feed nothing at replay time.
         super().__init__(
             env=env,
             run_id=run_id,
-            instrument_id=instrument_ids[0],
+            instrument_ids=instrument_ids,
             record=rows,
             blocks=blocks,
             maintenance_margin_rate=risk.maintenance_margin_rate,

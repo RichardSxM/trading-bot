@@ -92,7 +92,7 @@ def _run(prices=STEADY, *, interval_s=1_800, hold_s=3_600, rates=None, rearm_at_
     recording = RecordingActor(
         env=Env.DEMO,
         run_id=run_id,
-        instrument_id=INSTRUMENT_ID,
+        instrument_ids=[INSTRUMENT_ID],
         record=records.append,
         blocks=blocks,
         maintenance_margin_rate=Decimal("0.01"),
