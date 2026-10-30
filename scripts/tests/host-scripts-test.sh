@@ -301,6 +301,8 @@ check "kfs-deploy: the refusal names the version and verdict" "promotion check: 
     "$(grep 'preflight refused' "$work/plog/host.jsonl" | jq -r .reason)"
 check "kfs-deploy: and prints the promote command for it" "1" \
     "$(grep -c 'gate promote --manual --step candidate-paper --version v-1 ' "$work/pout")"
+check "kfs-deploy: with the new release's gate and no deps" "1" \
+    "$(grep -c "sudo env KFS_RELEASE=$sha kfs-compose run --rm --no-deps gate promote" "$work/pout")"
 check "kfs-deploy: the gate reads the new trader's version on stdin" "f1 $sha" \
     "$(jq -r '"\(.frozen_hash) \(.git_commit)"' "$work/gate_stdin")"
 check "kfs-deploy: nothing is paused" "0" "$(grep -c 'pause' "$work/plog/host.jsonl")"

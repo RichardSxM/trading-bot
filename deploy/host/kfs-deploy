@@ -152,8 +152,9 @@ promotion_check() {
     case $rc in
         0) kfs_log INFO "promotion check passed" sha "$SHA" version_id "$version_id" ;;
         3)
-            printf 'promote it, then deploy again:\n  sudo kfs-compose run --rm gate promote --manual --step candidate-paper --version %s --note '"'"'...'"'"'\n' \
-                "$version_id"
+            # The new release's gate: the running one can't read a revision this release adds.
+            printf 'promote it, then deploy again:\n  sudo env KFS_RELEASE=%s kfs-compose run --rm --no-deps gate promote --manual --step candidate-paper --version %s --note '"'"'...'"'"'\n' \
+                "$SHA" "$version_id"
             refuse "promotion check: version $version_id has no candidate to paper pass (verdict $verdict)"
             ;;
         *) refuse "promotion check: gate check-version failed (exit $rc)" ;;
