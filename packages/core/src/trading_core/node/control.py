@@ -761,8 +761,12 @@ def trader_state(
     }
 
 
-NO_RECONCILE_FIELDS: Final[Mapping[str, object]] = {"last_clean_check_ns": None, "last_check_outcome": None}
-"""The check fields of ``trader_state`` before any check finished (spec 0023 AC-19)."""
+NO_RECONCILE_FIELDS: Final[Mapping[str, object]] = {
+    "last_clean_check_ns": None,
+    "last_check_outcome": None,
+    "intent": {},
+}
+"""The check fields of ``trader_state`` before any check finished (spec 0023 AC-18, AC-19)."""
 
 
 NO_LOSS_FIELDS: Final[Mapping[str, object]] = {

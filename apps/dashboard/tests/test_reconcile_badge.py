@@ -58,10 +58,13 @@ def test_the_top_bar_renders_the_badge(logged_in, redis, clock):
 
     page = logged_in.get("/").text
 
-    assert re.search(r'sse-swap="topbar-check"><span class="check check--bad">.*kraken check</span> mismatch', page)
+    assert re.search(
+        r'sse-swap="topbar-check"><a class="check check--bad" href="/reconciliations".*kraken check</span> mismatch',
+        page,
+    )
 
 
 def test_the_top_bar_badge_says_no_data_without_trader_state(logged_in, redis):
     redis.values.pop(STATE_KEY, None)
 
-    assert re.search(r'class="check check--lost">.*no data', logged_in.get("/").text)
+    assert re.search(r'class="check check--lost" href="/reconciliations".*no data', logged_in.get("/").text)

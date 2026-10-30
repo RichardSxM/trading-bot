@@ -86,8 +86,9 @@ from nautilus_trader.model.position import Position
 
 from trading_core.control.consumer import Outcome
 from trading_core.control.halt import HaltReason
-from trading_core.node.control import Record
+from trading_core.node.control import PROTECTIVE_TYPES, Record
 from trading_core.reconcile.compare import Comparison, Finding, compare
+from trading_core.reconcile.intent import Intent, Intents, order_intent
 from trading_core.reconcile.plan import (
     CancelOrder,
     CloseAtMarket,
@@ -895,6 +896,7 @@ class ReconcileActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
         self._stopless = stopless
         self._strategies = strategies
         self._unresolved = UnresolvedEntries()
+        self._intents = Intents()
         self._resumed = False
         self._recorded = recorded
         self._local = local or (lambda cache: local_view(cache, self._owned(), self._recorded, self._stopless()))
@@ -921,11 +923,13 @@ class ReconcileActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
     # Read by the snapshot -------------------------------------------------------------------
 
     def snapshot_fields(self) -> dict[str, object]:
-        """The check fields of ``trader_state`` (AC-19): the last clean check's time (UTC ns) and the last outcome."""
+        """The check fields of ``trader_state``: the last clean check's time (UTC ns) and the last outcome (AC-19),
+        and the trader's intent per instrument (AC-18)."""
         with self._lock:
             return {
                 "last_clean_check_ns": self._last_clean_ns,
                 "last_check_outcome": None if self._last_outcome is None else str(self._last_outcome),
+                "intent": self._intents.by_instrument(),
             }
 
     # Lifecycle ------------------------------------------------------------------------------
@@ -947,23 +951,42 @@ class ReconcileActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
 
     def note_order_event(self, event: object) -> None:
         """Count an order event (a check whose fetch overlapped one fetches again), and track entries
-        with no answer from Kraken: ``order_unresolved`` blocks entries while there is one (AC-14)."""
+        with no answer from Kraken: ``order_unresolved`` blocks entries while there is one (AC-14). An order
+        going out starts its intent and its terminal event ends it (AC-18)."""
         self._order_events += 1
         match event:
             case OrderSubmitted():
                 order = self.cache.order(event.client_order_id)
+                if order is not None:
+                    self._note_intent(order)
                 if order is not None and not order.is_reduce_only:
                     self._unresolved.submitted(str(event.client_order_id), str(event.instrument_id))
             case OrderRejected():
+                self._end_intent(str(event.client_order_id))
                 self._unresolved.rejected(str(event.client_order_id), str(event.reason))
             case OrderAccepted() | OrderFilled() | OrderCanceled() | OrderExpired():
+                if not isinstance(event, OrderAccepted):
+                    order = self.cache.order(event.client_order_id)
+                    if order is None or order.is_closed:
+                        self._end_intent(str(event.client_order_id))
                 self._unresolved.answered(str(event.client_order_id))
             case _:
                 return
         self._show_unresolved()
 
+    def _note_intent(self, order: Order) -> None:
+        intent = order_intent(order.is_reduce_only, order.order_type in PROTECTIVE_TYPES)
+        if intent is not None:
+            with self._lock:
+                self._intents.start(str(order.client_order_id), str(order.instrument_id), intent)
+
+    def _end_intent(self, key: str) -> None:
+        with self._lock:
+            self._intents.end(key)
+
     def _track_inflight(self) -> None:
         for order in self.cache.orders_inflight():
+            self._note_intent(order)
             if not order.is_reduce_only:
                 self._unresolved.submitted(str(order.client_order_id), str(order.instrument_id))
         self._show_unresolved()
@@ -1322,11 +1345,17 @@ class ReconcileActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
                 actions.executor.close_residual(step.instrument_id)
                 return ActionResult.PENDING
             case PlaceStop():
-                if not await actions.executor.place_stop(step):
-                    raise ReconcileActionError("replacement stop refused or not accepted in time")
-                # Accepted: only now may the other stops go (never naked).
-                for order in step.then_cancel:
-                    await actions.cancel.cancel(order)
+                key = f"stop_fix:{step.position_id}"
+                with self._lock:
+                    self._intents.start(key, step.instrument_id, Intent.STOP_REPLACING)
+                try:
+                    if not await actions.executor.place_stop(step):
+                        raise ReconcileActionError("replacement stop refused or not accepted in time")
+                    # Accepted: only now may the other stops go (never naked).
+                    for order in step.then_cancel:
+                        await actions.cancel.cancel(order)
+                finally:
+                    self._end_intent(key)
                 return ActionResult.OK
             case CloseAtMarket():
                 actions.executor.close(step.position_id)

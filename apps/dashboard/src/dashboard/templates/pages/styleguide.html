@@ -10,6 +10,7 @@
 {% from "components/states.html" import empty_state, loading, error_state %}
 {% from "components/table.html" import table %}
 {% from "components/pager.html" import pager %}
+{% from "components/sides.html" import sides %}
 {% block head %}<link rel="stylesheet" href="/static/css/styleguide.css">{% endblock %}
 {% block scripts %}
   <script defer src="/static/vendor/lightweight-charts.standalone.production.js"></script>
@@ -155,6 +156,13 @@
   <h2 class="sg-h" id="position-sample-h">Position card</h2>
   {%- for state, view in position_samples.items() %}
   <div data-sample="position:{{ state }}">{% include "partials/overview_position.html" %}</div>
+  {%- endfor %}
+</section>
+
+<section class="sg-section" id="sides" aria-labelledby="sides-sample-h">
+  <h2 class="sg-h" id="sides-sample-h">Wanted, Trader, Kraken</h2>
+  {%- for state, view in sides_samples.items() %}
+  <div data-sample="sides:{{ state }}">{{ sides(view) }}</div>
   {%- endfor %}
 </section>
 

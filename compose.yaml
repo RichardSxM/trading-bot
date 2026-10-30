@@ -364,6 +364,8 @@ services:
       CONTROL_COMMAND_TTL_S: ${CONTROL_COMMAND_TTL_S:-300}
       DASHBOARD_COMMAND_HIDE_S: ${DASHBOARD_COMMAND_HIDE_S:-900}
       DASHBOARD_ACK_WARN_S: ${DASHBOARD_ACK_WARN_S:-10}
+      # spec 0023 AC-18: the Kraken view on the position card is unknown after 3 check intervals.
+      RECONCILE_INTERVAL_S: ${RECONCILE_INTERVAL_S:-60}
     secrets:
       - source: postgres_dashboard_password
         target: postgres_password

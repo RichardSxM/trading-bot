@@ -120,13 +120,13 @@ def test_a_clean_start_check_lifts_reconciling_and_writes_one_row():
     assert row.finished_ns >= row.started_ns
     assert [item.call for item in records] == [WriteCall.RECORD_RECONCILIATION]
     fields = actor.snapshot_fields()
-    assert fields == {"last_clean_check_ns": row.finished_ns, "last_check_outcome": "clean"}
+    assert fields == {"last_clean_check_ns": row.finished_ns, "last_check_outcome": "clean", "intent": {}}
 
 
 def test_before_any_check_the_snapshot_fields_are_null():
     actor, _, _ = _actor(FakeExchange(EMPTY))
 
-    assert actor.snapshot_fields() == {"last_clean_check_ns": None, "last_check_outcome": None}
+    assert actor.snapshot_fields() == {"last_clean_check_ns": None, "last_check_outcome": None, "intent": {}}
 
 
 def test_a_clean_check_leaves_other_blocks_alone():
@@ -166,7 +166,11 @@ def test_a_mismatch_keeps_entries_blocked_and_reports_each_finding(caplog):
     (line,) = [r for r in caplog.records if getattr(r, "fields", {}).get("code") == "reconcile_mismatch"]
     assert line.levelno == logging.CRITICAL
     assert line.fields["event_key"] == event.event_key
-    assert actor.snapshot_fields() == {"last_clean_check_ns": None, "last_check_outcome": "mismatch"}
+    assert actor.snapshot_fields() == {
+        "last_clean_check_ns": None,
+        "last_check_outcome": "mismatch",
+        "intent": {},
+    }
 
 
 def test_a_local_order_the_exchange_lacks_is_reported_from_the_local_view():

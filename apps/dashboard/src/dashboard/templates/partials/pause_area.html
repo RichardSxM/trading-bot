@@ -31,6 +31,6 @@
     <input type="hidden" name="csrf" value="{{ csrf }}">
     {{ button("Recheck", type="submit") }}
   </form>
-  <p class="pause-area__note">Pause stops new entries; open positions keep their exits and stops. Resume lifts a halt and any pause, also one a deploy set. Flatten closes every position without halting. Recheck compares orders and positions with Kraken now. Resume and Flatten ask you to confirm first.</p>
+  <p class="pause-area__note">Pause stops new entries; open positions keep their exits and stops. Resume lifts a halt and any pause, also one a deploy set. Flatten closes every position without halting. Recheck compares orders and positions with Kraken now. Every reported check is on the <a href="/reconciliations">Reconciliation page</a>. Resume and Flatten ask you to confirm first.</p>
   {% endif %}
 </div>

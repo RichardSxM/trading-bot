@@ -1,6 +1,7 @@
 """The shell pages, the styleguide, and the live value stream (spec 0004 AC-7, AC-9, AC-12, AC-16).
 
-Overview, Trades, Strategies, and System sit in the nav; the styleguide is reachable by URL only.
+Overview, Trades, Strategies, and System sit in the nav; the styleguide is reachable by URL only, and
+the Reconciliation page (spec 0023 AC-19) from System and the top bar's Kraken check badge.
 """
 
 import asyncio
@@ -20,6 +21,7 @@ from dashboard.auth.session import Session
 from dashboard.data.strategies import StrategiesView
 from dashboard.live.poller import Event, Poller
 from dashboard.web.context import AppContext, app_context
+from dashboard.web.reconciliations import reconciliations_context
 from dashboard.web.session import SessionDep, session_end_cue
 from dashboard.web.strategies import detail_context, log_context, strategies_context
 from dashboard.web.styleguide import styleguide_context
@@ -218,6 +220,25 @@ async def strategy_detail(request: Request, session: SessionDep, study_id: UUID)
         detail.ranking.study,
         path="/strategies",
         data=detail_context(detail),
+    )
+
+
+@router.get("/reconciliations")
+async def reconciliations(request: Request, session: SessionDep, page: Annotated[int, Query(ge=1)] = 1) -> Response:
+    """Every reported Kraken check, newest first, 50 per page, with its findings and actions (spec 0023 AC-19);
+    404 past the last page, 422 below 1 or not an integer."""
+    context = app_context(request)
+    try:
+        lines = await context.read_reconciliations(page)
+    except SQLAlchemyError as exc:
+        _read_failed("reconciliations", exc)
+        data: Mapping[str, object] = {"reconciliations_error": True, **reconciliations_context([], page)}
+    else:
+        if not lines and page > 1:
+            raise HTTPException(status_code=404)
+        data = reconciliations_context(lines, page)
+    return await render_page(
+        request, context, session, "pages/reconciliations.html", "Reconciliation", path="/system", data=data
     )
 
 

@@ -19,6 +19,7 @@ from dashboard.live.poller import Poller
 from dashboard.live.state import Entry
 from dashboard.settings import DashboardSettings
 from trading_core.recording.gate_queries import PromotionLine, StudyDetail
+from trading_core.recording.queries import ReconciliationLine
 
 
 class LiveRedis(Protocol):
@@ -48,7 +49,8 @@ class AppContext:
 
     ``read_trades(page, fills_page)`` reads the two Trades lists from Postgres in a thread, and
     ``read_strategies()`` the strategy ranking and paper progress, ``read_study(id)`` one study, and
-    ``read_promotions(page)`` the promotion log (spec 0015 AC-18 to AC-21).
+    ``read_promotions(page)`` the promotion log (spec 0015 AC-18 to AC-21), ``read_reconciliations(page)``
+    the reported Kraken checks (spec 0023 AC-19).
     ``trusted_peers`` are the socket peers besides loopback whose client headers key the lockout.
     """
 
@@ -65,6 +67,7 @@ class AppContext:
     read_strategies: Callable[[], Awaitable[StrategiesView]]
     read_study: Callable[[UUID], Awaitable[StudyDetail | None]]
     read_promotions: Callable[[int], Awaitable[Sequence[PromotionLine]]]
+    read_reconciliations: Callable[[int], Awaitable[Sequence[ReconciliationLine]]]
     trusted_peers: frozenset[str] = frozenset()
 
 

@@ -1,11 +1,16 @@
 {# Overview's position card (spec 0006 AC-17), from live.position.PositionView.
    open: the position with its stop and exit time; flat: the mark only; offline: no snapshot, or
    one past the red limit, never shown as flat; bad: a snapshot that does not parse; lost: Redis
-   unreadable. The P&L figures sit under it in every state; view.pnl is None when Postgres failed. #}
+   unreadable. The P&L figures sit under it in every state; view.pnl is None when Postgres failed.
+   Wanted, Trader, and Kraken (spec 0023 AC-18) lead every state but lost. #}
 {% from "components/states.html" import error_state %}
 {% from "components/stale.html" import stale %}
 {% from "components/stat.html" import stat %}
+{% from "components/sides.html" import sides %}
 <div class="position position--{{ view.status }}">
+{%- if view.sides is not none %}
+  {{ sides(view.sides) }}
+{%- endif %}
 {%- if view.status == "offline" %}
   {{ error_state("Trader offline", "No fresh position from the trader; it is stopped or not answering. Nothing here is live until it is back.") }}
 {%- elif view.status == "lost" %}

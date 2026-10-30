@@ -11,6 +11,7 @@ from dashboard.data.alerts import AlertLine
 from dashboard.data.pnl import PnlFigures
 from dashboard.live.alerts import ALERTS_UNAVAILABLE, MuteView, merge_activity
 from dashboard.live.position import LOST, PositionView
+from dashboard.live.sides import KRAKEN_UNKNOWN, SidesView
 from dashboard.live.state import (
     COMMAND_NO_DATA,
     NO_COMMAND,
@@ -102,6 +103,12 @@ SAMPLE_PNL: Final = PnlFigures(
     realized_today=Decimal("-0.42"), realized_all=Decimal("3.18"), fees_today=Decimal("0.51")
 )
 _FRESH: Final = AgeView("1s", "ok")
+# Wanted, Trader, Kraken in each state (spec 0023 AC-18).
+SIDES_SAMPLES: Final[dict[str, SidesView]] = {
+    "agree": SidesView("hold", "long 0.0011", "long 0.0011", "12s", "agree"),
+    "disagree": SidesView("flatten submitted", "long 0.0011", "flat", "4s", "disagree"),
+    "unknown": SidesView("hold", "long 0.0011", KRAKEN_UNKNOWN, None, "unknown"),
+}
 POSITION_SAMPLES: Final[dict[str, PositionView]] = {
     "open": PositionView(
         "open",
@@ -116,6 +123,7 @@ POSITION_SAMPLES: Final[dict[str, PositionView]] = {
         exit_due_ns=int(SAMPLE_TIME.timestamp()) * 1_000_000_000,
         equity=Decimal("1003.27"),
         pnl=SAMPLE_PNL,
+        sides=SIDES_SAMPLES["agree"],
     ),
     "flat": PositionView("flat", age=_FRESH, mark=Decimal("64288.5"), equity=Decimal("1003.18"), pnl=SAMPLE_PNL),
     "offline": PositionView("offline", pnl=SAMPLE_PNL),
@@ -235,6 +243,7 @@ def styleguide_context() -> dict[str, object]:
         "position_samples": POSITION_SAMPLES,
         "blocked_samples": BLOCKED_SAMPLES,
         "check_samples": CHECK_SAMPLES,
+        "sides_samples": SIDES_SAMPLES,
         "kraken_url": "https://demo-futures.kraken.com/",  # the sample alerts link to the demo venue
         "alert_samples": [
             AlertView(

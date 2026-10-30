@@ -25,6 +25,7 @@ from dashboard.auth.session import SessionCodec
 from dashboard.auth.totp import TotpGuard
 from dashboard.data.alerts import AlertLine, recent_alerts
 from dashboard.data.pnl import PnlFigures, pnl_figures
+from dashboard.data.reconciliations import reconciliations_view
 from dashboard.data.strategies import StrategiesView, promotions_view, strategies_view, study_view
 from dashboard.data.trades import TradesView, trades_view
 from dashboard.live.alerts import MuteView
@@ -50,6 +51,7 @@ from dashboard.web.session import CsrfRefused, LoginRequired, handle_login_requi
 from trading_core.control.alerts import alerts_results_stream
 from trading_core.control.messages import control_stream, results_stream
 from trading_core.recording.gate_queries import PromotionLine, StudyDetail
+from trading_core.recording.queries import ReconciliationLine
 from trading_core.secrets import (
     DASHBOARD_PASSWORD_HASH,
     DASHBOARD_SESSION_KEY,
@@ -110,11 +112,12 @@ def create_app(
     read_study: Callable[[UUID], StudyDetail | None] | None = None,
     read_promotions: Callable[[int], Sequence[PromotionLine]] | None = None,
     read_alerts: Callable[[], Sequence[AlertLine]] | None = None,
+    read_reconciliations: Callable[[int], Sequence[ReconciliationLine]] | None = None,
 ) -> FastAPI:
     """Build the dashboard app. Tests pass fake settings, secrets, a fake Redis, fake clocks, and Postgres readers.
 
-    ``read_pnl``, ``read_trades``, ``read_strategies``, and ``read_alerts`` are blocking (they query Postgres
-    as ``dashboard_app``); the poller and the page routes run them in a thread.
+    ``read_pnl``, ``read_trades``, ``read_strategies``, ``read_alerts``, and ``read_reconciliations`` are
+    blocking (they query Postgres as ``dashboard_app``); the poller and the page routes run them in a thread.
     """
     client: LiveRedis = redis if redis is not None else redis_client(settings, secrets[REDIS_PASSWORD])
     engine = None
@@ -126,6 +129,7 @@ def create_app(
         or read_strategies is None
         or read_study is None
         or read_promotions is None
+        or read_reconciliations is None
     ):
         # Two connections: a Trades page load never waits behind the poller's P&L read.
         engine = create_engine(
@@ -148,6 +152,9 @@ def create_app(
         def postgres_promotions(page: int) -> Sequence[PromotionLine]:
             return promotions_view(sessions, page)
 
+        def postgres_reconciliations(page: int) -> Sequence[ReconciliationLine]:
+            return reconciliations_view(sessions, env, page)
+
         def postgres_alerts() -> Sequence[AlertLine]:
             return recent_alerts(sessions, env, datetime.fromtimestamp(clock(), UTC))
 
@@ -157,8 +164,10 @@ def create_app(
         read_study = read_study or postgres_study
         read_promotions = read_promotions or postgres_promotions
         read_alerts = read_alerts or postgres_alerts
+        read_reconciliations = read_reconciliations or postgres_reconciliations
     pnl_reader, trades_reader, alerts_reader = read_pnl, read_trades, read_alerts
     strategies_reader, study_reader, promotions_reader = read_strategies, read_study, read_promotions
+    reconciliations_reader = read_reconciliations
     templates = Jinja2Templates(directory=PACKAGE_DIR / "templates")
     templates.env.filters.update(num=num, pnl=pnl, ts=ts, local_hm=local_hm)
     age_template = templates.get_template("partials/topbar_age.html")
@@ -176,6 +185,7 @@ def create_app(
     account_key = snapshot_key(settings.trading_env, "account")
     heartbeat_key = snapshot_key(settings.trading_env, "heartbeat")
     trader_state_key = snapshot_key(settings.trading_env, "trader_state")
+    exchange_key = snapshot_key(settings.trading_env, "exchange")
     password_hash = secrets[DASHBOARD_PASSWORD_HASH].get_secret_value()
 
     commands = control_stream(settings.trading_env)
@@ -257,6 +267,8 @@ def create_app(
             read_alert_results=lambda: client.xrevrange(alert_results, count=RESULTS_SEARCHED),
             render_mute=render_mute,
             render_check=render_check,
+            read_exchange=lambda: client.get(exchange_key),
+            check_interval_s=settings.reconcile_interval_s,
         ),
         redis=client,
         clock=clock,
@@ -264,6 +276,7 @@ def create_app(
         read_strategies=lambda: asyncio.to_thread(strategies_reader),
         read_study=lambda study_id: asyncio.to_thread(study_reader, study_id),
         read_promotions=lambda page: asyncio.to_thread(promotions_reader, page),
+        read_reconciliations=lambda page: asyncio.to_thread(reconciliations_reader, page),
         trusted_peers=trusted_peers(),
     )
 
