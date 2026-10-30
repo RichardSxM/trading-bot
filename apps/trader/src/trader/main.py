@@ -3,8 +3,10 @@
 In demo it runs the paper loop (spec 0006): the ``PAPER_STRATEGY`` strategy (``placeholder_timed`` by
 default, see ``trader.paper_strategy``) on the sandbox execution client, the recording actor writing to
 Postgres off the event loop, and the ``position`` and ``account`` snapshots. In live it runs the Kraken
-execution client with its startup key check (spec 0003; allowed by the env guard from feature 19) and no strategy yet;
-before the node is built it fetches Kraken's view, retrying for up to ``RECONCILE_START_TIMEOUT_S`` (spec 0023 AC-5).
+execution client with its startup key check (spec 0003). The env guard allows that only with ``LIVE_MODE=drill``
+(spec 0023 AC-22; feature 19 adds trading), and then the only strategy is ``reconcile_drill``, driven by
+``drill_step`` commands from ``cli``; ``PAPER_STRATEGY`` is ignored. Before the node is built it fetches
+Kraken's view, retrying for up to ``RECONCILE_START_TIMEOUT_S`` (spec 0023 AC-5).
 
 Every env runs the reconciliation actor (spec 0023) against the sandbox in demo and Kraken in live.
 
@@ -57,11 +59,12 @@ from trader.paper_strategy import StrategySettings, build_paper_strategy, paper_
 from trader.snapshot_writer import log_writer_crash, write_heartbeats, write_snapshot
 from trading_core import env_guard
 from trading_core.boot import boot
-from trading_core.control.consumer import ControlConsumer, Outcome
+from trading_core.control.consumer import ControlConsumer, Execute, Outcome
 from trading_core.control.halt import halt_key
+from trading_core.control.messages import ControlMessage
 from trading_core.control.pause import pause_key
 from trading_core.control.records import PostgresCommandRecorder
-from trading_core.env_guard import ALLOWED_EXEC_CLIENTS, SANDBOX, ExecClientAllowlist
+from trading_core.env_guard import SANDBOX, ExecClientAllowlist, allowed_exec_clients
 from trading_core.naming import node_id
 from trading_core.node.context_feed import ContextFeedActor, ContextFeedConfig
 from trading_core.node.control import (
@@ -94,6 +97,7 @@ from trading_core.node.reconcile import (
     wait_for_exchange,
     watch_start,
 )
+from trading_core.node.reconcile_drill import ReconcileDrill, ReconcileDrillConfig
 from trading_core.node.reconcile_executor import ReconcileExecutor, ReconcileExecutorConfig
 from trading_core.node.recording import RecordingActor
 from trading_core.node.sandbox import FeeSandboxExecClientFactory, sandbox_exec_client
@@ -312,10 +316,14 @@ def touch_heartbeat() -> None:
 
 
 def guard(
-    settings: TraderSettings, secrets: Mapping[str, SecretStr], allowlist: ExecClientAllowlist = ALLOWED_EXEC_CLIENTS
+    settings: TraderSettings, secrets: Mapping[str, SecretStr], allowlist: ExecClientAllowlist | None = None
 ) -> None:
+    """The env guard on the final node config; the allowlist follows ``LIVE_MODE`` (spec 0023 AC-22)."""
     env_guard.check_exec_clients(
-        build_config(settings, secrets).exec_clients, process="trader", env=settings.trading_env, allowlist=allowlist
+        build_config(settings, secrets).exec_clients,
+        process="trader",
+        env=settings.trading_env,
+        allowlist=allowed_exec_clients(settings.live_mode) if allowlist is None else allowlist,
     )
 
 
@@ -359,10 +367,11 @@ def control_parts(
     settings: LossLimitSettings,
     secrets: Mapping[str, SecretStr],
     recheck: Callable[[], Awaitable[Outcome]] | None = None,
+    drill: Execute | None = None,
 ) -> ControlParts:
     """Build the gate, the kill switch, the control actor with its own Redis and Postgres logins, and the readers.
 
-    ``recheck`` answers the ``recheck`` command (spec 0023 AC-20)."""
+    ``recheck`` answers the ``recheck`` command (spec 0023 AC-20), ``drill`` the ``drill_step`` command (AC-22)."""
     env = settings.trading_env
     password = secrets[REDIS_PASSWORD].get_secret_value()
     client = Redis(
@@ -393,7 +402,7 @@ def control_parts(
     kill_switch = KillSwitch(
         gate, risk_engine, client, env, now, node.cache, settings.kill_switch_flat_timeout_s, untrusted=untrusted
     )
-    execute = control_execute(controller, kill_switch, recheck)
+    execute = control_execute(controller, kill_switch, recheck, drill)
     consumer = ControlConsumer(client, env, execute, PostgresCommandRecorder(engine, Env(env)), now)
 
     def read_key(key: str) -> Callable[[], str | bytes | None]:
@@ -539,12 +548,16 @@ def loss_limits(settings: LossLimitSettings) -> LossLimits:
 
 
 def loss_limit_actor(
-    settings: TraderSettings, secrets: Mapping[str, SecretStr], kill_switch: KillSwitch, paper: PaperLoop | None
+    settings: TraderSettings,
+    secrets: Mapping[str, SecretStr],
+    kill_switch: KillSwitch,
+    paper: PaperLoop | None,
+    live_blocks: EntryBlocks | None = None,
 ) -> LossLimitActor:
     """The loss limits (spec 0010 AC-13): seeded from the paper runs in demo, the live runs in live.
 
-    Demo shares the paper loop's sessions, blocks, and recorder. Live has no strategy and no run
-    yet, so its blocks guard nothing and its events are only logged (spec 0010 Follow-up).
+    Demo shares the paper loop's sessions, blocks, and recorder. Live has no run yet, so its events
+    are only logged (spec 0010 Follow-up); its blocks are ``live_blocks``, the ones the drill reads.
     """
     env = Env(settings.trading_env)
     sessions: Callable[[], Session]
@@ -552,7 +565,11 @@ def loss_limit_actor(
         sessions, mode, blocks = paper.sessions, RunMode.PAPER, paper.blocks
     else:
         engine = create_engine(settings.database_url(secrets[POSTGRES_PASSWORD]), pool_size=1, pool_pre_ping=True)
-        sessions, mode, blocks = sessionmaker(engine), RunMode.LIVE, EntryBlocks()
+        sessions, mode, blocks = (
+            sessionmaker(engine),
+            RunMode.LIVE,
+            EntryBlocks() if live_blocks is None else live_blocks,
+        )
 
     def read_seed(day_start: datetime, total_since: datetime) -> LossSeed:
         with sessions() as session:
@@ -614,7 +631,12 @@ def run_node(
     env = settings.trading_env
     if env == "live" and exchange is None:
         raise ValueError("a live node needs Kraken's exchange view (spec 0023 AC-4)")
+    if env == "live" and not settings.drill_mode:
+        # The env guard already refused; a live node only ever runs the drill until feature 19 (AC-22).
+        raise ValueError("a live node needs LIVE_MODE=drill (spec 0023 AC-22)")
     node = TradingNode(config=config) if loop is None else TradingNode(config=config, loop=loop)
+    # One set of entry blocks: the paper loop's in demo; in live the check, the loss limits, and the drill share it.
+    blocks = EntryBlocks() if paper is None else paper.blocks
     snapshots = snapshot_client(settings, secrets[REDIS_PASSWORD])
     exchange_key = snapshot_key(env, "exchange")
     exchange_ttl_s = EXCHANGE_TTL_INTERVALS * settings.reconcile_interval_s
@@ -635,7 +657,7 @@ def run_node(
         exchange=exchange
         if exchange is not None
         else SandboxExchangeView(lambda: FeeSandboxExecClientFactory.last_built, node.cache, time.time_ns),
-        blocks=EntryBlocks() if paper is None else paper.blocks,
+        blocks=blocks,
         record=None if paper is None else paper.writer.put,
         run_id=None if paper is None else paper.run_id,
         owned=owned,
@@ -648,7 +670,15 @@ def run_node(
         stale_quote_s=float(settings.risk_stale_quote_s),
         publish=publish_exchange,
     )
-    control = control_parts(node, settings, secrets, reconcile.recheck_outcome)
+    # The drill strategy needs the control parts' gate, so its step handler is bound once it exists.
+    drills: list[ReconcileDrill] = []
+
+    async def drill_step(msg: ControlMessage) -> Outcome:
+        return await drills[0].run_step(msg)
+
+    control = control_parts(
+        node, settings, secrets, reconcile.recheck_outcome, drill_step if settings.drill_mode else None
+    )
     executor: ReconcileExecutor | None = None
     if exchange is not None:
         # Live: the check acts through the executor and the kill switch (the control parts answer recheck
@@ -686,7 +716,7 @@ def run_node(
         )
     )
     # After the control actor (the halt is known) and the demo's abandoned close (start_paper_loop).
-    losses = loss_limit_actor(settings, secrets, control.kill_switch, paper)
+    losses = loss_limit_actor(settings, secrets, control.kill_switch, paper, blocks)
     node.trader.add_actor(losses)
     # Before any strategy, so `reconciling` blocks entries until the start check is clean (spec 0023 AC-1).
     node.trader.add_actor(reconcile)
@@ -740,6 +770,19 @@ def run_node(
             ("position", lambda: position_snapshot(node.cache, instrument_id, view)),
             ("account", lambda: account_snapshot(node.portfolio, node.cache, instrument_id, usd)),
         ]
+    if settings.drill_mode:
+        # The only strategy in live drill mode; it acts only on a drill_step from cli (AC-22).
+        drill = ReconcileDrill(
+            ReconcileDrillConfig(
+                instrument_id=BTC_PERP,
+                rest_distance_pct=settings.drill_rest_distance_pct,
+                stop_pct=settings.drill_stop_pct,
+            ),
+            control.gate,
+            blocks,
+        )
+        drills.append(drill)
+        node.trader.add_strategy(drill)
     if executor is not None:
         # Live only, and part of the kill switch's flatten: it closes what no loaded strategy owns (AC-7).
         node.trader.add_strategy(executor)

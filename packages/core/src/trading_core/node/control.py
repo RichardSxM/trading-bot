@@ -36,7 +36,7 @@ from trading_core.control.halt import HaltFormatError, HaltReason, HaltSource, H
 from trading_core.control.messages import ControlMessage, format_utc
 from trading_core.control.pause import PauseFormatError, PauseState, decode, encode, pause_key, target_trading_state
 from trading_core.node.strategy import KfsStrategy, PauseGate, entry_orders
-from trading_core.recording.enums import ControlCmd, ControlOutcome, Env, RiskEventKind, Severity
+from trading_core.recording.enums import ControlCmd, ControlOutcome, ControlSource, Env, RiskEventKind, Severity
 from trading_core.recording.rows import JsonObject, RiskEventRow
 from trading_core.recording.spool import WriteCall, WriteItem
 from trading_core.settings import TradingEnv
@@ -577,14 +577,25 @@ class KillSwitch:
 
 
 def control_execute(
-    pause: PauseController, kill_switch: KillSwitch, recheck: Callable[[], Awaitable[Outcome]] | None = None
+    pause: PauseController,
+    kill_switch: KillSwitch,
+    recheck: Callable[[], Awaitable[Outcome]] | None = None,
+    drill: Execute | None = None,
 ) -> Execute:
     """The consumer's ``execute``: ``stop``, ``flatten``, and ``resume`` to the kill switch, ``recheck`` to the
-    reconciliation check (spec 0023 AC-20; ``failed: not_available`` without one), the rest to the pause."""
+    reconciliation check (spec 0023 AC-20; ``failed: not_available`` without one), ``drill_step`` to the
+    drill strategy (AC-22; ``failed: not_drill_mode`` without one, ``failed: source_not_cli`` unless from
+    ``cli``), the rest to the pause."""
 
     async def execute(msg: ControlMessage) -> Outcome:
         if msg.cmd is ControlCmd.RECHECK:
             return Outcome(ControlOutcome.FAILED, "not_available") if recheck is None else await recheck()
+        if msg.cmd is ControlCmd.DRILL_STEP:
+            if drill is None:
+                return Outcome(ControlOutcome.FAILED, "not_drill_mode")
+            if msg.source is not ControlSource.CLI:
+                return Outcome(ControlOutcome.FAILED, "source_not_cli")
+            return await drill(msg)
         if msg.cmd is ControlCmd.STOP:
             return await kill_switch.stop(msg)
         if msg.cmd is ControlCmd.FLATTEN:

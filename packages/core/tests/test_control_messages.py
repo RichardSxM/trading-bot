@@ -212,3 +212,23 @@ def test_malformed_details_are_a_format_error(details):
 
     with pytest.raises(ControlFormatError):
         result_from_fields(fields)
+
+
+# spec 0023 AC-22: drill_step carries its step, always from cli.
+
+
+def test_a_drill_step_carries_its_step_from_cli_and_round_trips():
+    from trading_core.control.messages import drill_step_command
+
+    msg = drill_step_command(NOW, 30, "open_position")
+
+    assert (msg.cmd, msg.source, msg.step) == (ControlCmd.DRILL_STEP, ControlSource.CLI, "open_position")
+    assert to_fields(msg)["step"] == "open_position"
+    assert from_fields(to_fields(msg)) == msg
+
+
+def test_other_commands_have_no_step_field():
+    msg = stop_command(NOW, 30)
+
+    assert "step" not in to_fields(msg)
+    assert from_fields(to_fields(msg)).step is None

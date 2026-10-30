@@ -36,8 +36,17 @@ class _UnreachableExchange:
 EXCHANGE = _UnreachableExchange()
 
 
-def _settings(env: TradingEnv) -> TraderSettings:
-    return TraderSettings(trading_env=env, redis_host="redis", redis_port=6379, kraken_key_rotated_on=date(2026, 9, 1))
+def _settings(env: TradingEnv, live_mode: str | None = None) -> TraderSettings:
+    # A live node runs only in drill mode (spec 0023 AC-22), so live tests default to it.
+    if live_mode is None:
+        live_mode = "drill" if env == "live" else "off"
+    return TraderSettings(
+        trading_env=env,
+        redis_host="redis",
+        redis_port=6379,
+        kraken_key_rotated_on=date(2026, 9, 1),
+        live_mode=live_mode,
+    )
 
 
 def test_demo_config_uses_env_tagged_id_and_stable_redis_cache(monkeypatch):
@@ -209,7 +218,7 @@ class KillSwitch:
         self.exchange_flat = exchange_flat
 
 
-def _fake_control_parts(node, settings, secrets, recheck=None):
+def _fake_control_parts(node, settings, secrets, recheck=None, drill=None):
     from trader.main import ControlParts
 
     node.kill_switch = KillSwitch()
@@ -319,9 +328,35 @@ def test_live_trader_is_refused_until_kraken_joins_the_allowlist(monkeypatch):
 
     monkeypatch.delenv("TRADER_ID", raising=False)
     with pytest.raises(EnvGuardRefused, match="KRAKEN"):
-        guard(_settings("live"), SECRETS)
+        guard(_settings("live", "off"), SECRETS)
     allowlist = dict(ALLOWED_EXEC_CLIENTS) | {("trader", "live"): frozenset({"KRAKEN"})}
-    guard(_settings("live"), SECRETS, allowlist)
+    guard(_settings("live", "off"), SECRETS, allowlist)
+
+
+def test_live_mode_drill_lets_the_live_trader_build_the_kraken_client(monkeypatch):
+    # covers: spec 0023 AC-22 (LIVE_MODE=off, the default, keeps live refused exactly as before).
+    from trader.main import guard
+
+    monkeypatch.delenv("TRADER_ID", raising=False)
+    guard(_settings("live", "drill"), SECRETS)
+    monkeypatch.setenv("TRADING_ENV", "live")
+    monkeypatch.setenv("KRAKEN_KEY_ROTATED_ON", "2026-09-01")
+    assert TraderSettings().live_mode == "off"
+
+
+def test_a_live_node_outside_drill_mode_is_refused(fake_main):
+    with pytest.raises(ValueError, match="LIVE_MODE=drill"):
+        fake_main.run_node(
+            build_config(_settings("live", "off"), SECRETS), _settings("live", "off"), 5.0, SECRETS, exchange=EXCHANGE
+        )
+
+
+def test_drill_mode_loads_reconcile_drill_as_the_only_strategy_beside_the_executor(fake_main):
+    fake_main.run_node(build_config(_settings("live"), SECRETS), _settings("live"), 5.0, SECRETS, exchange=EXCHANGE)
+
+    (node,) = _FakeNode.instances
+    strategies = [name for call, name in (c for c in node.calls if isinstance(c, tuple)) if call == "add_strategy"]
+    assert strategies == ["ReconcileDrill", "ReconcileExecutor"]
 
 
 def test_trader_loads_the_kraken_files_only_in_live():

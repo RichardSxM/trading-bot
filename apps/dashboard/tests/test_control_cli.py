@@ -384,3 +384,34 @@ def test_a_recheck_that_cannot_read_kraken_exits_1_with_its_reason(tmp_path, mon
     assert control_cli.main(["recheck", "--wait-result", "5"]) == 1
     line = json.loads(capsys.readouterr().out)
     assert (line["status"], line["reason"], line["details"]) == ("failed", "exchange_unknown", {"outcome": "failed"})
+
+
+# spec 0023 AC-22: drill-step -----------------------------------------------------------------
+
+
+def test_main_drill_step_sends_the_step_as_cli(tmp_path, monkeypatch, capsys):
+    _secrets_dir(tmp_path, monkeypatch)
+    redis = AnsweringRedis(ControlOutcome.RECEIVED, ControlOutcome.EXECUTED)
+    monkeypatch.setattr(control_cli, "redis_client", lambda settings, password: redis)
+
+    assert control_cli.main(["drill-step", "open_position", "--wait-result", "5"]) == 0
+    line = json.loads(capsys.readouterr().out)
+    assert (line["cmd"], line["source"], line["status"]) == ("drill_step", "cli", "executed")
+    ((_, fields),) = redis.streams["demo:control"]
+    assert fields[b"step"] == b"open_position"
+
+
+def test_a_drill_step_outside_drill_mode_exits_1_with_its_reason(tmp_path, monkeypatch, capsys):
+    _secrets_dir(tmp_path, monkeypatch)
+    redis = AnsweringRedis(ControlOutcome.RECEIVED, ControlOutcome.FAILED, reason="not_drill_mode")
+    monkeypatch.setattr(control_cli, "redis_client", lambda settings, password: redis)
+
+    assert control_cli.main(["drill-step", "flatten", "--wait-result", "5"]) == 1
+    assert json.loads(capsys.readouterr().out)["reason"] == "not_drill_mode"
+
+
+def test_an_unknown_drill_step_is_refused_by_the_parser(capsys):
+    with pytest.raises(SystemExit) as exc:
+        control_cli.main(["drill-step", "buy_lots"])
+
+    assert exc.value.code == 2

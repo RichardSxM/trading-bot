@@ -10,6 +10,7 @@ dashboard container.
     python -m dashboard.control_cli flatten --wait-result 30
     python -m dashboard.control_cli resume --wait-result 30
     python -m dashboard.control_cli recheck --wait-result 60
+    python -m dashboard.control_cli drill-step open_position --wait-result 30
 
 Runs with the dashboard's settings and its own Redis login (the ``dashboard`` ACL user), so it
 needs no new grant. stdout carries exactly one JSON line, the result; anything else goes to
@@ -25,6 +26,8 @@ stderr. Exit codes:
   reached or no result came in time.
 - ``recheck`` (spec 0023 AC-20, ``source = cli``): runs a reconciliation check now; the same codes, with
   the check's ``outcome`` and ``reconciliation_id`` printed under ``details``.
+- ``drill-step <step>`` (spec 0023 AC-22, ``source = cli``): one live drill step, answered only in
+  ``LIVE_MODE=drill``; the same codes. ``rest_order_and_die`` never answers, so it exits 2.
 """
 
 import argparse
@@ -51,10 +54,12 @@ from trading_core.control.messages import (
     ControlResult,
     command,
     control_stream,
+    drill_step_command,
     result_from_fields,
     results_stream,
     to_fields,
 )
+from trading_core.reconcile.drill import DrillStep
 from trading_core.recording.enums import ControlCmd, ControlOutcome, ControlSource
 from trading_core.secrets import REDIS_PASSWORD, SecretUnavailable, read_secret
 from trading_core.settings import TradingEnv
@@ -284,6 +289,9 @@ def _run(args: argparse.Namespace, settings: DashboardSettings) -> Result:
     if args.command in CLI_CMDS:
         msg = command(CLI_CMDS[args.command], datetime.now(UTC), args.ttl, ControlSource.CLI)
         return asyncio.run(_with_client(settings, lambda client: send_kill_switch(client, msg, env, args.wait_result)))
+    if args.command == "drill-step":
+        msg = drill_step_command(datetime.now(UTC), args.ttl, args.step)
+        return asyncio.run(_with_client(settings, lambda client: send_kill_switch(client, msg, env, args.wait_result)))
     key = snapshot_key(env, "trader_state")
     return asyncio.run(_with_client(settings, lambda client: wait_flat(client, key, args.timeout)))
 
@@ -309,6 +317,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         # A recheck may wait out two Kraken timeouts before it answers.
         cmd.add_argument("--wait-result", type=float, default=60.0 if name == "recheck" else 30.0, metavar="SECONDS")
         cmd.add_argument("--ttl", type=int, default=COMMAND_TTL_S, metavar="SECONDS")
+    # The live drill's steps (spec 0023 AC-22): only from cli, so the dashboard has no button for it.
+    drill = sub.add_parser("drill-step", help="send a drill_step as cli (LIVE_MODE=drill only); exit 0 on executed")
+    drill.add_argument("step", choices=[s.value for s in DrillStep])
+    drill.add_argument("--wait-result", type=float, default=30.0, metavar="SECONDS")
+    drill.add_argument("--ttl", type=int, default=COMMAND_TTL_S, metavar="SECONDS")
     flat = sub.add_parser("wait-flat", help="wait until the paused trader holds no position and no entry order")
     flat.add_argument("--timeout", type=parse_duration, default=parse_duration("15m"), metavar="DURATION")
     args = parser.parse_args(argv)

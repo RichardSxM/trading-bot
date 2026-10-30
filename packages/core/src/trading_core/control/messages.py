@@ -28,7 +28,8 @@ class ControlFormatError(ValueError):
 class ControlMessage:
     """One command on ``{env}:control``; ``issued_at`` and ``expires_at`` are aware UTC datetimes.
 
-    ``source`` says who sent it; an entry without the field came from the dashboard.
+    ``source`` says who sent it; an entry without the field came from the dashboard. ``step`` is the
+    ``drill_step`` command's step (spec 0023 AC-22), None for every other command.
     """
 
     id: uuid.UUID
@@ -36,6 +37,7 @@ class ControlMessage:
     issued_at: datetime
     expires_at: datetime
     source: ControlSource = ControlSource.DASHBOARD
+    step: str | None = None
 
 
 @dataclass(frozen=True)
@@ -96,9 +98,15 @@ def unpause_command(now: datetime, ttl_s: int, source: ControlSource) -> Control
     return command(ControlCmd.UNPAUSE, now, ttl_s, source)
 
 
+def drill_step_command(now: datetime, ttl_s: int, step: str) -> ControlMessage:
+    """A new ``drill_step`` command for ``step``, always from ``cli`` (spec 0023 AC-22)."""
+    msg = command(ControlCmd.DRILL_STEP, now, ttl_s, ControlSource.CLI)
+    return ControlMessage(msg.id, msg.cmd, msg.issued_at, msg.expires_at, msg.source, step)
+
+
 def to_fields(msg: ControlMessage) -> dict[str, str]:
-    """The stream fields for ``msg``."""
-    return {
+    """The stream fields for ``msg``; ``step`` only when set."""
+    fields = {
         "id": str(msg.id),
         "cmd": msg.cmd.value,
         "issued_at": format_utc(msg.issued_at),
@@ -106,6 +114,9 @@ def to_fields(msg: ControlMessage) -> dict[str, str]:
         "schema_version": SCHEMA_VERSION,
         "source": msg.source.value,
     }
+    if msg.step is not None:
+        fields["step"] = msg.step
+    return fields
 
 
 def result_to_fields(result: ControlResult) -> dict[str, str]:
@@ -142,6 +153,7 @@ def from_fields(fields: Fields) -> ControlMessage:
         parse_utc(values["issued_at"], "issued_at"),
         parse_utc(values["expires_at"], "expires_at"),
         source,
+        field(fields, "step"),
     )
 
 

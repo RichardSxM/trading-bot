@@ -18,6 +18,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from trading_core.secrets import DEFAULT_SECRETS_DIR
 
 TradingEnv = Literal["demo", "live"]
+# What live may do (spec 0023 AC-22): ``off`` refuses the Kraken execution client, ``drill`` allows it for the
+# ``reconcile_drill`` strategy only. Feature 19 adds ``trade``.
+LiveMode = Literal["off", "drill"]
 
 
 class Settings(BaseSettings):
@@ -228,6 +231,17 @@ class ReconcileSettings(Settings):
     reconcile_lookback_mins: int = Field(default=1440, gt=0)
     # Nautilus's ``timeout_reconciliation``.
     reconcile_nautilus_timeout_s: int = Field(default=30, gt=0)
+    # Live stays refused unless this is ``drill`` (AC-22); set only in /etc/kfs/kfs.env on the VPS.
+    live_mode: LiveMode = "off"
+    # How far below the mid the drill's resting post only buy sits, in percent.
+    drill_rest_distance_pct: Decimal = Field(default=Decimal(20), ge=5, le=50)
+    # The drill position's stop distance below its fill price, in percent.
+    drill_stop_pct: Decimal = Field(default=Decimal(2), ge=Decimal("0.5"), le=10)
+
+    @property
+    def drill_mode(self) -> bool:
+        """True only for a live trader in ``LIVE_MODE=drill``; demo ignores the setting."""
+        return self.trading_env == "live" and self.live_mode == "drill"
 
 
 class AlertSettings(Settings):

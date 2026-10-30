@@ -6,6 +6,7 @@ Needs the ``node`` extra (NautilusTrader) for ``node.control``, so it runs in th
 """
 
 import asyncio
+import dataclasses
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -667,6 +668,31 @@ def test_control_execute_routes_recheck_to_the_reconciliation_check():
     )
     assert not gate.paused
     assert not gate.halted
+
+
+def test_control_execute_routes_a_cli_drill_step_to_the_drill_only_in_drill_mode():
+    # covers: spec 0023 AC-22 (not_drill_mode without the drill, source_not_cli from anything but cli).
+    from trading_core.control.messages import drill_step_command
+
+    ks, gate, risk, redis, *_ = _kill_switch()
+    pause = PauseController(gate, risk, redis, "demo", lambda: NOW)
+    answer = Outcome(ControlOutcome.EXECUTED)
+    asked = []
+
+    async def drill(msg):
+        asked.append(msg.step)
+        return answer
+
+    in_drill = control_execute(pause, ks, drill=drill)
+    off = control_execute(pause, ks)
+    step = drill_step_command(NOW, 60, "rest_order")
+    from_dashboard = dataclasses.replace(step, source=ControlSource.DASHBOARD)
+
+    assert asyncio.run(in_drill(step)) is answer
+    assert asyncio.run(off(step)) == Outcome(ControlOutcome.FAILED, "not_drill_mode")
+    assert asyncio.run(in_drill(from_dashboard)) == Outcome(ControlOutcome.FAILED, "source_not_cli")
+    assert asked == ["rest_order"]
+    assert not gate.paused
 
 
 # The untrusted cache set (spec 0023 AC-8) ----------------------------------------------------

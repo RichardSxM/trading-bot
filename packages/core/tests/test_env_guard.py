@@ -74,3 +74,26 @@ def test_the_demo_trader_may_not_build_kraken_next_to_the_sandbox():
 
     with pytest.raises(EnvGuardRefused, match="KRAKEN"):
         check_exec_clients({SANDBOX: object(), "KRAKEN": object()}, process="trader", env="demo")
+
+
+# spec 0023 AC-22: LIVE_MODE=drill lets the live trader, and only it, build the Kraken client.
+
+
+def test_live_mode_off_keeps_live_refused():
+    from trading_core.env_guard import allowed_exec_clients
+
+    assert allowed_exec_clients("off") == ALLOWED_EXEC_CLIENTS
+    with pytest.raises(EnvGuardRefused, match="KRAKEN"):
+        check_exec_clients({"KRAKEN": object()}, process="trader", env="live", allowlist=allowed_exec_clients("off"))
+
+
+def test_drill_mode_allows_kraken_for_the_live_trader_only():
+    from trading_core.env_guard import allowed_exec_clients
+
+    drill = allowed_exec_clients("drill")
+
+    check_exec_clients({"KRAKEN": object()}, process="trader", env="live", allowlist=drill)
+    for process, env in [("trader", "demo"), ("recorder", "live"), ("recorder", "demo")]:
+        with pytest.raises(EnvGuardRefused, match="KRAKEN"):
+            check_exec_clients({"KRAKEN": object()}, process=process, env=env, allowlist=drill)
+    assert ALLOWED_EXEC_CLIENTS[("trader", "live")] == frozenset()  # the module default is untouched
