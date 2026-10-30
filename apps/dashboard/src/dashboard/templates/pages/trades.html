@@ -8,7 +8,7 @@
   {% set jf = journal_form %}
   <section class="region region--wide" aria-labelledby="journal-h">
     <header class="region__head"><h2 class="region__title" id="journal-h">Export journal</h2><span class="region__meta">every fill, fee, and funding payment · EUR at the ECB rate · Amsterdam dates, the end inclusive</span></header>
-    <form class="journal-form" method="get" action="/trades/journal.csv">
+    <form class="journal-form" method="get" action="/trades/journal/check" hx-get="/trades/journal/check" hx-target="#journal-panel" hx-swap="innerHTML">
       <div class="field">
         <label class="field__label" for="journal-start">Start</label>
         <input class="input" id="journal-start" name="start" type="date" value="{{ jf.start }}" max="{{ jf.end }}" required>
@@ -23,8 +23,9 @@
           {% for m in jf.modes %}<option value="{{ m }}"{% if m == jf.mode %} selected{% endif %}>{{ m }}</option>{% endfor %}
         </select>
       </div>
-      <div class="journal-form__actions">{{ button("Download journal.csv", kind="primary", type="submit", glyph="download") }}</div>
+      <div class="journal-form__actions">{{ button("Check", kind="primary", type="submit", glyph="shield-check") }}</div>
     </form>
+    <div id="journal-panel" class="journal-panel-area" aria-live="polite"></div>
   </section>
   {% if trades_error %}
   <section class="region region--wide" aria-labelledby="trades-h">

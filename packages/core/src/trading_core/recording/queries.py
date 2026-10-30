@@ -15,10 +15,11 @@ from enum import StrEnum
 from typing import Final, NamedTuple
 from uuid import UUID
 
-from sqlalchemy import Date, String, cast, func, literal, select, true
+from sqlalchemy import ColumnElement, Date, String, and_, cast, func, literal, or_, select, true
 from sqlalchemy.orm import InstrumentedAttribute, Session, aliased
 from sqlalchemy.sql.selectable import LateralFromClause
 
+from trading_core.journal.summary import PositionFigures, Snapshot
 from trading_core.recording import models
 from trading_core.recording.enums import (
     ControlOutcome,
@@ -232,9 +233,7 @@ def journal_rows(
     inverse instrument.
     """
     start_ns, end_ns = _utc_ns("start", start), _utc_ns("end", end)
-    wanted = set(modes)
-    if not wanted or not wanted <= set(_TRADING_MODES):
-        raise ValueError(f"modes must be a non empty set of paper and live, got {sorted(wanted)}")
+    wanted = _wanted(modes)
     fill, funding, instrument = models.Fill, models.FundingPayment, models.Instrument
     run, version, strategy = models.StrategyRun, models.StrategyVersion, models.Strategy
     context = (run.mode, strategy.name, version.version_hash)
@@ -277,6 +276,87 @@ def journal_rows(
         for payment, mode, name, version_hash, rate, rate_date in payments
     ]
     return sorted(rows, key=lambda r: (r.at, r.source_id, _KIND_ORDER[r.kind]))
+
+
+def _wanted(modes: Collection[RunMode]) -> set[RunMode]:
+    wanted = set(modes)
+    if not wanted or not wanted <= set(_TRADING_MODES):
+        raise ValueError(f"modes must be a non empty set of paper and live, got {sorted(wanted)}")
+    return wanted
+
+
+def fx_rate_on(session: Session, day: date) -> Decimal | None:
+    """The EUR/USD rate of ``day`` or the latest earlier one, None when none is stored (spec 0024 AC-8)."""
+    fx = models.FxRate
+    return session.execute(
+        select(fx.rate)
+        .where(fx.base_currency == "EUR", fx.quote_currency == _FX_CURRENCY, fx.rate_date <= day)
+        .order_by(fx.rate_date.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+
+
+def balances_at(session: Session, env: Env, modes: Collection[RunMode], at: datetime) -> list[Snapshot]:
+    """Per ``(account_ref, currency)``, the latest ``account_snapshots`` row of ``env`` with ``captured_at <= at``
+    whose run has one of ``modes`` (spec 0024 AC-8).
+
+    A row with NULL ``run_id`` counts as ``live``, and only in the live env.
+    """
+    _utc_ns("at", at)
+    wanted = _wanted(modes)
+    snap, run = models.AccountSnapshot, models.StrategyRun
+    mode_ok: ColumnElement[bool] = run.mode.in_(wanted)
+    if env == Env.LIVE and RunMode.LIVE in wanted:
+        mode_ok = or_(mode_ok, snap.run_id.is_(None))
+    newest = (
+        func.row_number()
+        .over(
+            partition_by=(snap.account_ref, snap.currency), order_by=(snap.captured_at.desc(), snap.captured_ns.desc())
+        )
+        .label("newest")
+    )
+    ranked = (
+        select(snap.account_ref, snap.currency, snap.balance_total, snap.captured_at, snap.run_id, newest)
+        .outerjoin(run, run.id == snap.run_id)
+        .where(snap.env == env, snap.captured_at <= at, mode_ok)
+        .subquery()
+    )
+    rows = session.execute(
+        select(ranked.c.account_ref, ranked.c.currency, ranked.c.balance_total, ranked.c.captured_at, ranked.c.run_id)
+        .where(ranked.c.newest == 1)
+        .order_by(ranked.c.account_ref, ranked.c.currency)
+    ).all()
+    return [Snapshot(*row) for row in rows]
+
+
+def journal_check_positions(
+    session: Session, env: Env, modes: Collection[RunMode], start: datetime, end: datetime
+) -> PositionFigures:
+    """The dashboard side of the P&L check (spec 0024 AC-9) over ``env``'s positions of ``modes``.
+
+    ``dashboard_net`` is ``sum(realized_pnl + funding_total)`` of positions closed in ``[start, end)``,
+    the per position formula of the dashboard's P&L. A position crosses an edge when it was open
+    at ``start`` (opened before, not closed by then) or at ``end``.
+    """
+    _utc_ns("start", start)
+    _utc_ns("end", end)
+    wanted = _wanted(modes)
+    pos, run = models.Position, models.StrategyRun
+    closed = and_(pos.status == PositionStatus.CLOSED, pos.closed_at >= start, pos.closed_at < end)
+    crosses = or_(
+        and_(pos.opened_at < start, or_(pos.closed_at.is_(None), pos.closed_at > start)),
+        and_(pos.opened_at < end, or_(pos.closed_at.is_(None), pos.closed_at >= end)),
+    )
+    net, counted, crossing = session.execute(
+        select(
+            func.coalesce(func.sum(pos.realized_pnl + pos.funding_total).filter(closed), 0),
+            func.count().filter(closed),
+            func.count().filter(crosses),
+        )
+        .join(run, run.id == pos.run_id)
+        .where(pos.env == env, run.env == env, run.mode.in_(wanted))
+    ).one()
+    return PositionFigures(dashboard_net=Decimal(net), counted=counted, crossing=crossing)
 
 
 @dataclass(frozen=True, kw_only=True)

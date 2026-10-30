@@ -14,6 +14,7 @@ from dashboard.data.strategies import StrategiesView
 from dashboard.data.trades import TradesView
 from dashboard.settings import DashboardSettings
 from dashboard.web.app import create_app
+from trading_core.journal.summary import JournalTotals, PositionFigures, summarize
 from trading_core.snapshot.envelope import encode
 
 PASSWORD = "correct horse battery"
@@ -151,6 +152,17 @@ class FakeExport:
             self.closed = True
 
 
+def summary_of(journal_range, totals=None, start=((), None), end=((), None), positions=None):
+    """A real summary from the pure core; an empty range that matches by default."""
+    return summarize(
+        journal_range,
+        totals or JournalTotals(),
+        start,
+        end,
+        positions or PositionFigures(dashboard_net=Decimal(0), counted=0, crossing=0),
+    )
+
+
 def make_app(
     redis,
     clock,
@@ -163,6 +175,7 @@ def make_app(
     read_promotions=lambda page: (),
     read_reconciliations=lambda page: (),
     open_export=None,
+    read_journal_summary=None,
     **settings,
 ):
     settings.setdefault("dashboard_cookie_secure", False)
@@ -180,6 +193,7 @@ def make_app(
         read_promotions=read_promotions,
         read_reconciliations=read_reconciliations,
         open_export=open_export or (lambda journal_range: FakeExport()),
+        read_journal_summary=read_journal_summary or summary_of,
     )
 
 

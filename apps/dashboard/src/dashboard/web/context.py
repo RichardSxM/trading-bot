@@ -20,6 +20,7 @@ from dashboard.live.poller import Poller
 from dashboard.live.state import Entry
 from dashboard.settings import DashboardSettings
 from trading_core.journal.bounds import JournalRange
+from trading_core.journal.summary import JournalSummary
 from trading_core.recording.gate_queries import PromotionLine, StudyDetail
 from trading_core.recording.queries import ReconciliationLine
 
@@ -53,7 +54,7 @@ class AppContext:
     ``read_strategies()`` the strategy ranking and paper progress, ``read_study(id)`` one study, and
     ``read_promotions(page)`` the promotion log (spec 0015 AC-18 to AC-21), ``read_reconciliations(page)``
     the reported Kraken checks (spec 0023 AC-19). ``open_journal(range)`` opens a journal export's snapshot
-    and runs its refusal pass (spec 0024).
+    and runs its refusal pass, ``read_journal_summary(range)`` its totals, balances, and check (spec 0024).
     ``trusted_peers`` are the socket peers besides loopback whose client headers key the lockout.
     """
 
@@ -72,6 +73,7 @@ class AppContext:
     read_promotions: Callable[[int], Awaitable[Sequence[PromotionLine]]]
     read_reconciliations: Callable[[int], Awaitable[Sequence[ReconciliationLine]]]
     open_journal: Callable[[JournalRange], Awaitable[JournalExport]]
+    read_journal_summary: Callable[[JournalRange], Awaitable[JournalSummary]]
     trusted_peers: frozenset[str] = frozenset()
 
 

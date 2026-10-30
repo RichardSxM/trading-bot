@@ -1,5 +1,6 @@
 """covers: spec 0024 AC-3 (one line per journal row, in order, header only when empty), AC-4 (EUR from the row's rate,
-rounded once), AC-5 (a missing or unpublished rate refuses), AC-6 (an inverse instrument refuses), AC-14 (month
+rounded once), AC-5 (a missing or unpublished rate refuses), AC-6 (an inverse instrument refuses), AC-7 to AC-9 (the
+summary's totals, balances, and check over Postgres), AC-11 (the summary equals the journal.csv sums), AC-14 (month
 chunks give the same rows in the same order)."""
 
 import csv
@@ -7,18 +8,20 @@ import io
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from uuid import uuid7
+from uuid import UUID, uuid7
 
-from sqlalchemy import insert
+import pytest
+from sqlalchemy import insert, update
 from sqlalchemy.orm import Session
 
 from trading_core.journal.bounds import parse_range
-from trading_core.journal.export import JOURNAL_COLUMNS, eur_cents
+from trading_core.journal.export import JOURNAL_COLUMNS, JournalRefusedError, eur_cents
+from trading_core.journal.summary import CheckStatus
 from trading_core.recording import models, repository
-from trading_core.recording.enums import Env, FundingSource, Liquidity, OrderOrigin, OrderSide
-from trading_core.recording.journal_export import JournalCsv, journal_refusal
-from trading_core.recording.queries import journal_rows
-from trading_core.recording.rows import FundingRow, FxRateRow, column_values
+from trading_core.recording.enums import Env, FundingSource, Liquidity, OrderOrigin, OrderSide, PositionStatus, RunMode
+from trading_core.recording.journal_export import JournalCsv, journal_refusal, journal_summary
+from trading_core.recording.queries import balances_at, journal_check_positions, journal_rows
+from trading_core.recording.rows import AccountSnapshotRow, FundingRow, FxRateRow, RunRow, column_values
 
 from .conftest import INSTRUMENT, World, instrument_row
 
@@ -46,8 +49,9 @@ def _trade(session: Session, world: World, at: datetime, side: OrderSide = Order
     repository.record_fill(session, world.fill(order.client_order_id, side=side, filled_ns=_ns(at), **fill))
 
 
-def _funding(session: Session, world: World, at: datetime, amount: str) -> None:
+def _funding(session: Session, world: World, at: datetime, amount: str, position_id: UUID | None = None) -> None:
     row = FundingRow(
+        position_id=position_id,
         env=Env.DEMO,
         run_id=world.run_id,
         instrument_id=INSTRUMENT,
@@ -195,3 +199,166 @@ def test_month_chunks_give_the_same_rows_in_the_same_order(session: Session, wor
     assert [line["source_id"] for line in lines] == [str(row.source_id) for row in whole]
     assert lines[2]["at_amsterdam"] == "2031-02-01T00:30:00.000000+01:00"
     assert chunks[2].startswith("demo,fill,paper,2031-01-31T23:30:00")
+
+
+@pytest.fixture(autouse=True)
+def _no_crossing_positions_from_other_tests(session: Session) -> None:
+    """Some tests commit positions that are still open, or close years later, and would cross every 2031 range.
+    Close each at its own open time in this test's transaction, which rolls back at its end."""
+    position = models.Position
+    session.execute(update(position).values(status=PositionStatus.CLOSED, closed_at=position.opened_at))
+
+
+def _position(session: Session, world: World, opened: datetime, closed: datetime | None, **values: object) -> UUID:
+    status = PositionStatus.OPEN if closed is None else PositionStatus.CLOSED
+    row = world.position(opened_ns=_ns(opened), closed_at=closed, status=status, **values)
+    repository.upsert_position(session, row)
+    return row.id
+
+
+def _replay_run(session: Session, world: World) -> UUID:
+    row = RunRow(
+        env=Env.DEMO,
+        mode=RunMode.REPLAY,
+        strategy_version_id=world.version_id,
+        trader_id=f"T-replay-{uuid7().hex[-8:]}",
+        run_config={},
+        started_at=_at(1),
+    )
+    session.execute(insert(models.StrategyRun).values(column_values(row)))
+    return row.id
+
+
+def _snapshot(session: Session, run_id: UUID | None, at: datetime, total: str, currency: str = "USD") -> None:
+    repository.record_account_snapshot(
+        session,
+        AccountSnapshotRow(
+            env=Env.DEMO,
+            run_id=run_id,
+            account_ref="KRAKEN-001",
+            balance_total=Decimal(total),
+            balance_free=Decimal(total),
+            margin_used=Decimal(0),
+            currency=currency,
+            captured_ns=_ns(at),
+        ),
+    )
+
+
+def test_the_summary_equals_the_csv_sums_and_matches_the_positions(session: Session, world: World):
+    _week(session)
+    position = _position(session, world, _at(6, 9), _at(8, 9), realized_pnl=Decimal("0.1489"), funding_total=Decimal(0))
+    _trade(
+        session,
+        world,
+        _at(6, 9),
+        position_id=position,
+        quantity=Decimal("0.002"),
+        price=Decimal("60000.5"),
+        fee=Decimal("-0.01"),
+    )
+    _funding(session, world, _at(7, 16), "-0.0123", position)
+    _trade(
+        session,
+        world,
+        _at(8, 9),
+        OrderSide.SELL,
+        position_id=position,
+        quantity=Decimal("0.002"),
+        price=Decimal("60100"),
+        fee=Decimal("0.0601"),
+    )
+    _snapshot(session, world.run_id, _at(5), "1000")
+    _snapshot(session, world.run_id, _at(9), "1000.1366")
+    journal_range = parse_range("2031-01-06", "2031-01-09", "paper", TODAY)
+
+    summary = journal_summary(session, Env.DEMO, journal_range)
+    lines, _, _ = _csv(session, "2031-01-06", "2031-01-09")
+
+    assert summary.rows == len(lines) == 5
+    usd = summary.native["USD"]
+    for item, kind in (("trading", "fill"), ("fees", "fee"), ("funding", "funding")):
+        assert getattr(usd, item) == sum(Decimal(r["amount"]) for r in lines if r["kind"] == kind)
+        assert getattr(summary.eur, item) == sum(Decimal(r["eur_amount"]) for r in lines if r["kind"] == kind)
+    assert summary.eur.net == sum(Decimal(r["eur_amount"]) for r in lines)
+    assert usd.net == Decimal("0.1366")
+    check = summary.check
+    assert (check.status, check.dashboard_net, check.counted, check.crossing) == (
+        CheckStatus.MATCH,
+        Decimal("0.1366"),
+        1,
+        0,
+    )
+    [start] = summary.balance_start
+    [end] = summary.balance_end
+    assert start.snapshot is not None
+    assert start.snapshot.balance_total == Decimal("1000")
+    assert start.eur == eur_cents(Decimal("1000"), Decimal("1.2000"))  # the 3rd's rate for a Sunday 23:00 UTC bound
+    assert end.snapshot is not None
+    assert end.snapshot.captured_at == _at(9)
+    assert end.eur == eur_cents(Decimal("1000.1366"), Decimal("1.2800"))
+
+
+def test_a_changed_realized_pnl_is_a_mismatch(session: Session, world: World):
+    _week(session)
+    position = _position(session, world, _at(6, 9), _at(6, 10), realized_pnl=Decimal("0.05"))
+    _trade(session, world, _at(6, 9), position_id=position, fee=Decimal(0))
+
+    check = journal_summary(session, Env.DEMO, parse_range("2031-01-06", "2031-01-09", "paper", TODAY)).check
+
+    assert check.status is CheckStatus.MISMATCH
+    assert check.difference == Decimal("-60.0505")
+
+
+def test_a_fill_without_a_position_makes_the_check_not_comparable(session: Session, world: World):
+    _week(session)
+    _trade(session, world, _at(7), fee=Decimal(0))
+
+    check = journal_summary(session, Env.DEMO, parse_range("2031-01-06", "2031-01-09", "paper", TODAY)).check
+
+    assert (check.status, check.reason, check.unlinked_rows) == (CheckStatus.NOT_COMPARABLE, "unlinked", 1)
+    assert check.unlinked_net == Decimal("-60.0005")
+
+
+def test_the_summary_refuses_like_the_csv(session: Session, world: World):
+    _rates(session, {date(2031, 1, 6): "1.25"})
+    _trade(session, world, _at(7), fee=Decimal(0))
+
+    with pytest.raises(JournalRefusedError, match="No ECB rate for 2031-01-07"):
+        journal_summary(session, Env.DEMO, parse_range("2031-01-06", "2031-01-07", "paper", TODAY))
+
+
+def test_positions_crossing_either_edge_are_counted_apart(session: Session, world: World):
+    start, end = _at(6, 0), _at(9, 0)
+    _position(session, world, _at(5), _at(6, 12))  # open at the start
+    _position(session, world, _at(8), None)  # open at the end
+    _position(session, world, _at(8), _at(9, 0))  # closed exactly at the end: open at it, crosses
+    _position(session, world, _at(2), _at(6, 0))  # closed exactly at the start: in range, does not cross
+    _position(session, world, _at(6, 1), _at(7), realized_pnl=Decimal("1.5"), funding_total=Decimal("-0.25"))
+    _position(session, world, _at(1), _at(3), realized_pnl=Decimal(100))  # before the range
+    _position(session, world, _at(7), _at(7, 1), run_id=_replay_run(session, world), realized_pnl=Decimal(9))
+
+    figures = journal_check_positions(session, Env.DEMO, {RunMode.PAPER}, start, end)
+
+    assert figures.crossing == 3
+    assert figures.counted == 3  # closed at the start, at 12:00 on the 6th, and on the 7th
+    assert figures.dashboard_net == Decimal("1.25")
+
+
+def test_balances_take_the_latest_snapshot_of_the_mode_on_or_before_the_bound(session: Session, world: World):
+    replay = _replay_run(session, world)
+    _snapshot(session, world.run_id, _at(3), "900")
+    _snapshot(session, world.run_id, _at(5), "950")
+    _snapshot(session, world.run_id, _at(5), "12", currency="EUR")
+    _snapshot(session, world.run_id, _at(6, 1), "999")  # after the bound
+    _snapshot(session, replay, _at(5, 12), "1")  # another mode
+    _snapshot(session, None, _at(5, 13), "2")  # NULL run counts as live, only in the live env
+
+    found = balances_at(session, Env.DEMO, {RunMode.PAPER}, _at(5, 23))
+
+    assert [(s.currency, s.balance_total, s.captured_at) for s in found] == [
+        ("EUR", Decimal("12"), _at(5)),
+        ("USD", Decimal("950"), _at(5)),
+    ]
+    assert balances_at(session, Env.DEMO, {RunMode.PAPER}, _at(5)) == found  # captured at the bound counts
+    assert balances_at(session, Env.DEMO, {RunMode.PAPER}, _at(2)) == []
