@@ -1,5 +1,5 @@
 """covers: spec 0013 AC-4 (``disk_low``) and AC-6 (the stuck entry block, its since time, and the
-restart rule).
+restart rule); spec 0023 AC-21 (the three check reasons join the alerting set).
 
 Pure: no clock, no I/O.
 """
@@ -72,7 +72,18 @@ def test_the_alerting_set_leaves_out_the_reasons_you_set_or_that_clear_on_a_cloc
         BlockReason.TRADE_CAP,
         BlockReason.LOSS_COOLDOWN,
     }.isdisjoint(ENTRY_BLOCK_REASONS)
-    assert len(ENTRY_BLOCK_REASONS) == 7
+    assert len(ENTRY_BLOCK_REASONS) == 10
+
+
+@pytest.mark.parametrize("reason", ["reconciling", "exchange_unknown", "order_unresolved"])
+def test_a_stuck_check_block_alerts_like_any_other(reason):
+    engine = AlertEngine(CONFIG)
+
+    [push] = block(engine, NOW, [reason], {reason: NOW - timedelta(hours=2)})
+
+    assert push.tier is Tier.WARNING
+    assert push.episode.fingerprint == f"entry_block:{reason}"
+    assert push.message.endswith(f"({reason}).")
 
 
 @pytest.mark.parametrize("reason", ["halted", "paused", "daily_loss_limit", "trade_cap", "loss_cooldown", "new_one"])

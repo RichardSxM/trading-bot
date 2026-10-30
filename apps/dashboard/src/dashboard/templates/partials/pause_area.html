@@ -1,5 +1,5 @@
-{#- Pause, Resume, and Flatten (spec 0005 AC-13, spec 0010 AC-18): the stop's path, one form per
-    command. Pause blocks new entries; exits and protective stops still go through. Resume lifts a
+{#- Pause, Resume, Flatten, and Recheck (spec 0005 AC-13, spec 0010 AC-18, spec 0023 AC-20): the stop's
+    path, one form per command. Recheck runs a check against Kraken now and sends on one tap. Pause blocks new entries; exits and protective stops still go through. Resume lifts a
     halt and any pause, whoever set it. Flatten closes every position without halting. Resume and
     Flatten take a confirm step rendered by the server (``confirm``), so it works without JavaScript. -#}
 {% from "components/button.html" import button %}
@@ -27,6 +27,10 @@
     <input type="hidden" name="csrf" value="{{ csrf }}">
     {{ button("Flatten", kind="danger", type="submit") }}
   </form>
-  <p class="pause-area__note">Pause stops new entries; open positions keep their exits and stops. Resume lifts a halt and any pause, also one a deploy set. Flatten closes every position without halting. Resume and Flatten ask you to confirm first.</p>
+  <form method="post" action="/control/recheck" hx-post="/control/recheck" hx-target="#pause-area" hx-swap="outerHTML" data-not-sent="Recheck NOT sent: no connection to the dashboard">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    {{ button("Recheck", type="submit") }}
+  </form>
+  <p class="pause-area__note">Pause stops new entries; open positions keep their exits and stops. Resume lifts a halt and any pause, also one a deploy set. Flatten closes every position without halting. Recheck compares orders and positions with Kraken now. Every reported check is on the <a href="/reconciliations">Reconciliation page</a>. Resume and Flatten ask you to confirm first.</p>
   {% endif %}
 </div>

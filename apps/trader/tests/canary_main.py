@@ -19,7 +19,7 @@ import msgspec
 from nautilus_trader.config import CacheConfig
 from pydantic import SecretStr
 
-from trader.main import TraderSettings, build_config, run_node, trader_secrets
+from trader.main import TraderSettings, build_config, kraken_exchange_view, run_node, trader_secrets
 from trading_core import env_guard
 from trading_core.env_guard import ALLOWED_EXEC_CLIENTS
 from trading_core.logs import configure_logging
@@ -51,7 +51,9 @@ def main() -> int:
     config = build_config(settings, secrets, kraken_urls=CLOSED_PORT_URLS)
     config = msgspec.structs.replace(config, cache=CacheConfig(), data_clients={})
     env_guard.check_exec_clients(config.exec_clients, "trader", settings.trading_env, allowlist=CANARY_ALLOWLIST)
-    return run_node(config, settings, 2.0, secrets, fail_backoff_s=0.0)
+    # The reconciliation view gets the closed port too, so nothing reaches Kraken.
+    exchange = kraken_exchange_view(settings, secrets, base_url=CLOSED_PORT_URLS[0])
+    return run_node(config, settings, 2.0, secrets, fail_backoff_s=0.0, exchange=exchange)
 
 
 if __name__ == "__main__":

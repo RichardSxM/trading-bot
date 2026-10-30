@@ -3,7 +3,12 @@
 In demo it runs the paper loop (spec 0006): the ``PAPER_STRATEGY`` strategy (``placeholder_timed`` by
 default, see ``trader.paper_strategy``) on the sandbox execution client, the recording actor writing to
 Postgres off the event loop, and the ``position`` and ``account`` snapshots. In live it runs the Kraken
-execution client with its startup key check (spec 0003; allowed by the env guard from feature 19) and no strategy yet.
+execution client with its startup key check (spec 0003). The env guard allows that only with ``LIVE_MODE=drill``
+(spec 0023 AC-22; feature 19 adds trading), and then the only strategy is ``reconcile_drill``, driven by
+``drill_step`` commands from ``cli``; ``PAPER_STRATEGY`` is ignored. Before the node is built it fetches
+Kraken's view, retrying for up to ``RECONCILE_START_TIMEOUT_S`` (spec 0023 AC-5).
+
+Every env runs the reconciliation actor (spec 0023) against the sandbox in demo and Kraken in live.
 
 Every env runs the control actor (pause and unpause, spec 0005) and writes the heartbeat and
 ``trader_state`` snapshots. SIGTERM stops the node gracefully: entry orders are cancelled,
@@ -16,9 +21,11 @@ import os
 import signal
 import sys
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
+from decimal import Decimal
+from pathlib import Path
 from typing import Final, Protocol, Self
 from uuid import UUID
 
@@ -44,18 +51,20 @@ from pydantic import Field, SecretStr, field_validator, model_validator
 from redis import Redis as SyncRedis
 from redis.asyncio import Redis
 from sqlalchemy import create_engine
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from trader import paper_strategy
 from trader.paper_strategy import StrategySettings, build_paper_strategy, paper_version
-from trader.snapshot_writer import log_writer_crash, write_heartbeats
+from trader.snapshot_writer import log_writer_crash, write_heartbeats, write_snapshot
 from trading_core import env_guard
 from trading_core.boot import boot
-from trading_core.control.consumer import ControlConsumer
+from trading_core.control.consumer import ControlConsumer, Execute, Outcome
 from trading_core.control.halt import halt_key
+from trading_core.control.messages import ControlMessage
 from trading_core.control.pause import pause_key
 from trading_core.control.records import PostgresCommandRecorder
-from trading_core.env_guard import ALLOWED_EXEC_CLIENTS, SANDBOX, ExecClientAllowlist
+from trading_core.env_guard import SANDBOX, ExecClientAllowlist, allowed_exec_clients
 from trading_core.naming import node_id
 from trading_core.node.context_feed import ContextFeedActor, ContextFeedConfig
 from trading_core.node.control import (
@@ -76,13 +85,30 @@ from trading_core.node.kraken import BTC_PERP, futures_data_client, futures_exec
 from trading_core.node.loss_limits import LossLimitActor
 from trading_core.node.paper_snapshots import account_snapshot, paper_status, position_snapshot
 from trading_core.node.placeholder import PlaceholderConfig
+from trading_core.node.reconcile import (
+    Actions,
+    ExecEngineReports,
+    KrakenExchangeView,
+    LiveExchange,
+    ReconcileActor,
+    SandboxExchangeView,
+    StopTriggerLookup,
+    kraken_futures_reports,
+    wait_for_exchange,
+    watch_start,
+)
+from trading_core.node.reconcile_drill import ReconcileDrill, ReconcileDrillConfig
+from trading_core.node.reconcile_executor import ReconcileExecutor, ReconcileExecutorConfig
 from trading_core.node.recording import RecordingActor
 from trading_core.node.sandbox import FeeSandboxExecClientFactory, sandbox_exec_client
 from trading_core.node.strategy import KfsStrategy, PauseGate
+from trading_core.node.untrusted import UntrustedCache
+from trading_core.reconcile.recover import cache_untrusted_key
+from trading_core.reconcile.views import ExchangePort, ExchangeUnavailable
 from trading_core.recording import repository
 from trading_core.recording.enums import Env, RunMode, RunStatus
 from trading_core.recording.errors import PromotionRequiredError
-from trading_core.recording.queries import LossSeed, loss_seed, run_funding_total
+from trading_core.recording.queries import LossSeed, loss_seed, recorded_stop_trigger, run_funding_total
 from trading_core.recording.rows import JsonObject
 from trading_core.recording.writer import RecordingWriter, deadletter_path, replay_spool, spool_path
 from trading_core.redis_check import redis_reachable
@@ -93,7 +119,7 @@ from trading_core.secrets import (
     POSTGRES_PASSWORD,
     REDIS_PASSWORD,
 )
-from trading_core.settings import LossLimitSettings, PaperLoopSettings, Settings
+from trading_core.settings import LossLimitSettings, PaperLoopSettings, ReconcileSettings, Settings
 from trading_core.snapshot.envelope import snapshot_key
 from trading_core.strategy.blocks import EntryBlocks
 
@@ -113,11 +139,15 @@ PURGE_BATCH: Final = 500
 CONTROL_SOCKET_TIMEOUT_S: Final = 3.0
 # sysexits EX_CONFIG: the version has no candidate → paper pass (spec 0015 AC-14).
 EXIT_CONFIG: Final = 78
+# The startup watchdog allows this long after Nautilus's own reconciliation timeout (spec 0023 AC-5).
+WATCHDOG_GRACE_S: Final = 30
+# The exchange snapshot outlives this many check intervals (spec 0023 data model).
+EXCHANGE_TTL_INTERVALS: Final = 3
 
 KrakenUrls = tuple[str, str]
 
 
-class TraderSettings(StrategySettings, LossLimitSettings):
+class TraderSettings(StrategySettings, LossLimitSettings, ReconcileSettings):
     # UTC date the live Kraken key was created; required in live (spec 0003 AC-9).
     kraken_key_rotated_on: date | None = None
     # How long a live start waits for an authenticated Kraken account (spec 0003 AC-8).
@@ -191,8 +221,7 @@ def build_config(
             use_instance_id=False,
             flush_on_start=False,
         ),
-        # Reconciliation with Kraken arrives with feature 11.
-        exec_engine=LiveExecEngineConfig(reconciliation=False),
+        exec_engine=exec_engine_config(settings),
         risk_engine=LiveRiskEngineConfig(
             # Nautilus parses each value with Decimal(value), so the exact cap goes in as a string.
             max_notional_per_order={BTC_PERP: str(settings.risk_max_order_notional_usd)},  # type: ignore[dict-item]
@@ -201,14 +230,100 @@ def build_config(
         exec_clients=exec_clients,
         # Cancels sent by the strategies on stop get this long to be acknowledged (spec 0005 AC-9).
         timeout_post_stop=POST_STOP_S,
+        timeout_reconciliation=settings.reconcile_nautilus_timeout_s,
     )
 
 
+def exec_engine_config(settings: TraderSettings) -> LiveExecEngineConfig:
+    """Nautilus's own reconciliation: off in demo (the sandbox cannot restore state, spec 0006), on in live.
+
+    Live rebuilds the cache from Kraken at start with a day of fills (spec 0023 *Where the views
+    come from*). Its periodic open order and position checks stay off, because the adapter reads
+    errors as empty lists; our fail closed check is the only periodic one.
+    """
+    if settings.trading_env != "live":
+        return LiveExecEngineConfig(reconciliation=False)
+    return LiveExecEngineConfig(
+        reconciliation=True,
+        reconciliation_lookback_mins=settings.reconcile_lookback_mins,
+        open_check_interval_secs=None,
+        position_check_interval_secs=None,
+        generate_missing_orders=True,
+    )
+
+
+def exchange_flat(exchange: ExchangePort) -> Callable[[str], Awaitable[bool]]:
+    """Is Kraken flat on an instrument, from a fresh fetch; an error counts as not flat (spec 0023 AC-8)."""
+
+    async def flat(instrument_id: str) -> bool:
+        try:
+            view = await exchange.fetch()
+        except ExchangeUnavailable:
+            return False
+        return not any(p.instrument_id == instrument_id and p.quantity > 0 for p in view.positions)
+
+    return flat
+
+
+def kraken_exchange_view(
+    settings: ReconcileSettings, secrets: Mapping[str, SecretStr], base_url: str | None = None
+) -> KrakenExchangeView:
+    """Live's fail closed view of Kraken (spec 0023 AC-4), with its own HTTP client and the keys from the secret
+    files. ``base_url`` exists only for the canary leak test."""
+    reports = kraken_futures_reports(
+        secrets[KRAKEN_API_KEY].get_secret_value(),
+        secrets[KRAKEN_API_SECRET].get_secret_value(),
+        settings.reconcile_fetch_timeout_s,
+        base_url,
+    )
+    return KrakenExchangeView(reports, float(settings.reconcile_fetch_timeout_s))
+
+
+def stop_trigger_lookup(sessions: Callable[[], Session], env: Env) -> StopTriggerLookup:
+    """The Postgres fallback for a stop's trigger price (spec 0023 AC-9). A database error reads as no
+    price, which fails closed: a stop fix with no price flattens and halts."""
+
+    def lookup(parent_client_order_id: str) -> Decimal | None:
+        try:
+            with sessions() as session:
+                return recorded_stop_trigger(session, env, parent_client_order_id)
+        except SQLAlchemyError as exc:
+            log.error(
+                "recorded stop trigger unreadable",
+                extra={"fields": {"code": "reconcile_trigger_unreadable", "error": type(exc).__name__}},
+            )
+            return None
+
+    return lookup
+
+
+def heartbeat_path() -> Path:
+    """The heartbeat file the healthcheck reads."""
+    return Path(os.environ.get("HEARTBEAT_FILE", "/run/heartbeat/alive"))
+
+
+def touch_heartbeat() -> None:
+    """Mark the trader alive for the healthcheck while it waits for Kraken at start (spec 0023 AC-5)."""
+    path = heartbeat_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    except OSError as exc:
+        log.warning(
+            "heartbeat file not touched",
+            extra={"fields": {"code": "heartbeat_touch_failed", "path": str(path), "error": type(exc).__name__}},
+        )
+
+
 def guard(
-    settings: TraderSettings, secrets: Mapping[str, SecretStr], allowlist: ExecClientAllowlist = ALLOWED_EXEC_CLIENTS
+    settings: TraderSettings, secrets: Mapping[str, SecretStr], allowlist: ExecClientAllowlist | None = None
 ) -> None:
+    """The env guard on the final node config; the allowlist follows ``LIVE_MODE`` (spec 0023 AC-22)."""
     env_guard.check_exec_clients(
-        build_config(settings, secrets).exec_clients, process="trader", env=settings.trading_env, allowlist=allowlist
+        build_config(settings, secrets).exec_clients,
+        process="trader",
+        env=settings.trading_env,
+        allowlist=allowed_exec_clients(settings.live_mode) if allowlist is None else allowlist,
     )
 
 
@@ -244,10 +359,19 @@ class ControlParts:
     risk_engine: RiskEngine
     shutdown_counts: Callable[[], Mapping[str, int]]
     gate: PauseGate = field(default_factory=PauseGate)
+    untrusted: UntrustedCache | None = None
 
 
-def control_parts(node: TradingNode, settings: LossLimitSettings, secrets: Mapping[str, SecretStr]) -> ControlParts:
-    """Build the gate, the kill switch, the control actor with its own Redis and Postgres logins, and the readers."""
+def control_parts(
+    node: TradingNode,
+    settings: LossLimitSettings,
+    secrets: Mapping[str, SecretStr],
+    recheck: Callable[[], Awaitable[Outcome]] | None = None,
+    drill: Execute | None = None,
+) -> ControlParts:
+    """Build the gate, the kill switch, the control actor with its own Redis and Postgres logins, and the readers.
+
+    ``recheck`` answers the ``recheck`` command (spec 0023 AC-20), ``drill`` the ``drill_step`` command (AC-22)."""
     env = settings.trading_env
     password = secrets[REDIS_PASSWORD].get_secret_value()
     client = Redis(
@@ -274,8 +398,11 @@ def control_parts(node: TradingNode, settings: LossLimitSettings, secrets: Mappi
         return datetime.now(UTC)
 
     controller = PauseController(gate, risk_engine, client, env, now)
-    kill_switch = KillSwitch(gate, risk_engine, client, env, now, node.cache, settings.kill_switch_flat_timeout_s)
-    execute = control_execute(controller, kill_switch)
+    untrusted = UntrustedCache(client, env)
+    kill_switch = KillSwitch(
+        gate, risk_engine, client, env, now, node.cache, settings.kill_switch_flat_timeout_s, untrusted=untrusted
+    )
+    execute = control_execute(controller, kill_switch, recheck, drill)
     consumer = ControlConsumer(client, env, execute, PostgresCommandRecorder(engine, Env(env)), now)
 
     def read_key(key: str) -> Callable[[], str | bytes | None]:
@@ -285,9 +412,21 @@ def control_parts(node: TradingNode, settings: LossLimitSettings, secrets: Mappi
 
         return read
 
+    def load_untrusted() -> None:
+        members = start_client.smembers(cache_untrusted_key(env))
+        untrusted.load(members if isinstance(members, set) else ())
+
     return ControlParts(
-        actor=ControlActor(controller, kill_switch, read_key(pause_key(env)), read_key(halt_key(env)), consumer.run),
+        actor=ControlActor(
+            controller,
+            kill_switch,
+            read_key(pause_key(env)),
+            read_key(halt_key(env)),
+            consumer.run,
+            load_untrusted=load_untrusted,
+        ),
         kill_switch=kill_switch,
+        untrusted=untrusted,
         risk_engine=risk_engine,
         shutdown_counts=lambda: shutdown_counts(gate, node.cache),
         gate=gate,
@@ -409,12 +548,16 @@ def loss_limits(settings: LossLimitSettings) -> LossLimits:
 
 
 def loss_limit_actor(
-    settings: TraderSettings, secrets: Mapping[str, SecretStr], kill_switch: KillSwitch, paper: PaperLoop | None
+    settings: TraderSettings,
+    secrets: Mapping[str, SecretStr],
+    kill_switch: KillSwitch,
+    paper: PaperLoop | None,
+    live_blocks: EntryBlocks | None = None,
 ) -> LossLimitActor:
     """The loss limits (spec 0010 AC-13): seeded from the paper runs in demo, the live runs in live.
 
-    Demo shares the paper loop's sessions, blocks, and recorder. Live has no strategy and no run
-    yet, so its blocks guard nothing and its events are only logged (spec 0010 Follow-up).
+    Demo shares the paper loop's sessions, blocks, and recorder. Live has no run yet, so its events
+    are only logged (spec 0010 Follow-up); its blocks are ``live_blocks``, the ones the drill reads.
     """
     env = Env(settings.trading_env)
     sessions: Callable[[], Session]
@@ -422,7 +565,11 @@ def loss_limit_actor(
         sessions, mode, blocks = paper.sessions, RunMode.PAPER, paper.blocks
     else:
         engine = create_engine(settings.database_url(secrets[POSTGRES_PASSWORD]), pool_size=1, pool_pre_ping=True)
-        sessions, mode, blocks = sessionmaker(engine), RunMode.LIVE, EntryBlocks()
+        sessions, mode, blocks = (
+            sessionmaker(engine),
+            RunMode.LIVE,
+            EntryBlocks() if live_blocks is None else live_blocks,
+        )
 
     def read_seed(day_start: datetime, total_since: datetime) -> LossSeed:
         with sessions() as session:
@@ -458,6 +605,8 @@ def run_node(
     secrets: Mapping[str, SecretStr],
     fail_backoff_s: float = KEY_CHECK_FAIL_BACKOFF_S,
     paper: PaperLoop | None = None,
+    exchange: LiveExchange | None = None,
+    loop: asyncio.AbstractEventLoop | None = None,
 ) -> int:
     """Build and run the node until it stops; return the process exit code.
 
@@ -472,13 +621,87 @@ def run_node(
     With ``paper`` (demo) it registers the recording actor and the ``placeholder_timed``
     strategy after the control actor, writes the ``position`` and ``account`` snapshots, and
     after the stop drains the recording queue and finishes the run.
+
+    Every env runs the reconciliation actor before any strategy (spec 0023): against the sandbox
+    in demo, against ``exchange`` (Kraken's view, required) in live, publishing the exchange
+    snapshot and answering ``recheck``. ``loop`` is the event loop live's start fetch ran on. In
+    every env a watchdog stops the node, and this returns 1 with no backoff, when the trader is
+    not running ``RECONCILE_NAUTILUS_TIMEOUT_S`` + 30 s after the build (AC-5).
     """
-    node = TradingNode(config=config)
-    control = control_parts(node, settings, secrets)
-    node.trader.add_actor(control.actor)
-    node.trader.add_actor(
-        HeartbeatActor(HeartbeatConfig(path=os.environ.get("HEARTBEAT_FILE", "/run/heartbeat/alive")))
+    env = settings.trading_env
+    if env == "live" and exchange is None:
+        raise ValueError("a live node needs Kraken's exchange view (spec 0023 AC-4)")
+    if env == "live" and not settings.drill_mode:
+        # The env guard already refused; a live node only ever runs the drill until feature 19 (AC-22).
+        raise ValueError("a live node needs LIVE_MODE=drill (spec 0023 AC-22)")
+    node = TradingNode(config=config) if loop is None else TradingNode(config=config, loop=loop)
+    # One set of entry blocks: the paper loop's in demo; in live the check, the loss limits, and the drill share it.
+    blocks = EntryBlocks() if paper is None else paper.blocks
+    snapshots = snapshot_client(settings, secrets[REDIS_PASSWORD])
+    exchange_key = snapshot_key(env, "exchange")
+    exchange_ttl_s = EXCHANGE_TTL_INTERVALS * settings.reconcile_interval_s
+
+    async def publish_exchange(data: Mapping[str, object]) -> None:
+        await write_snapshot(snapshots, exchange_key, data, exchange_ttl_s)
+
+    def owned() -> frozenset[str]:
+        # Every loaded trader strategy, the ReconcileExecutor included: their orders are ours (AC-6).
+        return frozenset(str(s.id) for s in node.trader.strategies() if isinstance(s, KfsStrategy))
+
+    def stopless() -> frozenset[str]:
+        # The loaded strategies that never place a stop: no stop check for their positions (AC-9).
+        return frozenset(str(s.id) for s in node.trader.strategies() if isinstance(s, KfsStrategy) and not s.uses_stop)
+
+    reconcile = ReconcileActor(
+        env=Env(env),
+        exchange=exchange
+        if exchange is not None
+        else SandboxExchangeView(lambda: FeeSandboxExecClientFactory.last_built, node.cache, time.time_ns),
+        blocks=blocks,
+        record=None if paper is None else paper.writer.put,
+        run_id=None if paper is None else paper.run_id,
+        owned=owned,
+        stopless=stopless,
+        strategies=lambda: [s for s in node.trader.strategies() if isinstance(s, KfsStrategy)],
+        recorded=None if paper is None else stop_trigger_lookup(paper.sessions, Env(env)),
+        lookback_mins=settings.reconcile_lookback_mins,
+        interval_s=float(settings.reconcile_interval_s),
+        retry_s=float(settings.reconcile_retry_s),
+        stale_quote_s=float(settings.risk_stale_quote_s),
+        publish=publish_exchange,
     )
+    # The drill strategy needs the control parts' gate, so its step handler is bound once it exists.
+    drills: list[ReconcileDrill] = []
+
+    async def drill_step(msg: ControlMessage) -> Outcome:
+        return await drills[0].run_step(msg)
+
+    control = control_parts(
+        node, settings, secrets, reconcile.recheck_outcome, drill_step if settings.drill_mode else None
+    )
+    executor: ReconcileExecutor | None = None
+    if exchange is not None:
+        # Live: the check acts through the executor and the kill switch (the control parts answer recheck
+        # through the check, so it is handed its actions once they exist); demo only reports (AC-23).
+        untrusted = control.untrusted
+        if untrusted is None:
+            raise ValueError("a live node needs the untrusted cache set (spec 0023 AC-8)")
+        executor = ReconcileExecutor(
+            ReconcileExecutorConfig(instrument_id=BTC_PERP), control.gate, owned, exchange=exchange
+        )
+        reconcile.act_with(
+            Actions(
+                executor=executor,
+                cancel=exchange,
+                reports=ExecEngineReports(node.kernel.exec_engine, node.cache),
+                kill_switch=control.kill_switch,
+                fills=exchange,
+                untrusted=untrusted,
+            )
+        )
+        control.kill_switch.watch_exchange(exchange_flat(exchange))
+    node.trader.add_actor(control.actor)
+    node.trader.add_actor(HeartbeatActor(HeartbeatConfig(path=str(heartbeat_path()))))
     # Open interest and liquidations for the strategies' market context (spec 0009 AC-12). The trader
     # records none of it, and an outage only logs: it never blocks entries, pauses, or alerts.
     node.trader.add_actor(
@@ -493,8 +716,10 @@ def run_node(
         )
     )
     # After the control actor (the halt is known) and the demo's abandoned close (start_paper_loop).
-    losses = loss_limit_actor(settings, secrets, control.kill_switch, paper)
+    losses = loss_limit_actor(settings, secrets, control.kill_switch, paper, blocks)
     node.trader.add_actor(losses)
+    # Before any strategy, so `reconciling` blocks entries until the start check is clean (spec 0023 AC-1).
+    node.trader.add_actor(reconcile)
     paper_state: Callable[[], PaperStatus] | None = None
     snapshot_readers: list[tuple[str, Callable[[], Mapping[str, object] | None]]] = [
         ("heartbeat", lambda: heartbeat_state(node, settings)),
@@ -508,16 +733,16 @@ def run_node(
                 paper_state,
                 control.kill_switch,
                 losses.snapshot_fields,
+                reconcile.snapshot_fields,
             ),
         ),
     ]
     if paper is not None:
         instrument_id = InstrumentId.from_str(BTC_PERP)
         record = paper.writer.put
-        env = Env(settings.trading_env)
         node.trader.add_actor(
             RecordingActor(
-                env=env,
+                env=Env(env),
                 run_id=paper.run_id,
                 instrument_id=instrument_id,
                 record=record,
@@ -545,20 +770,47 @@ def run_node(
             ("position", lambda: position_snapshot(node.cache, instrument_id, view)),
             ("account", lambda: account_snapshot(node.portfolio, node.cache, instrument_id, usd)),
         ]
-    failed: list[bool] = []
+    if settings.drill_mode:
+        # The only strategy in live drill mode; it acts only on a drill_step from cli (AC-22).
+        drill = ReconcileDrill(
+            ReconcileDrillConfig(
+                instrument_id=BTC_PERP,
+                rest_distance_pct=settings.drill_rest_distance_pct,
+                stop_pct=settings.drill_stop_pct,
+            ),
+            control.gate,
+            blocks,
+        )
+        drills.append(drill)
+        node.trader.add_strategy(drill)
+    if executor is not None:
+        # Live only, and part of the kill switch's flatten: it closes what no loaded strategy owns (AC-7).
+        node.trader.add_strategy(executor)
+        control.kill_switch.attach([s for s in node.trader.strategies() if isinstance(s, KfsStrategy)], None, None)
+    # The backoff before exit 1, one per failure: the key check waits, the watchdog exits at once.
+    failed: list[float] = []
+    # The live start guards (key check, watchdog), cancelled and awaited on the way out.
+    guards: list[asyncio.Task[object]] = []
+
+    def stop() -> None:
+        failed.append(fail_backoff_s)
+        node.stop()
+
+    def stop_now() -> None:
+        # Docker's restart backoff paces the retries (AC-5); the key check's 300 s wait would keep the
+        # trader down and unhealthy for 5 more minutes after Kraken came back.
+        failed.append(0.0)
+        node.stop()
+
     if settings.trading_env == "live" and settings.kraken_key_rotated_on is not None:
         node.trader.add_actor(KeyAgeActor(KeyAgeConfig(rotated_on=settings.kraken_key_rotated_on)))
         started_ns = time.time_ns()
 
-        def stop() -> None:
-            failed.append(True)
-            node.stop()
-
-        loop = node.get_event_loop()
-        if loop is None:  # the live node always has one; without it the check could not run
+        key_loop = node.get_event_loop()
+        if key_loop is None:  # the live node always has one; without it the check could not run
             raise RuntimeError("trading node has no event loop for the Kraken key check")
         # Kept in a local so the task lives as long as the node runs; a crash fails closed.
-        key_check = loop.create_task(
+        key_check = key_loop.create_task(
             watch_key_check(
                 lambda: kraken_account_confirmed(node.cache, started_ns),
                 stop,
@@ -578,6 +830,7 @@ def run_node(
             stop()
 
         key_check.add_done_callback(key_check_ended)
+        guards.append(key_check)
     if config.data_clients:
         node.add_data_client_factory(KRAKEN, KrakenLiveDataClientFactory)
     if SANDBOX in config.exec_clients:
@@ -588,7 +841,28 @@ def run_node(
     loop = node.get_event_loop()
     if loop is None:  # the live node always has one; without it the dashboard would see no heartbeat
         raise RuntimeError("trading node has no event loop for the snapshot writer")
-    snapshots = snapshot_client(settings, secrets[REDIS_PASSWORD])
+    # Every env: when Kraken is unreachable at start, Nautilus times out connecting and never starts the
+    # trader, so without this a demo node would sit unhealthy forever (D9). A crash fails closed.
+    watchdog = loop.create_task(
+        watch_start(
+            lambda: bool(node.trader.is_running),
+            stop_now,
+            float(settings.reconcile_nautilus_timeout_s + WATCHDOG_GRACE_S),
+        )
+    )
+
+    def watchdog_ended(task: asyncio.Task[bool]) -> None:
+        if task.cancelled() or task.exception() is None:
+            return
+        log.critical(
+            "startup watchdog crashed, stopping the node",
+            exc_info=task.exception(),
+            extra={"fields": {"code": "reconcile_watchdog_crashed"}},
+        )
+        stop_now()
+
+    watchdog.add_done_callback(watchdog_ended)
+    guards.append(watchdog)
     # Kept in locals so the tasks live as long as the node runs; a crash is logged, trading goes on.
     writers = [
         loop.create_task(write_heartbeats(snapshots, snapshot_key(settings.trading_env, name), read_state))
@@ -608,16 +882,16 @@ def run_node(
     finally:
         for signum in stop_signals:
             loop.remove_signal_handler(signum)
-        for task in writers:
-            task.cancel()
-        # Let the cancelled writers finish on the stopped loop, so none is destroyed while pending.
+        for pending in [*writers, *guards]:
+            pending.cancel()
+        # Let the cancelled tasks finish on the stopped loop, so none is destroyed while pending.
         if not loop.is_closed() and not loop.is_running():
-            loop.run_until_complete(asyncio.gather(*writers, return_exceptions=True))
+            loop.run_until_complete(asyncio.gather(*writers, *guards, return_exceptions=True))
         if paper is not None:
             finish_paper_loop(paper, settings, len(node.cache.positions_open()))
         node.dispose()
     if failed:
-        time.sleep(fail_backoff_s)
+        time.sleep(max(failed))
         return 1
     return 0
 
@@ -717,12 +991,32 @@ def main() -> None:
             )
             sys.exit(1)
 
+    exchange: KrakenExchangeView | None = None
+    loop: asyncio.AbstractEventLoop | None = None
+    if settings.trading_env == "live":
+        # Nautilus's own startup reconciliation must never run against an unreachable Kraken (spec 0023 AC-5).
+        exchange = kraken_exchange_view(settings, started.secrets)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        fetched = loop.run_until_complete(
+            wait_for_exchange(
+                exchange,
+                timeout_s=float(settings.reconcile_start_timeout_s),
+                retry_s=float(settings.reconcile_retry_s),
+                touch=touch_heartbeat,
+            )
+        )
+        if fetched is None:
+            sys.exit(1)
+
     code = run_node(
         config,
         settings,
         settings.kraken_key_check_timeout_s,
         started.secrets,
         paper=paper,
+        exchange=exchange,
+        loop=loop,
     )
     if code:
         sys.exit(code)

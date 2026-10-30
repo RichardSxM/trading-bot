@@ -27,6 +27,9 @@ class BlockReason(StrEnum):
     LOSS_COOLDOWN = "loss_cooldown"
     LOSS_UNKNOWN = "loss_unknown"
     REGIME = "regime"
+    RECONCILING = "reconciling"
+    EXCHANGE_UNKNOWN = "exchange_unknown"
+    ORDER_UNRESOLVED = "order_unresolved"
 
 
 PLAIN_WORDS: Final[dict[BlockReason, str]] = {
@@ -43,6 +46,9 @@ PLAIN_WORDS: Final[dict[BlockReason, str]] = {
     BlockReason.LOSS_COOLDOWN: "Cooling down after a losing trade",
     BlockReason.LOSS_UNKNOWN: "Today's loss is not known yet (waiting for the database)",
     BlockReason.REGIME: "The market is trending (ADX above the limit), entries wait",
+    BlockReason.RECONCILING: "Checking orders and positions against Kraken",
+    BlockReason.EXCHANGE_UNKNOWN: "Kraken's orders and positions are unknown (retrying)",
+    BlockReason.ORDER_UNRESOLVED: "An entry order has no answer from Kraken yet",
 }
 """What the dashboard shows for each reason."""
 
@@ -56,6 +62,9 @@ SELF_CLEARING: Final = frozenset(
         BlockReason.LOSS_COOLDOWN,
         BlockReason.LOSS_UNKNOWN,
         BlockReason.REGIME,
+        BlockReason.RECONCILING,
+        BlockReason.EXCHANGE_UNKNOWN,
+        BlockReason.ORDER_UNRESOLVED,
     }
 )
 """Reasons that clear by themselves; the rest hold until the trader restarts."""
@@ -65,6 +74,7 @@ class EntryBlocks:
     """The active block reasons, safe to change from any thread, with when each became active.
 
     ``now_ns`` gives the UTC time in nanoseconds (the wall clock unless a test passes its own).
+    Listeners (``subscribe``) hear each change on the thread that made it, after the lock is released.
     """
 
     def __init__(self, now_ns: Callable[[], int] = time.time_ns) -> None:
@@ -72,6 +82,12 @@ class EntryBlocks:
         self._active: set[BlockReason] = set()
         self._since: dict[BlockReason, int] = {}
         self._now_ns = now_ns
+        self._listeners: list[Callable[[BlockReason, bool], None]] = []
+
+    def subscribe(self, listener: Callable[[BlockReason, bool], None]) -> None:
+        """Call ``listener(reason, active)`` after each reason goes on (True) or comes off (False)."""
+        with self._lock:
+            self._listeners.append(listener)
 
     def add(self, reason: BlockReason) -> bool:
         """Block entries for ``reason``; True when it was not already active."""
@@ -80,7 +96,10 @@ class EntryBlocks:
                 return False
             self._active.add(reason)
             self._since[reason] = self._now_ns()
-            return True
+            listeners = tuple(self._listeners)
+        for listener in listeners:
+            listener(reason, True)
+        return True
 
     def clear(self, reason: BlockReason) -> bool:
         """Lift ``reason``; True when it was active. Only a self clearing reason may be lifted."""
@@ -91,7 +110,10 @@ class EntryBlocks:
                 return False
             self._active.discard(reason)
             self._since.pop(reason, None)
-            return True
+            listeners = tuple(self._listeners)
+        for listener in listeners:
+            listener(reason, False)
+        return True
 
     def active(self) -> tuple[BlockReason, ...]:
         """The active reasons, sorted."""

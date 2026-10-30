@@ -20,6 +20,7 @@ from typing import Final
 from uuid import UUID
 
 from trading_core.recording.enums import (
+    ActionResult,
     ControlCmd,
     ControlOutcome,
     DecidedBy,
@@ -30,6 +31,8 @@ from trading_core.recording.enums import (
     InstrumentKind,
     Intent,
     Liquidity,
+    MismatchAction,
+    MismatchKind,
     OrderEventKind,
     OrderOrigin,
     OrderSide,
@@ -37,6 +40,8 @@ from trading_core.recording.enums import (
     OrderType,
     PositionSide,
     PositionStatus,
+    ReconcileOutcome,
+    ReconcileTrigger,
     RiskEventKind,
     RiskVerdict,
     RunMode,
@@ -397,6 +402,47 @@ class ControlCommandRow(_Row):
     received_at: datetime
     outcome: ControlOutcome = ControlOutcome.RECEIVED
     outcome_at: datetime | None = None
+    details: JsonObject = field(default_factory=dict)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReconciliationRow(_Row):
+    """One finished reconciliation check (``reconciliations``, spec 0023 AC-17); counts are null when it failed."""
+
+    id: UUID = field(default_factory=uuid.uuid7)
+    env: Env
+    run_id: UUID
+    trigger: ReconcileTrigger
+    started_ns: int
+    started_at: datetime = field(init=False)
+    finished_ns: int | None = None
+    finished_at: datetime | None = field(init=False)
+    outcome: ReconcileOutcome | None = None
+    exchange_orders: int | None = None
+    exchange_positions: int | None = None
+    mismatch_count: int = 0
+    error: str | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReconciliationMismatchRow(_Row):
+    """One finding of a check (``reconciliation_mismatches``, spec 0023 AC-13); ``id`` is made once per finding."""
+
+    id: UUID = field(default_factory=uuid.uuid7)
+    env: Env
+    reconciliation_id: UUID
+    kind: MismatchKind
+    instrument_id: str
+    client_order_id: str | None = None
+    venue_order_id: str | None = None
+    order_id: UUID | None = None
+    position_id: UUID | None = None
+    exchange_side: str | None = None
+    exchange_qty: Decimal | None = None
+    local_side: str | None = None
+    local_qty: Decimal | None = None
+    action: MismatchAction = MismatchAction.NONE
+    action_result: ActionResult = ActionResult.OK
     details: JsonObject = field(default_factory=dict)
 
 

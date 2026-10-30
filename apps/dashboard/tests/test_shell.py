@@ -321,6 +321,7 @@ def test_the_event_stream_carries_the_security_headers(logged_in, monkeypatch):
         "topbar-pause",
         "overview-position",
         "topbar-blocked",
+        "topbar-check",
         "overview-blocked",
         "system-losses",
         "overview-mute",

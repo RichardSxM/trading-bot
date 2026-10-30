@@ -138,6 +138,7 @@ def make_app(
     read_strategies=lambda: StrategiesView(()),
     read_study=lambda study_id: None,
     read_promotions=lambda page: (),
+    read_reconciliations=lambda page: (),
     **settings,
 ):
     settings.setdefault("dashboard_cookie_secure", False)
@@ -153,6 +154,7 @@ def make_app(
         read_strategies=read_strategies,
         read_study=read_study,
         read_promotions=read_promotions,
+        read_reconciliations=read_reconciliations,
     )
 
 

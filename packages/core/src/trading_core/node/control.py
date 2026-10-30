@@ -16,6 +16,7 @@ trader is paused or halted, else ``ACTIVE``. So no pause path can lift a halt's 
 
 import asyncio
 import logging
+import time
 import uuid
 from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -35,7 +36,7 @@ from trading_core.control.halt import HaltFormatError, HaltReason, HaltSource, H
 from trading_core.control.messages import ControlMessage, format_utc
 from trading_core.control.pause import PauseFormatError, PauseState, decode, encode, pause_key, target_trading_state
 from trading_core.node.strategy import KfsStrategy, PauseGate, entry_orders
-from trading_core.recording.enums import ControlCmd, ControlOutcome, Env, RiskEventKind, Severity
+from trading_core.recording.enums import ControlCmd, ControlOutcome, ControlSource, Env, RiskEventKind, Severity
 from trading_core.recording.rows import JsonObject, RiskEventRow
 from trading_core.recording.spool import WriteCall, WriteItem
 from trading_core.settings import TradingEnv
@@ -46,6 +47,8 @@ log = logging.getLogger(__name__)
 PROTECTIVE_TYPES: Final = (OrderType.STOP_MARKET, OrderType.STOP_LIMIT)
 # How often the kill switch looks at the cache while it waits for flat (spec 0010 AC-3).
 FLAT_POLL_S: Final = 0.25
+# How often the wait for flat asks Kraken about an untrusted instrument (spec 0023 AC-8).
+EXCHANGE_FLAT_POLL_S: Final = 1.0
 # A trader that starts halted flattens again this long after start (spec 0010 AC-7).
 RESTART_FLATTEN_DELAY: Final = timedelta(seconds=5)
 _RESTART_FLATTEN_ALERT: Final = "kill_switch_restart_flatten"
@@ -181,6 +184,17 @@ def load_pause(controller: PauseController, raw: str | bytes | None) -> None:
     )
 
 
+class Untrusted(Protocol):
+    """The untrusted cache set the kill switch reads (``UntrustedCache``, spec 0023 AC-8)."""
+
+    @property
+    def instruments(self) -> frozenset[str]: ...
+
+
+# A fresh Kraken fetch: True when Kraken holds no position on the instrument; an error is False.
+type ExchangeFlat = Callable[[str], Awaitable[bool]]
+
+
 class LossStatus(Protocol):
     """What ``resume`` needs from the loss limits (spec 0010 AC-4): seeded yet, and the total under its limit."""
 
@@ -201,6 +215,11 @@ class KillSwitch:
     The halt is applied in memory before any I/O, so a Redis failure can only leave the trader
     more halted, never less. ``attach`` hands it the strategies and the recording callable once
     they exist; with none (live) flat is judged from the cache alone and events are only logged.
+
+    For an instrument in ``untrusted`` (spec 0023 AC-8) every flatten goes through each strategy's
+    ``flatten_for``, which skips the owning strategy's own close, and the wait for flat asks
+    ``exchange_flat`` (a fresh Kraken fetch, at most every ``EXCHANGE_FLAT_POLL_S``) instead of the
+    cache, so it never times out on the wrong cache.
     """
 
     def __init__(
@@ -213,6 +232,7 @@ class KillSwitch:
         cache: Cache,
         flat_timeout_s: float,
         poll_s: float = FLAT_POLL_S,
+        untrusted: Untrusted | None = None,
     ) -> None:
         self._gate = gate
         self._risk_engine = risk_engine
@@ -233,6 +253,18 @@ class KillSwitch:
         self._halts = 0  # every halt applied, new or not, so resume sees one that lands during its delete
         self._tasks: set[asyncio.Task[object]] = set()
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._untrusted = untrusted
+        self._exchange_flat: ExchangeFlat | None = None
+        self._exchange_checked: tuple[float, bool] | None = None  # (monotonic time, flat) of the last ask
+
+    @property
+    def untrusted(self) -> frozenset[str]:
+        """The instruments whose cached position is wrong (spec 0023 AC-8)."""
+        return frozenset() if self._untrusted is None else self._untrusted.instruments
+
+    def watch_exchange(self, exchange_flat: ExchangeFlat) -> None:
+        """Let the wait for flat ask Kraken about an untrusted instrument (live)."""
+        self._exchange_flat = exchange_flat
 
     def attach(self, strategies: Sequence[KfsStrategy], record: Record | None, run_id: uuid.UUID | None) -> None:
         """Hand over the strategies to flatten and where events go, once they exist (``main``)."""
@@ -378,20 +410,28 @@ class KillSwitch:
         self._flatten_all(flatten_id)
         self._spawn(self._wait_flat(flatten_id, self._now()))
 
-    def halt_automatic(self, reason: HaltReason) -> uuid.UUID:
-        """Halt for a loss limit (spec 0010 AC-9, AC-10): in memory now, then key, event, and flat wait as a task.
+    @property
+    def halted(self) -> bool:
+        """True while the trader is halted."""
+        return self._gate.halted
+
+    def halt_automatic(self, reason: HaltReason, *, flatten: bool = True) -> uuid.UUID:
+        """Halt for a loss limit or a reconciliation finding (spec 0010 AC-9, AC-10, spec 0023 AC-7):
+        in memory now, then key, event, and flat wait as a task.
 
         Returns the new ``halt_id`` (a UUID7). There is no command to answer, so a timeout only
-        writes its ``flatten_timeout`` event.
+        writes its ``flatten_timeout`` event. ``flatten=False`` halts without closing anything (a
+        position the cache holds but the exchange does not, which no order can close).
         """
         state = HaltState(reason, HaltSource.TRADER, self._now(), uuid.uuid7())
         newly = self._apply_halt(state)
-        self._spawn(self._halt_automatic(state, newly))
+        self._spawn(self._halt_automatic(state, newly, flatten))
         return state.halt_id
 
-    async def _halt_automatic(self, state: HaltState, newly: bool) -> None:
-        await self._after_halt(state, newly, flatten_id=state.halt_id)
-        await self._wait_flat(state.halt_id, self._now())
+    async def _halt_automatic(self, state: HaltState, newly: bool, flatten: bool) -> None:
+        await self._after_halt(state, newly, flatten_id=state.halt_id if flatten else None)
+        if flatten:
+            await self._wait_flat(state.halt_id, self._now())
 
     def _apply_halt(self, state: HaltState) -> bool:
         """Halt in memory and set the trading state, before any I/O; True when newly halted."""
@@ -404,10 +444,11 @@ class KillSwitch:
         """Halt in memory, then write the key while flattening; False when the key could not be written."""
         return await self._after_halt(state, self._apply_halt(state), flatten_id)
 
-    async def _after_halt(self, state: HaltState, newly: bool, flatten_id: uuid.UUID) -> bool:
+    async def _after_halt(self, state: HaltState, newly: bool, flatten_id: uuid.UUID | None) -> bool:
         current = self._gate.halt_state or state
         write = None if self._key_written else asyncio.ensure_future(self._write_key(current))
-        self._flatten_all(flatten_id)  # before the write runs: a slow Redis never delays the close
+        if flatten_id is not None:
+            self._flatten_all(flatten_id)  # before the write runs: a slow Redis never delays the close
         if newly:
             self._event(
                 f"halt:{state.halt_id}",
@@ -442,14 +483,36 @@ class KillSwitch:
         return True
 
     def _flatten_all(self, flatten_id: uuid.UUID) -> None:
+        untrusted = self.untrusted
         for strategy in self._strategies:
-            strategy.flatten(flatten_id)
+            strategy.flatten_for(flatten_id, untrusted)
+
+    async def _flat_for_wait(self) -> bool:
+        """``is_flat``, except that an untrusted instrument is flat when Kraken says so (an error is not flat)."""
+        untrusted = self.untrusted
+        if not untrusted or self._exchange_flat is None:
+            return self.is_flat()
+        if any(str(p.instrument_id) not in untrusted for p in self._cache.positions_open()):
+            return False
+        if entry_orders([*self._cache.orders_open(), *self._cache.orders_inflight()]):
+            return False
+        checked = self._exchange_checked
+        now = time.monotonic()
+        if checked is not None and now - checked[0] < EXCHANGE_FLAT_POLL_S:
+            return checked[1]
+        flat = True
+        for instrument_id in sorted(untrusted):
+            if not await self._exchange_flat(instrument_id):
+                flat = False
+                break
+        self._exchange_checked = (now, flat)
+        return flat
 
     async def _wait_flat(self, flatten_id: uuid.UUID, started: datetime) -> bool:
-        """Poll the cache until flat, re-flattening as positions appear; False after the timeout."""
+        """Poll until flat, re-flattening as positions appear; False after the timeout."""
         self._flattening += 1
         try:
-            while not self.is_flat():
+            while not await self._flat_for_wait():
                 if self._now() - started >= self._flat_timeout:
                     self._event(
                         f"flatten_timeout:{flatten_id}",
@@ -465,9 +528,10 @@ class KillSwitch:
                     )
                     return False
                 await asyncio.sleep(self._poll_s)
+                untrusted = self.untrusted
                 for strategy in self._strategies:
-                    if self._cache.positions_open(strategy_id=strategy.id):
-                        strategy.flatten(flatten_id)
+                    if strategy.has_open_positions():
+                        strategy.flatten_for(flatten_id, untrusted)
             return True
         finally:
             self._flattening -= 1
@@ -512,10 +576,26 @@ class KillSwitch:
         self._record(WriteItem(WriteCall.RECORD_RISK_EVENT, row))
 
 
-def control_execute(pause: PauseController, kill_switch: KillSwitch) -> Execute:
-    """The consumer's ``execute``: ``stop``, ``flatten``, and ``resume`` to the kill switch, the rest to the pause."""
+def control_execute(
+    pause: PauseController,
+    kill_switch: KillSwitch,
+    recheck: Callable[[], Awaitable[Outcome]] | None = None,
+    drill: Execute | None = None,
+) -> Execute:
+    """The consumer's ``execute``: ``stop``, ``flatten``, and ``resume`` to the kill switch, ``recheck`` to the
+    reconciliation check (spec 0023 AC-20; ``failed: not_available`` without one), ``drill_step`` to the
+    drill strategy (AC-22; ``failed: not_drill_mode`` without one, ``failed: source_not_cli`` unless from
+    ``cli``), the rest to the pause."""
 
     async def execute(msg: ControlMessage) -> Outcome:
+        if msg.cmd is ControlCmd.RECHECK:
+            return Outcome(ControlOutcome.FAILED, "not_available") if recheck is None else await recheck()
+        if msg.cmd is ControlCmd.DRILL_STEP:
+            if drill is None:
+                return Outcome(ControlOutcome.FAILED, "not_drill_mode")
+            if msg.source is not ControlSource.CLI:
+                return Outcome(ControlOutcome.FAILED, "source_not_cli")
+            return await drill(msg)
         if msg.cmd is ControlCmd.STOP:
             return await kill_switch.stop(msg)
         if msg.cmd is ControlCmd.FLATTEN:
@@ -530,8 +610,9 @@ def control_execute(pause: PauseController, kill_switch: KillSwitch) -> Execute:
 class ControlActor(Actor):  # type: ignore[misc]  # Actor is Cython with no stubs
     """Halts and pauses at start when the keys say so, then reads control commands until stopped.
 
-    The halt key is read first, then the pause key, and the trading state is applied once. A
-    trader that starts halted flattens again 5 s later, once its strategies run (spec 0010 AC-7).
+    The halt key is read first, then the untrusted cache set (spec 0023 AC-8; unreadable halts),
+    then the pause key, and the trading state is applied once. A trader that starts halted
+    flattens again 5 s later, once its strategies run (spec 0010 AC-7).
     """
 
     def __init__(
@@ -541,6 +622,7 @@ class ControlActor(Actor):  # type: ignore[misc]  # Actor is Cython with no stub
         read_pause_key: Callable[[], str | bytes | None],
         read_halt_key: Callable[[], str | bytes | None],
         consume: Callable[[], Awaitable[None]],
+        load_untrusted: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(ActorConfig(component_id="ControlActor"))
         self._controller = controller
@@ -548,6 +630,7 @@ class ControlActor(Actor):  # type: ignore[misc]  # Actor is Cython with no stub
         self._read_pause_key = read_pause_key
         self._read_halt_key = read_halt_key
         self._consume = consume
+        self._load_untrusted = load_untrusted
         self._task: asyncio.Task[None] | None = None
 
     def on_start(self) -> None:
@@ -561,6 +644,16 @@ class ControlActor(Actor):  # type: ignore[misc]  # Actor is Cython with no stub
             self._kill_switch.halt_unknown()
         else:
             self._kill_switch.load(raw_halt)
+        if self._load_untrusted is not None:
+            try:
+                self._load_untrusted()
+            except (RedisError, OSError, TimeoutError) as exc:
+                # Which cached positions are wrong is unknown: fail closed.
+                log.critical(
+                    "untrusted cache set unreadable, starting halted",
+                    extra={"fields": {"code": "cache_untrusted_unreadable", "error": type(exc).__name__}},
+                )
+                self._kill_switch.halt_unknown()
         try:
             raw = self._read_pause_key()
         except (RedisError, OSError, TimeoutError) as exc:
@@ -630,6 +723,7 @@ def trader_state(
     paper: Callable[[], PaperStatus] | None = None,
     kill_switch: KillSwitch | None = None,
     losses: Callable[[], Mapping[str, object]] | None = None,
+    reconcile: Callable[[], Mapping[str, object]] | None = None,
 ) -> Mapping[str, object] | None:
     """The ``trader_state`` snapshot data (AC-7) from the gate, the risk engine, and the cache.
 
@@ -637,7 +731,8 @@ def trader_state(
     With ``paper`` (demo) it adds the paper loop's status; without one the same fields hold only
     the pause, so the dashboard reads one shape in every env (spec 0006 AC-16). The halt, and the
     loss figures from ``losses`` (``LossLimitActor.snapshot_fields``), are spec 0010 AC-16's; without
-    ``losses`` every loss field is null, as before the seed lands.
+    ``losses`` every loss field is null, as before the seed lands. The check fields from ``reconcile``
+    (``ReconcileActor.snapshot_fields``) are spec 0023 AC-19's; without it they are null.
     """
     if not gate.loaded:
         return None
@@ -673,7 +768,16 @@ def trader_state(
         "halted_at": format_utc(halt_state.halted_at) if halt_state is not None else None,
         "flattening": kill_switch.flattening if kill_switch is not None else False,
         **(losses() if losses is not None else NO_LOSS_FIELDS),
+        **(reconcile() if reconcile is not None else NO_RECONCILE_FIELDS),
     }
+
+
+NO_RECONCILE_FIELDS: Final[Mapping[str, object]] = {
+    "last_clean_check_ns": None,
+    "last_check_outcome": None,
+    "intent": {},
+}
+"""The check fields of ``trader_state`` before any check finished (spec 0023 AC-18, AC-19)."""
 
 
 NO_LOSS_FIELDS: Final[Mapping[str, object]] = {

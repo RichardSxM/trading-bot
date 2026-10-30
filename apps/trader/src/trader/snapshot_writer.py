@@ -57,6 +57,23 @@ async def write_heartbeats(
         await asyncio.sleep(interval_s)
 
 
+async def write_snapshot(
+    client: SnapshotClient,
+    key: str,
+    data: Mapping[str, object],
+    ttl_s: int,
+    clock_ns: Callable[[], int] = time.time_ns,
+) -> None:
+    """Write one snapshot now, expiring after ``ttl_s``; a Redis error is logged, never raised."""
+    try:
+        await client.set(key, encode(clock_ns(), data), ex=ttl_s)
+    except (RedisError, OSError) as exc:
+        log.warning(
+            "snapshot write failed",
+            extra={"fields": {"code": "snapshot_write_failed", "key": key, "error": type(exc).__name__}},
+        )
+
+
 def log_writer_crash(task: asyncio.Task[None]) -> None:
     """Done callback: a writer that raised logs CRITICAL; the trader keeps trading."""
     if task.cancelled() or task.exception() is None:

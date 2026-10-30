@@ -6,6 +6,7 @@ Needs the ``node`` extra (NautilusTrader) for ``node.control``, so it runs in th
 """
 
 import asyncio
+import dataclasses
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -18,13 +19,16 @@ from nautilus_trader.model.enums import TradingState
 from redis.exceptions import ConnectionError as RedisConnectionError
 
 from trading_core.control import halt
+from trading_core.control.consumer import Outcome
 from trading_core.control.halt import HaltReason, HaltSource
 from trading_core.control.messages import command
+from trading_core.node import control
 from trading_core.node.control import KillSwitch, PauseController, control_execute
 from trading_core.node.strategy import PauseGate
 from trading_core.recording.enums import ControlCmd, ControlOutcome, ControlSource, RiskEventKind, Severity
 from trading_core.recording.spool import WriteCall, WriteItem
 
+BTC = "PF_XBTUSD.KRAKEN"
 NOW = datetime(2026, 10, 12, 9, 30, tzinfo=UTC)
 HALT_KEY = "demo:trader:halt"
 
@@ -90,12 +94,33 @@ class FakeStrategy:
         self.cache = cache
         self.stuck = stuck
         self.flattened = []
+        self.skipped = []
+        self.instrument = BTC
 
     def flatten(self, halt_id):
         self.flattened.append(halt_id)
         self.cache.open = [o for o in self.cache.open if o.is_reduce_only]
         if not self.stuck:
             self.cache.positions.pop(self.id, None)
+
+    def flatten_for(self, halt_id, untrusted):
+        if self.instrument in untrusted:
+            self.skipped.append(halt_id)
+            return
+        self.flatten(halt_id)
+
+    def has_open_positions(self):
+        return bool(self.cache.positions_open(strategy_id=self.id))
+
+
+class FakePosition:
+    def __init__(self, instrument_id):
+        self.instrument_id = instrument_id
+
+
+class FakeUntrusted:
+    def __init__(self, *instruments):
+        self.instruments = frozenset(instruments)
 
 
 class Clock:
@@ -109,11 +134,11 @@ class Clock:
         return value
 
 
-def _kill_switch(cache=None, clock=None, timeout_s=20, redis=None):
+def _kill_switch(cache=None, clock=None, timeout_s=20, redis=None, untrusted=None):
     gate, risk, redis = PauseGate(), FakeRiskEngine(), redis or FakeRedis()
     cache = cache or FakeCache()
     records: list[WriteItem] = []
-    ks = KillSwitch(gate, risk, redis, "demo", clock or Clock(), cache, timeout_s, poll_s=0.001)
+    ks = KillSwitch(gate, risk, redis, "demo", clock or Clock(), cache, timeout_s, poll_s=0.001, untrusted=untrusted)
     return ks, gate, risk, redis, cache, records
 
 
@@ -555,6 +580,32 @@ def test_an_automatic_halt_writes_the_key_flattens_and_records_one_critical_even
     assert event.details == {"reason": "total_loss_limit", "source": "trader"}
 
 
+def test_a_reconcile_halt_without_a_flatten_writes_the_key_and_event_but_closes_nothing():
+    """covers: spec 0023 AC-8 (a cache position Kraken does not have: nothing an order could close)"""
+    cache = FakeCache()
+    cache.positions = {"S-1": ["p"]}
+    ks, gate, risk, redis, cache, records = _kill_switch(cache)
+    strategy = FakeStrategy(cache)
+    ks.attach([strategy], records.append, uuid.uuid4())
+
+    async def run():
+        halt_id = ks.halt_automatic(HaltReason.RECONCILE_MISMATCH, flatten=False)
+        await asyncio.sleep(0.01)
+        return halt_id
+
+    halt_id = asyncio.run(run())
+
+    assert gate.halted
+    assert risk.trading_state == TradingState.REDUCING
+    assert halt.decode(redis.values[HALT_KEY]).reason is HaltReason.RECONCILE_MISMATCH
+    assert strategy.flattened == []
+    assert cache.positions_open() == ["p"]
+    assert not ks.flattening
+    [event] = _events(records)
+    assert event.event_key == f"halt:{halt_id}"
+    assert event.details == {"reason": "reconcile_mismatch", "source": "trader"}
+
+
 def test_a_limit_that_trips_while_halted_keeps_the_first_halt_and_writes_no_second_event():
     """covers: spec 0010 AC-5 (already halted)"""
     ks, gate, _, redis, _, records = _kill_switch()
@@ -597,3 +648,128 @@ def test_control_execute_routes_flatten_and_resume_to_the_kill_switch():
     resumed = asyncio.run(execute(command(ControlCmd.RESUME, NOW, 60)))
 
     assert (flattened.outcome, resumed.outcome) == (ControlOutcome.EXECUTED, ControlOutcome.EXECUTED)
+
+
+def test_control_execute_routes_recheck_to_the_reconciliation_check():
+    # covers: spec 0023 AC-20.
+    ks, gate, risk, redis, *_ = _kill_switch()
+    pause = PauseController(gate, risk, redis, "demo", lambda: NOW)
+    answer = Outcome(ControlOutcome.EXECUTED, None, {"outcome": "clean"})
+
+    async def recheck():
+        return answer
+
+    with_check = control_execute(pause, ks, recheck)
+    without = control_execute(pause, ks)
+
+    assert asyncio.run(with_check(command(ControlCmd.RECHECK, NOW, 60, ControlSource.CLI))) is answer
+    assert asyncio.run(without(command(ControlCmd.RECHECK, NOW, 60, ControlSource.CLI))) == Outcome(
+        ControlOutcome.FAILED, "not_available"
+    )
+    assert not gate.paused
+    assert not gate.halted
+
+
+def test_control_execute_routes_a_cli_drill_step_to_the_drill_only_in_drill_mode():
+    # covers: spec 0023 AC-22 (not_drill_mode without the drill, source_not_cli from anything but cli).
+    from trading_core.control.messages import drill_step_command
+
+    ks, gate, risk, redis, *_ = _kill_switch()
+    pause = PauseController(gate, risk, redis, "demo", lambda: NOW)
+    answer = Outcome(ControlOutcome.EXECUTED)
+    asked = []
+
+    async def drill(msg):
+        asked.append(msg.step)
+        return answer
+
+    in_drill = control_execute(pause, ks, drill=drill)
+    off = control_execute(pause, ks)
+    step = drill_step_command(NOW, 60, "rest_order")
+    from_dashboard = dataclasses.replace(step, source=ControlSource.DASHBOARD)
+
+    assert asyncio.run(in_drill(step)) is answer
+    assert asyncio.run(off(step)) == Outcome(ControlOutcome.FAILED, "not_drill_mode")
+    assert asyncio.run(in_drill(from_dashboard)) == Outcome(ControlOutcome.FAILED, "source_not_cli")
+    assert asked == ["rest_order"]
+    assert not gate.paused
+
+
+# The untrusted cache set (spec 0023 AC-8) ----------------------------------------------------
+
+
+@pytest.fixture
+def no_flat_poll_wait(monkeypatch):
+    monkeypatch.setattr(control, "EXCHANGE_FLAT_POLL_S", 0.0)
+
+
+class KrakenFlat:
+    """Answers whether Kraken is flat on an instrument from the given answers in turn; the last one repeats."""
+
+    def __init__(self, *answers):
+        self.answers, self.asked = list(answers), []
+
+    async def __call__(self, instrument_id):
+        self.asked.append(instrument_id)
+        answer = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+
+def test_the_flatten_skips_the_strategy_s_own_close_on_an_untrusted_instrument(no_flat_poll_wait):
+    cache = FakeCache()
+    cache.positions = {"S-1": [FakePosition(BTC)]}  # the wrong cached position
+    ks, *_ = _kill_switch(cache, untrusted=FakeUntrusted(BTC))
+    strategy = FakeStrategy(cache)
+    ks.attach([strategy], None, None)
+    kraken = KrakenFlat(True)
+    ks.watch_exchange(kraken)
+
+    outcome = asyncio.run(ks.stop(_stop()))
+
+    assert outcome.outcome is ControlOutcome.EXECUTED  # Kraken is flat: the wrong cache never times it out
+    assert strategy.flattened == []
+    assert len(strategy.skipped) >= 1
+    assert kraken.asked == [BTC]
+
+
+def test_the_wait_for_flat_reads_kraken_until_it_is_flat(no_flat_poll_wait):
+    cache = FakeCache()
+    cache.positions = {"S-1": [FakePosition(BTC)]}
+    ks, *_ = _kill_switch(cache, untrusted=FakeUntrusted(BTC))
+    ks.attach([FakeStrategy(cache)], None, None)
+    kraken = KrakenFlat(False, False, True)
+    ks.watch_exchange(kraken)
+
+    outcome = asyncio.run(ks.stop(_stop()))
+
+    assert outcome.outcome is ControlOutcome.EXECUTED
+    assert len(kraken.asked) == 3
+
+
+def test_kraken_never_flat_times_the_wait_out(no_flat_poll_wait):
+    cache = FakeCache()
+    cache.positions = {"S-1": [FakePosition(BTC)]}
+    ks, *_ = _kill_switch(cache, clock=Clock(step=timedelta(seconds=1)), timeout_s=3, untrusted=FakeUntrusted(BTC))
+    ks.attach([FakeStrategy(cache)], None, None)
+    ks.watch_exchange(KrakenFlat(False))
+
+    outcome = asyncio.run(ks.stop(_stop()))
+
+    assert outcome.outcome is ControlOutcome.FAILED
+
+
+def test_a_trusted_position_still_counts_from_the_cache(no_flat_poll_wait):
+    cache = FakeCache()
+    cache.positions = {"S-1": [FakePosition(BTC)], "S-2": [FakePosition("PF_ETHUSD.KRAKEN")]}
+    ks, *_ = _kill_switch(cache, untrusted=FakeUntrusted(BTC))
+    eth = FakeStrategy(cache, "S-2")
+    eth.instrument = "PF_ETHUSD.KRAKEN"
+    ks.attach([FakeStrategy(cache), eth], None, None)
+    ks.watch_exchange(KrakenFlat(True))
+
+    outcome = asyncio.run(ks.stop(_stop()))
+
+    assert outcome.outcome is ControlOutcome.EXECUTED
+    assert eth.flattened  # closed through its own strategy, judged flat from the cache

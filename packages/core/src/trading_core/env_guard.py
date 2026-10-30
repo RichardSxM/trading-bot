@@ -11,7 +11,7 @@ import os
 from collections.abc import Mapping
 from typing import ClassVar, Literal
 
-from trading_core.settings import TradingEnv
+from trading_core.settings import LiveMode, TradingEnv
 
 NodeProcess = Literal["trader", "recorder"]
 
@@ -19,16 +19,27 @@ ExecClientAllowlist = Mapping[tuple[NodeProcess, TradingEnv], frozenset[str]]
 
 # The simulated exchange inside the trader (spec 0006); the name its client is registered under.
 SANDBOX = "SANDBOX"
+# The Kraken execution client's name (NautilusTrader's ``KRAKEN`` constant).
+KRAKEN = "KRAKEN"
 
 # Execution clients each node may build, by environment. The demo trader gets only the sandbox
-# (spec 0006); feature 19 (go live) adds Kraken to ("trader", "live"). The recorder never gets
-# one, in any environment.
+# (spec 0006); the live trader gets none, so live stays refused (``allowed_exec_clients`` adds
+# Kraken in drill mode, and feature 19 for trading). The recorder never gets one, in any environment.
 ALLOWED_EXEC_CLIENTS: ExecClientAllowlist = {
     ("trader", "demo"): frozenset({SANDBOX}),
     ("trader", "live"): frozenset(),
     ("recorder", "demo"): frozenset(),
     ("recorder", "live"): frozenset(),
 }
+
+
+def allowed_exec_clients(live_mode: LiveMode) -> ExecClientAllowlist:
+    """The allowlist for ``live_mode`` (spec 0023 AC-22): ``drill`` adds Kraken to the live trader only;
+    ``off`` is ``ALLOWED_EXEC_CLIENTS`` unchanged."""
+    if live_mode != "drill":
+        return ALLOWED_EXEC_CLIENTS
+    return {**ALLOWED_EXEC_CLIENTS, ("trader", "live"): frozenset({KRAKEN})}
+
 
 KRAKEN_KEY_VARS = (
     "KRAKEN_FUTURES_API_KEY",

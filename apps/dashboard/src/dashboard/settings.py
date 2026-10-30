@@ -17,7 +17,7 @@ from trading_core.secrets import (
     POSTGRES_PASSWORD,
     REDIS_PASSWORD,
 )
-from trading_core.settings import Settings
+from trading_core.settings import ReconcileSettings
 
 DASHBOARD_SECRETS: Final = (
     POSTGRES_PASSWORD,
@@ -31,7 +31,8 @@ DASHBOARD_SECRETS: Final = (
 MIN_SEED_BYTES: Final = 20
 
 
-class DashboardSettings(Settings):
+class DashboardSettings(ReconcileSettings):
+    # ReconcileSettings brings ``reconcile_interval_s``: the card's Kraken view is unknown after 3 (spec 0023 AC-18).
     # False only for a laptop browser that refuses Secure cookies on http://127.0.0.1.
     dashboard_cookie_secure: bool = True
     dashboard_stale_amber_s: float = Field(default=3, gt=0)

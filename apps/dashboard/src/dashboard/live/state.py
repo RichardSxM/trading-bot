@@ -122,6 +122,8 @@ FAILURE_WORDS: Final = {
     "pause_key_write_failed": "pause not saved",
     "pause_key_delete_failed": "pause not cleared",
     "not_implemented": "not implemented",
+    "exchange_unknown": "Kraken unknown",
+    "not_available": "not available",
     "error": "error in the trader",
 }
 
@@ -349,6 +351,7 @@ HALT_WORDS: Final = {
     "manual_stop": "manual stop",
     "daily_loss_limit": "daily loss limit",
     "total_loss_limit": "total loss limit",
+    "reconcile_mismatch": "reconciliation mismatch",
     "unknown": "unknown reason",
 }
 
@@ -390,6 +393,43 @@ def pause_view(raw: str | bytes | None, now: datetime | None = None) -> PauseVie
         return RUNNING
     source = snapshot.data.get("pause_source")
     return PauseView(_PAUSED_BY.get(source, "paused") if isinstance(source, str) else "paused", "warn")
+
+
+@dataclass(frozen=True)
+class ReconcileView:
+    """The Kraken check badge in the top bar (spec 0023 AC-19): the last clean check's age, or what is wrong."""
+
+    text: str
+    level: Level
+
+
+RECONCILE_NO_DATA: Final = ReconcileView("no data", "lost")
+RECONCILE_CHECKING: Final = ReconcileView("checking", "warn")
+_RECONCILE_BAD: Final = {"mismatch": "mismatch", "failed": "Kraken unknown"}
+
+
+def reconcile_view(raw: str | bytes | None, now: datetime | None = None) -> ReconcileView:
+    """The check badge for the raw ``{env}:snapshot:trader_state`` value (None when the key is missing).
+
+    ``halted`` wins, then a ``mismatch`` or ``failed`` (``Kraken unknown``) last outcome, all in the
+    alert colour; else the last clean check's age from ``now``, or ``checking`` before the first one.
+    """
+    if raw is None:
+        return RECONCILE_NO_DATA
+    try:
+        snapshot = decode(raw)
+    except SnapshotFormatError:
+        return ReconcileView("bad snapshot", "bad")
+    if snapshot.data.get("halted") is True:
+        return ReconcileView("halted", "bad")
+    outcome = snapshot.data.get("last_check_outcome")
+    if isinstance(outcome, str) and outcome in _RECONCILE_BAD:
+        return ReconcileView(_RECONCILE_BAD[outcome], "bad")
+    clean_ns = snapshot.data.get("last_clean_check_ns")
+    if not isinstance(clean_ns, int) or isinstance(clean_ns, bool):
+        return RECONCILE_CHECKING
+    now_ns = int((now or datetime.now(UTC)).timestamp() * 1_000_000_000)
+    return ReconcileView(f"clean · {short_age(max(0, now_ns - clean_ns) / 1_000_000_000)}", "ok")
 
 
 @dataclass(frozen=True)

@@ -447,6 +447,9 @@ def test_trader_state_reports_the_pause_and_the_counts():
         "trades_today": None,
         "max_trades_per_day": None,
         "cooldown_until": None,
+        "last_clean_check_ns": None,
+        "last_check_outcome": None,
+        "intent": {},
     }
 
 
@@ -482,6 +485,12 @@ class _StuckStrategy:
 
     def flatten(self, halt_id):
         pass
+
+    def flatten_for(self, halt_id, untrusted):
+        pass
+
+    def has_open_positions(self):
+        return True
 
 
 def _kill_switch(gate, risk, cache):

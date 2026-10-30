@@ -3,7 +3,8 @@
 ``journal_rows`` turns fills, fees, and funding of paper and live runs into signed cash
 flows (positive is money in, negative is money out), each with a EUR amount from
 ``fx_rates``. Feature 18 exports them to CSV. ``round_trips_page`` and ``fills_page`` are the
-Trades page lists (spec 0006 AC-19), paper runs only.
+Trades page lists (spec 0006 AC-19), paper runs only. ``reconciliations_page`` is the Reconciliation
+page list (spec 0023 AC-19).
 """
 
 from collections.abc import Sequence
@@ -353,6 +354,24 @@ def fills_page(session: Session, env: Env, page: int, size: int = PAGE_SIZE) -> 
     ]
 
 
+def recorded_stop_trigger(session: Session, env: Env, parent_client_order_id: str) -> Decimal | None:
+    """The trigger price of the newest recorded reduce only stop market order whose parent is
+    ``parent_client_order_id`` (a position's opening order), or None (spec 0023 *Value sourcing*, AC-9)."""
+    order = models.Order
+    return session.scalars(
+        select(order.trigger_price)
+        .where(
+            order.env == env,
+            order.parent_client_order_id == parent_client_order_id,
+            order.order_type == OrderType.STOP_MARKET,
+            order.reduce_only.is_(True),
+            order.trigger_price.is_not(None),
+        )
+        .order_by(order.created_at.desc(), order.id.desc())
+        .limit(1)
+    ).first()
+
+
 def control_command_outcome(session: Session, command_id: UUID) -> ControlOutcome | None:
     """The recorded outcome of the control command ``command_id``, or None when it was never
     recorded (spec 0005 AC-6). ``received`` means it was never finished."""
@@ -491,3 +510,82 @@ def run_funding_total(session: Session, run_id: UUID) -> Decimal:
         select(func.coalesce(func.sum(models.FundingPayment.amount), 0)).where(models.FundingPayment.run_id == run_id)
     ).scalar_one()
     return Decimal(total)
+
+
+@dataclass(frozen=True)
+class MismatchLine:
+    """One finding of a check on the Reconciliation page: what, where, both views, and what was done."""
+
+    kind: str
+    instrument_id: str
+    client_order_id: str | None
+    exchange_side: str | None
+    exchange_qty: Decimal | None
+    local_side: str | None
+    local_qty: Decimal | None
+    action: str
+    action_result: str
+
+
+@dataclass(frozen=True)
+class ReconciliationLine:
+    """One reported check (spec 0023 AC-19) with its findings in the order they were written."""
+
+    id: UUID
+    trigger: str
+    started_at: datetime
+    finished_at: datetime | None
+    outcome: str | None
+    exchange_orders: int | None
+    exchange_positions: int | None
+    error: str | None
+    mismatches: tuple[MismatchLine, ...]
+
+
+def reconciliations_page(session: Session, env: Env, page: int, size: int = PAGE_SIZE) -> Sequence[ReconciliationLine]:
+    """Page ``page`` (from 1) of ``env``'s ``reconciliations``, newest ``started_at`` first, then ``id``, each
+    with its ``reconciliation_mismatches`` (by ``created_at``, then ``id``). A page past the end is empty.
+    Raises ``ValueError`` for a page or size below 1."""
+    offset = _offset(page, size)
+    check, mismatch = models.Reconciliation, models.ReconciliationMismatch
+    checks = session.scalars(
+        select(check)
+        .where(check.env == env)
+        .order_by(check.started_at.desc(), check.id.desc())
+        .limit(size)
+        .offset(offset)
+    ).all()
+    found: dict[UUID, list[MismatchLine]] = {c.id: [] for c in checks}
+    if found:
+        for row in session.scalars(
+            select(mismatch)
+            .where(mismatch.env == env, mismatch.reconciliation_id.in_(found))
+            .order_by(mismatch.created_at, mismatch.id)
+        ):
+            found[row.reconciliation_id].append(
+                MismatchLine(
+                    kind=row.kind,
+                    instrument_id=row.instrument_id,
+                    client_order_id=row.client_order_id,
+                    exchange_side=row.exchange_side,
+                    exchange_qty=row.exchange_qty,
+                    local_side=row.local_side,
+                    local_qty=row.local_qty,
+                    action=row.action,
+                    action_result=row.action_result,
+                )
+            )
+    return [
+        ReconciliationLine(
+            id=c.id,
+            trigger=c.trigger,
+            started_at=c.started_at,
+            finished_at=c.finished_at,
+            outcome=c.outcome,
+            exchange_orders=c.exchange_orders,
+            exchange_positions=c.exchange_positions,
+            error=c.error,
+            mismatches=tuple(found[c.id]),
+        )
+        for c in checks
+    ]

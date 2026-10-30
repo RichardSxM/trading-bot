@@ -279,6 +279,56 @@ class ControlCmd(StrEnum):
     FLATTEN = "flatten"
     PAUSE = "pause"
     UNPAUSE = "unpause"
+    RECHECK = "recheck"
+    DRILL_STEP = "drill_step"
+
+
+class ReconcileTrigger(StrEnum):
+    """What started a reconciliation check (spec 0023); a ``recheck`` command runs a ``periodic`` one."""
+
+    START = "start"
+    RECONNECT = "reconnect"
+    PERIODIC = "periodic"
+
+
+class ReconcileOutcome(StrEnum):
+    """How a reconciliation check ended (spec 0023)."""
+
+    CLEAN = "clean"
+    MISMATCH = "mismatch"
+    FAILED = "failed"
+
+
+class MismatchKind(StrEnum):
+    """One kind of reconciliation finding (spec 0023 AC-6 to AC-12)."""
+
+    UNKNOWN_ORDER = "unknown_order"
+    LOCAL_ONLY_ORDER = "local_only_order"
+    UNKNOWN_POSITION = "unknown_position"
+    POSITION_MISMATCH = "position_mismatch"
+    MISSING_STOP = "missing_stop"
+    STOP_SIZE_MISMATCH = "stop_size_mismatch"
+    DUPLICATE_ENTRY = "duplicate_entry"
+
+
+class MismatchAction(StrEnum):
+    """What the trader did about a finding; ``none`` when it only reported (demo, flattening, halted)."""
+
+    CANCELLED = "cancelled"
+    FLATTENED = "flattened"
+    CLOSED_AT_MARKET = "closed_at_market"
+    STOP_REPLACED = "stop_replaced"
+    ADOPTED = "adopted"
+    MARKED_CANCELED = "marked_canceled"
+    NONE = "none"
+
+
+class ActionResult(StrEnum):
+    """How a finding's action went."""
+
+    OK = "ok"
+    FAILED = "failed"
+    PENDING = "pending"
 
 
 class AlertCmd(StrEnum):

@@ -11,8 +11,9 @@ from pydantic import SecretStr
 from trader.main import TraderSettings, build_config
 from trading_core.boot import Boot
 from trading_core.naming import NodeIdMismatch
+from trading_core.reconcile.views import ExchangeUnavailable
 from trading_core.recording.errors import PromotionRequiredError
-from trading_core.settings import TradingEnv
+from trading_core.settings import LiveMode, TradingEnv
 
 SECRETS = {
     "redis_password": SecretStr("r" * 32),
@@ -22,8 +23,30 @@ SECRETS = {
 }
 
 
-def _settings(env: TradingEnv) -> TraderSettings:
-    return TraderSettings(trading_env=env, redis_host="redis", redis_port=6379, kraken_key_rotated_on=date(2026, 9, 1))
+class _UnreachableExchange:
+    """Kraken's view for a live run_node: never reached in these tests (spec 0023)."""
+
+    async def fetch(self):
+        raise ExchangeUnavailable("not in tests")
+
+    async def cancel(self, order):
+        raise ExchangeUnavailable("not in tests")
+
+
+EXCHANGE = _UnreachableExchange()
+
+
+def _settings(env: TradingEnv, live_mode: LiveMode | None = None) -> TraderSettings:
+    # A live node runs only in drill mode (spec 0023 AC-22), so live tests default to it.
+    if live_mode is None:
+        live_mode = "drill" if env == "live" else "off"
+    return TraderSettings(
+        trading_env=env,
+        redis_host="redis",
+        redis_port=6379,
+        kraken_key_rotated_on=date(2026, 9, 1),
+        live_mode=live_mode,
+    )
 
 
 def test_demo_config_uses_env_tagged_id_and_stable_redis_cache(monkeypatch):
@@ -152,6 +175,9 @@ class _FakeNode:
     def stop(self):
         self.calls.append("stop")
 
+    # What the startup watchdog reads (spec 0023 AC-5).
+    is_running = True
+
     # What the heartbeat snapshot reads (spec 0004 AC-8).
     class state:
         name = "RUNNING"
@@ -161,6 +187,8 @@ class _FakeNode:
             @staticmethod
             def check_connected():
                 return True
+
+        exec_engine = None  # live hands it to the reconciliation's report sink (spec 0023)
 
 
 class _FakeRedis:
@@ -186,8 +214,11 @@ class KillSwitch:
     def watch_losses(self, losses):
         self.losses = losses
 
+    def watch_exchange(self, exchange_flat):
+        self.exchange_flat = exchange_flat
 
-def _fake_control_parts(node, settings, secrets):
+
+def _fake_control_parts(node, settings, secrets, recheck=None, drill=None):
     from trader.main import ControlParts
 
     node.kill_switch = KillSwitch()
@@ -196,6 +227,7 @@ def _fake_control_parts(node, settings, secrets):
         kill_switch=cast(Any, node.kill_switch),
         risk_engine=cast(Any, object()),
         shutdown_counts=lambda: {"cancelled": 0, "unacknowledged_cancels": 0, "positions_kept": 0, "stops_kept": 0},
+        untrusted=cast(Any, object()),
     )
 
 
@@ -296,9 +328,35 @@ def test_live_trader_is_refused_until_kraken_joins_the_allowlist(monkeypatch):
 
     monkeypatch.delenv("TRADER_ID", raising=False)
     with pytest.raises(EnvGuardRefused, match="KRAKEN"):
-        guard(_settings("live"), SECRETS)
+        guard(_settings("live", "off"), SECRETS)
     allowlist = dict(ALLOWED_EXEC_CLIENTS) | {("trader", "live"): frozenset({"KRAKEN"})}
-    guard(_settings("live"), SECRETS, allowlist)
+    guard(_settings("live", "off"), SECRETS, allowlist)
+
+
+def test_live_mode_drill_lets_the_live_trader_build_the_kraken_client(monkeypatch):
+    # covers: spec 0023 AC-22 (LIVE_MODE=off, the default, keeps live refused exactly as before).
+    from trader.main import guard
+
+    monkeypatch.delenv("TRADER_ID", raising=False)
+    guard(_settings("live", "drill"), SECRETS)
+    monkeypatch.setenv("TRADING_ENV", "live")
+    monkeypatch.setenv("KRAKEN_KEY_ROTATED_ON", "2026-09-01")
+    assert TraderSettings().live_mode == "off"
+
+
+def test_a_live_node_outside_drill_mode_is_refused(fake_main):
+    with pytest.raises(ValueError, match="LIVE_MODE=drill"):
+        fake_main.run_node(
+            build_config(_settings("live", "off"), SECRETS), _settings("live", "off"), 5.0, SECRETS, exchange=EXCHANGE
+        )
+
+
+def test_drill_mode_loads_reconcile_drill_as_the_only_strategy_beside_the_executor(fake_main):
+    fake_main.run_node(build_config(_settings("live"), SECRETS), _settings("live"), 5.0, SECRETS, exchange=EXCHANGE)
+
+    (node,) = _FakeNode.instances
+    strategies = [name for call, name in (c for c in node.calls if isinstance(c, tuple)) if call == "add_strategy"]
+    assert strategies == ["ReconcileDrill", "ReconcileExecutor"]
 
 
 def test_trader_loads_the_kraken_files_only_in_live():
@@ -366,7 +424,12 @@ def test_live_run_adds_the_key_age_actor_and_exec_factory_and_a_failed_check_exi
     fake_main.TradingNode = NoAccountNode
     try:
         code = fake_main.run_node(
-            build_config(_settings("live"), SECRETS), _settings("live"), 0.1, SECRETS, fail_backoff_s=0
+            build_config(_settings("live"), SECRETS),
+            _settings("live"),
+            0.1,
+            SECRETS,
+            fail_backoff_s=0,
+            exchange=EXCHANGE,
         )
     finally:
         fake_main.TradingNode = original
@@ -376,6 +439,8 @@ def test_live_run_adds_the_key_age_actor_and_exec_factory_and_a_failed_check_exi
     assert "stop" in node.calls
     assert ("add_actor", "KeyAgeActor") in node.calls
     assert ("exec_factory", "KRAKEN") in node.calls
+    # Live only: the executor that sends the check's orders (spec 0023 AC-7).
+    assert ("add_strategy", "ReconcileExecutor") in node.calls
     assert node.calls[-1] == "dispose"
 
 
@@ -386,6 +451,7 @@ def test_demo_run_has_no_key_actors_and_exits_0(fake_main):
     assert code == 0
     assert ("add_actor", "KeyAgeActor") not in node.calls
     assert ("exec_factory", "KRAKEN") not in node.calls
+    assert ("add_strategy", "ReconcileExecutor") not in node.calls  # demo only reports (spec 0023 AC-23)
 
 
 def _cache_with_kraken_account(ts_init):
@@ -444,7 +510,12 @@ def test_an_account_reloaded_from_a_previous_run_still_fails_the_check(fake_main
     fake_main.TradingNode = StaleAccountNode
     try:
         code = fake_main.run_node(
-            build_config(_settings("live"), SECRETS), _settings("live"), 0.1, SECRETS, fail_backoff_s=0
+            build_config(_settings("live"), SECRETS),
+            _settings("live"),
+            0.1,
+            SECRETS,
+            fail_backoff_s=0,
+            exchange=EXCHANGE,
         )
     finally:
         fake_main.TradingNode = original
@@ -466,7 +537,12 @@ def test_a_crashing_key_check_stops_the_node(fake_main):
     fake_main.TradingNode = BrokenCacheNode
     try:
         code = fake_main.run_node(
-            build_config(_settings("live"), SECRETS), _settings("live"), 5.0, SECRETS, fail_backoff_s=0
+            build_config(_settings("live"), SECRETS),
+            _settings("live"),
+            5.0,
+            SECRETS,
+            fail_backoff_s=0,
+            exchange=EXCHANGE,
         )
     finally:
         fake_main.TradingNode = original
@@ -496,7 +572,9 @@ def test_every_env_writes_the_heartbeat_snapshot_while_the_node_runs(fake_main, 
             self.get_event_loop().run_until_complete(asyncio.sleep(0.05))
 
     monkeypatch.setattr(fake_main, "TradingNode", RunningNode)
-    fake_main.run_node(build_config(_settings(env), SECRETS), _settings(env), 5.0, SECRETS, fail_backoff_s=0)
+    fake_main.run_node(
+        build_config(_settings(env), SECRETS), _settings(env), 5.0, SECRETS, fail_backoff_s=0, exchange=EXCHANGE
+    )
 
     key, value, ex = next(w for w in redis.writes if w[0].endswith(":heartbeat"))
     assert (key, ex) == (f"{env}:snapshot:heartbeat", 30)
@@ -981,3 +1059,75 @@ def test_the_loss_limit_defaults_match_the_spec(monkeypatch):
         settings.kill_switch_flat_timeout_s,
     ) == (Decimal(20), Decimal(100), 50, 600, 20)
     assert "risk_daily_loss_limit_usd" in settings.strategy_config()
+
+
+# spec 0023: reconciliation ------------------------------------------------------------------
+
+
+def test_demo_keeps_nautilus_reconciliation_off():
+    engine = build_config(_settings("demo"), SECRETS).exec_engine
+
+    assert engine.reconciliation is False
+
+
+def test_live_reconciles_with_kraken_at_start_and_runs_no_periodic_checks_of_its_own():
+    # covers: spec 0023 *Where the views come from*, the LiveExecEngineConfig table.
+    config = build_config(_settings("live"), SECRETS)
+    engine = config.exec_engine
+
+    assert engine.reconciliation is True
+    assert engine.reconciliation_lookback_mins == 1440
+    assert engine.open_check_interval_secs is None
+    assert engine.position_check_interval_secs is None
+    assert engine.generate_missing_orders is True
+    assert (engine.inflight_check_interval_ms, engine.inflight_check_threshold_ms) == (2000, 5000)
+    assert config.timeout_reconciliation == 30
+
+
+def test_a_live_node_without_krakens_view_refuses_to_build(fake_main):
+    with pytest.raises(ValueError, match="exchange view"):
+        fake_main.run_node(build_config(_settings("live"), SECRETS), _settings("live"), 5.0, SECRETS)
+
+    assert _FakeNode.instances == []
+
+
+@pytest.mark.parametrize("env", ["demo", "live"])
+def test_every_env_registers_the_reconcile_actor_before_any_strategy(fake_main, env):
+    fake_main.run_node(
+        build_config(_settings(env), SECRETS), _settings(env), 5.0, SECRETS, fail_backoff_s=0, exchange=EXCHANGE
+    )
+
+    (node,) = _FakeNode.instances
+    actors = [name for kind, name in (c for c in node.calls if isinstance(c, tuple)) if kind == "add_actor"]
+    assert "ReconcileActor" in actors
+
+
+@pytest.mark.parametrize("env", ["demo", "live"])
+def test_a_trader_that_never_runs_is_stopped_by_the_watchdog(fake_main, monkeypatch, env):
+    # covers: spec 0023 AC-5, the startup watchdog, and D9 in demo (Kraken unreachable at start).
+    class NeverRunningNode(_FakeNode):
+        is_running = False
+
+        class cache:
+            @staticmethod
+            def account_for_venue(venue):
+                return None
+
+        def run(self):
+            self.calls.append("run")
+            self.get_event_loop().run_until_complete(asyncio.sleep(0.3))
+
+    monkeypatch.setattr(fake_main, "TradingNode", NeverRunningNode)
+    settings = _settings(env).model_copy(update={"reconcile_nautilus_timeout_s": 1})
+    monkeypatch.setattr(fake_main, "WATCHDOG_GRACE_S", -1)  # a 0 s watchdog, so it fires inside run()
+    slept: list[float] = []
+    monkeypatch.setattr(fake_main.time, "sleep", slept.append)
+
+    # The key check's backoff is not the watchdog's: it exits 1 at once and Docker paces the restarts.
+    code = fake_main.run_node(
+        build_config(settings, SECRETS), settings, 60.0, SECRETS, fail_backoff_s=300, exchange=EXCHANGE
+    )
+
+    assert code == 1
+    assert "stop" in _FakeNode.instances[0].calls
+    assert slept == [0.0]

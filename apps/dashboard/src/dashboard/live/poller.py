@@ -9,7 +9,9 @@ partial ``no data`` and the next tick tries again.
 
 With a position renderer (spec 0006 AC-17) it also reads the ``position`` and ``account``
 snapshots every tick, and the P&L figures from Postgres at most every ``pnl_refresh_s``, off
-the event loop. A Postgres error keeps the live card and shows the figures as unavailable.
+the event loop. A Postgres error keeps the live card and shows the figures as unavailable. With an
+exchange reader the card also shows Wanted, Trader, and Kraken (spec 0023 AC-18), the Kraken view
+unknown once older than three ``check_interval_s``.
 
 With an alerts reader (spec 0013 AC-16) the Activity feed also lists the last 24 h of alert
 episodes, read from Postgres at most every ``alerts_refresh_s``; a Postgres error keeps the
@@ -31,12 +33,14 @@ from dashboard.data.alerts import AlertLine
 from dashboard.data.pnl import PnlFigures
 from dashboard.live.alerts import MUTE_OFF, MuteView, merge_activity, mute_view
 from dashboard.live.position import LOST, PositionView, position_view
+from dashboard.live.sides import sides_view
 from dashboard.live.state import (
     COMMAND_NO_DATA,
     LOSSES_NO_DATA,
     NO_DATA,
     NOT_BLOCKED,
     PAUSE_NO_DATA,
+    RECONCILE_NO_DATA,
     ActivityRow,
     AgeView,
     AlertView,
@@ -45,6 +49,7 @@ from dashboard.live.state import (
     Entry,
     LossesView,
     PauseView,
+    ReconcileView,
     activity_row,
     alert_state,
     blocked_view,
@@ -53,6 +58,7 @@ from dashboard.live.state import (
     heartbeat_view,
     losses_view,
     pause_view,
+    reconcile_view,
 )
 from trading_core.control.messages import ControlMessage, Fields, field, to_fields
 
@@ -67,6 +73,7 @@ POSITION_EVENT: Final = "overview-position"
 BLOCKED_EVENT: Final = "topbar-blocked"
 BLOCKED_REASONS_EVENT: Final = "overview-blocked"
 LOSSES_EVENT: Final = "system-losses"
+CHECK_EVENT: Final = "topbar-check"
 MUTE_EVENT: Final = "overview-mute"
 ALERTS_REFRESH_S: Final = 10.0
 PNL_REFRESH_S: Final = 5.0
@@ -117,7 +124,13 @@ class Poller:
         read_alert_results: Callable[[], Awaitable[Sequence[Entry] | None]] | None = None,
         render_mute: Callable[[MuteView], str] | None = None,
         alerts_refresh_s: float = ALERTS_REFRESH_S,
+        render_check: Callable[[ReconcileView], str] | None = None,
+        read_exchange: Callable[[], Awaitable[str | bytes | None]] | None = None,
+        check_interval_s: float = 60.0,
     ) -> None:
+        self._read_exchange = read_exchange
+        self._check_interval_s = check_interval_s
+        self._render_check = render_check
         self._read_alerts = read_alerts
         self._read_alert_results = read_alert_results
         self._render_mute = render_mute
@@ -214,12 +227,19 @@ class Poller:
         }
         if self._render_losses is not None:
             partials[LOSSES_EVENT] = self._render_losses(losses_view(state, self._now()))
+        if self._render_check is not None:
+            partials[CHECK_EVENT] = self._render_check(reconcile_view(state, self._now()))
         if self._render_mute is not None:
             partials[MUTE_EVENT] = self._render_mute(mute_view(alert_results, self._now()))
         if self._render_position is not None:
             await self._refresh_pnl()
-            raw_position, raw_account = snapshots
+            raw_position, raw_account, raw_exchange = snapshots
             view = position_view(raw_position, raw_account, self._pnl, self._clock_ns(), self._amber_s, self._red_s)
+            if self._read_exchange is not None:
+                sides = sides_view(
+                    raw_position, raw_exchange, state, self._clock_ns(), self._red_s, self._check_interval_s
+                )
+                view = dataclasses.replace(view, sides=sides)
             partials[POSITION_EVENT] = self._render_position(view)
         return partials
 
@@ -236,6 +256,8 @@ class Poller:
         }
         if self._render_losses is not None:
             partials[LOSSES_EVENT] = self._render_losses(LOSSES_NO_DATA)
+        if self._render_check is not None:
+            partials[CHECK_EVENT] = self._render_check(RECONCILE_NO_DATA)
         if self._render_mute is not None:
             partials[MUTE_EVENT] = self._render_mute(MUTE_OFF)
         if self._render_position is not None:
@@ -253,10 +275,11 @@ class Poller:
             partials[BLOCKED_REASONS_EVENT] = self._render_blocked_reasons(view)
         return partials
 
-    async def _read_snapshots(self) -> tuple[str | bytes | None, str | bytes | None]:
+    async def _read_snapshots(self) -> tuple[str | bytes | None, str | bytes | None, str | bytes | None]:
         if self._render_position is None or self._read_position is None or self._read_account is None:
-            return None, None
-        return await self._read_position(), await self._read_account()
+            return None, None, None
+        exchange = None if self._read_exchange is None else await self._read_exchange()
+        return await self._read_position(), await self._read_account(), exchange
 
     async def _read_mute(self) -> Sequence[Entry] | None:
         if self._render_mute is None or self._read_alert_results is None:

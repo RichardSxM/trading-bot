@@ -13,7 +13,9 @@ On each bar close, in this order: the base's ATR and then the rule are updated (
 (``ENTERING`` or ``PROTECTED``) ``bars_held`` goes up and the exit step runs; while flat with no exit sent
 at this bar the entry step runs; otherwise a signal the rule gives is consumed and dropped. At most one
 entry or exit is sent per bar close, and nothing is decided before the rule and the ATR are ready.
-Frozen after the first study (AC-7): a change goes into a new ``bar_rule_v2`` module.
+Frozen after the first study (AC-7): a change goes into a new ``bar_rule_v2`` module. The restart
+hooks of spec 0023 change nothing in a replay: an entry signal from a bar older than the last check
+is consumed and dropped (AC-15), and ``resume_position`` takes back a position after a restart (AC-16).
 """
 
 import functools
@@ -49,7 +51,7 @@ from nautilus_trader.model.position import Position
 from trading_core.node import guard
 from trading_core.node.guard import GuardedConfig
 from trading_core.node.stale import StaleQuoteBlock
-from trading_core.node.strategy import KfsStrategy, PauseGate
+from trading_core.node.strategy import KfsStrategy, PauseGate, decision_of
 from trading_core.recording.enums import (
     Env,
     Intent,
@@ -239,6 +241,30 @@ class BarRuleStrategy(KfsStrategy, StaleQuoteBlock):
         self.phase = Phase.EXITING
         self._submit_exit()
 
+    def resume_position(self, position: Position, stop_order: Order | None) -> None:
+        """Take back ``position`` after a restart (spec 0023 AC-16): protected by ``stop_order`` at its trigger.
+
+        ``bars_held`` is the bar closes since the position opened, so the time stop fires when it would
+        have; past ``time_stop_bars`` it exits at once. Without a stop it fails closed, as a stop not accepted.
+        """
+        self._cancel_entries()
+        opening = self.cache.order(position.opening_order_id)
+        self.entry_decision = decision_of(opening)
+        self._entry_id = position.opening_order_id
+        self._side = _side_of(position)
+        self._entry_px = Decimal(str(position.avg_px_open))
+        interval = self._cfg.bar_interval_ns
+        self.bars_held = max(0, self.clock.timestamp_ns() // interval - position.ts_opened // interval)
+        self.phase = Phase.PROTECTED
+        if stop_order is None:
+            self._stop_failed("no stop to resume with")
+            return
+        self._stop_id = stop_order.client_order_id
+        self._stop_px = stop_order.trigger_price.as_decimal()
+        if self.bars_held >= self._cfg.time_stop_bars:
+            inputs: JsonObject = {"bars_held": self.bars_held, "stop": self._stop_px, "resumed": True}
+            self._decide_exit(position, TIME_STOP, inputs)
+
     # Bars -----------------------------------------------------------------------------------
 
     def on_bar(self, bar: Bar) -> None:
@@ -285,7 +311,8 @@ class BarRuleStrategy(KfsStrategy, StaleQuoteBlock):
         if signal is None:
             return
         self.rule.consumed()  # one bar event: whether approved, refused, or skipped (AC-2)
-        self._decide_entry(bar, atr, signal)
+        if self.fresh_signal(bar.ts_ns):
+            self._decide_entry(bar, atr, signal)
 
     def _decide_entry(self, bar: BarInput, atr: Decimal, signal: EnterSignal) -> None:
         quote = self.cache.quote_tick(self._instrument_id)

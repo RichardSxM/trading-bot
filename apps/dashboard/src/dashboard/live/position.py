@@ -11,6 +11,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Final, Literal
 
 from dashboard.data.pnl import PnlFigures
+from dashboard.live.sides import SidesView
 from dashboard.live.state import AgeView, age_state
 from trading_core.snapshot.envelope import SnapshotFormatError, decode
 
@@ -21,7 +22,8 @@ CardStatus = Literal["open", "flat", "offline", "bad", "lost"]
 class PositionView:
     """The card: its status, the snapshot age, the position (when open), equity, and the P&L figures.
 
-    ``pnl`` is None when Postgres did not answer; the live part still shows.
+    ``pnl`` is None when Postgres did not answer; the live part still shows. ``sides`` is Wanted, Trader,
+    and Kraken (spec 0023 AC-18), None when Redis is unreadable.
     """
 
     status: CardStatus
@@ -37,6 +39,7 @@ class PositionView:
     equity: Decimal | None = None
     currency: str = "USD"
     pnl: PnlFigures | None = None
+    sides: SidesView | None = None
 
 
 LOST: Final = PositionView("lost")

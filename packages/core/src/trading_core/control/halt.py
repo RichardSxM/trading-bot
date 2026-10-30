@@ -25,6 +25,7 @@ class HaltReason(StrEnum):
     MANUAL_STOP = "manual_stop"
     DAILY_LOSS_LIMIT = "daily_loss_limit"
     TOTAL_LOSS_LIMIT = "total_loss_limit"
+    RECONCILE_MISMATCH = "reconcile_mismatch"  # a reconciliation finding it cannot explain (spec 0023)
     UNKNOWN = "unknown"
 
 

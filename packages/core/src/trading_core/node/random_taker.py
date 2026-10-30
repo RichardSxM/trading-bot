@@ -11,6 +11,9 @@ records through ``record``.
 any position at market with the kill switch tags, retried like any exit.
 
 Round trip: ``flat`` → ``entering`` (entry submitted) → ``holding`` (filled) → ``exiting`` → ``flat``.
+
+After a restart (spec 0023) a boundary scheduled before the last check is skipped (AC-15), and
+``resume_position`` takes back a position with its normal timed exit, ``hold_s`` after it opened (AC-16).
 """
 
 import logging
@@ -42,7 +45,7 @@ from nautilus_trader.model.position import Position
 from trading_core.node import guard
 from trading_core.node.guard import GuardedConfig
 from trading_core.node.placeholder import Record
-from trading_core.node.strategy import KfsStrategy, PauseGate
+from trading_core.node.strategy import KfsStrategy, PauseGate, decision_of
 from trading_core.recording.enums import Env, Intent, OrderOrigin, OrderSide, RiskEventKind, RiskVerdict, Severity
 from trading_core.recording.mappers import DECISION_TAG, HALT_TAG, ORIGIN_TAG
 from trading_core.recording.rows import DecisionRow, JsonObject, RiskEventRow
@@ -86,6 +89,7 @@ class RandomTakerConfig(GuardedConfig, frozen=True):
 class RandomTaker(KfsStrategy):
     """Enters at market on a random side every boundary while flat, exits at market after ``hold_s``."""
 
+    uses_stop = False  # it never places a stop (spec 0023 AC-9)
     # Timers of one round trip, cancelled when it ends (the boundary timer keeps running).
     _round_trip_timers: tuple[str, ...] = (_HOLD, _EXIT_RETRY)
 
@@ -135,6 +139,19 @@ class RandomTaker(KfsStrategy):
             self._submit_exit()
         self._cancel_entries()
 
+    def resume_position(self, position: Position, stop_order: Order | None) -> None:
+        """Take back ``position`` after a restart (spec 0023 AC-16): it exits ``hold_s`` after the position
+        opened, at once when that has passed. It never has a stop."""
+        self._cancel_entries()
+        self._entry_decision = decision_of(self.cache.order(position.opening_order_id))
+        self._entry_id = position.opening_order_id
+        self.phase = Phase.HOLDING
+        due_ns = position.ts_opened + self._cfg.hold_s * NS_PER_S
+        if due_ns <= self.clock.timestamp_ns():
+            self._on_hold_over(None)
+        else:
+            self._alert(_HOLD, due_ns, self._on_hold_over)
+
     def on_quote_tick(self, tick: QuoteTick) -> None:
         """The mid is read from the cache at the boundary; nothing to do here."""
 
@@ -147,7 +164,7 @@ class RandomTaker(KfsStrategy):
     def _on_boundary(self, event: object) -> None:
         boundary = self._boundary_ns
         self._arm_boundary()
-        if self.phase != Phase.FLAT or self._position() is not None:
+        if self.phase != Phase.FLAT or self._position() is not None or not self.fresh_signal(boundary):
             return
         try:
             self._decide_entry(boundary)

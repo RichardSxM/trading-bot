@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from trading_core.control.messages import ControlMessage, ControlResult
 from trading_core.recording import queries, repository
 from trading_core.recording.enums import ControlOutcome, Env
-from trading_core.recording.rows import ControlCommandRow
+from trading_core.recording.rows import ControlCommandRow, JsonValue
 
 _EPOCH: Final = datetime(1970, 1, 1, tzinfo=UTC)
 
@@ -57,7 +57,10 @@ class PostgresCommandRecorder:
             session.commit()
 
     def _finished(self, result: ControlResult) -> None:
-        details = {"reason": result.reason} if result.reason is not None else None
+        found: dict[str, JsonValue] = dict(result.details or {})
+        if result.reason is not None:
+            found["reason"] = result.reason
+        details = found or None
         with Session(self._engine) as session:
             repository.set_control_outcome(session, result.id, result.outcome, _ns(result.outcome_at), details)
             session.commit()

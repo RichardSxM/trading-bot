@@ -10,6 +10,7 @@
 {% from "components/states.html" import empty_state, loading, error_state %}
 {% from "components/table.html" import table %}
 {% from "components/pager.html" import pager %}
+{% from "components/sides.html" import sides %}
 {% block head %}<link rel="stylesheet" href="/static/css/styleguide.css">{% endblock %}
 {% block scripts %}
   <script defer src="/static/vendor/lightweight-charts.standalone.production.js"></script>
@@ -158,12 +159,28 @@
   {%- endfor %}
 </section>
 
+<section class="sg-section" id="sides" aria-labelledby="sides-sample-h">
+  <h2 class="sg-h" id="sides-sample-h">Wanted, Trader, Kraken</h2>
+  {%- for state, view in sides_samples.items() %}
+  <div data-sample="sides:{{ state }}">{{ sides(view) }}</div>
+  {%- endfor %}
+</section>
+
 <section class="sg-section" id="blocked" aria-labelledby="blocked-sample-h">
   <h2 class="sg-h" id="blocked-sample-h">Entries blocked</h2>
   {%- for state, view in blocked_samples.items() %}
   <div data-sample="blocked:{{ state }}">
     <div class="status-strip"><span class="topbar__blocked">{% include "partials/topbar_blocked.html" %}</span></div>
     <div class="blocked-reasons">{% include "partials/overview_blocked.html" %}</div>
+  </div>
+  {%- endfor %}
+</section>
+
+<section class="sg-section" id="check" aria-labelledby="check-sample-h">
+  <h2 class="sg-h" id="check-sample-h">Kraken check</h2>
+  {%- for state, view in check_samples.items() %}
+  <div data-sample="check:{{ state }}">
+    <div class="status-strip"><span class="topbar__check">{% include "partials/topbar_check.html" %}</span></div>
   </div>
   {%- endfor %}
 </section>

@@ -34,6 +34,9 @@ EXPECTED_TABLES = {
     "run_daily_equity",
     "run_measures",
     "promotion_folds",
+    # Spec 0023.
+    "reconciliations",
+    "reconciliation_mismatches",
 }
 
 

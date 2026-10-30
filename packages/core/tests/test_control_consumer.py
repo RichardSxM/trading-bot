@@ -359,3 +359,15 @@ def test_a_second_stop_waits_until_the_first_has_its_outcome():
         (first.id, "executed"),
         (second.id, "executed"),
     ]
+
+
+def test_an_outcome_carries_its_details_to_the_result():
+    # covers: spec 0023 AC-20, recheck answers with its outcome and report id.
+    redis, recorder = FakeRedis(), FakeRecorder()
+    msg = stop_command(NOW, 60)
+    redis.add(to_fields(msg))
+    details = {"outcome": "clean", "reconciliation_id": "01a18814-ccfb-72a2-a151-89af16daccc4"}
+
+    _drain(_consumer(redis, recorder, outcome=Outcome(ControlOutcome.EXECUTED, None, details)))
+
+    assert [r.details for r in redis.results] == [None, details]

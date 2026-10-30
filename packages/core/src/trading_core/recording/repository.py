@@ -75,6 +75,8 @@ from trading_core.recording.rows import (
     PositionSnapshotRow,
     PromotionFoldRow,
     PromotionRow,
+    ReconciliationMismatchRow,
+    ReconciliationRow,
     RiskEventRow,
     RunBundle,
     RunFillStatsRow,
@@ -720,6 +722,18 @@ def record_risk_event(session: Session, row: RiskEventRow) -> None:
     """Record a risk event, idempotent on ``(env, event_key)``."""
     check_env(row.env)
     _insert_or_compare(session, models.RiskEvent, column_values(row), ["env", "event_key"])
+
+
+def record_reconciliation(session: Session, row: ReconciliationRow) -> None:
+    """Record one finished reconciliation check (spec 0023 AC-17), idempotent on its id."""
+    check_env(row.env)
+    _insert_or_compare(session, models.Reconciliation, column_values(row), ["id"])
+
+
+def record_reconciliation_mismatch(session: Session, row: ReconciliationMismatchRow) -> None:
+    """Record one finding of a check (spec 0023 AC-13), idempotent on its id, so a retried write adds no row."""
+    check_env(row.env)
+    _insert_or_compare(session, models.ReconciliationMismatch, column_values(row), ["id"])
 
 
 def report_conflict(session: Session, error: RecordConflictError) -> None:

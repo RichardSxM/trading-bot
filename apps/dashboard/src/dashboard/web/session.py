@@ -17,10 +17,11 @@ STOP_PATH: Final = "/control/stop"
 PAUSE_PATH: Final = "/control/pause"
 RESUME_PATH: Final = "/control/resume"
 FLATTEN_PATH: Final = "/control/flatten"
+RECHECK_PATH: Final = "/control/recheck"
 ALERTS_MUTE_PATH: Final = "/alerts/mute"
 ALERTS_TEST_PATH: Final = "/alerts/test"
 # Which command a POST without a session lost, for the login page's notice (spec 0005 AC-13, spec 0010 AC-18).
-LOST_COMMANDS: Final = {PAUSE_PATH: "pause", RESUME_PATH: "resume", FLATTEN_PATH: "flatten"}
+LOST_COMMANDS: Final = {PAUSE_PATH: "pause", RESUME_PATH: "resume", FLATTEN_PATH: "flatten", RECHECK_PATH: "recheck"}
 CSRF_HEADER: Final = "x-csrf-token"
 CSRF_FIELD: Final = "csrf"
 # Show the "session ends" cue in the top bar this long before the session expires.

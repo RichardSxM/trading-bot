@@ -1,5 +1,6 @@
-"""The 18 Postgres tables of spec 0002, ``run_fill_stats`` (spec 0008), ``alerts`` (spec 0013), and the
-gate's ``studies``, ``study_runs``, ``run_daily_equity``, ``run_measures``, and ``promotion_folds`` (spec 0015).
+"""The 18 Postgres tables of spec 0002, ``run_fill_stats`` (spec 0008), ``alerts`` (spec 0013), the
+gate's ``studies``, ``study_runs``, ``run_daily_equity``, ``run_measures``, and ``promotion_folds`` (spec 0015),
+and ``reconciliations`` with ``reconciliation_mismatches`` (spec 0023).
 
 All live on ``trading_core.db.Base``.
 
@@ -35,6 +36,7 @@ from trading_core.db import Base
 from trading_core.recording.enums import (
     CLOSED_ORDER_STATUSES,
     TERMINAL_RUN_STATUSES,
+    ActionResult,
     ControlCmd,
     ControlOutcome,
     DecidedBy,
@@ -45,6 +47,8 @@ from trading_core.recording.enums import (
     InstrumentKind,
     Intent,
     Liquidity,
+    MismatchAction,
+    MismatchKind,
     OrderEventKind,
     OrderOrigin,
     OrderSide,
@@ -52,6 +56,8 @@ from trading_core.recording.enums import (
     OrderType,
     PositionSide,
     PositionStatus,
+    ReconcileOutcome,
+    ReconcileTrigger,
     RiskEventKind,
     RiskVerdict,
     RunMode,
@@ -732,6 +738,72 @@ class ControlCommand(Base):
     details: Mapped[dict[str, object]]
     created_at: Mapped[datetime] = _created()
     updated_at: Mapped[datetime] = _updated()
+
+
+# Reconciliation (spec 0023) -----------------------------------------------------------------
+
+
+class Reconciliation(Base):
+    """One check of the trader's orders and positions against the exchange's (spec 0023 AC-17)."""
+
+    __tablename__ = "reconciliations"
+    __table_args__ = (
+        UniqueConstraint("id", "env"),
+        _env_fk("run_id", "strategy_runs"),
+        _env_check(),
+        _one_of("trigger", ReconcileTrigger),
+        _one_of("outcome", ReconcileOutcome),
+        _ix("reconciliations", "env", "started_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    env: Mapped[str]
+    run_id: Mapped[uuid.UUID]
+    trigger: Mapped[str]
+    started_at: Mapped[datetime]
+    started_ns: Mapped[int] = mapped_column(BigInteger)
+    finished_at: Mapped[datetime | None]
+    finished_ns: Mapped[int | None] = mapped_column(BigInteger)
+    outcome: Mapped[str | None]
+    exchange_orders: Mapped[int | None]
+    exchange_positions: Mapped[int | None]
+    mismatch_count: Mapped[int] = mapped_column(server_default=text("0"))
+    error: Mapped[str | None]
+    created_at: Mapped[datetime] = _created()
+
+
+class ReconciliationMismatch(Base):
+    """One finding of a reconciliation check, with the action taken and how it went (spec 0023 AC-13)."""
+
+    __tablename__ = "reconciliation_mismatches"
+    __table_args__ = (
+        _env_fk("reconciliation_id", "reconciliations"),
+        _env_fk("order_id", "orders"),
+        _env_fk("position_id", "positions"),
+        _env_check(),
+        _one_of("kind", MismatchKind),
+        _one_of("action", MismatchAction),
+        _one_of("action_result", ActionResult),
+        _ix("reconciliation_mismatches", "env", "reconciliation_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    env: Mapped[str]
+    reconciliation_id: Mapped[uuid.UUID]
+    kind: Mapped[str]
+    instrument_id: Mapped[str] = mapped_column(ForeignKey("instruments.instrument_id"))
+    client_order_id: Mapped[str | None]
+    venue_order_id: Mapped[str | None]
+    order_id: Mapped[uuid.UUID | None]
+    position_id: Mapped[uuid.UUID | None]
+    exchange_side: Mapped[str | None]
+    exchange_qty: Mapped[Decimal | None]
+    local_side: Mapped[str | None]
+    local_qty: Mapped[Decimal | None]
+    action: Mapped[str]
+    action_result: Mapped[str]
+    details: Mapped[dict[str, object]]
+    created_at: Mapped[datetime] = _created()
 
 
 # Alerts (spec 0013) -------------------------------------------------------------------------

@@ -1,5 +1,6 @@
 """covers: spec 0005 AC-13, Pause and Resume on System, the pause in the top bar, and Activity rows;
-spec 0010 AC-18 (Resume sends ``resume``, Flatten, the confirm step that works without JavaScript)."""
+spec 0010 AC-18 (Resume sends ``resume``, Flatten, the confirm step that works without JavaScript);
+spec 0023 AC-20 (Recheck sends ``recheck`` on one tap)."""
 
 import logging
 import re
@@ -31,6 +32,7 @@ BUTTONS = [
     ("/control/pause", "pause", "Pause", {}),
     ("/control/resume", "resume", "Resume", {"confirm": "1"}),
     ("/control/flatten", "flatten", "Flatten", {"confirm": "1"}),
+    ("/control/recheck", "recheck", "Recheck", {}),
 ]
 
 
@@ -62,7 +64,9 @@ def test_system_has_pause_and_resume_forms_with_the_csrf_token(logged_in):
     assert ">Pause<" in page
     assert ">Resume<" in page
     assert ">Flatten<" in page
-    assert page.count('name="csrf"') >= 5  # stop, pause, resume, flatten, log out
+    assert 'action="/control/recheck"' in page
+    assert ">Recheck<" in page
+    assert page.count('name="csrf"') >= 6  # stop, pause, resume, flatten, recheck, log out
 
 
 @pytest.mark.parametrize(("path", "cmd", "label", "extra"), BUTTONS)
@@ -124,6 +128,7 @@ def test_redis_down_answers_503_logs_error_and_never_says_sent(logged_in, redis,
         ("/control/pause", "pause", "Your pause was NOT sent. Log in and tap Pause again."),
         ("/control/resume", "resume", "Your resume was NOT sent. Log in and tap Resume again."),
         ("/control/flatten", "flatten", "Your flatten was NOT sent. Log in and tap Flatten again."),
+        ("/control/recheck", "recheck", "Your recheck was NOT sent. Log in and tap Recheck again."),
     ],
 )
 def test_a_tap_without_a_session_goes_to_login_saying_it_was_not_sent(client, redis, path, lost, notice):

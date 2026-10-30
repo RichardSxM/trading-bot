@@ -5,6 +5,7 @@ appends what happened to each one to ``{env}:control:results``. Every field is a
 fields are. Timestamps are ISO 8601 UTC with a ``Z`` suffix.
 """
 
+import json
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -27,7 +28,8 @@ class ControlFormatError(ValueError):
 class ControlMessage:
     """One command on ``{env}:control``; ``issued_at`` and ``expires_at`` are aware UTC datetimes.
 
-    ``source`` says who sent it; an entry without the field came from the dashboard.
+    ``source`` says who sent it; an entry without the field came from the dashboard. ``step`` is the
+    ``drill_step`` command's step (spec 0023 AC-22), None for every other command.
     """
 
     id: uuid.UUID
@@ -35,6 +37,7 @@ class ControlMessage:
     issued_at: datetime
     expires_at: datetime
     source: ControlSource = ControlSource.DASHBOARD
+    step: str | None = None
 
 
 @dataclass(frozen=True)
@@ -42,12 +45,15 @@ class ControlResult:
     """One outcome on ``{env}:control:results`` for the command with the same ``id``.
 
     ``reason`` explains a ``failed`` outcome (e.g. ``not_implemented``); it is None otherwise.
+    ``details`` carries what a command answered with (``recheck``: its outcome and report id), as
+    the JSON text field ``details``; None for most commands.
     """
 
     id: uuid.UUID
     outcome: ControlOutcome
     outcome_at: datetime
     reason: str | None = None
+    details: Mapping[str, str] | None = None
 
 
 def control_stream(env: TradingEnv) -> str:
@@ -92,9 +98,15 @@ def unpause_command(now: datetime, ttl_s: int, source: ControlSource) -> Control
     return command(ControlCmd.UNPAUSE, now, ttl_s, source)
 
 
+def drill_step_command(now: datetime, ttl_s: int, step: str) -> ControlMessage:
+    """A new ``drill_step`` command for ``step``, always from ``cli`` (spec 0023 AC-22)."""
+    msg = command(ControlCmd.DRILL_STEP, now, ttl_s, ControlSource.CLI)
+    return ControlMessage(msg.id, msg.cmd, msg.issued_at, msg.expires_at, msg.source, step)
+
+
 def to_fields(msg: ControlMessage) -> dict[str, str]:
-    """The stream fields for ``msg``."""
-    return {
+    """The stream fields for ``msg``; ``step`` only when set."""
+    fields = {
         "id": str(msg.id),
         "cmd": msg.cmd.value,
         "issued_at": format_utc(msg.issued_at),
@@ -102,6 +114,9 @@ def to_fields(msg: ControlMessage) -> dict[str, str]:
         "schema_version": SCHEMA_VERSION,
         "source": msg.source.value,
     }
+    if msg.step is not None:
+        fields["step"] = msg.step
+    return fields
 
 
 def result_to_fields(result: ControlResult) -> dict[str, str]:
@@ -114,6 +129,8 @@ def result_to_fields(result: ControlResult) -> dict[str, str]:
     }
     if result.reason is not None:
         fields["reason"] = result.reason
+    if result.details is not None:
+        fields["details"] = json.dumps(dict(result.details), separators=(",", ":"), sort_keys=True)
     return fields
 
 
@@ -136,6 +153,7 @@ def from_fields(fields: Fields) -> ControlMessage:
         parse_utc(values["issued_at"], "issued_at"),
         parse_utc(values["expires_at"], "expires_at"),
         source,
+        field(fields, "step"),
     )
 
 
@@ -148,8 +166,25 @@ def result_from_fields(fields: Fields) -> ControlResult:
     except ValueError:
         raise ControlFormatError(f"unknown control outcome {values['outcome']!r}") from None
     return ControlResult(
-        parse_uuid(values["id"]), outcome, parse_utc(values["outcome_at"], "outcome_at"), field(fields, "reason")
+        parse_uuid(values["id"]),
+        outcome,
+        parse_utc(values["outcome_at"], "outcome_at"),
+        field(fields, "reason"),
+        parse_details(field(fields, "details")),
     )
+
+
+def parse_details(text: str | None) -> dict[str, str] | None:
+    """The ``details`` field (a JSON object of strings) or None when absent; raises ``ControlFormatError``."""
+    if text is None:
+        return None
+    try:
+        value = json.loads(text)
+    except ValueError:
+        raise ControlFormatError("control details is not JSON") from None
+    if not isinstance(value, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in value.items()):
+        raise ControlFormatError("control details is not an object of strings")
+    return value
 
 
 def field(fields: Fields, name: str) -> str | None:

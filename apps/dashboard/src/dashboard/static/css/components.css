@@ -391,6 +391,15 @@ time[title] { text-decoration: underline dotted var(--edge); text-underline-offs
 .blocked__label { color: var(--faint); font-weight: 400; margin-right: var(--space-4); }
 [data-link="reconnecting"] .topbar__blocked, [data-link="lost"] .topbar__blocked { opacity: 0.5; }
 
+/* The Kraken check badge (spec 0023 AC-19): always shown; the alert colour when a check went wrong. */
+.check { white-space: nowrap; color: var(--muted); text-decoration: none; transition: color var(--motion-state), opacity var(--motion-state); }
+.check:hover .check__label, .check:focus-visible .check__label { color: var(--muted); text-decoration: underline; }
+.check__label { color: var(--faint); margin-right: var(--space-4); }
+.check--warn { color: var(--warn); font-weight: 600; }
+.check--bad { color: var(--loss); font-weight: 600; }
+.check--lost { opacity: 0.6; }
+[data-link="reconnecting"] .topbar__check, [data-link="lost"] .topbar__check { opacity: 0.5; }
+
 /* Pause and Resume on System (spec 0005 AC-13): two forms side by side, the error above them. */
 .pause-area { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-12); }
 .pause-area__error { flex-basis: 100%; color: var(--loss); font-weight: 600; font-size: var(--type-caption-size); }
@@ -538,6 +547,18 @@ time[title] { text-decoration: underline dotted var(--edge); text-underline-offs
 .figures__warn { color: var(--warn); }
 .figures__title { margin: var(--space-8) 0 0; color: var(--faint); font-size: var(--type-caption-size); font-weight: var(--type-caption-weight); }
 .figures__unavailable { margin: 0; color: var(--muted); font-size: var(--type-label-size); }
+
+/* The findings and actions of one Kraken check on the Reconciliation page (spec 0023 AC-19). */
+.findings { margin: 0; padding: 0; list-style: none; display: grid; gap: var(--space-4); }
+
+/* Wanted, Trader, Kraken on the position card (spec 0023 AC-18): three label over value columns. */
+.sides { display: grid; gap: var(--space-8); padding-bottom: var(--space-16); border-bottom: 1px solid var(--rule); }
+.sides__grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-16); margin: 0; }
+.sides__col dt { color: var(--muted); font-size: var(--type-label-size); }
+.sides__col dd { margin: var(--space-4) 0 0; font-weight: 500; overflow-wrap: anywhere; }
+.sides__age { display: block; color: var(--faint); font-size: var(--type-caption-size); font-weight: 400; }
+.sides--disagree .sides__value, .sides--unknown .sides__kraken { color: var(--loss); font-weight: 600; }
+.sides__note { margin: 0; color: var(--loss); font-size: var(--type-label-size); }
 
 /* Why entries are blocked, above the position card (spec 0006 AC-18): Amber Watch title, plain rows. */
 .blocked-reasons:empty { display: none; }

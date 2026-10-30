@@ -29,6 +29,11 @@ no block, otherwise the block. Entries stay refused until then.
 With ``regime_adx_max`` set, the base also feeds ``<instrument>-<regime_bar_spec>-INTERNAL`` bars to an
 ``Adx(regime_adx_period)`` (AC-6): ``regime`` blocks entries from the start until the ADX is warm and
 whenever it is above the limit, and clears at or below it and on stop.
+
+After a restart (spec 0023) a signal from a bar or firing older than the last check is ignored (AC-15),
+and ``resume_position`` takes back a position under its stop, with the time stop ``time_stop_min``
+after it opened (AC-16). A resting maker target is kept; a taker target price lived only in the lost
+signal, so a resumed taker position exits on its stop or its time stop.
 """
 
 import dataclasses
@@ -44,8 +49,8 @@ from uuid import UUID
 from nautilus_trader.model.data import Bar, BarType, QuoteTick
 from nautilus_trader.model.enums import OrderSide as NautilusOrderSide
 from nautilus_trader.model.enums import OrderStatus as NautilusOrderStatus
+from nautilus_trader.model.enums import OrderType, TimeInForce, TriggerType
 from nautilus_trader.model.enums import PositionSide as NautilusPositionSide
-from nautilus_trader.model.enums import TimeInForce, TriggerType
 from nautilus_trader.model.events import (
     OrderAccepted,
     OrderCanceled,
@@ -67,7 +72,7 @@ from nautilus_trader.model.position import Position
 from trading_core.node import guard
 from trading_core.node.guard import GuardedConfig
 from trading_core.node.stale import StaleQuoteBlock
-from trading_core.node.strategy import KfsStrategy, PauseGate
+from trading_core.node.strategy import KfsStrategy, PauseGate, decision_of
 from trading_core.recording.enums import (
     Env,
     Intent,
@@ -271,6 +276,49 @@ class ScalpStrategy(KfsStrategy, StaleQuoteBlock):
         self.phase = Phase.EXITING
         self._submit_exit()
 
+    def resume_position(self, position: Position, stop_order: Order | None) -> None:
+        """Take back ``position`` after a restart (spec 0023 AC-16): protected by ``stop_order``, out at the
+        time stop ``time_stop_min`` after it opened (at once when that has passed), or at a resting maker
+        target, which is kept. Without a stop it fails closed, as a stop not accepted."""
+        self._cancel_entries()
+        self.entry_decision = decision_of(self.cache.order(position.opening_order_id))
+        self._entry_id = position.opening_order_id
+        self._first_fill_ns = position.ts_opened
+        self.phase = Phase.HOLDING
+        target = self._resting_target(position)
+        self._target_id = None if target is None else target.client_order_id
+        if stop_order is None:
+            self._stop_failed("no stop to resume with")
+            return
+        self._stop_id = stop_order.client_order_id
+        long = position.side == NautilusPositionSide.LONG
+        if target is not None:
+            self._signal = ScalpSignal(
+                OrderSide.BUY if long else OrderSide.SELL,
+                stop_order.trigger_price.as_decimal(),
+                target.price.as_decimal(),
+            )
+        else:
+            log.warning(
+                "position resumed without its target price",
+                extra={"fields": {"code": "resume_without_target", "position_id": str(position.id)}},
+            )
+        due_ns = position.ts_opened + self._cfg.time_stop_min * MINUTE_NS
+        if due_ns <= self.clock.timestamp_ns():
+            self._decide_exit(EXIT_TIME_STOP, position, {"resumed": True})
+        else:
+            self._alert(_TIME_STOP, due_ns, self._on_time_stop)
+
+    def _resting_target(self, position: Position) -> Order | None:
+        """This strategy's open reduce only limit closing ``position`` (the maker target, AC-19), if any."""
+        closing = NautilusOrderSide.SELL if position.side == NautilusPositionSide.LONG else NautilusOrderSide.BUY
+        targets = [
+            order
+            for order in self.cache.orders_open(instrument_id=self._instrument_id, strategy_id=self.id)
+            if order.order_type == OrderType.LIMIT and order.is_reduce_only and order.side == closing
+        ]
+        return max(targets, key=lambda order: order.ts_init, default=None)
+
     # Bars and quotes ------------------------------------------------------------------------
 
     def on_bar(self, bar: Bar) -> None:
@@ -280,13 +328,19 @@ class ScalpStrategy(KfsStrategy, StaleQuoteBlock):
             return
         if bar.bar_type != self.bar_type:
             return
-        self._on_signal_source(lambda: self.signal_on_bar(bar))
+        self._on_signal_source(lambda: self.signal_on_bar(bar), bar.ts_event)
 
-    def _on_signal_source(self, produce: Callable[[], ScalpSignal | None]) -> None:
-        """One bar close or firing: always feed the child; act on its signal only while flat with no entry working."""
+    def _on_signal_source(self, produce: Callable[[], ScalpSignal | None], ts_event: int) -> None:
+        """One bar close or firing at ``ts_event``: always feed the child; act on its signal only while flat
+        with no entry working, and only when it is newer than the last check (spec 0023 AC-15)."""
         try:
             signal = produce()
-            if signal is not None and self.phase == Phase.FLAT and self._position() is None:
+            if (
+                signal is not None
+                and self.phase == Phase.FLAT
+                and self._position() is None
+                and self.fresh_signal(ts_event)
+            ):
                 self._decide_entry(signal)
         except Exception:
             # Fail closed: no new order this bar; a position keeps its stop.

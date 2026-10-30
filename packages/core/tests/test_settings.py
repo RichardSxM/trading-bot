@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from pydantic import SecretStr, ValidationError
 
-from trading_core.settings import CatalogDiskSettings, ContextSettings, Settings
+from trading_core.settings import CatalogDiskSettings, ContextSettings, ReconcileSettings, Settings
 
 
 def test_trading_env_is_required():
@@ -306,3 +306,36 @@ def test_context_settings_refuse_a_bad_value(monkeypatch, name, value):
 
     with pytest.raises(ValidationError, match=name if name == "CONTEXT_WS_URL" else name.lower()):
         ContextSettings()
+
+
+def test_reconcile_settings_default_to_the_spec(monkeypatch):
+    # covers: spec 0023 *Configuration required*.
+    monkeypatch.setenv("TRADING_ENV", "demo")
+    settings = ReconcileSettings()
+
+    assert (settings.reconcile_interval_s, settings.reconcile_retry_s, settings.reconcile_start_timeout_s) == (
+        60,
+        5,
+        300,
+    )
+    assert (settings.reconcile_fetch_timeout_s, settings.reconcile_lookback_mins) == (10, 1440)
+    assert settings.reconcile_nautilus_timeout_s == 30
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "RECONCILE_INTERVAL_S",
+        "RECONCILE_RETRY_S",
+        "RECONCILE_START_TIMEOUT_S",
+        "RECONCILE_FETCH_TIMEOUT_S",
+        "RECONCILE_LOOKBACK_MINS",
+        "RECONCILE_NAUTILUS_TIMEOUT_S",
+    ],
+)
+def test_reconcile_settings_must_be_above_zero(monkeypatch, name):
+    monkeypatch.setenv("TRADING_ENV", "demo")
+    monkeypatch.setenv(name, "0")
+
+    with pytest.raises(ValidationError):
+        ReconcileSettings()

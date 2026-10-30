@@ -1,0 +1,15 @@
+{# Wanted, Trader, Kraken on the position card (DESIGN.md: Wanted, Trader, Kraken; spec 0023 AC-18).
+   ``view`` is a live.sides.SidesView: ``agree``, ``disagree`` (the alert colour and a note), or
+   ``unknown`` (Kraken's view is missing, failed, or too old, never shown as flat). #}
+{% macro sides(view) -%}
+<div class="sides sides--{{ view.state }}">
+  <dl class="sides__grid">
+    <div class="sides__col"><dt>Wanted</dt><dd>{{ view.wanted }}</dd></div>
+    <div class="sides__col"><dt>Trader</dt><dd class="sides__value">{{ view.trader }}</dd></div>
+    <div class="sides__col"><dt>Kraken</dt><dd class="sides__value sides__kraken">{{ view.kraken }}{% if view.kraken_age %}<span class="sides__age">{{ view.kraken_age }} old</span>{% endif %}</dd></div>
+  </dl>
+  {%- if view.state == "disagree" %}
+  <p class="sides__note" role="status">Trader and Kraken disagree. The next check acts on it, or press Recheck on System.</p>
+  {%- endif %}
+</div>
+{%- endmacro %}

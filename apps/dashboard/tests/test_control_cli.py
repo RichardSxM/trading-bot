@@ -109,10 +109,11 @@ STATE_KEY = "demo:snapshot:trader_state"
 class AnsweringRedis(FakeRedis):
     """A trader stand in: answers every command appended to the control stream with ``answers``."""
 
-    def __init__(self, *answers, reason=None):
+    def __init__(self, *answers, reason=None, details=None):
         super().__init__()
         self.answers = answers
         self.reason = reason
+        self.details = details
 
     async def xadd(self, name, fields, id="*", maxlen=None, approximate=True):
         entry_id = await super().xadd(name, fields, id, maxlen, approximate)
@@ -120,7 +121,8 @@ class AnsweringRedis(FakeRedis):
             msg = from_fields({k: str(v) for k, v in fields.items()})
             for outcome in self.answers:
                 reason = self.reason if outcome is ControlOutcome.FAILED else None
-                result = ControlResult(msg.id, outcome, msg.issued_at, reason)
+                details = self.details if outcome in (ControlOutcome.EXECUTED, ControlOutcome.FAILED) else None
+                result = ControlResult(msg.id, outcome, msg.issued_at, reason, details)
                 self.append("demo:control:results", result_to_fields(result))
         return entry_id
 
@@ -355,3 +357,61 @@ def test_a_stop_without_an_answer_in_time_exits_2():
     result = asyncio.run(control_cli.send_kill_switch(redis, msg, "demo", 0))
 
     assert (result.code, result.line["status"]) == (2, "no_result")
+
+
+# spec 0023 AC-20: recheck ------------------------------------------------------------------
+
+
+def test_main_recheck_sends_as_cli_and_prints_the_check_outcome(tmp_path, monkeypatch, capsys):
+    _secrets_dir(tmp_path, monkeypatch)
+    details = {"outcome": "clean", "reconciliation_id": "01a18814-ccfb-72a2-a151-89af16daccc4"}
+    redis = AnsweringRedis(ControlOutcome.RECEIVED, ControlOutcome.EXECUTED, details=details)
+    monkeypatch.setattr(control_cli, "redis_client", lambda settings, password: redis)
+
+    assert control_cli.main(["recheck", "--wait-result", "5"]) == 0
+    line = json.loads(capsys.readouterr().out)
+    assert (line["cmd"], line["source"], line["status"]) == ("recheck", "cli", "executed")
+    assert line["details"] == details
+
+
+def test_a_recheck_that_cannot_read_kraken_exits_1_with_its_reason(tmp_path, monkeypatch, capsys):
+    _secrets_dir(tmp_path, monkeypatch)
+    redis = AnsweringRedis(
+        ControlOutcome.RECEIVED, ControlOutcome.FAILED, reason="exchange_unknown", details={"outcome": "failed"}
+    )
+    monkeypatch.setattr(control_cli, "redis_client", lambda settings, password: redis)
+
+    assert control_cli.main(["recheck", "--wait-result", "5"]) == 1
+    line = json.loads(capsys.readouterr().out)
+    assert (line["status"], line["reason"], line["details"]) == ("failed", "exchange_unknown", {"outcome": "failed"})
+
+
+# spec 0023 AC-22: drill-step -----------------------------------------------------------------
+
+
+def test_main_drill_step_sends_the_step_as_cli(tmp_path, monkeypatch, capsys):
+    _secrets_dir(tmp_path, monkeypatch)
+    redis = AnsweringRedis(ControlOutcome.RECEIVED, ControlOutcome.EXECUTED)
+    monkeypatch.setattr(control_cli, "redis_client", lambda settings, password: redis)
+
+    assert control_cli.main(["drill-step", "open_position", "--wait-result", "5"]) == 0
+    line = json.loads(capsys.readouterr().out)
+    assert (line["cmd"], line["source"], line["status"]) == ("drill_step", "cli", "executed")
+    ((_, fields),) = redis.streams["demo:control"]
+    assert fields[b"step"] == b"open_position"
+
+
+def test_a_drill_step_outside_drill_mode_exits_1_with_its_reason(tmp_path, monkeypatch, capsys):
+    _secrets_dir(tmp_path, monkeypatch)
+    redis = AnsweringRedis(ControlOutcome.RECEIVED, ControlOutcome.FAILED, reason="not_drill_mode")
+    monkeypatch.setattr(control_cli, "redis_client", lambda settings, password: redis)
+
+    assert control_cli.main(["drill-step", "flatten", "--wait-result", "5"]) == 1
+    assert json.loads(capsys.readouterr().out)["reason"] == "not_drill_mode"
+
+
+def test_an_unknown_drill_step_is_refused_by_the_parser(capsys):
+    with pytest.raises(SystemExit) as exc:
+        control_cli.main(["drill-step", "buy_lots"])
+
+    assert exc.value.code == 2

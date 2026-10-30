@@ -1,5 +1,5 @@
-"""The control buttons: Stop in the top bar (spec 0004 AC-11, AC-13), Pause, Resume, and Flatten
-on System (spec 0005 AC-13, spec 0010 AC-18). One tap appends one command to ``{env}:control``.
+"""The control buttons: Stop in the top bar (spec 0004 AC-11, AC-13), Pause, Resume, Flatten, and Recheck
+on System (spec 0005 AC-13, spec 0010 AC-18, spec 0023 AC-20). One tap appends one command to ``{env}:control``.
 
 Each button is a plain form that HTMX enhances, so it works without JavaScript. It depends
 only on the session, the CSRF token, and Redis; it never shows ``sent`` unless the append
@@ -26,6 +26,7 @@ from dashboard.web.page_routes import render_referring_page
 from dashboard.web.session import (
     FLATTEN_PATH,
     PAUSE_PATH,
+    RECHECK_PATH,
     RESUME_PATH,
     STOP_PATH,
     CsrfDep,
@@ -90,7 +91,20 @@ FLATTEN: Final = Button(
     "Flatten NOT sent: reload the page",
     confirm="flatten",
 )
-BUTTONS: Final = {STOP_PATH: STOP, PAUSE_PATH: PAUSE, RESUME_PATH: RESUME, FLATTEN_PATH: FLATTEN}
+RECHECK: Final = Button(
+    "pause-area",
+    "partials/pause_area.html",
+    "pause_error",
+    "Recheck NOT sent: Redis did not answer",
+    "Recheck NOT sent: reload the page",
+)
+BUTTONS: Final = {
+    STOP_PATH: STOP,
+    PAUSE_PATH: PAUSE,
+    RESUME_PATH: RESUME,
+    FLATTEN_PATH: FLATTEN,
+    RECHECK_PATH: RECHECK,
+}
 CONFIRMED: Final = "1"
 
 
@@ -166,6 +180,14 @@ async def pause(request: Request, session: CsrfDep) -> Response:
     context = app_context(request)
     msg = command(ControlCmd.PAUSE, _now(context), context.settings.control_command_ttl_s, ControlSource.DASHBOARD)
     return await send(request, session, PAUSE, msg)
+
+
+@router.post(RECHECK_PATH)
+async def recheck(request: Request, session: CsrfDep) -> Response:
+    # Only reads Kraken and reports, so it sends on one tap (spec 0023 AC-20).
+    context = app_context(request)
+    msg = command(ControlCmd.RECHECK, _now(context), context.settings.control_command_ttl_s, ControlSource.DASHBOARD)
+    return await send(request, session, RECHECK, msg)
 
 
 async def ask_confirm(request: Request, session: Session, button: Button) -> Response:

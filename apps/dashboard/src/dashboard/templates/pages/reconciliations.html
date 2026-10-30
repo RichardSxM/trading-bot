@@ -1,0 +1,17 @@
+{% extends "shell.html" %}
+{% from "components/table.html" import table %}
+{% from "components/pager.html" import pager %}
+{% from "components/states.html" import error_state %}
+{% block page %}
+<div class="board">
+  <section class="region region--wide" aria-labelledby="reconciliations-h">
+    <header class="region__head"><h2 class="region__title" id="reconciliations-h">Kraken checks</h2><span class="region__meta">every start and reconnect check, and each periodic one that found something · newest first · times in UTC · <a href="/system">back to System</a></span></header>
+    {% if reconciliations_error %}
+    {{ error_state("Kraken checks unavailable.", " The dashboard cannot read Postgres right now. Reload in a moment.") }}
+    {% else %}
+    {{ table("Kraken checks", reconciliation_columns, reconciliations, "Checks appear here once the trader runs one.", empty_glyph="server-cog") }}
+    {{ pager("Kraken checks pages", reconciliation_pager) }}
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

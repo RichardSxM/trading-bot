@@ -21,9 +21,13 @@ ENTRY_BLOCK_REASONS: Final = frozenset(
         BlockReason.EXIT_FAILED,
         BlockReason.RECORD_CONFLICT,
         BlockReason.RECORDING_FAILED,
+        BlockReason.RECONCILING,
+        BlockReason.EXCHANGE_UNKNOWN,
+        BlockReason.ORDER_UNRESOLVED,
     }
 )
-"""The reasons a stuck block alerts on (AC-6). ``halted``, ``paused``, ``daily_loss_limit``,
+"""The reasons a stuck block alerts on (AC-6; the three check reasons from spec 0023 AC-21).
+``halted``, ``paused``, ``daily_loss_limit``,
 ``trade_cap``, and ``loss_cooldown`` never do: you set them, they raised their own event, or
 they clear on a known clock."""
 
