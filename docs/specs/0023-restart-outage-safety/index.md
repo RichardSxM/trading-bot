@@ -335,7 +335,7 @@ Tracer Bullet: the first slice is one thin real thread (a demo start check → r
 5. [x] **Dashboard.** `trader_state.intent`, the three state position card, the Reconciliation history page, and the Redis ACL read on the new key. Satisfies **AC-18**, **AC-19**.
 6. [x] **Alerts.** Add the three new reasons to the stuck entry block alerting set. Satisfies **AC-21**.
 7. [x] **Drill mode.** `LIVE_MODE` setting, the env guard allowlist change for `("trader", "live")` gated on `drill`, the `reconcile_drill` strategy, `drill_step`, and `python -m trader.drill`. Satisfies **AC-22**.
-8. **Drill script and runbook.** `scripts/restart-drill.sh` with D1 to D12, and `docs/runbooks/restart-recovery.md`. Run the demo drill set on the laptop. Satisfies **AC-24**, **AC-26**.
+8. [x] **Drill script and runbook.** `scripts/restart-drill.sh` with D1 to D12, and `docs/runbooks/restart-recovery.md`. Run the demo drill set on the laptop. Satisfies **AC-24**, **AC-26**.
 9. **Live proof.** Deploy (always `--no-deps`), set `LIVE_MODE=drill` on the VPS, run the full live drill, save the output to `verify.md`, then set `LIVE_MODE=off` and restore the demo paper loop. Satisfies **AC-25**.
 
 ## Migration plan
