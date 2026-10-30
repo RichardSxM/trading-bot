@@ -470,7 +470,7 @@ spec [0022](../specs/0022-multi-coin-portfolio/index.md)
 ### 26. Donchian scalp r1 · in-progress
 `donchian_scalp` plus three ideas from the Donchian blueprint you shared on 2026-10-30: trade only with the 200 bar EMA, exit when a close crosses the channel middle, and skip an entry when the spread is wide against the ATR. It is a new variant, so the frozen `donchian_scalp` stays as the baseline. A seed from Kraken's 5 minute candles makes it ready right after a deploy. Two lab screens compare it with the baseline, then it runs on demo whatever their verdict.
 **Done when:** both screens are recorded with gross and cost per trade, the real spread to ATR distribution is recorded, no existing strategy's hash moved, and the VPS demo runs `donchian_scalp_r1` with a working seed.
-spec [0025](../specs/0025-donchian-scalp-r1/index.md)
+spec [0025](../specs/0025-donchian-scalp-r1/index.md) · code in [donchian_midline.py](../../packages/core/src/trading_core/strategy/donchian_midline.py), [donchian_scalp_r1.py](../../packages/core/src/trading_core/node/donchian_scalp_r1.py), [trader/warmup.py](../../apps/trader/src/trader/warmup.py)
 
 - [x] Design it (spec): `/architect donchian scalp r1`
 - [ ] Build it: `/develop donchian scalp r1`

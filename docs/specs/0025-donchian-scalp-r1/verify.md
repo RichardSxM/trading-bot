@@ -43,3 +43,11 @@ trading_core.node.strategy 128786a5b6cb990991a819ba636ca9ed53b20355d9135b88410ef
 trading_core.node.untrusted 83451616d6433f9f6d3d9b1a329ec7ff2c9a956821d537e76ad911d3ded7ceec
 trading_core.node.vwap_retest 44083de39ddf9f1b452b041dc81f1017ea3ee070315104e4131f52789fefdc52
 ```
+
+## Build evidence (2026-10-30, /develop)
+
+- Tests at fbba014 (`kfs/*:s0025t`, dev target): core 2,046 passed, 5 skipped (this feature: 22 node, 13 rule, 19 seed check tests); trader 145 passed; lab 317 passed. mypy strict clean on every package; pre-commit clean.
+- AC-11: `python -m trader.version` with `PAPER_STRATEGY=donchian_scalp_r1` on `kfs/trader:s0025` prints name `donchian_scalp_r1`, kind `scalping`, every setting with `ema_period` 200 and `spread_max_atr` `"0.1"`, frozen hash `c9772911…`, commit fbba014.
+- AC-7 on real data: `warmup_seed()` in the same image at 17:25:19 UTC fetched 600 complete candles in 0.78 s, the last closing 17:25:00 UTC (the in progress candle dropped). Fed into `DonchianMidlineRule(20, 3, 200)` and ATR(14), the rule was ready with `ema` 77786.33, `midline` 77326.0, `entry_high` 77592.0, `entry_low` 77060.
+- Not yet run: the laptop trader start (tasks 2 and 5 smoke). On demo it needs a manual `candidate → paper` promote of r1's version first, which `gate promote --manual` takes only from a person at a terminal.
+- Build order note: the spread check and the seed join were written into the node module before the screens ran, so the screens record the node's final code hash (filter off and an empty seed in the lab, so the screened behavior is the same).

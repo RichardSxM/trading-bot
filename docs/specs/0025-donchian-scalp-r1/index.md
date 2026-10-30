@@ -141,12 +141,12 @@ No new environment variable. On the VPS, set `PAPER_STRATEGY=donchian_scalp_r1` 
 
 Tracer Bullet: the first two tasks give a thin real thread (rule to node to trader on the laptop demo). The lab screens come right after, because they need only the rule and give the earliest answer on the fee hurdle. Each later task thickens one segment end to end. Demo (task 6) happens whatever the screen verdicts.
 
-1. Hash baseline: record the code hash of every registered strategy version to a scratch file, as specs 0021 and 0022 did. Satisfies **AC-5**.
-2. Thin thread: `DonchianMidlineRule` with its unit tests, `DonchianScalpR1` and its config (no seed, no spread check yet; `seed` already defaults to `()`), the `PaperStrategyName` value, `paper_version`, and `build_paper_strategy` wiring. Laptop smoke: stack up with `PAPER_STRATEGY=donchian_scalp_r1`, the trader starts and records a version. Then take the stack down. Satisfies **AC-1**, **AC-2**, **AC-3**, **AC-4**, **AC-11**, **AC-12**.
-3. Lab screens: register both strategies in `lab/strategies.py` (AC-13 kinds and flags), commit both study files, run `lab study` and `lab screen` for each, and write the AC-13 table into `verify.md`. Run the AC-13a spread query and record it too. Satisfies **AC-13**, **AC-13a**.
-4. Spread filter: the `_decide_entry` override, `spread_max_atr` 0.1 in the paper config, and tests. Satisfies **AC-6**.
-5. Warmup seed: `trading_core/strategy/warmup.py` (pure checks and tests), `trader/warmup.py` (fetch, retries), the `main()` call and the `seed` parameter through `run_node` and `build_paper_strategy`, the node's first bar join and feed, and the `warmup_seed_failed` alert rule with its coverage test. Laptop smoke: a start shows the rule ready after the first live bar. Then take the stack down. Satisfies **AC-7**, **AC-8**, **AC-9**, **AC-10**.
-6. Close out and demo: compare hashes against task 1, merge, deploy (`--no-deps`), promote r1 by hand, set `PAPER_STRATEGY` on the VPS, redeploy, and check the first decisions. Satisfies **AC-5**, **AC-14**.
+1. [x] Hash baseline: record the code hash of every registered strategy version to a scratch file, as specs 0021 and 0022 did. Satisfies **AC-5**.
+2. [ ] Thin thread: `DonchianMidlineRule` with its unit tests, `DonchianScalpR1` and its config (no seed, no spread check yet; `seed` already defaults to `()`), the `PaperStrategyName` value, `paper_version`, and `build_paper_strategy` wiring. Laptop smoke: stack up with `PAPER_STRATEGY=donchian_scalp_r1`, the trader starts and records a version. Then take the stack down. Satisfies **AC-1**, **AC-2**, **AC-3**, **AC-4**, **AC-11**, **AC-12**.
+3. [ ] Lab screens: register both strategies in `lab/strategies.py` (AC-13 kinds and flags), commit both study files, run `lab study` and `lab screen` for each, and write the AC-13 table into `verify.md`. Run the AC-13a spread query and record it too. Satisfies **AC-13**, **AC-13a**.
+4. [x] Spread filter: the `_decide_entry` override, `spread_max_atr` 0.1 in the paper config, and tests. Satisfies **AC-6**.
+5. [ ] Warmup seed: `trading_core/strategy/warmup.py` (pure checks and tests), `trader/warmup.py` (fetch, retries), the `main()` call and the `seed` parameter through `run_node` and `build_paper_strategy`, the node's first bar join and feed, and the `warmup_seed_failed` alert rule with its coverage test. Laptop smoke: a start shows the rule ready after the first live bar. Then take the stack down. Satisfies **AC-7**, **AC-8**, **AC-9**, **AC-10**.
+6. [ ] Close out and demo: compare hashes against task 1, merge, deploy (`--no-deps`), promote r1 by hand, set `PAPER_STRATEGY` on the VPS, redeploy, and check the first decisions. Satisfies **AC-5**, **AC-14**.
 
 ## Migration plan
 
