@@ -1,7 +1,7 @@
 # 0025. donchian_scalp_r1: EMA 200 trend filter, midline exit, spread filter
 
 **Date**: 2026-10-30
-**Status**: Proposed
+**Status**: In Progress
 
 ## Summary
 
