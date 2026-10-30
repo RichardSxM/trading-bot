@@ -95,7 +95,10 @@ try:
     d = json.load(sys.stdin)
 except ValueError:
     sys.exit(2)
-v = eval(args[0], {"d": d})
+try:
+    v = eval(args[0], {"d": d})
+except (KeyError, IndexError, TypeError):
+    sys.exit(2)  # a snapshot without the field (the trader is not running yet): unreadable, not a traceback
 if cmd == "test":
     sys.exit(0 if v else 1)
 print(v if isinstance(v, str) else ("" if v is None else json.dumps(v)))

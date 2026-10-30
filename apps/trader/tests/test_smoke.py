@@ -1102,8 +1102,9 @@ def test_every_env_registers_the_reconcile_actor_before_any_strategy(fake_main, 
     assert "ReconcileActor" in actors
 
 
-def test_a_live_trader_that_never_runs_is_stopped_by_the_watchdog(fake_main, monkeypatch):
-    # covers: spec 0023 AC-5, the startup watchdog.
+@pytest.mark.parametrize("env", ["demo", "live"])
+def test_a_trader_that_never_runs_is_stopped_by_the_watchdog(fake_main, monkeypatch, env):
+    # covers: spec 0023 AC-5, the startup watchdog, and D9 in demo (Kraken unreachable at start).
     class NeverRunningNode(_FakeNode):
         is_running = False
 
@@ -1117,12 +1118,16 @@ def test_a_live_trader_that_never_runs_is_stopped_by_the_watchdog(fake_main, mon
             self.get_event_loop().run_until_complete(asyncio.sleep(0.3))
 
     monkeypatch.setattr(fake_main, "TradingNode", NeverRunningNode)
-    settings = _settings("live").model_copy(update={"reconcile_nautilus_timeout_s": 1})
+    settings = _settings(env).model_copy(update={"reconcile_nautilus_timeout_s": 1})
     monkeypatch.setattr(fake_main, "WATCHDOG_GRACE_S", -1)  # a 0 s watchdog, so it fires inside run()
+    slept = []
+    monkeypatch.setattr(fake_main.time, "sleep", slept.append)
 
+    # The key check's backoff is not the watchdog's: it exits 1 at once and Docker paces the restarts.
     code = fake_main.run_node(
-        build_config(settings, SECRETS), settings, 60.0, SECRETS, fail_backoff_s=0, exchange=EXCHANGE
+        build_config(settings, SECRETS), settings, 60.0, SECRETS, fail_backoff_s=300, exchange=EXCHANGE
     )
 
     assert code == 1
     assert "stop" in _FakeNode.instances[0].calls
+    assert slept == [0.0]

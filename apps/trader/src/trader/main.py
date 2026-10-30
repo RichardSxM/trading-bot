@@ -625,8 +625,8 @@ def run_node(
     Every env runs the reconciliation actor before any strategy (spec 0023): against the sandbox
     in demo, against ``exchange`` (Kraken's view, required) in live, publishing the exchange
     snapshot and answering ``recheck``. ``loop`` is the event loop live's start fetch ran on. In
-    live a watchdog stops the node, and this returns 1, when the trader is not running
-    ``RECONCILE_NAUTILUS_TIMEOUT_S`` + 30 s after the build (AC-5).
+    every env a watchdog stops the node, and this returns 1 with no backoff, when the trader is
+    not running ``RECONCILE_NAUTILUS_TIMEOUT_S`` + 30 s after the build (AC-5).
     """
     env = settings.trading_env
     if env == "live" and exchange is None:
@@ -787,12 +787,19 @@ def run_node(
         # Live only, and part of the kill switch's flatten: it closes what no loaded strategy owns (AC-7).
         node.trader.add_strategy(executor)
         control.kill_switch.attach([s for s in node.trader.strategies() if isinstance(s, KfsStrategy)], None, None)
-    failed: list[bool] = []
+    # The backoff before exit 1, one per failure: the key check waits, the watchdog exits at once.
+    failed: list[float] = []
     # The live start guards (key check, watchdog), cancelled and awaited on the way out.
     guards: list[asyncio.Task[object]] = []
 
     def stop() -> None:
-        failed.append(True)
+        failed.append(fail_backoff_s)
+        node.stop()
+
+    def stop_now() -> None:
+        # Docker's restart backoff paces the retries (AC-5); the key check's 300 s wait would keep the
+        # trader down and unhealthy for 5 more minutes after Kraken came back.
+        failed.append(0.0)
         node.stop()
 
     if settings.trading_env == "live" and settings.kraken_key_rotated_on is not None:
@@ -834,28 +841,28 @@ def run_node(
     loop = node.get_event_loop()
     if loop is None:  # the live node always has one; without it the dashboard would see no heartbeat
         raise RuntimeError("trading node has no event loop for the snapshot writer")
-    if env == "live":
-        # Kept in a local so the task lives as long as the node runs; a crash fails closed.
-        watchdog = loop.create_task(
-            watch_start(
-                lambda: bool(node.trader.is_running),
-                stop,
-                float(settings.reconcile_nautilus_timeout_s + WATCHDOG_GRACE_S),
-            )
+    # Every env: when Kraken is unreachable at start, Nautilus times out connecting and never starts the
+    # trader, so without this a demo node would sit unhealthy forever (D9). A crash fails closed.
+    watchdog = loop.create_task(
+        watch_start(
+            lambda: bool(node.trader.is_running),
+            stop_now,
+            float(settings.reconcile_nautilus_timeout_s + WATCHDOG_GRACE_S),
         )
+    )
 
-        def watchdog_ended(task: asyncio.Task[bool]) -> None:
-            if task.cancelled() or task.exception() is None:
-                return
-            log.critical(
-                "startup watchdog crashed, stopping the node",
-                exc_info=task.exception(),
-                extra={"fields": {"code": "reconcile_watchdog_crashed"}},
-            )
-            stop()
+    def watchdog_ended(task: asyncio.Task[bool]) -> None:
+        if task.cancelled() or task.exception() is None:
+            return
+        log.critical(
+            "startup watchdog crashed, stopping the node",
+            exc_info=task.exception(),
+            extra={"fields": {"code": "reconcile_watchdog_crashed"}},
+        )
+        stop_now()
 
-        watchdog.add_done_callback(watchdog_ended)
-        guards.append(watchdog)
+    watchdog.add_done_callback(watchdog_ended)
+    guards.append(watchdog)
     # Kept in locals so the tasks live as long as the node runs; a crash is logged, trading goes on.
     writers = [
         loop.create_task(write_heartbeats(snapshots, snapshot_key(settings.trading_env, name), read_state))
@@ -884,7 +891,7 @@ def run_node(
             finish_paper_loop(paper, settings, len(node.cache.positions_open()))
         node.dispose()
     if failed:
-        time.sleep(fail_backoff_s)
+        time.sleep(max(failed))
         return 1
     return 0
 
