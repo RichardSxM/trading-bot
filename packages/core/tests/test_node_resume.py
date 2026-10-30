@@ -12,7 +12,7 @@ import asyncio
 import uuid
 from datetime import timedelta
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -59,11 +59,17 @@ D = Decimal
 MINUTE_NS = 60_000_000_000
 
 
+if TYPE_CHECKING:
+    from trading_core.node.strategy import KfsStrategy as _Mixin
+else:
+    _Mixin = object
+
+
 def _min(minutes):
     return _ns(START + timedelta(minutes=minutes))
 
 
-class _Restart:
+class _Restart(_Mixin):
     """Loses its round trip state at ``forget_min`` (a restart) and is handed the open position at ``resume_min``.
 
     ``resumed`` is what it was handed: the position, its resting stop, and the state right after the resume.
@@ -89,7 +95,7 @@ class _Restart:
         self.resumed = (position, stop, self.phase)
 
 
-class _FreshAfter:
+class _FreshAfter(_Mixin):
     """A start or reconnect check finished at ``after_min``: older signals are stale."""
 
     after_min = 0.0
@@ -427,8 +433,8 @@ def test_the_executor_closes_a_position_of_its_own_on_resume():
     from test_reconcile_executor import FLAT, _executor
 
     executor, _ = _executor(FakeExchange(FLAT))
-    closed = []
-    executor.close = closed.append  # type: ignore[method-assign]
+    closed: list[object] = []
+    executor.close = closed.append
 
     class _Held:
         id = "PF_XBTUSD.KRAKEN-ReconcileExecutor-000"

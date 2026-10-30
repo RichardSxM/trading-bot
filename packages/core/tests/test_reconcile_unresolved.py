@@ -8,8 +8,8 @@ ETH = "PF_ETHUSD.KRAKEN"
 
 
 def test_an_entry_is_unresolved_from_its_submit_until_kraken_answers():
+    assert not UnresolvedEntries().active
     entries = UnresolvedEntries()
-    assert not entries.active
 
     entries.submitted("O-1", BTC)
     assert entries.active

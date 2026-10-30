@@ -13,7 +13,7 @@ from trading_core.boot import Boot
 from trading_core.naming import NodeIdMismatch
 from trading_core.reconcile.views import ExchangeUnavailable
 from trading_core.recording.errors import PromotionRequiredError
-from trading_core.settings import TradingEnv
+from trading_core.settings import LiveMode, TradingEnv
 
 SECRETS = {
     "redis_password": SecretStr("r" * 32),
@@ -36,7 +36,7 @@ class _UnreachableExchange:
 EXCHANGE = _UnreachableExchange()
 
 
-def _settings(env: TradingEnv, live_mode: str | None = None) -> TraderSettings:
+def _settings(env: TradingEnv, live_mode: LiveMode | None = None) -> TraderSettings:
     # A live node runs only in drill mode (spec 0023 AC-22), so live tests default to it.
     if live_mode is None:
         live_mode = "drill" if env == "live" else "off"
@@ -1120,7 +1120,7 @@ def test_a_trader_that_never_runs_is_stopped_by_the_watchdog(fake_main, monkeypa
     monkeypatch.setattr(fake_main, "TradingNode", NeverRunningNode)
     settings = _settings(env).model_copy(update={"reconcile_nautilus_timeout_s": 1})
     monkeypatch.setattr(fake_main, "WATCHDOG_GRACE_S", -1)  # a 0 s watchdog, so it fires inside run()
-    slept = []
+    slept: list[float] = []
     monkeypatch.setattr(fake_main.time, "sleep", slept.append)
 
     # The key check's backoff is not the watchdog's: it exits 1 at once and Docker paces the restarts.

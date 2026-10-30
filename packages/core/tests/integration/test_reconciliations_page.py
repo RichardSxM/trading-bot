@@ -5,8 +5,10 @@ Other tests may commit checks to the same database, so every row here starts in 
 anything else, and the assertions look at the head of the list.
 """
 
+import dataclasses
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Any
 
 import pytest
 from sqlalchemy.orm import Session
@@ -32,16 +34,16 @@ def _ns(at: datetime) -> int:
     return (at - datetime(1970, 1, 1, tzinfo=UTC)) // timedelta(microseconds=1) * 1000
 
 
-def _check(session: Session, world: World, at: datetime, **fields: object) -> ReconciliationRow:
-    fields.setdefault("outcome", ReconcileOutcome.CLEAN)
+def _check(session: Session, world: World, at: datetime, **fields: Any) -> ReconciliationRow:
     row = ReconciliationRow(
         env=Env.DEMO,
         run_id=world.run_id,
         trigger=ReconcileTrigger.START,
         started_ns=_ns(at),
         finished_ns=_ns(at) + 1_000_000,
-        **fields,
+        outcome=ReconcileOutcome.CLEAN,
     )
+    row = dataclasses.replace(row, **fields)
     repository.record_reconciliation(session, row)
     return row
 

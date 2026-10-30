@@ -1379,8 +1379,9 @@ class ReconcileActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
             resumed = self._blocks.clear(BlockReason.RECONCILING)
             if resumed:
                 # Entries resume: no strategy acts on a signal from data older than this check (AC-15).
+                after_ns = row.finished_ns if row.finished_ns is not None else self.clock.timestamp_ns()
                 for strategy in self._strategies():
-                    strategy.signals_after(row.finished_ns)
+                    strategy.signals_after(after_ns)
             if resumed or unknown_cleared:
                 log.info(
                     "reconciliation clean, entries allowed",

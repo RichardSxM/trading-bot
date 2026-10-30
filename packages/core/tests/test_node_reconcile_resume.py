@@ -336,7 +336,9 @@ def test_resting_stop_is_the_reduce_only_stop_on_the_closing_side():
 
     stop = _resting(actor, owner)
 
-    assert resting_stop(actor.cache, position).client_order_id == stop.client_order_id
+    found = resting_stop(actor.cache, position)
+    assert found is not None
+    assert found.client_order_id == stop.client_order_id
 
 
 def test_the_base_strategy_cannot_resume():

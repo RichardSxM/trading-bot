@@ -6,9 +6,11 @@ from trading_core.env_guard import (
     ALLOWED_EXEC_CLIENTS,
     KRAKEN_KEY_VARS,
     EnvGuardRefused,
+    NodeProcess,
     check_environ,
     check_exec_clients,
 )
+from trading_core.settings import TradingEnv
 
 
 def test_no_exec_clients_and_no_keys_passes():
@@ -55,8 +57,7 @@ def test_refusal_never_contains_the_secret_value():
 
 
 def test_sandbox_is_allowed_only_for_the_demo_trader():
-    from trading_core.env_guard import SANDBOX, NodeProcess
-    from trading_core.settings import TradingEnv
+    from trading_core.env_guard import SANDBOX
 
     check_exec_clients({SANDBOX: object()}, process="trader", env="demo")
     refused: tuple[tuple[NodeProcess, TradingEnv], ...] = (
@@ -93,7 +94,12 @@ def test_drill_mode_allows_kraken_for_the_live_trader_only():
     drill = allowed_exec_clients("drill")
 
     check_exec_clients({"KRAKEN": object()}, process="trader", env="live", allowlist=drill)
-    for process, env in [("trader", "demo"), ("recorder", "live"), ("recorder", "demo")]:
+    others: tuple[tuple[NodeProcess, TradingEnv], ...] = (
+        ("trader", "demo"),
+        ("recorder", "live"),
+        ("recorder", "demo"),
+    )
+    for process, env in others:
         with pytest.raises(EnvGuardRefused, match="KRAKEN"):
             check_exec_clients({"KRAKEN": object()}, process=process, env=env, allowlist=drill)
     assert ALLOWED_EXEC_CLIENTS[("trader", "live")] == frozenset()  # the module default is untouched

@@ -131,8 +131,9 @@ class PyO3DrillKraken:
     async def mark(self, instrument_id: str) -> Decimal:
         """Kraken's mark price."""
         await self._load()
-        mark: Decimal = await self._http.request_mark_price(nautilus_pyo3.InstrumentId.from_str(instrument_id))
-        return mark
+        # The stub types it a float: through str, so no float rounding reaches a price.
+        mark = await self._http.request_mark_price(nautilus_pyo3.InstrumentId.from_str(instrument_id))
+        return Decimal(str(mark))
 
     async def orders(self) -> Sequence[OrderView]:
         """Kraken's open orders."""

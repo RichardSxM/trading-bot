@@ -11,6 +11,7 @@ loop with ``submit_order`` replaced by a recorder. Needs the ``node`` extra.
 import asyncio
 import dataclasses
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -52,7 +53,7 @@ def _step(step, source=ControlSource.CLI):
 class _Scripted(ReconcileDrill):
     """Runs ``script``'s ``(minute, call)`` pairs on the engine's clock."""
 
-    script: tuple = ()
+    script: tuple[tuple[float, Callable[[ReconcileDrill], object]], ...] = ()
 
     def on_start(self):
         super().on_start()
@@ -103,12 +104,12 @@ def _engine(script=(), minutes=8, run=True, gate=None, blocks=None, **config):
 
 def _recording(drill):
     sent = []
-    drill.submit_order = lambda order, position_id=None, *args, **kwargs: sent.append(order)  # type: ignore[method-assign]
+    drill.submit_order = lambda order, position_id=None, *args, **kwargs: sent.append(order)
     return sent
 
 
 def _statuses(drill):
-    found = {}
+    found: dict[object, list[object]] = {}
     for order in sorted(drill.cache.orders(strategy_id=drill.id), key=lambda o: o.ts_init):
         found.setdefault(order.order_type, []).append(order.status)
     return found
