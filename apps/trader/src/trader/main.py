@@ -21,7 +21,7 @@ import os
 import signal
 import sys
 import time
-from collections.abc import Awaitable, Callable, Iterator, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -57,6 +57,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from trader import paper_strategy
 from trader.paper_strategy import StrategySettings, build_paper_strategy, paper_version
 from trader.snapshot_writer import log_writer_crash, write_heartbeats, write_snapshot
+from trader.warmup import warmup_seed
 from trading_core import env_guard
 from trading_core.boot import boot
 from trading_core.control.consumer import ControlConsumer, Execute, Outcome
@@ -66,6 +67,7 @@ from trading_core.control.pause import pause_key
 from trading_core.control.records import PostgresCommandRecorder
 from trading_core.env_guard import SANDBOX, ExecClientAllowlist, allowed_exec_clients
 from trading_core.naming import node_id
+from trading_core.node import donchian_scalp_r1
 from trading_core.node.context_feed import ContextFeedActor, ContextFeedConfig
 from trading_core.node.control import (
     ControlActor,
@@ -121,6 +123,7 @@ from trading_core.secrets import (
 )
 from trading_core.settings import LossLimitSettings, PaperLoopSettings, ReconcileSettings, Settings
 from trading_core.snapshot.envelope import snapshot_key
+from trading_core.strategy.bar_rule import BarInput
 from trading_core.strategy.blocks import EntryBlocks
 
 log = logging.getLogger("trader")
@@ -607,6 +610,7 @@ def run_node(
     paper: PaperLoop | None = None,
     exchange: LiveExchange | None = None,
     loop: asyncio.AbstractEventLoop | None = None,
+    seed: Sequence[BarInput] = (),
 ) -> int:
     """Build and run the node until it stops; return the process exit code.
 
@@ -627,6 +631,8 @@ def run_node(
     snapshot and answering ``recheck``. ``loop`` is the event loop live's start fetch ran on. In
     every env a watchdog stops the node, and this returns 1 with no backoff, when the trader is
     not running ``RECONCILE_NAUTILUS_TIMEOUT_S`` + 30 s after the build (AC-5).
+
+    ``seed`` is ``donchian_scalp_r1``'s warmup candles, fetched before the node (spec 0025 AC-7).
     """
     env = settings.trading_env
     if env == "live" and exchange is None:
@@ -754,7 +760,7 @@ def run_node(
             )
         )
         strategy, view = build_paper_strategy(
-            settings, paper.run_id, BTC_PERP, control.gate, paper.blocks, record, paper.ledger
+            settings, paper.run_id, BTC_PERP, control.gate, paper.blocks, record, paper.ledger, seed
         )
         node.trader.add_strategy(strategy)
         control.kill_switch.attach(
@@ -1009,6 +1015,10 @@ def main() -> None:
         if fetched is None:
             sys.exit(1)
 
+    # Before the node exists, never on its event loop; a failure is an empty seed and a warning (spec 0025 AC-9).
+    r1 = paper is not None and settings.paper_strategy == donchian_scalp_r1.STRATEGY_NAME
+    seed = warmup_seed() if r1 else ()
+
     code = run_node(
         config,
         settings,
@@ -1017,6 +1027,7 @@ def main() -> None:
         paper=paper,
         exchange=exchange,
         loop=loop,
+        seed=seed,
     )
     if code:
         sys.exit(code)
