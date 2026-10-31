@@ -61,6 +61,50 @@ Both checks pass on both venues, so AC-6's `due_post_only` path is real on both 
 
 2026-10-31, worktree stack on `kfs/trader:s0026` (built at 2000357), `TRADING_ENV=demo`, `PAPER_STRATEGY=donchian_scalp_r2`, `PAPER_INSTRUMENTS=PF_PEPEUSD.KRAKEN,PF_XBTUSD.KRAKEN`. The trader started, recorded version `01a19166-ee6f-767a-883c-a22c635ce734` (`donchian_scalp_r2`, kind `scalping`, `entry_offset_atr` 0.5, `atr_min_bps` 10, `instruments` both coins), logged `paper_promotion_required`, and exited 78, as an unpromoted version must. The stack was taken down after.
 
+## Lab screens (task 5, AC-17)
+
+Both `_v3` studies ran on `kfs/lab:s0026` from the main checkout's lab catalog, 5 minute candles, `LAB_WORKERS=2`. BTC ran on the image built at ba9afa9: 1,297 days from 2022-04-01, study 1,546 s, screen 22 s. PEPE resumed on the image built at 0407479 (the ruin rule), and the lab accepted the resume with no exit 64: 871 days from 2023-06-01, study 1,874 s (14:20 to 14:51 UTC, 15:20 to 15:51 Amsterdam), screen 37 s. Both screens exited 3 (fail). The r1 column is spec 0025's `verify.md`, and r1's PEPE max drawdown comes from its `run_results` row. The maker figures come from `studies/maker_figures.py` on each run bundle.
+
+| Figure | r2 on BTC | r1 on BTC | r2 minus r1 | r2 on PEPE | r1 on PEPE | r2 minus r1 |
+|---|---|---|---|---|---|---|
+| Batch | `01a191f9-38ac-766a-a242-4fa78faf8166` | `01a18df4-8d0e-7032-9c1f-958271e3eed2` | | `01a19255-8a49-778a-9e81-dce78b0966f8` | `01a18fa3-8061-7141-8ec4-0133c7f9a5ab` | |
+| Screen verdict | fail (walk_forward_sharpe, fee_hurdle, trades_per_day) | fail (the same three) | same | fail (walk_forward_sharpe, fee_hurdle, trades_per_day) | fail (missing walk_forward_sharpe, fee_hurdle, trades_per_day) | same reasons, Sharpe now present |
+| Trades | 6,474 | 5,002 | +1,472 | 5,085 | 21 | +5,064 |
+| Trades per day (minimum 17) | 4.99 | 3.86 | +1.13 | 5.84 | 0.024 | +5.81 |
+| Net P&L (USD, from 10,000) | −9,985.08 (−99.85 %) | −9,991.05 (−99.91 %) | +5.97 | −10,000.89 (−100.01 %) | −865.14 (−8.65 %) | −9,135.75 |
+| Gross P&L per trade (USD) | −1.0738 | −1.0031 | −0.0707 | −1.7592 | −31.63 | +29.87 |
+| Cost per trade, round trip (USD) | 0.4690 | 0.9953 | −0.5263 | 0.2076 | 9.57 | −9.36 |
+| Daily Sharpe (walk forward) | −8.9262 | −5.0948 | −3.8314 | −8.7304 | none (too few trades) | n/a |
+| Max drawdown (realized) | 99.855 % | 99.91 % | −0.055 points | at least 100 % (100.009 %) | 8.65 % | +91.36 points |
+| Entry fill share | 0.679 (6,474 of 9,540) | n/a | n/a | 0.568 (5,085 of 8,945; 18 in part) | n/a | n/a |
+| Maker exit share (upper bound) | 0.756 (4,024 of 5,323) | n/a | n/a | 0.705 (2,540 of 3,604) | n/a | n/a |
+| `vol_low` skips | 7,962 | n/a | n/a | 1,046 | n/a | n/a |
+
+The maker exit share is an **upper bound**. The candle lab fills a limit at the touch from synthetic quotes with no queue, so a real book fills fewer.
+
+**What it says.** Maker orders did what they were meant to do on cost. BTC's cost per trade fell by more than half, and PEPE's fell from 9.57 to 0.21 USD. The gross edge did not come back. Both coins still lose more per trade before costs than the trade costs, so the fee hurdle fails by far, and both lost the whole account. Neither coin gets near 17 trades a day. PEPE's r1 column measures four days, not 871 (spec 0025: a stop block stopped it after the first week), so the PEPE differences compare a full span with a short one.
+
+**PEPE was ruined.** The `equity_ruined` log line gives run `85819983-cff9-47e2-9d72-b01eba6fb676`, day **2025-09-01**, equity close −0.0169 USD. Under spec 0015 AC-6 that day scores −100 % and every day after it scores 0. Read its max drawdown as at least 100 %. The node kept trading tiny sizes after the ruin day, so the equity drifted to about −1.33 USD (marked) by 2025-10-18, and the 0.01 % past 100 % in the net and drawdown figures is that drift. Exit reasons: midline 3,594, `stop_through` 306, time stop 10, `stop_residual` 5, late entry fill 4. No `blocked:` refusal, so the AC-5 amendments held for the whole span.
+
+**BTC.** Exit reasons: midline 5,307, `stop_through` 33, time stop 16, no block. 811 entries were refused as `zero_quantity` near the end, when equity was too small to size one contract.
+
+**Trials in the family.** Six studies count as trials in the scalping family.
+
+| Study | Batch | Standing |
+|---|---|---|
+| `donchian_scalp_r2` | `01a19164-8ae6-7451-8f9c-fa51dbaceef8` | invalid (before the AC-5 quote amendment, blocked after the first week) |
+| `donchian_scalp_r2_pepe` | `01a19181-87bd-72fc-8739-c77134df16fe` | invalid (the same block) |
+| `donchian_scalp_r2_pepe_v2` | `01a191c7-f9a7-7380-93c7-7fae95b8e9cc` | invalid (a stop that filled short of the position set the block) |
+| `donchian_scalp_r2_v2` | `01a191aa-383d-729a-b3e5-dae8c81a03ef` | superseded by `_v3` (screen fail, figures as `_v3`) |
+| `donchian_scalp_r2_v3` | `01a191f9-38ac-766a-a242-4fa78faf8166` | result (BTC, above) |
+| `donchian_scalp_r2_pepe_v3` | `01a19255-8a49-778a-9e81-dce78b0966f8` | result (PEPE, above) |
+
+PEPE `_v3`'s first batch, `01a19210-b820-702d-ae6d-612e6f0f7a97`, failed (the daily series raised on the ruin day before the ruin rule) and wrote no run. It is not a trial result.
+
+## Tests at 0407479
+
+Core 2,156 passed, 5 skipped. One failure, `test_recording_writer.py::test_a_full_queue_overflows...`, is the known flake, and it passed alone twice. Lab 330 passed (the 5 `postgres` marked tests were not run). mypy strict clean on the changed files (core, lab).
+
 ## Tests at 2000357
 
 Core 2,134 passed, 5 skipped. Trader 175 passed (the 8 Redis ACL and demo purge tests need the Compose Redis and were not run). Lab 324 passed (the 5 `postgres` marked tests were not run). mypy strict clean on core, trader, lab, and `studies/maker_figures.py`.
