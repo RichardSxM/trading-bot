@@ -121,6 +121,14 @@ Options: (1) also check the cached quote at the first fill, as spec 0017 AC-18 d
 
 The rerun on the fixed code stopped at once: the lab stores each study by name, plan hash, and code hash, and refuses to resume a study whose code changed (exit 64, "give a new name"). That guard is right, it keeps one study from mixing runs of two versions. Options: (1) new `_v2` study files with new names; (2) delete the old studies from Postgres and reuse the names. Chosen: option 1, as spec 0017 did with its void screens. Deleting would hide two trials that did run, and the multiple testing count should include every run, so the family counts four trials, two of them invalid.
 
+### Amendment 2026-10-31: a stop that filled short of the position
+
+The `_v2` BTC screen ran clean. The PEPE one was blocked from 2023-09-01 17:11 UTC on (19,400 refused entries, 160 trades; batch `01a191c7-f9a7-7380-93c7-7fae95b8e9cc`). A sell entry filled in about 1010 pieces of 1000 contracts. Each piece sent a stop modify, and some were still in flight when the price reached the stop, so the stop triggered and filled 1,010,000 against a position of 1,013,000. The next sync saw a stop that was no longer open with a position still open, and AC-5 said that fails closed, so `STOP_NOT_ACCEPTED` blocked the rest of the run. The trade itself closed correctly at market.
+
+A stop that filled did its job: the risk it guarded is gone except for the small rest, and nothing is wrong with the venue or the order path. Options: (1) close the rest at market with no block; (2) the same, plus a WARNING risk event; (3) keep the block. Chosen: option 1, the user's pick. The rest is closed at once, as a recorded `stop_residual` exit, so the record shows why that order exists. Option 2 would put an alert on the dashboard for a normal outcome of fast fills. Option 3 would leave PEPE untestable and, on demo, need a restart after each such fill. Every other way a stop can end with a position open (rejected, denied, cancelled by someone else, expired, not accepted in time) still fails closed as before.
+
+The fix changes the code hash, so the reruns need new names again. The user chose to rerun both coins as `_v3`, so both results come from the code demo will run. BTC `_v2` was a valid run on the older code; it stays on record as a trial, with its figures noted in `verify.md` as superseded. The family now counts six trials: three invalid (`donchian_scalp_r2`, `donchian_scalp_r2_pepe`, `donchian_scalp_r2_pepe_v2`), one superseded (`donchian_scalp_r2_v2`), and the two `_v3` screens.
+
 ## References
 
 **Project sources**:
