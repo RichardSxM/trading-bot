@@ -99,6 +99,23 @@ def test_each_state_sample_holds_markup_in_that_state(logged_in):
     assert "pnl--zero" in _sample(page, "pnl:zero")
 
 
+def test_each_journal_sample_shows_its_panel_state(logged_in):
+    """covers: spec 0024 AC-1, AC-5, AC-9 (the Check panel in every state, on /styleguide)"""
+    page = logged_in.get("/styleguide").text
+    assert 'badge--ok">match' in _sample(page, "journal:match")
+    mismatch = _sample(page, "journal:mismatch")
+    assert "journal-panel--mismatch" in mismatch
+    assert "badge badge--warn" in mismatch
+    assert "crossed a range edge" in _sample(page, "journal:not_comparable")
+    assert "belong to no position" in _sample(page, "journal:unlinked")
+    for state in ("match", "mismatch", "not_comparable", "unlinked"):
+        assert "journal.csv?" in _sample(page, f"journal:{state}"), state
+    refused = _sample(page, "journal:refused")
+    assert "No ECB rate for 2026-10-29 yet." in refused
+    assert ".csv?" not in refused
+    assert "Check failed." in _sample(page, "journal:error")
+
+
 def test_every_type_space_radius_and_motion_token_has_a_sample(logged_in):
     """covers: AC-16"""
     from dashboard.web.styleguide import TYPE_ROLES

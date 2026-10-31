@@ -1,9 +1,10 @@
 """Sample data for ``/styleguide`` (spec 0004 AC-16): every token and component state, never real data."""
 
 from collections.abc import Mapping
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Final
+from uuid import UUID
 
 from markupsafe import Markup
 
@@ -31,6 +32,8 @@ from dashboard.ui.format import num, pnl, ts
 from dashboard.ui.tokens import color_tokens, contrast_ratio, read_tokens
 from dashboard.web.trades import FILL_COLUMNS, PagerView
 from trading_core.alerts.model import Delivery, Tier
+from trading_core.journal.bounds import parse_range
+from trading_core.journal.summary import BalanceLine, CheckStatus, JournalSummary, PnlCheck, Snapshot, Totals
 from trading_core.strategy.blocks import PLAIN_WORDS, BlockReason
 
 # The text color each swatch is read against: surfaces carry text, alarms carry white or night.
@@ -157,6 +160,56 @@ CHECK_SAMPLES: Final[dict[str, ReconcileView]] = {
     "unknown": ReconcileView("Kraken unknown", "bad"),
     "lost": ReconcileView("no data", "lost"),
 }
+_JOURNAL_RANGE: Final = parse_range("2026-10-01", "2026-10-29", "paper", date(2026, 10, 30))
+_JOURNAL_RUN: Final = UUID("01a18cf3-361b-75f1-95d4-7f70591d723a")
+_JOURNAL_USD: Final = Totals(trading=Decimal("14.2100"), fees=Decimal("-1.6800"), funding=Decimal("-0.0300"))
+_JOURNAL_EUR: Final = Totals(trading=Decimal("13.08"), fees=Decimal("-1.55"), funding=Decimal("-0.03"))
+_JOURNAL_SNAPSHOT: Final = Snapshot(
+    "KRAKEN-001", "USD", Decimal("1000.25"), datetime(2026, 9, 30, 21, tzinfo=UTC), _JOURNAL_RUN
+)
+
+
+def _journal(
+    status: CheckStatus, reason: str = "", dashboard_net: str = "12.5000", crossing: int = 0, unlinked: int = 0
+) -> JournalSummary:
+    check = PnlCheck(
+        status=status,
+        reason=reason,
+        journal_net=_JOURNAL_USD.net,
+        dashboard_net=Decimal(dashboard_net),
+        tolerance=Decimal("0.02"),
+        counted=2,
+        crossing=crossing,
+        unlinked_rows=unlinked,
+        unlinked_net=Decimal("-0.0100") if unlinked else Decimal(0),
+    )
+    return JournalSummary(
+        journal_range=_JOURNAL_RANGE,
+        rows=8,
+        native={"USD": _JOURNAL_USD},
+        eur=_JOURNAL_EUR,
+        balance_start=[BalanceLine("KRAKEN-001", "USD", _JOURNAL_SNAPSHOT, Decimal("920.69"))],
+        balance_end=[BalanceLine("KRAKEN-001", "USD", None, None)],
+        check=check,
+    )
+
+
+# The journal Check panel in each state (spec 0024 AC-1, AC-5, AC-9), labelled sample data.
+JOURNAL_SAMPLES: Final[dict[str, dict[str, object]]] = {
+    "match": {"state": "match", "summary": _journal(CheckStatus.MATCH)},
+    "mismatch": {"state": "mismatch", "summary": _journal(CheckStatus.MISMATCH, dashboard_net="11.9000")},
+    "not_comparable": {"state": "not_comparable", "summary": _journal(CheckStatus.NOT_COMPARABLE, "edge", crossing=1)},
+    "unlinked": {
+        "state": "not_comparable",
+        "summary": _journal(CheckStatus.NOT_COMPARABLE, "unlinked", unlinked=1),
+    },
+    "refused": {
+        "state": "refused",
+        "summary": None,
+        "message": "No ECB rate for 2026-10-29 yet. The alerter fetches it hourly, so try again later.",
+    },
+    "error": {"state": "error", "summary": None, "message": "The dashboard cannot read Postgres right now."},
+}
 WINTER_TIME: Final = datetime(2026, 1, 15, 9, 30, 0, tzinfo=UTC)
 # Sample heartbeat ages for the tape, one a second; -1 is a second without a live link.
 PULSE_SAMPLE: Final = (
@@ -250,6 +303,7 @@ def styleguide_context() -> dict[str, object]:
         "position_samples": POSITION_SAMPLES,
         "blocked_samples": BLOCKED_SAMPLES,
         "check_samples": CHECK_SAMPLES,
+        "journal_samples": JOURNAL_SAMPLES,
         "sides_samples": SIDES_SAMPLES,
         "kraken_url": "https://demo-futures.kraken.com/",  # the sample alerts link to the demo venue
         "alert_samples": [

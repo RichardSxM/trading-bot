@@ -23,7 +23,7 @@
 
 <nav class="sg-toc" aria-label="Styleguide sections">
   <a href="#colors">Colors</a><a href="#type">Type</a><a href="#space">Space and shape</a><a href="#numbers">Numbers and time</a>
-  <a href="#status">Badges and status</a><a href="#shell">Nav, link, icons</a><a href="#topbar">Top bar states</a><a href="#pulse">Pulse</a><a href="#stats">Stats and freshness</a><a href="#table">Table</a>
+  <a href="#status">Badges and status</a><a href="#shell">Nav, link, icons</a><a href="#topbar">Top bar states</a><a href="#pulse">Pulse</a><a href="#stats">Stats and freshness</a><a href="#table">Table</a><a href="#journal">Journal check</a>
   <a href="#buttons">Buttons</a><a href="#states">Empty, loading, error</a><a href="#chart">Chart</a>
 </nav>
 
@@ -183,6 +183,14 @@
     <div class="status-strip"><span class="topbar__check">{% include "partials/topbar_check.html" %}</span></div>
   </div>
   {%- endfor %}
+</section>
+
+<section class="sg-section" id="journal" aria-labelledby="journal-sample-h">
+  <h2 class="sg-h" id="journal-sample-h">Journal check</h2>
+  {%- for name, sample in journal_samples.items() %}
+  <div data-sample="journal:{{ name }}">{% with state=sample.state, summary=sample.summary, message=sample.message, query="" %}{% include "partials/journal_panel.html" %}{% endwith %}</div>
+  {%- endfor %}
+  <p class="sg-note">Sample panels: their download links carry no range, so the dashboard refuses them.</p>
 </section>
 
 <section class="sg-section" id="stats" aria-labelledby="stats-h">
