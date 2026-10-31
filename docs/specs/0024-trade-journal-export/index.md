@@ -142,7 +142,7 @@ Tracer Bullet: first one thin real thread from ECB to `fx_rates` to a downloaded
 6. [x] Monthly chunking with the two pass stream, the logging, the auth tests, and a 200 000 row memory test, satisfies **AC-12, AC-14**.
 7. [x] `fx_rates_stale` rule and check in core, wired into the alerter, satisfies **AC-17**.
 8. [x] Styleguide samples for the panel's states (match, mismatch, not comparable, refused) per `DESIGN.md`, and the dashboard and alerter `AGENTS.md` lines via `/sync`, satisfies **AC-1, AC-9**.
-9. [ ] VPS check: after the deploy, confirm `fx_fetched` backfilled 2026, then export the demo paper range since the 0f12982 deploy (mode `paper`) and save the panel result and both files' sums in `verify.md`, satisfies **AC-5, AC-9, AC-11, AC-15**.
+9. [x] VPS check: after the deploy, confirm `fx_fetched` backfilled 2026, then export the demo paper range since the 0f12982 deploy (mode `paper`) and save the panel result and both files' sums in `verify.md`, satisfies **AC-5, AC-9, AC-11, AC-15**.
 
 ## Consequences
 
