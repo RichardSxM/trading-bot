@@ -129,6 +129,14 @@ A stop that filled did its job: the risk it guarded is gone except for the small
 
 The fix changes the code hash, so the reruns need new names again. The user chose to rerun both coins as `_v3`, so both results come from the code demo will run. BTC `_v2` was a valid run on the older code; it stays on record as a trial, with its figures noted in `verify.md` as superseded. The family now counts six trials: three invalid (`donchian_scalp_r2`, `donchian_scalp_r2_pepe`, `donchian_scalp_r2_pepe_v2`), one superseded (`donchian_scalp_r2_v2`), and the two `_v3` screens.
 
+### Amendment 2026-10-31: a ruined run is scored
+
+PEPE `_v3` replayed every month with the stop residual fix, so no block stopped it. But the account lost a little more than everything (equity closed 2025-09-01 at −0.017 USD), and the daily series raised on the next day, so the lab wrote no run. A run that loses everything is the clearest fail there is, so it should be on record with figures, not missing.
+
+You picked three things. The rule lives in spec 0015 AC-6, shared by the lab, the gate, and paper series, so a later gate run on the same rows scores it too (runner up: lab only, which leaves the gate crashing on the same rows). The ruin day is −100 % and every later day is 0, which keeps days lined up for folds and makes the compounded return exactly −100 % (runner up: end the series at ruin, which leaves later folds empty and reads as insufficient, not failed). And there is no new gate reason: the run fails on its figures, and the lab logs `equity_ruined` (runner up: a `ruined` reason code, clearer but a spec 0015 reason change for one case).
+
+The study resumes under its `_v3` name because its one grid point wrote no run and `gate/series.py` is outside r2's code hash. If the hash did change, the lab refuses, and that comes back here rather than a new name being picked during the build.
+
 ## References
 
 **Project sources**:
