@@ -1,4 +1,5 @@
-"""covers: spec 0014 AC-1, AC-2, AC-2a, AC-3, AC-4 (months, candle rows, funding periods, the merge)."""
+"""covers: spec 0014 AC-1, AC-2, AC-2a, AC-3, AC-4 (months, candle rows, funding periods, the merge); spec 0025
+AC-23 (the price noise bound per coin)."""
 
 from decimal import Decimal
 
@@ -19,8 +20,10 @@ from trading_core.lab.candles import (
     fetch_months,
     find_gaps,
     is_complete,
+    is_off_tick,
     merge_funding,
     missing_charges,
+    price_noise,
     quiet_prefix_problems,
     round_price,
     rows_by_month,
@@ -141,6 +144,38 @@ def test_build_candles_lists_bad_rows():
 )
 def test_prices_snap_noise_and_round_extremes_toward_the_body(text, name, expected):
     assert round_price(D(text), TICK, name) == expected
+
+
+@pytest.mark.parametrize("tick", [D(1), D("0.1"), D("0.01"), D("0.000001")])
+def test_a_tick_of_a_millionth_or_more_keeps_the_old_noise_bound(tick):
+    assert price_noise(tick) == D("1e-8")
+
+
+def test_pepes_tick_gets_a_hundredth_of_a_tick_and_half_a_tick_off_is_off_tick():
+    pepe_tick = D("1E-10")
+
+    assert price_noise(pepe_tick) == D("1E-12")
+    assert is_off_tick(D("0.00001234565"), pepe_tick)  # 0.5e-10 off; under the old 1e-8 bound it was noise
+    assert not is_off_tick(D("0.0000123456000000001"), pepe_tick)  # float noise still snaps
+    assert round_price(D("0.00001234565"), pepe_tick, "high") == D("0.0000123456")
+
+
+def test_a_btc_month_builds_the_same_rows_under_the_per_coin_bound():
+    raw = [
+        _raw(0, h="101.7", lo="98.2"),
+        _raw(1, h="100.99999999999", c="100.000000001"),
+        _raw(2, o="100.00000001", h="99.99999999999", c="100"),
+        _raw(3),
+    ]
+    build = build_candles(raw, SEP, TICK, STEP)
+
+    assert [(r.open, r.high, r.low, r.close) for r in build.rows] == [
+        (D(100), D(101), D(99), D(100)),
+        (D(100), D(101), D(99), D(100)),
+        (D(100), D(100), D(99), D(100)),
+        (D(100), D(101), D(99), D(100)),
+    ]
+    assert (build.bad, build.price_rounded_rows) == ([], 3)
 
 
 def test_off_tick_extremes_are_stored_rounded_and_counted_once():

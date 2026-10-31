@@ -33,6 +33,8 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 23 | Intraday trend candidates | Slice 7 | done |
 | 24 | Imbalance fade candidate | Slice 7 | done |
 | 25 | Multi coin portfolio | Slice 7 | done |
+| 26 | Donchian scalp r1 | Slice 7 | in-progress |
+| 27 | Donchian scalp r2 | Slice 7 | in-progress |
 | 17 | Hour level strategy candidates | Slice 7 | in-progress |
 | 18 | Trade journal export | Slice 8 | in-progress |
 | 19 | Go live with small capital | Slice 9 | planned |
@@ -465,6 +467,44 @@ spec [0022](../specs/0022-multi-coin-portfolio/index.md)
 - [x] Test it: `/test multi coin portfolio`
 - [x] Review it (fresh model): `/check review multi coin portfolio`
 - [x] Document it: `/document multi coin portfolio` (CHANGELOG, 2026-10-29)
+
+### 26. Donchian scalp r1 · in-progress
+`donchian_scalp` plus three ideas from the Donchian blueprint you shared on 2026-10-30: trade only with the 200 bar EMA, exit when a close crosses the channel middle, and skip an entry when the spread is wide against the ATR. It is a new variant, so the frozen `donchian_scalp` stays as the baseline. A seed from Kraken's 5 minute candles makes it ready right after a deploy. Two lab screens compare it with the baseline, then it runs on demo whatever their verdict. Amended 2026-10-30: one trader runs it on both BTC and PEPE (`PAPER_INSTRUMENTS`), with a PEPE screen too.
+**Done when:** the BTC and PEPE screens are recorded with gross and cost per trade, the real spread to ATR distribution is recorded for both coins, no existing strategy's hash moved, and the VPS demo runs `donchian_scalp_r1` on BTC and PEPE with a working seed for each.
+spec [0025](../specs/0025-donchian-scalp-r1/index.md) · code in [donchian_midline.py](../../packages/core/src/trading_core/strategy/donchian_midline.py), [donchian_scalp_r1.py](../../packages/core/src/trading_core/node/donchian_scalp_r1.py), [trader/warmup.py](../../apps/trader/src/trader/warmup.py)
+
+- [x] Design it (spec): `/architect donchian scalp r1`
+- [ ] Build it: `/develop donchian scalp r1`
+  - [ ] Thin thread: hash baseline, midline rule, r1 node and config, paper wiring, laptop smoke (AC-1 to AC-5, AC-11, AC-12)
+  - [ ] Lab screens: registry, two study files, `lab study` and `lab screen`, real spread query, `verify.md` table (AC-13, AC-13a)
+  - [ ] Spread filter and warmup seed: entry override, seed checks, fetch, first bar join, alert rule (AC-6 to AC-10)
+  - [x] Two coin thread: `PAPER_INSTRUMENTS`, one r1 per coin, blocks wrapper, version, recording, risk caps (AC-15 to AC-19)
+  - [x] Seed per coin (AC-20)
+  - [x] Snapshots and dashboard: `positions` snapshot, a card row per coin (AC-21)
+  - [x] Lab: off tick guard per coin, PEPE screen (AC-23, AC-24)
+  - [ ] Close out and demo: hash comparison, deploy, manual promote of the two coin version, `PAPER_STRATEGY`, `PAPER_INSTRUMENTS` and `RECORDER_INSTRUMENTS`, first decisions checked for both coins (AC-5, AC-13a, AC-14, AC-22)
+  - [ ] PEPE spread check after 7 recorded days (AC-25)
+- [ ] Verify it: `/check verify donchian scalp r1`
+- [ ] Test it: `/test donchian scalp r1`
+- [ ] Review it (fresh model): `/check review donchian scalp r1`
+- [ ] Document it: `/document donchian scalp r1`
+
+### 27. Donchian scalp r2 · in-progress
+r1's signals traded with maker orders, from the exit and maker studies of 2026-10-31: the entry rests as a post only limit 0.5 ATR behind the signal close for 3 bars, the midline exit and the time stop rest at the touch for 3 bars and then go to market, and entries are skipped when ATR is below 10 bps of price. The stop and every forced close stay market. A new maker base sits beside the frozen `BarRuleStrategy`. Screened on BTC and PEPE, then it replaces r1 on demo whatever the verdict. From spec 0025's results.
+**Done when:** the BTC and PEPE screens are recorded with the entry fill share and maker exit share, no existing strategy's hash moved, the VPS demo runs `donchian_scalp_r2` on both coins with a working seed, and one demo week of fill and fallback counts is recorded.
+spec [0026](../specs/0026-donchian-scalp-r2/index.md)
+
+- [x] Design it (spec): `/architect donchian scalp r2`
+- [ ] Build it: `/develop donchian scalp r2`
+  - [x] Hash baseline, spike, and thin thread: maker base with entry and stop, r2 node, trader wiring, laptop smoke (AC-1 to AC-4, AC-14 to AC-16)
+  - [x] Order paths: partial fills, post only rejection, maker exit and fallback, kill switch, restart (AC-5 to AC-12)
+  - [x] Filters and seed: volatility floor, spread check, seed join (AC-13, AC-14, AC-16)
+  - [ ] Lab screens: registry, two study files, `maker_figures.py`, `verify.md` table (AC-17)
+  - [ ] Close out, demo switch, and demo week (AC-15, AC-18)
+- [ ] Verify it: `/check verify donchian scalp r2`
+- [ ] Test it: `/test donchian scalp r2`
+- [ ] Review it (fresh model): `/check review donchian scalp r2`
+- [ ] Document it: `/document donchian scalp r2`
 
 ### 17. Hour level strategy candidates · in-progress
 The fallback set: trend following and mean reversion on 1h to 4h candles, tested in the candle lab.

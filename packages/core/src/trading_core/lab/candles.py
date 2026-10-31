@@ -37,6 +37,7 @@ VOLUME_NOISE: Final = Decimal("1e-8")
 # is below VOLUME_NOISE, so BTC and ETH volumes meet the same bound as before.
 VOLUME_NOISE_SHARE: Final = Decimal("1e-12")
 # A price this close to a tick is float noise and is snapped to it (AC-1), the same bound as volume.
+# A tick under 1e-6 gets a hundredth of its tick instead (price_noise, spec 0025 AC-23).
 PRICE_NOISE: Final = Decimal("1e-8")
 # Five or more consecutive missing minutes make a gap row (AC-4).
 GAP_MIN_MINUTES: Final = 5
@@ -150,15 +151,24 @@ def snap_volume(volume: Decimal, step: Decimal) -> Decimal | None:
     return snapped
 
 
+def price_noise(tick: Decimal) -> Decimal:
+    """The float noise bound for a coin's prices: ``PRICE_NOISE``, or a hundredth of the tick when smaller.
+
+    For any tick of 1e-6 or more it is ``PRICE_NOISE``, so BTC and ETH candles are unchanged; PEPE's
+    tick of 1e-10 gets 1e-12, so a price half a tick off is not taken for noise (spec 0025 AC-23).
+    """
+    return min(PRICE_NOISE, tick / 100)
+
+
 def is_off_tick(raw: Decimal, tick: Decimal) -> bool:
-    """A price further than ``PRICE_NOISE`` from every tick (not float noise)."""
+    """A price further than ``price_noise(tick)`` from every tick (not float noise)."""
     nearest = (raw / tick).quantize(Decimal(1), rounding=ROUND_HALF_EVEN) * tick
-    return abs(nearest - raw) > PRICE_NOISE
+    return abs(nearest - raw) > price_noise(tick)
 
 
 def round_price(raw: Decimal, tick: Decimal, name: str) -> Decimal:
     """The rounded price of one candle field (AC-1, spec 0022 AC-2a): the nearest tick
-    (``ROUND_HALF_EVEN``) when within ``PRICE_NOISE`` and for an off tick ``open`` or ``close``;
+    (``ROUND_HALF_EVEN``) when within ``price_noise(tick)`` and for an off tick ``open`` or ``close``;
     an off tick ``high`` rounds down and a ``low`` up to the tick (toward the candle's body)."""
     if name == "high" and is_off_tick(raw, tick):
         return ((raw / tick).to_integral_value(rounding=ROUND_FLOOR) * tick).quantize(tick)
@@ -303,7 +313,7 @@ def _store(
         stored = rounded[name]
         if stored is None or stored == raws[name]:
             continue
-        if abs(stored - raws[name]) <= PRICE_NOISE:
+        if abs(stored - raws[name]) <= price_noise(tick):
             snapped = True
         else:
             roundings_list.append(PriceRounding(open_ns, name, getattr(candle, name), stored))

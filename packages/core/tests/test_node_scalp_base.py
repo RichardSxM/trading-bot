@@ -125,7 +125,7 @@ def _run(mid, minutes, script, strategy_cls=_Scripted, size="5.0000", consume=Fa
         RecordingActor(
             env=Env.DEMO,
             run_id=run_id,
-            instrument_id=INSTRUMENT_ID,
+            instrument_ids=[INSTRUMENT_ID],
             record=records.append,
             blocks=blocks,
             maintenance_margin_rate=D("0.01"),

@@ -77,7 +77,7 @@ def _run(prices, strategy_cls=RandomTaker, gate=None):
         RecordingActor(
             env=Env.DEMO,
             run_id=run_id,
-            instrument_id=INSTRUMENT_ID,
+            instrument_ids=[INSTRUMENT_ID],
             record=records.append,
             blocks=blocks,
             maintenance_margin_rate=Decimal("0.01"),

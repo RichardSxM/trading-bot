@@ -100,7 +100,7 @@ def _run(minutes, book=None, trades=(), strategy_cls=BookImbalance, config_cls=B
         RecordingActor(
             env=Env.DEMO,
             run_id=run_id,
-            instrument_id=INSTRUMENT_ID,
+            instrument_ids=[INSTRUMENT_ID],
             record=records.append,
             blocks=blocks,
             maintenance_margin_rate=D("0.01"),

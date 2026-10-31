@@ -35,6 +35,12 @@ from trading_core.node.donchian_4h import STRATEGY_NAME as DONCHIAN_4H
 from trading_core.node.donchian_4h import Donchian4h, Donchian4hConfig
 from trading_core.node.donchian_4h_r1 import STRATEGY_NAME as DONCHIAN_4H_R1
 from trading_core.node.donchian_4h_r1 import Donchian4hR1, Donchian4hR1Config
+from trading_core.node.donchian_scalp import STRATEGY_NAME as DONCHIAN_SCALP
+from trading_core.node.donchian_scalp import DonchianScalp, DonchianScalpConfig
+from trading_core.node.donchian_scalp_r1 import STRATEGY_NAME as DONCHIAN_SCALP_R1
+from trading_core.node.donchian_scalp_r1 import DonchianScalpR1, DonchianScalpR1Config
+from trading_core.node.donchian_scalp_r2 import STRATEGY_NAME as DONCHIAN_SCALP_R2
+from trading_core.node.donchian_scalp_r2 import DonchianScalpR2, DonchianScalpR2Config
 from trading_core.node.ema_pullback import STRATEGY_NAME as EMA_PULLBACK
 from trading_core.node.ema_pullback import EmaPullback, EmaPullbackConfig
 from trading_core.node.imbalance_fade import STRATEGY_NAME as IMBALANCE_FADE
@@ -366,6 +372,24 @@ def _donchian_4h_r1(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks
     return Donchian4hR1(config, gate, blocks, record)
 
 
+def _donchian_scalp(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
+    if not isinstance(config, DonchianScalpConfig):
+        raise TypeError(f"donchian_scalp needs a DonchianScalpConfig, not {type(config).__name__}")
+    return DonchianScalp(config, gate, blocks, record)
+
+
+def _donchian_scalp_r1(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
+    if not isinstance(config, DonchianScalpR1Config):
+        raise TypeError(f"donchian_scalp_r1 needs a DonchianScalpR1Config, not {type(config).__name__}")
+    return DonchianScalpR1(config, gate, blocks, record)  # an empty seed: the lab warms up from its own bars
+
+
+def _donchian_scalp_r2(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
+    if not isinstance(config, DonchianScalpR2Config):
+        raise TypeError(f"donchian_scalp_r2 needs a DonchianScalpR2Config, not {type(config).__name__}")
+    return DonchianScalpR2(config, gate, blocks, record)  # an empty seed, as r1
+
+
 def _peek_probe(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
     if not isinstance(config, MacdBaselineConfig):
         raise TypeError(f"peek_probe needs a MacdBaselineConfig, not {type(config).__name__}")
@@ -509,6 +533,33 @@ REGISTRY: Final[Mapping[str, StrategyEntry]] = {
         factory=_donchian_4h_r1,
         run_fields=_candle_fields,
         kind=StrategyKind.HOUR_LEVEL,
+    ),
+    # The demo's 5 minute donchian and its revision (spec 0025): two candle screens in the scalping family.
+    DONCHIAN_SCALP: StrategyEntry(
+        name=DONCHIAN_SCALP,
+        module=DonchianScalp.__module__,
+        config_cls=DonchianScalpConfig,
+        factory=_donchian_scalp,
+        run_fields=_candle_fields,
+        candle_screen=True,
+    ),
+    DONCHIAN_SCALP_R1: StrategyEntry(
+        name=DONCHIAN_SCALP_R1,
+        module=DonchianScalpR1.__module__,
+        config_cls=DonchianScalpR1Config,
+        factory=_donchian_scalp_r1,
+        run_fields=_candle_fields,
+        candle_screen=True,
+    ),
+    DONCHIAN_SCALP_R2: StrategyEntry(
+        name=DONCHIAN_SCALP_R2,
+        module=DonchianScalpR2.__module__,
+        config_cls=DonchianScalpR2Config,
+        factory=_donchian_scalp_r2,
+        run_fields=_candle_fields,
+        kind=StrategyKind.SCALPING,
+        candle_screen=True,
+        candle_gate=False,
     ),
 }
 

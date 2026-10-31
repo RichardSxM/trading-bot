@@ -547,6 +547,9 @@ time[title] { text-decoration: underline dotted var(--edge); text-underline-offs
 .figures__warn { color: var(--warn); }
 .figures__title { margin: var(--space-8) 0 0; color: var(--faint); font-size: var(--type-caption-size); font-weight: var(--type-caption-weight); }
 .figures__unavailable { margin: 0; color: var(--muted); font-size: var(--type-label-size); }
+/* One row per coin on the card (spec 0025 AC-21), each split from the next by a Hairline. */
+.position__coin { display: grid; gap: var(--space-8); padding-bottom: var(--space-16); border-bottom: 1px solid var(--rule); }
+.position__coin-title { margin: 0; color: var(--muted); font-size: var(--type-label-size); font-weight: 600; }
 
 /* The findings and actions of one Kraken check on the Reconciliation page (spec 0023 AC-19). */
 .findings { margin: 0; padding: 0; list-style: none; display: grid; gap: var(--space-4); }

@@ -1,6 +1,9 @@
 """covers: spec 0023 AC-18, the three state position card: Wanted (``trader_state.intent``), Trader (the
-``position`` snapshot), and Kraken (the ``exchange`` snapshot with its age); a disagreement in side or size
-shows in the alert colour, and a missing, failed, or stale exchange view reads ``Kraken unknown``, never flat."""
+coin's ``positions`` entry), and Kraken (the ``exchange`` snapshot with its age); a disagreement in side or size
+shows in the alert colour, and a missing, failed, or stale exchange view reads ``Kraken unknown``, never flat.
+Spec 0025 AC-21: each coin row gets its own three."""
+
+from decimal import Decimal
 
 import pytest
 
@@ -12,14 +15,11 @@ from .conftest import log_in
 S = 1_000_000_000
 NOW = 1_790_000_000 * S
 BTC = "PF_XBTUSD.KRAKEN"
-RED_S = 10.0
+PEPE = "PF_PEPEUSD.KRAKEN"
 INTERVAL_S = 60.0
-LONG = {"instrument_id": BTC, "side": "long", "quantity": "0.0011", "mark_px": "64288.5"}
-FLAT = {"instrument_id": BTC, "side": "flat", "mark_px": "64288.5"}
-
-
-def _position(data, age_s=1):
-    return encode(NOW - age_s * S, data)
+LONG = {"instrument_id": BTC, "base": "BTC", "side": "long", "quantity": "0.0011", "mark_px": "64288.5"}
+HOLD_LONG = ("long", Decimal("0.0011"))
+HOLD_FLAT = ("flat", Decimal(0))
 
 
 def _exchange(positions=(), age_s=12, status="ok"):
@@ -37,13 +37,13 @@ def _state(intent=None):
     return encode(NOW, {"paused": False, "intent": {} if intent is None else intent})
 
 
-def _view(position=None, exchange=None, state=None):
+def _view(holding=HOLD_LONG, exchange=None, state=None):
     return sides_view(
-        _position(LONG) if position is None else position,
+        BTC,
+        holding,
         _exchange([_held()]) if exchange is None else exchange,
         _state() if state is None else state,
         NOW,
-        RED_S,
         INTERVAL_S,
     )
 
@@ -57,7 +57,7 @@ def test_the_same_size_written_differently_still_agrees():
 
 
 def test_flat_on_both_sides_agrees_and_kraken_flat_lists_no_position():
-    view = _view(_position(FLAT), _exchange([]))
+    view = _view(HOLD_FLAT, _exchange([]))
 
     assert (view.trader, view.kraken, view.state) == ("flat", "flat", "agree")
 
@@ -94,7 +94,7 @@ def test_a_position_on_another_instrument_is_not_this_card():
     ],
 )
 def test_a_missing_failed_stale_or_unreadable_exchange_view_is_kraken_unknown_never_flat(exchange):
-    view = sides_view(_position(LONG), exchange, _state(), NOW, RED_S, INTERVAL_S)
+    view = sides_view(BTC, HOLD_LONG, exchange, _state(), NOW, INTERVAL_S)
 
     assert (view.kraken, view.kraken_age, view.state) == (KRAKEN_UNKNOWN, None, "unknown")
 
@@ -124,21 +124,20 @@ def test_a_flatten_submitted_but_not_confirmed_never_looks_flat():
 
 
 def test_without_trader_state_wanted_is_unknown():
-    view = sides_view(_position(LONG), _exchange([_held()]), None, NOW, RED_S, INTERVAL_S)
+    view = sides_view(BTC, HOLD_LONG, _exchange([_held()]), None, NOW, INTERVAL_S)
 
     assert view.wanted == "unknown"
 
 
-@pytest.mark.parametrize("position", [None, _position(LONG, age_s=RED_S + 1), b"{"])
-def test_an_unknown_trader_view_never_disagrees(position):
-    view = sides_view(position, _exchange([_held()]), _state(), NOW, RED_S, INTERVAL_S)
+def test_an_unknown_trader_view_never_disagrees():
+    view = sides_view(BTC, None, _exchange([_held(side="short")]), _state(), NOW, INTERVAL_S)
 
     assert view.trader == "unknown"
     assert view.state == "agree"
 
 
 def test_without_a_position_snapshot_kraken_shows_its_one_position():
-    view = sides_view(None, _exchange([_held()]), _state(), NOW, RED_S, INTERVAL_S)
+    view = sides_view(None, None, _exchange([_held()]), _state(), NOW, INTERVAL_S)
 
     assert (view.wanted, view.kraken) == ("unknown", "long 0.0011")
 
@@ -146,9 +145,10 @@ def test_without_a_position_snapshot_kraken_shows_its_one_position():
 # The rendered card ---------------------------------------------------------------------------------
 
 
-def _overview(client, clock, redis, *, exchange=True, kraken_side="long", intent=None):
+def _overview(client, clock, redis, *, exchange=True, kraken_side="long", intent=None, coins=None):
     now = clock.ns()
-    redis.values["demo:snapshot:position"] = encode(now - S, {**LONG, **_OPEN_FIELDS})
+    coins = [{**LONG, **_OPEN_FIELDS}] if coins is None else coins
+    redis.values["demo:snapshot:positions"] = encode(now - S, {"coins": coins})
     redis.values["demo:snapshot:trader_state"] = encode(now, {"paused": False, "intent": intent or {}})
     if exchange:
         redis.values["demo:snapshot:exchange"] = encode(
@@ -194,3 +194,28 @@ def test_overview_without_an_exchange_snapshot_says_kraken_unknown(client, clock
 
     assert 'class="sides sides--unknown"' in page
     assert f'sides__kraken">{KRAKEN_UNKNOWN}</dd>' in page
+
+
+def test_each_coin_row_gets_its_own_wanted_trader_and_kraken(client, clock, redis):
+    pepe_flat = {"instrument_id": PEPE, "base": "PEPE", "side": "flat", "mark_px": "0.0000123456"}
+    page = _overview(
+        client, clock, redis, coins=[{**LONG, **_OPEN_FIELDS}, pepe_flat], intent={PEPE: "entry_submitted"}
+    )
+
+    assert page.count('class="sides sides--agree"') == 2
+    assert "<dt>Wanted</dt><dd>hold</dd>" in page
+    assert "<dt>Wanted</dt><dd>entry submitted</dd>" in page
+    assert 'sides__kraken">long 0.0011<span' in page
+    assert 'sides__kraken">flat<span' in page
+
+
+def test_a_card_without_rows_shows_one_set_for_no_coin(client, clock, redis):
+    redis.values["demo:snapshot:exchange"] = encode(
+        clock.ns() - 5 * S, {"status": "ok", "fetched_ns": clock.ns() - 5 * S, "positions": [_held()], "orders": []}
+    )
+    log_in(client, clock)
+    page = client.get("/").text
+
+    assert "Trader offline" in page
+    assert page.count('class="sides ') == 1
+    assert 'sides__kraken">long 0.0011<span' in page

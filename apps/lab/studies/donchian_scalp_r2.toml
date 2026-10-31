@@ -1,0 +1,46 @@
+# The donchian_scalp_r2 candle screen on BTC (spec 0026 AC-17): studies/donchian_scalp_r1.toml with the r2
+# strategy and its maker settings written out: the entry rests 0.5 ATR behind the signal close for 3 bars,
+# planned exits rest at the touch for 3 bars and then go to market, and entries with ATR under 10 bps of the
+# close are skipped. The spread filter stays off (spread_max_atr unset), as on r1. One more trial in the
+# scalping family, committed before it first runs. Run it only through `lab study studies/donchian_scalp_r2.toml`,
+# then `lab screen donchian_scalp_r2`. The plan is frozen by name: change anything here and give it a new name.
+instrument_id = "PF_XBTUSD.KRAKEN"
+from = 2022-04-01                    # first whole month after the 2022-03-24 floor
+to = 2025-10-18                      # the day before holdout_start
+seed = 7                             # the run seed (look ahead cut times)
+stale_quote_s = 300
+maker_fee = "0.0002"
+taker_fee = "0.0005"
+slippage_bps = "2"
+starting_balance_usd = "10000"
+leverage = "2"
+
+[risk]                               # every value written out, none left to a default
+max_order_notional = "20000"
+max_leverage = "2"
+max_total_exposure = "20000"
+risk_per_trade = "0.005"
+maintenance_margin_rate = "0.01"
+min_liq_distance_pct = "10"
+liq_stop_multiple = "3"
+stop_slippage_bps = "5"              # the sizing's assumed stop slippage, separate from slippage_bps
+
+[strategy]
+name = "donchian_scalp_r2"
+[strategy.config]                    # the demo's settings (trader/paper_strategy.py); no grid, one base run
+bar_spec = "5-MINUTE-LAST"
+entry_bars = 20
+stop_atr = "3"
+atr_period = 14
+atr_floor_mult = "1"
+time_stop_bars = 60                  # 5 hours of 5 minute bars
+ema_period = 200                     # the trend filter's EMA
+entry_offset_atr = "0.5"             # the maker entry limit, this many ATR behind the signal close
+entry_wait_bars = 3                  # bar closes the entry rests before its remainder is cancelled
+exit_wait_bars = 3                   # bar closes a planned exit rests at the touch before it goes to market
+atr_min_bps = "10"                   # the volatility floor: skip an entry whose ATR is under 10 bps of the close
+
+[study]
+name = "donchian_scalp_r2"
+lab = "candle"
+seed = 42                            # the gate's bootstrap seed

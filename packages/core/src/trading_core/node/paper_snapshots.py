@@ -1,13 +1,14 @@
-"""The ``position`` and ``account`` snapshot data the trader publishes every second (spec 0006 AC-16).
+"""The ``positions`` and ``account`` snapshot data the trader publishes every second (spec 0006 AC-16).
 
-Money and prices are strings of ``Decimal`` so the dashboard never parses a float. Each
-reader returns None until it knows something (no quote, no account yet), and the snapshot
-writer skips that round.
+Money and prices are strings of ``Decimal`` so the dashboard never parses a float. ``positions``
+holds one entry per coin (spec 0025 AC-21); a coin without a quote yet is ``unknown`` and never
+blanks the others. ``account`` returns None until the account exists, and the snapshot writer
+skips that round.
 """
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from decimal import Decimal
-from typing import Protocol
+from typing import Final, Protocol
 
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.model.enums import PositionSide
@@ -54,9 +55,26 @@ def _mid(cache: Cache, instrument_id: InstrumentId) -> Decimal | None:
     return mid
 
 
-def _cents(value: Decimal | None) -> Decimal | None:
-    """An average price for display, at cents: the division leaves more digits than any fill had."""
-    return None if value is None else value.quantize(Decimal("0.01"))
+CENT: Final = Decimal("0.01")
+
+
+def _rounded(value: Decimal | None, tick: Decimal) -> Decimal | None:
+    """An average price for display, at the smaller of a cent and the tick.
+
+    The division leaves more digits than any fill had. BTC stays at cents; PEPE, priced far
+    below a cent, keeps its digits (spec 0025 AC-21).
+    """
+    return None if value is None else value.quantize(min(CENT, tick))
+
+
+def _base(cache: Cache, instrument_id: InstrumentId) -> str | None:
+    instrument = cache.instrument(instrument_id)
+    return None if instrument is None else instrument.base_currency.code
+
+
+def _tick(cache: Cache, instrument_id: InstrumentId) -> Decimal:
+    instrument = cache.instrument(instrument_id)
+    return CENT if instrument is None else instrument.price_increment.as_decimal()
 
 
 def _unrealized(cache: Cache, instrument_id: InstrumentId, mark: Decimal) -> Decimal:
@@ -69,25 +87,28 @@ def _unrealized(cache: Cache, instrument_id: InstrumentId, mark: Decimal) -> Dec
     return total
 
 
-def position_snapshot(
-    cache: Cache, instrument_id: InstrumentId, strategy: PaperStrategyView
-) -> Mapping[str, object] | None:
-    """``{env}:snapshot:position``: the open position with its stop and exit time, or flat with the mark."""
+def position_snapshot(cache: Cache, instrument_id: InstrumentId, strategy: PaperStrategyView) -> Mapping[str, object]:
+    """One coin's ``positions`` entry: open with its stop and exit time, flat with the mark, or ``unknown``.
+
+    ``unknown`` means no quote yet; the entry then holds only ``instrument_id``, ``base``, and ``side``.
+    """
+    base = _base(cache, instrument_id)
     mark = _mid(cache, instrument_id)
     if mark is None:
-        return None
+        return {"instrument_id": instrument_id.value, "base": base, "side": "unknown"}
     positions = cache.positions_open(instrument_id=instrument_id)
     if not positions:
-        return {"instrument_id": instrument_id.value, "side": "flat", "mark_px": str(mark)}
+        return {"instrument_id": instrument_id.value, "base": base, "side": "flat", "mark_px": str(mark)}
     position = positions[0]
     facts = position_facts(position)
     stop = strategy.stop_order()
     trigger = None if stop is None else getattr(stop, "trigger_price", None)
     return {
         "instrument_id": instrument_id.value,
+        "base": base,
         "side": "long" if position.side == PositionSide.LONG else "short",
         "quantity": str(facts.quantity),
-        "avg_entry_px": str(_cents(weighted_avg(facts.opening))),
+        "avg_entry_px": str(_rounded(weighted_avg(facts.opening), _tick(cache, instrument_id))),
         "mark_px": str(mark),
         "unrealized_pnl": str(_unrealized(cache, instrument_id, mark)),
         "stop_px": None if trigger is None else str(trigger.as_decimal()),
@@ -98,22 +119,37 @@ def position_snapshot(
     }
 
 
-def paper_status(gate: PauseGate, blocks: EntryBlocks, backlog: int, strategy: PaperStrategyView) -> PaperStatus:
-    """The paper loop's ``trader_state`` fields: blocks plus pause, the recording backlog, the exit state."""
+def positions_snapshot(cache: Cache, coins: Sequence[tuple[InstrumentId, PaperStrategyView]]) -> Mapping[str, object]:
+    """``{env}:snapshot:positions``: one entry per coin, in the order of ``coins`` (sorted by the caller)."""
+    return {"coins": [position_snapshot(cache, instrument_id, view) for instrument_id, view in coins]}
+
+
+def paper_status(
+    gate: PauseGate, blocks: EntryBlocks, backlog: int, strategies: Sequence[PaperStrategyView]
+) -> PaperStatus:
+    """The paper loop's ``trader_state`` fields: blocks plus pause, the recording backlog, the exit state.
+
+    ``exiting`` is true while any coin exits; ``position_opened_ns`` is the earliest open position's.
+    """
+    opened = [ns for ns in (view.position_opened_ns for view in strategies) if ns is not None]
     return PaperStatus(
         entries_blocked=entries_blocked(blocks, gate.paused, gate.halted),
         recording_backlog=backlog,
-        exiting=strategy.exiting,
-        position_opened_ns=strategy.position_opened_ns,
+        exiting=any(view.exiting for view in strategies),
+        position_opened_ns=min(opened, default=None),
         entries_blocked_since=blocks.since(),
     )
 
 
 def account_snapshot(
-    portfolio: Portfolio, cache: Cache, instrument_id: InstrumentId, currency: Currency
+    portfolio: Portfolio, cache: Cache, instrument_ids: Sequence[InstrumentId], currency: Currency
 ) -> Mapping[str, object] | None:
-    """``{env}:snapshot:account``: balances in ``currency`` and equity (balance plus unrealized P&L)."""
-    account = portfolio.account(instrument_id.venue)
+    """``{env}:snapshot:account``: balances in ``currency`` and equity (balance plus unrealized P&L).
+
+    The unrealized P&L sums every coin's open positions, each at its own coin's mid; a coin with no
+    mid yet adds nothing. All coins share one venue, so the account is one.
+    """
+    account = portfolio.account(instrument_ids[0].venue)
     if account is None:
         return None
     total = account.balance_total(currency)
@@ -121,8 +157,11 @@ def account_snapshot(
         return None
     free = account.balance_free(currency)
     locked = account.balance_locked(currency)
-    mark = _mid(cache, instrument_id)
-    unrealized = Decimal(0) if mark is None else _unrealized(cache, instrument_id, mark)
+    unrealized = Decimal(0)
+    for instrument_id in instrument_ids:
+        mark = _mid(cache, instrument_id)
+        if mark is not None:
+            unrealized += _unrealized(cache, instrument_id, mark)
     return {
         "balance_total": str(total.as_decimal()),
         "balance_free": str(Decimal(0) if free is None else free.as_decimal()),

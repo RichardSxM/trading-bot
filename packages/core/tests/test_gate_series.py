@@ -1,4 +1,4 @@
-"""covers: spec 0015 AC-6 (daily returns per lab, the daily Sharpe, and its rounding)."""
+"""covers: spec 0015 AC-6 (daily returns per lab, the ruin rule, the daily Sharpe, and its rounding)."""
 
 import math
 from datetime import date, timedelta
@@ -31,6 +31,33 @@ def test_a_replay_series_measures_each_day_against_the_starting_balance():
 
     assert series.returns == pytest.approx((0.01, -0.01))
     assert series.net_pnl == (Decimal(10), Decimal(-10))
+
+
+def test_a_chained_series_scores_its_ruin_day_minus_one_and_zero_after():
+    series = daily_series(_rows(["400", "-0.02", "-5", "10"]), Decimal(1000), chained=True)
+
+    assert series.returns == pytest.approx((-0.6, -1.0, 0.0, 0.0))
+    assert series.returns[1] == -1.0
+    assert series.ruined_on == START + timedelta(days=1)
+    assert series.compounded() == pytest.approx(-1.0)
+    assert series.total_net() == Decimal(10) - Decimal(1000)
+    assert series.between(START + timedelta(days=2), START + timedelta(days=3)).ruined_on is None
+    assert series.between(START, START + timedelta(days=1)).ruined_on == START + timedelta(days=1)
+
+
+def test_a_close_of_exactly_zero_is_ruin():
+    series = daily_series(_rows(["0", "50"]), Decimal(1000), chained=True)
+
+    assert series.returns == (-1.0, 0.0)
+    assert series.ruined_on == START
+
+
+def test_a_replay_day_loses_at_most_everything_and_the_next_day_starts_fresh():
+    series = daily_series(_rows(["-200", "1010"]), Decimal(1000), chained=False)
+
+    assert series.returns == pytest.approx((-1.0, 0.01))
+    assert series.net_pnl == (Decimal(-1200), Decimal(10))
+    assert series.ruined_on is None
 
 
 def test_sharpe_is_mean_over_sample_std_and_annualizes_with_root_365():
