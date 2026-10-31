@@ -1,6 +1,6 @@
 """covers: spec 0026 AC-17 (``donchian_scalp_r2`` registered as a candle screen in the scalping family, and its two
-study files and their two ``_v2`` reruns, each r1's matching file with the r2 name and the four maker lines spelled
-out).
+study files and their ``_v2`` and ``_v3`` reruns, each r1's matching file with the r2 name and the four maker lines
+spelled out).
 """
 
 import tomllib
@@ -17,7 +17,15 @@ from .test_intraday_trend_candidates import STUDIES, _month_with_empty_windows, 
 
 D = Decimal
 MAKER_LINES = {"entry_offset_atr": "0.5", "entry_wait_bars": 3, "exit_wait_bars": 3, "atr_min_bps": "10"}
-R2_EXITS = {"midline_exit", "time_stop", "stop_through", "late_entry_fill", "range_end", "liquidated"}
+R2_EXITS = {
+    "midline_exit",
+    "time_stop",
+    "stop_through",
+    "stop_residual",
+    "late_entry_fill",
+    "range_end",
+    "liquidated",
+}
 
 
 def test_r2_is_a_candle_screen_in_the_scalping_family():
@@ -36,6 +44,9 @@ def test_r2_is_a_candle_screen_in_the_scalping_family():
         # the reruns after the AC-5 amendment (AC-17 amended 2026-10-31): the same plan under a new name
         ("donchian_scalp_r2_v2", "donchian_scalp_r1"),
         ("donchian_scalp_r2_pepe_v2", "donchian_scalp_r1_pepe"),
+        # the reruns after the AC-5 stop residual amendment (AC-17 amended again 2026-10-31)
+        ("donchian_scalp_r2_v3", "donchian_scalp_r1"),
+        ("donchian_scalp_r2_pepe_v3", "donchian_scalp_r1_pepe"),
     ],
 )
 def test_each_study_is_r1_s_file_with_the_r2_name_and_the_maker_lines(r2, r1):

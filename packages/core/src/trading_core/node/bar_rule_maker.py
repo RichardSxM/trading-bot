@@ -93,6 +93,7 @@ log = logging.getLogger(__name__)
 TIME_STOP: Final = "time_stop"
 STOP_THROUGH: Final = "stop_through"
 LATE_ENTRY_FILL: Final = "late_entry_fill"
+STOP_RESIDUAL: Final = "stop_residual"
 BAD_SIGNAL: Final = "bad_signal"
 NS_PER_S: Final = 1_000_000_000
 STOP_ACCEPT_TIMEOUT_NS: Final = 5 * NS_PER_S
@@ -569,13 +570,18 @@ class MakerBarRuleStrategy(KfsStrategy, StaleQuoteBlock):
             self._sync_stop()
 
     def on_order_filled(self, event: OrderFilled) -> None:
-        """Entry fills rest or follow the stop (AC-5); a retired entry's fill closes at once (AC-10)."""
+        """Entry fills rest or follow the stop (AC-5); a retired entry's fill closes at once (AC-10).
+
+        A stop that filled short of the position closes the rest at market (AC-5).
+        """
         if event.client_order_id in self._retired:
             self._close_late_fill(event)
         elif event.client_order_id == self._entry_id:
             self._on_entry_fill(event)
         elif event.client_order_id == self._exit_limit_id and self._position() is not None:
             self._sync_stop()  # a part filled exit limit: the stop shrinks to the rest
+        elif event.client_order_id == self._stop_id:
+            self._sync_stop()  # a stop that filled short of the position closes the rest (AC-5)
 
     def _on_entry_fill(self, event: OrderFilled) -> None:
         entry = self.cache.order(event.client_order_id)
@@ -761,10 +767,14 @@ class MakerBarRuleStrategy(KfsStrategy, StaleQuoteBlock):
 
     def _sync_stop(self) -> None:
         # The stop follows the position's quantity (ScalpStrategy's rule): skipped while in flight, triggered,
-        # or already being changed; a stop no longer open fails closed, unless a market close is under way.
+        # or already being changed; a stop no longer open fails closed, unless a market close is under way,
+        # and a stop that filled short of the position closes the rest (AC-5).
         position = self._position()
         stop = self._stop_order()
         if position is None or stop is None or stop.is_inflight:
+            return
+        if stop.status == NautilusOrderStatus.FILLED:
+            self._stop_residual(stop, position)
             return
         if stop.is_closed:
             if not self._closing_at_market():
@@ -796,6 +806,36 @@ class MakerBarRuleStrategy(KfsStrategy, StaleQuoteBlock):
         self._block_stop_not_accepted(self._stop_id, why, self.entry_decision)
         self._stop_id = None  # forgotten, so no later event or bar close fails it again
         self._close_unprotected()
+
+    def _stop_residual(self, stop: Order, position: Position) -> None:
+        # The stop filled for less than the position (its last resize was still in flight): handled once,
+        # since the stop id is forgotten. The rest closes at market under its own exit decision, with no block.
+        self._cancel_timer(_STOP_ACCEPT)
+        self._stop_id = None
+        self.phase = Phase.EXITING
+        self._retire_entry()
+        if self._closing_at_market():
+            return
+        self._cancel_exit_limit()
+        residual = position.quantity.as_decimal()
+        log.info(
+            "stop filled short of the position; closing the rest",
+            extra={"fields": {"code": STOP_RESIDUAL, "residual_qty": str(residual)}},
+        )
+        inputs: JsonObject = {
+            "stop_client_order_id": str(stop.client_order_id),
+            "stop_filled_qty": stop.filled_qty.as_decimal(),
+            "residual_qty": residual,
+            "entry_px": self._entry_px,
+            "bars_held": self.bars_held,
+        }
+        decision = uuid.uuid7()
+        closing = OrderSide.SELL if position.side == NautilusPositionSide.LONG else OrderSide.BUY
+        self._record_decision(
+            decision, Intent.EXIT, closing, STOP_RESIDUAL, inputs, True, None, self.clock.timestamp_ns()
+        )
+        self._exit_decision = decision
+        self._submit_exit()
 
     def _close_unprotected(self) -> None:
         # The position has no stop: retire the entry and close at market, unless a market close is under way.

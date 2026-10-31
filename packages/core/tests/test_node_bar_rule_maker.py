@@ -470,6 +470,114 @@ def test_a_stop_fill_while_the_exit_limit_rests_closes_with_no_market_order():
     assert strategy.phase == Phase.FLAT
 
 
+# A stop that filled short of the position (AC-5, amended 2026-10-31) ---------------------------------------
+# On FILL_DROP the price falls through the stop at 12:09: a stop sized for half the position, whose resize
+# never goes out (as when it was still in flight at the trigger), fills and leaves the other half open.
+
+TWO_LONGS_DROP = {5: (Side.LONG, 100), 12: (Side.LONG, 100)}  # the second shows that entries go on
+
+
+class _HalfStop(MakerBarRuleStrategy):
+    """Its stop goes out for half the position, and is never resized."""
+
+    def _submit_stop(self, position):
+        half = self._instrument().make_qty(position.quantity.as_decimal() / 2)
+        order = self.order_factory.stop_market(
+            self._instrument_id,
+            OrderSide.SELL,
+            half,
+            trigger_price=Price(self._stop_px, 0),
+            reduce_only=True,
+            time_in_force=TimeInForce.GTC,
+        )
+        self._stop_id = order.client_order_id
+        self.submit_order(order)
+
+    def modify_order(self, order, quantity=None, price=None, trigger_price=None, client_id=None, params=None):
+        if order.client_order_id == self._stop_id:
+            return
+        super().modify_order(order, quantity, price, trigger_price, client_id, params)
+
+
+class _HalfStopSeenAtTheBar(_HalfStop):
+    """Misses its stop's fill, so the next bar close finds the rest."""
+
+    def on_order_filled(self, event):
+        if event.client_order_id != self._stop_id:
+            super().on_order_filled(event)
+
+
+class _HalfStopUnderTheKillSwitch(_HalfStop):
+    """The kill switch's close goes out just before the stop's fill reaches the strategy."""
+
+    def on_order_filled(self, event):
+        if event.client_order_id == self._stop_id:
+            self.flatten(HALT_ID)
+        super().on_order_filled(event)
+
+
+def _residuals(rows):
+    return [d for d in _decisions(rows) if d.reason == "stop_residual"]
+
+
+@pytest.mark.parametrize("strategy_cls", [_HalfStop, _HalfStopSeenAtTheBar])
+def test_a_stop_filled_short_of_the_position_closes_the_rest_at_market_with_no_block(strategy_cls, caplog):
+    with caplog.at_level(logging.INFO):
+        engine, strategy, rows = _run(
+            Script(entries=TWO_LONGS_DROP), prices=FILL_DROP, strategy_cls=strategy_cls, minutes=16
+        )
+
+    [stop] = _orders(engine, OrderType.STOP_MARKET)
+    [residual] = _residuals(rows)
+    [market] = _orders(engine, OrderType.MARKET)
+    entry = _entry(engine)
+    assert stop.status == OrderStatus.FILLED
+    assert (residual.intent, residual.risk_verdict) == (Intent.EXIT, RiskVerdict.APPROVED)
+    assert residual.inputs["stop_client_order_id"] == str(stop.client_order_id)
+    assert D(str(residual.inputs["stop_filled_qty"])) == stop.filled_qty.as_decimal()
+    assert D(str(residual.inputs["residual_qty"])) == entry.filled_qty.as_decimal() - stop.filled_qty.as_decimal()
+    assert {"entry_px", "bars_held"} <= set(residual.inputs)
+    assert (market.quantity.as_decimal(), market.is_reduce_only) == (D(str(residual.inputs["residual_qty"])), True)
+    assert market.tags == [f"{DECISION_TAG}{residual.id}"]
+    assert market.status == OrderStatus.FILLED
+    assert _risk_events(rows) == []
+    assert not strategy._blocks.active()
+    assert ("stop_residual", None) in _codes(caplog)
+    second = _decisions(rows)[-1]
+    assert (second.intent, second.decided_ns) == (Intent.ENTER, _at(12))
+    assert not (second.risk_reason or "").startswith("blocked:")
+
+
+def test_a_stop_filled_short_during_a_kill_switch_close_adds_nothing():
+    engine, strategy, rows = _run(Script(entries=LONG), prices=FILL_DROP, strategy_cls=_HalfStopUnderTheKillSwitch)
+
+    assert _residuals(rows) == []
+    [close] = _orders(engine, OrderType.MARKET)
+    assert f"{HALT_TAG}{HALT_ID}" in close.tags
+    assert engine.cache.positions_open() == []
+    assert not strategy._blocks.active()
+
+
+class _CancelsItsStop(MakerBarRuleStrategy):
+    """Cancels its own stop at the first bar close in the position, with no close in progress."""
+
+    def on_bar(self, bar):
+        stop = self._stop_order()
+        if stop is not None and stop.is_open and self.bars_held >= 1:
+            self.cancel_order(stop)
+        super().on_bar(bar)
+
+
+def test_a_stop_cancelled_with_no_close_in_progress_still_blocks():
+    engine, strategy, rows = _run(Script(entries=LONG), prices=FILL_FLAT, strategy_cls=_CancelsItsStop)
+
+    assert len(_stop_blocks(rows)) == 1
+    assert BlockReason.STOP_NOT_ACCEPTED in strategy._blocks.active()
+    assert _residuals(rows) == []
+    [market] = _orders(engine, OrderType.MARKET)
+    assert market.status == OrderStatus.FILLED
+
+
 # Market only paths and one order in flight (AC-9, AC-10) ------------------------------------
 
 
