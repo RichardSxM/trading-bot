@@ -45,6 +45,15 @@ trading_core.node.untrusted 83451616d6433f9f6d3d9b1a329ec7ff2c9a956821d537e76ad9
 trading_core.node.vwap_retest 44083de39ddf9f1b452b041dc81f1017ea3ee070315104e4131f52789fefdc52
 ```
 
+### Close out check (task 6)
+
+The same tool on a `git archive` of ccaa75d, in `kfs/lab:s0026`: 40 modules. The only lines not in the baseline are the two new ones below. With them taken out, the list matches the baseline line for line, with the same sha256 (`654edb45…`). The ruin fix's edit to `trading_core/gate/series.py` sits in no node closure. AC-15 passes.
+
+```
+trading_core.node.bar_rule_maker 134ee61a670e72b4ebb49cb4a1a321d9d799f148c8cad088a01e3b04c2955be8
+trading_core.node.donchian_scalp_r2 dc96df87a2bab7c152e7d7d1184e1d72aa88784c954d757154598e90c08eced2
+```
+
 ## Spike (task 2, *Spike first*)
 
 `scripts/spikes/maker_spike.py`, run in `kfs/lab:s0025p` on 2026-10-31. Two venues, each fed scripted PF_XBTUSD quotes (spread 1 tick): **lab** is the candle lab's own `make_candle_engine`; **sandbox** is a backtest venue built from the demo trader's `sandbox_exec_client` settings, which are the same `SimulatedExchange` arguments the Nautilus sandbox client passes (L1 book, quotes only, no latency, reduce only checks on), with quotes through `deep_quote`. The live sandbox client itself was not driven: it wraps this same matching engine, so the events are the same.
