@@ -51,3 +51,7 @@ A few smaller calls were made in the spec:
 - **The tolerance of one cent per position** covers Nautilus rounding each position's realized P&L to the currency's precision. The runner up, an exact match, would fail on every real range.
 - **One mode per file, and a range that ends yesterday at the latest** came out of the cross check. Mixing paper and real money gave a meaningless tax total. An open day's rows could change their EUR amount once that day's rate was published.
 - **Monthly chunks with a validate pass** keep memory flat and still allow a 409 before streaming starts. The runner up, building the file in memory, is simpler but grows with the range.
+
+## Amendments
+
+- **2026-10-31, AC-15 empty 200.** The first `/check verify` found `fx_fetch_failed` (parse, missing column) logged every hour on a Saturday. The ECB had answered 200 `text/csv` with an empty body, not the 404 AC-15 expected. AC-15, the alerter request line, and the fetcher test line now treat a blank or whitespace only 200 body like a 404: zero rows, nothing logged. A 200 with a body that fails to parse still logs `fx_fetch_failed`, so a real format change keeps failing closed. Built in 2a0dbc9.

@@ -131,7 +131,7 @@ class FxFetcher:
         return rows[-1].rate_date
 
     async def _fetch(self, start: date, end: date) -> list[FxRateRow]:
-        """The parsed rows for ``start`` to ``end``; empty on a 404 or any logged failure."""
+        """The parsed rows for ``start`` to ``end``; empty on a 404, an empty 200, or any logged failure."""
         try:
             response = await self._http.get(ecb_url(self._base_url, start, end), timeout=TIMEOUT_S)
         except httpx.HTTPError as exc:
@@ -141,6 +141,8 @@ class FxFetcher:
             return []
         if response.status_code != httpx.codes.OK:
             _failed("status", status=response.status_code)
+            return []
+        if not response.text.strip():  # the ECB also answers a period with no observations with an empty 200
             return []
         try:
             return parse_ecb_csv(response.text, start, end)
