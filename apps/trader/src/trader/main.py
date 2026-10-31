@@ -57,7 +57,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from trader import paper_strategy
 from trader.coin_blocks import coin_blocks
 from trader.instrument_check import InstrumentCheck
-from trader.paper_strategy import StrategySettings, build_paper_strategy, paper_version
+from trader.paper_strategy import SEEDED_STRATEGIES, StrategySettings, build_paper_strategy, paper_version
 from trader.snapshot_writer import log_writer_crash, write_heartbeats, write_snapshot
 from trader.warmup import warmup_seeds
 from trading_core import env_guard
@@ -69,7 +69,6 @@ from trading_core.control.pause import pause_key
 from trading_core.control.records import PostgresCommandRecorder
 from trading_core.env_guard import SANDBOX, ExecClientAllowlist, allowed_exec_clients
 from trading_core.naming import node_id
-from trading_core.node import donchian_scalp_r1
 from trading_core.node.context_feed import ContextFeedActor, ContextFeedConfig
 from trading_core.node.control import (
     ControlActor,
@@ -641,7 +640,8 @@ def run_node(
     every env a watchdog stops the node, and this returns 1 with no backoff, when the trader is
     not running ``RECONCILE_NAUTILUS_TIMEOUT_S`` + 30 s after the build (AC-5).
 
-    ``seeds`` is ``donchian_scalp_r1``'s warmup candles per coin, fetched before the node (spec 0025 AC-7).
+    ``seeds`` is ``donchian_scalp_r1``'s or ``donchian_scalp_r2``'s warmup candles per coin, fetched before the node
+    (spec 0025 AC-7, spec 0026 AC-16).
     """
     env = settings.trading_env
     if env == "live" and exchange is None:
@@ -1041,8 +1041,8 @@ def main() -> None:
             sys.exit(1)
 
     # Before the node exists, never on its event loop; a failure is an empty seed and a warning (spec 0025 AC-9).
-    r1 = paper is not None and settings.paper_strategy == donchian_scalp_r1.STRATEGY_NAME
-    seeds = warmup_seeds(settings.instrument_list) if r1 else {}
+    seeded = paper is not None and settings.paper_strategy in SEEDED_STRATEGIES
+    seeds = warmup_seeds(settings.instrument_list) if seeded else {}
 
     code = run_node(
         config,

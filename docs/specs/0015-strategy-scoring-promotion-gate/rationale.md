@@ -79,6 +79,10 @@ Task 12 showed that `[study].entry_mode` never reached the version config, becau
 - **Entry mode joins the version config (chosen, AC-25).** AC-1 already says any config value that changes behavior changes the hash, and entry mode changes every fill. Runner up: key the holdout spent check on hash plus mode. It is smaller, but the paper and live guards match on `frozen_hash` alone, so they could not tell a promoted taker version from an unpromoted maker one. Rejected: one entry mode per strategy, which throws away the maker versus taker comparison that replay studies exist for.
 - **Deploy checks the promotion before any change (chosen, AC-26).** The guard stays strict and manual promotion stays a deliberate typed step, but a missing promotion becomes an exit 4 refusal with the exact command, instead of a pause, a failed health gate, and a 460 s rollback. Runner up: keep it manual and documented, which works but costs a rollback on every closure change. Rejected: shrinking the closure (leaving `recording/` out), because a change there can change what gets recorded and so what evidence the gate sees, which is exactly what the hash is meant to catch.
 
+### Ruin (2026-10-31 amendment, spec 0026)
+
+A candle run in spec 0026 closed a day below zero equity, and the chained return after it was undefined, so `daily_series` raised and the lab wrote no run. A day's return is now never below −100 %. In a chained series the first day at or below zero is −100 % and later days are 0, since nothing is left to lose; days stay in the series so folds line up. No new gate reason: a ruined run fails on its figures. The pure gate never logs, so `DailySeries.ruined_on` tells the lab, which logs `equity_ruined`. Reasoning and runners up are in spec 0026's rationale.
+
 ### Threshold provenance (v1, fixed 2026-10-19 before any candidate result)
 
 | Threshold | Value | Why |

@@ -34,6 +34,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 24 | Imbalance fade candidate | Slice 7 | done |
 | 25 | Multi coin portfolio | Slice 7 | done |
 | 26 | Donchian scalp r1 | Slice 7 | in-progress |
+| 27 | Donchian scalp r2 | Slice 7 | in-progress |
 | 17 | Hour level strategy candidates | Slice 7 | in-progress |
 | 18 | Trade journal export | Slice 8 | planned |
 | 19 | Go live with small capital | Slice 9 | planned |
@@ -487,6 +488,23 @@ spec [0025](../specs/0025-donchian-scalp-r1/index.md) · code in [donchian_midli
 - [ ] Test it: `/test donchian scalp r1`
 - [ ] Review it (fresh model): `/check review donchian scalp r1`
 - [ ] Document it: `/document donchian scalp r1`
+
+### 27. Donchian scalp r2 · in-progress
+r1's signals traded with maker orders, from the exit and maker studies of 2026-10-31: the entry rests as a post only limit 0.5 ATR behind the signal close for 3 bars, the midline exit and the time stop rest at the touch for 3 bars and then go to market, and entries are skipped when ATR is below 10 bps of price. The stop and every forced close stay market. A new maker base sits beside the frozen `BarRuleStrategy`. Screened on BTC and PEPE, then it replaces r1 on demo whatever the verdict. From spec 0025's results.
+**Done when:** the BTC and PEPE screens are recorded with the entry fill share and maker exit share, no existing strategy's hash moved, the VPS demo runs `donchian_scalp_r2` on both coins with a working seed, and one demo week of fill and fallback counts is recorded.
+spec [0026](../specs/0026-donchian-scalp-r2/index.md)
+
+- [x] Design it (spec): `/architect donchian scalp r2`
+- [ ] Build it: `/develop donchian scalp r2`
+  - [x] Hash baseline, spike, and thin thread: maker base with entry and stop, r2 node, trader wiring, laptop smoke (AC-1 to AC-4, AC-14 to AC-16)
+  - [x] Order paths: partial fills, post only rejection, maker exit and fallback, kill switch, restart (AC-5 to AC-12)
+  - [x] Filters and seed: volatility floor, spread check, seed join (AC-13, AC-14, AC-16)
+  - [ ] Lab screens: registry, two study files, `maker_figures.py`, `verify.md` table (AC-17)
+  - [ ] Close out, demo switch, and demo week (AC-15, AC-18)
+- [ ] Verify it: `/check verify donchian scalp r2`
+- [ ] Test it: `/test donchian scalp r2`
+- [ ] Review it (fresh model): `/check review donchian scalp r2`
+- [ ] Document it: `/document donchian scalp r2`
 
 ### 17. Hour level strategy candidates · in-progress
 The fallback set: trend following and mean reversion on 1h to 4h candles, tested in the candle lab.

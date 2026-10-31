@@ -4,7 +4,9 @@
 ``donchian_4h`` is the candle lab's best rule (spec 0020.3), at the grid point the ``donchian_4h_pair`` study
 chose (spec 0022 *Results*). ``donchian_scalp`` is the same rule and point on 5 minute bars, for quicker
 trades. ``donchian_scalp_r1`` (spec 0025) adds an EMA 200 trend filter, a midline exit, and a spread check,
-and is seeded from Kraken's candles at start (``trader.warmup``). None passed the gate, so on demo each paper
+and is seeded from Kraken's candles at start (``trader.warmup``). ``donchian_scalp_r2`` (spec 0026) trades r1's
+signals with maker orders and skips entries when ATR is small next to the fee, with the same seed. None passed
+the gate, so on demo each paper
 trades only after a manual ``candidate → paper`` promote; live never runs them (the config builders refuse).
 They build their own bars from trades, so without a seed they need about 21 bars after every start before
 the first entry (3.5 days on 4 hours, under 2 hours on 5 minutes), and r1 about 200 (17 hours).
@@ -22,11 +24,20 @@ from nautilus_trader.model.orders import Order
 from pydantic import model_validator
 
 from trading_core import versioning
-from trading_core.node import donchian_4h, donchian_scalp, donchian_scalp_r1, placeholder
+from trading_core.node import (
+    bar_rule_maker,
+    donchian_4h,
+    donchian_scalp,
+    donchian_scalp_r1,
+    donchian_scalp_r2,
+    placeholder,
+)
 from trading_core.node.bar_rule import BarRuleStrategy, Phase
+from trading_core.node.bar_rule_maker import MakerBarRuleStrategy
 from trading_core.node.donchian_4h import Donchian4h, Donchian4hConfig
 from trading_core.node.donchian_scalp import DonchianScalp, DonchianScalpConfig
 from trading_core.node.donchian_scalp_r1 import DonchianScalpR1, DonchianScalpR1Config
+from trading_core.node.donchian_scalp_r2 import DonchianScalpR2, DonchianScalpR2Config
 from trading_core.node.funding import FundingLedger
 from trading_core.node.kraken import BTC_PERP
 from trading_core.node.paper_snapshots import PaperStrategyView
@@ -40,7 +51,9 @@ from trading_core.strategy.bar_rule import BarInput
 from trading_core.strategy.blocks import EntryBlocks
 from trading_core.versioning import FrozenHashes
 
-type PaperStrategyName = Literal["placeholder_timed", "donchian_4h", "donchian_scalp", "donchian_scalp_r1"]
+type PaperStrategyName = Literal[
+    "placeholder_timed", "donchian_4h", "donchian_scalp", "donchian_scalp_r1", "donchian_scalp_r2"
+]
 
 # The donchian_4h_pair study's chosen grid point (spec 0022 Results: grid-2), also used by donchian_scalp.
 DONCHIAN_ENTRY_BARS: Final = 20
@@ -52,6 +65,15 @@ DONCHIAN_TIME_STOP_BARS: Final = 60
 # donchian_scalp_r1's additions (spec 0025): the trend EMA, and the demo's spread limit in ATRs.
 R1_EMA_PERIOD: Final = 200
 R1_SPREAD_MAX_ATR: Final = Decimal("0.1")
+# donchian_scalp_r2's additions (spec 0026); it reuses r1's EMA and spread limit.
+R2_ENTRY_OFFSET_ATR: Final = Decimal("0.5")
+R2_ENTRY_WAIT_BARS: Final = 3
+R2_EXIT_WAIT_BARS: Final = 3
+R2_ATR_MIN_BPS: Final = Decimal(10)
+# The strategies that trade more than one coin (spec 0025 AC-15, spec 0026 AC-16).
+_MULTI_COIN: Final = (donchian_scalp_r1.STRATEGY_NAME, donchian_scalp_r2.STRATEGY_NAME)
+# The strategies the trader fetches a warmup seed for before the node (spec 0025 AC-7, spec 0026 AC-16).
+SEEDED_STRATEGIES: Final = (donchian_scalp_r1.STRATEGY_NAME, donchian_scalp_r2.STRATEGY_NAME)
 # A PAPER_INSTRUMENTS entry: a Kraken perpetual (spec 0025 AC-15).
 _PAPER_INSTRUMENT: Final = re.compile(r"PF_[A-Z0-9]+\.KRAKEN")
 
@@ -60,7 +82,7 @@ class StrategySettings(PaperLoopSettings, ContextSettings):
     """The settings a paper strategy is built from; ``TraderSettings`` adds the rest of the trader's."""
 
     paper_strategy: PaperStrategyName = "placeholder_timed"
-    # The coins it trades, comma separated, any order (spec 0025 AC-15). Only r1 trades more than one.
+    # The coins it trades, comma separated, any order (spec 0025 AC-15). Only r1 and r2 trade more than one.
     paper_instruments: str = BTC_PERP
 
     @property
@@ -76,8 +98,8 @@ class StrategySettings(PaperLoopSettings, ContextSettings):
                 raise ValueError(f"PAPER_INSTRUMENTS entry {coin!r} is not PF_<SYMBOL>.KRAKEN")
         if len(set(coins)) != len(coins):
             raise ValueError("PAPER_INSTRUMENTS holds a duplicate")
-        if len(coins) > 1 and self.paper_strategy != donchian_scalp_r1.STRATEGY_NAME:
-            raise ValueError(f"more than one PAPER_INSTRUMENTS coin needs {donchian_scalp_r1.STRATEGY_NAME}")
+        if len(coins) > 1 and self.paper_strategy not in _MULTI_COIN:
+            raise ValueError(f"more than one PAPER_INSTRUMENTS coin needs {' or '.join(_MULTI_COIN)}")
         return self
 
 
@@ -93,6 +115,19 @@ class PaperVersion:
 
 def paper_version(settings: StrategySettings) -> PaperVersion:
     """The version for ``PAPER_STRATEGY``; ``placeholder_timed``'s config is unchanged by this setting."""
+    if settings.paper_strategy == donchian_scalp_r2.STRATEGY_NAME:
+        r2_config: JsonObject = {
+            **_donchian_version_config(settings, donchian_scalp_r2.STRATEGY_NAME, donchian_scalp_r2.BAR_SPEC),
+            "ema_period": R1_EMA_PERIOD,
+            "entry_offset_atr": str(R2_ENTRY_OFFSET_ATR),
+            "entry_wait_bars": R2_ENTRY_WAIT_BARS,
+            "exit_wait_bars": R2_EXIT_WAIT_BARS,
+            "atr_min_bps": str(R2_ATR_MIN_BPS),
+            "spread_max_atr": str(R1_SPREAD_MAX_ATR),
+            "instruments": list(settings.instrument_list),
+        }
+        frozen = versioning.freeze(DonchianScalpR2.__module__, r2_config)
+        return PaperVersion(donchian_scalp_r2.STRATEGY_NAME, StrategyKind.SCALPING, r2_config, frozen)
     if settings.paper_strategy == donchian_scalp_r1.STRATEGY_NAME:
         r1_config: JsonObject = {
             **_donchian_version_config(settings, donchian_scalp_r1.STRATEGY_NAME, donchian_scalp_r1.BAR_SPEC),
@@ -285,6 +320,48 @@ def donchian_scalp_r1_config(settings: StrategySettings, run_id: UUID, instrumen
     )
 
 
+def donchian_scalp_r2_config(settings: StrategySettings, run_id: UUID, instrument_id: str) -> DonchianScalpR2Config:
+    """``donchian_scalp_r2`` (spec 0026): r1's settings plus the maker entry offset, both waits, and the ATR floor.
+
+    Its ``order_id_tag`` is the coin's symbol without ``PF_``, as r1's. Raises ``ValueError`` outside demo.
+    """
+    _demo_only(settings)
+    return DonchianScalpR2Config(
+        order_id_tag=order_id_tag(instrument_id),
+        env=settings.trading_env,
+        run_id=str(run_id),
+        instrument_id=instrument_id,
+        bar_spec=donchian_scalp_r2.BAR_SPEC,
+        entry_bars=DONCHIAN_ENTRY_BARS,
+        stop_atr=DONCHIAN_STOP_ATR,
+        atr_period=DONCHIAN_ATR_PERIOD,
+        atr_floor_mult=DONCHIAN_ATR_FLOOR_MULT,
+        time_stop_bars=DONCHIAN_TIME_STOP_BARS,
+        ema_period=R1_EMA_PERIOD,
+        entry_offset_atr=R2_ENTRY_OFFSET_ATR,
+        entry_wait_bars=R2_ENTRY_WAIT_BARS,
+        exit_wait_bars=R2_EXIT_WAIT_BARS,
+        atr_min_bps=R2_ATR_MIN_BPS,
+        spread_max_atr=R1_SPREAD_MAX_ATR,
+        max_order_notional_usd=settings.risk_max_order_notional_usd,
+        max_leverage=settings.risk_max_leverage,
+        max_total_exposure_usd=settings.risk_max_total_exposure_usd,
+        risk_per_trade=settings.risk_per_trade,
+        maintenance_margin_rate=settings.risk_maintenance_margin_rate,
+        min_liq_distance_pct=settings.risk_min_liq_distance_pct,
+        liq_stop_multiple=settings.risk_liq_stop_multiple,
+        stop_slippage_bps=settings.risk_stop_slippage_bps,
+        taker_fee=settings.sandbox_taker_fee,
+        stale_quote_s=settings.risk_stale_quote_s,
+        use_market_context=True,
+        context_max_age_mark_s=settings.context_max_age_mark_s,
+        context_max_age_index_s=settings.context_max_age_index_s,
+        context_max_age_open_interest_s=settings.context_max_age_open_interest_s,
+        context_max_age_funding_s=settings.context_max_age_funding_s,
+        context_liquidation_window_s=settings.context_liquidation_window_s,
+    )
+
+
 class BarRuleView:
     """``PaperStrategyView`` over a ``BarRuleStrategy``, read from its phase and the cache.
 
@@ -318,6 +395,40 @@ class BarRuleView:
         return None
 
 
+class MakerBarRuleView:
+    """``PaperStrategyView`` over a ``MakerBarRuleStrategy`` (spec 0026 AC-16): like ``BarRuleView``.
+
+    ``exiting`` is true while an exit limit or a market exit is working. The card shows positions only,
+    so a resting entry is not reported.
+    """
+
+    def __init__(self, strategy: MakerBarRuleStrategy) -> None:
+        self._strategy = strategy
+
+    @property
+    def exiting(self) -> bool:
+        """True while an exit limit or a market exit is working."""
+        return self._strategy.phase == bar_rule_maker.Phase.EXITING
+
+    @property
+    def position_opened_ns(self) -> int | None:
+        """When the strategy's open position opened, None while flat."""
+        positions = self._strategy.cache.positions_open(strategy_id=self._strategy.id)
+        return positions[0].ts_opened if positions else None
+
+    @property
+    def exit_due_ns(self) -> int | None:
+        """Always None: there is no fixed exit time."""
+        return None
+
+    def stop_order(self) -> Order | None:
+        """The strategy's open protective stop, if any."""
+        for order in self._strategy.cache.orders_open(strategy_id=self._strategy.id):
+            if order.order_type == OrderType.STOP_MARKET:
+                return order
+        return None
+
+
 def build_paper_strategy(
     settings: StrategySettings,
     run_id: UUID,
@@ -328,7 +439,10 @@ def build_paper_strategy(
     ledger: FundingLedger,
     seed: Sequence[BarInput] = (),
 ) -> tuple[KfsStrategy, PaperStrategyView]:
-    """The ``PAPER_STRATEGY`` strategy and the view the snapshots read from it; only r1 takes the ``seed``."""
+    """The ``PAPER_STRATEGY`` strategy and the view the snapshots read from it; only r1 and r2 take the ``seed``."""
+    if settings.paper_strategy == donchian_scalp_r2.STRATEGY_NAME:
+        r2 = DonchianScalpR2(donchian_scalp_r2_config(settings, run_id, instrument_id), gate, blocks, record, seed)
+        return r2, MakerBarRuleView(r2)
     if settings.paper_strategy == donchian_scalp_r1.STRATEGY_NAME:
         r1 = DonchianScalpR1(donchian_scalp_r1_config(settings, run_id, instrument_id), gate, blocks, record, seed)
         return r1, BarRuleView(r1)

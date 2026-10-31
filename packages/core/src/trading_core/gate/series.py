@@ -5,6 +5,10 @@ over the previous day's close, minus 1, and the first day is measured against th
 A replay run is a set of closed one day segments, each starting at the starting balance: a day's
 return is that day's net P&L over the starting balance.
 
+Ruin (amended for spec 0026): a day's return is never below -1.0. In a chained series the first day
+closing at or below zero equity is the ruin day, scored -1.0, and every later day is 0.0, because
+nothing is left to lose. The days stay in the series, so folds line up.
+
 Decimal turns into float only here, for the statistics. Sums use ``math.fsum`` over values in day
 order, so the same rows always give the same float. Anything stored goes back through ``to_decimal``,
 rounded to 6 places.
@@ -34,12 +38,16 @@ class DayEquity:
 
 @dataclass(frozen=True)
 class DailySeries:
-    """Returns per UTC day, in day order, with the trades closed and the net P&L of each day."""
+    """Returns per UTC day, in day order, with the trades closed and the net P&L of each day.
+
+    ``ruined_on`` is a chained series' ruin day (its first close at or below zero equity), else None.
+    """
 
     days: tuple[date, ...]
     returns: tuple[float, ...]
     trades: tuple[int, ...]
     net_pnl: tuple[Decimal, ...]
+    ruined_on: date | None = None
 
     def __post_init__(self) -> None:
         if not len(self.days) == len(self.returns) == len(self.trades) == len(self.net_pnl):
@@ -66,6 +74,7 @@ class DailySeries:
             returns=tuple(self.returns[i] for i in keep),
             trades=tuple(self.trades[i] for i in keep),
             net_pnl=tuple(self.net_pnl[i] for i in keep),
+            ruined_on=self.ruined_on if self.ruined_on in {self.days[i] for i in keep} else None,
         )
 
     def total_trades(self) -> int:
@@ -88,7 +97,9 @@ def daily_series(rows: Sequence[DayEquity], starting_balance: Decimal, *, chaine
     """The daily series of a run's ``run_daily_equity`` rows (any order).
 
     ``chained`` for a candle run or a paper series, else each day is its own replay segment.
-    Raises ``ValueError`` for a non positive starting balance or a non positive previous close.
+    A return is never below -1.0; a chained series scores 0.0 after its ruin day (see the module doc).
+    ``net_pnl`` stays each day's real change in equity. Raises ``ValueError`` for a non positive
+    starting balance.
     """
     if starting_balance <= 0:
         raise ValueError(f"starting balance {starting_balance} must be positive")
@@ -96,19 +107,24 @@ def daily_series(rows: Sequence[DayEquity], starting_balance: Decimal, *, chaine
     returns: list[float] = []
     net: list[Decimal] = []
     previous = starting_balance
+    ruined_on: date | None = None
     for row in ordered:
         base = previous if chained else starting_balance
-        if base <= 0:
-            raise ValueError(f"equity before {row.day} is {base}, so its return is undefined")
         change = row.equity_close - base
-        returns.append(float(change / base))
         net.append(change)
         previous = row.equity_close
+        if ruined_on is not None:
+            returns.append(0.0)
+            continue
+        returns.append(max(float(change / base), -1.0))
+        if chained and row.equity_close <= 0:
+            ruined_on = row.day
     return DailySeries(
         days=tuple(r.day for r in ordered),
         returns=tuple(returns),
         trades=tuple(r.trades_closed for r in ordered),
         net_pnl=tuple(net),
+        ruined_on=ruined_on,
     )
 
 

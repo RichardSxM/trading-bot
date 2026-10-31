@@ -52,7 +52,7 @@ from lab.report import (
 from lab.runfile import LoadedCandleRun
 from lab.settings import LabSettings
 from lab.strategies import registry_entry
-from lab.study_rows import RATIO_KIND, StudyContext, daily_equity_rows, daily_sharpe, measures_row
+from lab.study_rows import RATIO_KIND, StudyContext, daily_equity_rows, daily_sharpe, measures_row, ruin_close
 from lab.units import TRADER_ID
 from trading_core.catalog.candles import CandleTree
 from trading_core.lab.candle_metrics import (
@@ -483,6 +483,14 @@ def build_candle_bundle(
         for p in closed
     ]
     days = marked_daily(curve, batch.start_ns, batch.end_ns, run.starting_balance_usd, closed_positions, cash)
+    ruin = ruin_close(days, run.starting_balance_usd)
+    if ruin is not None:
+        log.warning(
+            "equity_ruined",
+            extra={
+                "fields": {"run_id": str(run_id), "day": ruin.day.isoformat(), "equity_close": str(ruin.equity_close)}
+            },
+        )
     run_row = RunRow(
         id=run_id,
         env=Env.DEMO,
