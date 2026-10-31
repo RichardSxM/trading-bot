@@ -44,6 +44,16 @@ trading_core.node.untrusted 83451616d6433f9f6d3d9b1a329ec7ff2c9a956821d537e76ad9
 trading_core.node.vwap_retest 44083de39ddf9f1b452b041dc81f1017ea3ee070315104e4131f52789fefdc52
 ```
 
+### Close out compare (task 11), 2026-10-31
+
+The same tool on a `git archive` of the merge commit 6f3a8ac (PR #112), run in `kfs/lab:s0025p`, prints 38 lines. Every existing strategy's line matches the baseline. Three lines differ, and the amended AC-5 rule allows each one:
+
+- `trading_core.node.donchian_scalp_r1 197e7a68b0a18dedbfe4f0bbf8e90e40dc38e3d4fc8c3ba48b6de3b052742bad` is new.
+- `trading_core.node.paper_snapshots aa5447bfac5f7b663de8f0df329a60f276b25d5abd88128d0e855eb885765a64` changed (AC-21).
+- `trading_core.node.recording f649c12c6535590139e086eac534af98b7d1cd35c91a871e8a5c47560e4a2cd8` changed (AC-18).
+
+`trading_core.node.context_feed` is unchanged. AC-5 passes.
+
 ## Build evidence (2026-10-30, /develop)
 
 - Tests at fbba014 (`kfs/*:s0025t`, dev target): core 2,046 passed, 5 skipped (this feature: 22 node, 13 rule, 19 seed check tests); trader 145 passed; lab 317 passed. mypy strict clean on every package; pre-commit clean.
@@ -83,6 +93,18 @@ Read this with care: both accounts were drained to near zero long before the end
 So the r1 minus baseline column compares two strategies that each lost the account. It does not measure the EMA filter and the midline exit over a full span. Neither change turned the gross edge per trade positive. The fee hurdle (gross per trade must exceed 1.5 times cost) fails by a wide margin for both.
 
 AC-13a (spread filter skip rate on the VPS quote ticks) is not run yet. Task 3 stays open until it is.
+
+## Demo switch (task 11, AC-14, AC-22), 2026-10-31
+
+- Deploy: PR #112 merged as 6f3a8ac. The first `scripts/deploy.sh` stopped at 06:58 UTC with nothing changed (`aborted_not_flat`, a `donchian_scalp` position open). You then chose `--now`, and 6f3a8ac went live at 07:05 UTC (08:05 Amsterdam), still running the baseline.
+- Instruments: the futures demo is gone (since 14 July 2026), so the trader loads instruments from Kraken production. Production lists `PF_PEPEUSD` as tradeable (tick 1e-10, opened 2023-05-25), and the trader loaded 223 instruments at start.
+- Version: `trader.version` on the VPS with both settings gives code hash `197e7a68…` (the r1 line above), frozen hash `cb8b9ae75b13…`, and `instruments` `[PF_PEPEUSD.KRAKEN, PF_XBTUSD.KRAKEN]`. `gate check-version` recorded it as version `01a190d3-88f5-7101-a011-d1dbfe7a6df3` (verdict `missing`), and you promoted it by hand (`gate versions` shows stage `paper`).
+- kfs.env: backed up to `kfs.env.bak-20261031-r1`, then `PAPER_STRATEGY=donchian_scalp_r1`, `PAPER_INSTRUMENTS=PF_PEPEUSD.KRAKEN,PF_XBTUSD.KRAKEN`, and `RECORDER_INSTRUMENTS=PF_PEPEUSD.KRAKEN,PF_XBTUSD.KRAKEN`. The redeploy with `--now` recreated the trader, the recorder, and the compactor, and passed its health gate at 07:56:53 UTC (08:56 Amsterdam).
+- Start: `warmup_seed_fetched` with 600 bars for each coin, and no `warmup_seed_failed`. `DonchianScalpR1-PEPEUSD` and `DonchianScalpR1-XBTUSD` were registered and running, each with a 250 USD notional cap.
+- Card data: `demo:snapshot:positions` (read with the dashboard's own ACL user, `scripts/spikes/positions_snapshot.py`) holds one entry per coin, sorted, with `base` PEPE and BTC, both `flat`, and PEPE marked at 0.0000050168 with all 10 digits.
+- Recorder (AC-22): it subscribed to PF_PEPEUSD books, trades, mark, index, and funding, and the PEPE live files appear from 07:56 UTC. Seven full days of PEPE quotes are 1 to 7 November, so task 12 can run from 8 November.
+- Still open: the first decision rows with `ema` and `midline` for each coin (decisions are written only on an entry or exit signal), a look at the Overview card in the browser, and AC-13a (see below).
+- AC-13a source: the VPS catalog holds `order_book_deltas` and `trade_tick` but no quote ticks (BTC: 554 hourly delta files from 2026-10-08, 19 GB). A spread at each bar close needs the book replayed from the deltas, which plain DuckDB cannot do.
 
 ## PEPE candles (task 10, AC-23), 2026-10-31
 
