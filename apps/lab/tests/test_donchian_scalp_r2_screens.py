@@ -1,5 +1,6 @@
 """covers: spec 0026 AC-17 (``donchian_scalp_r2`` registered as a candle screen in the scalping family, and its two
-study files, each r1's matching file with the r2 name and the four maker lines spelled out).
+study files and their two ``_v2`` reruns, each r1's matching file with the r2 name and the four maker lines spelled
+out).
 """
 
 import tomllib
@@ -28,7 +29,14 @@ def test_r2_is_a_candle_screen_in_the_scalping_family():
 
 
 @pytest.mark.parametrize(
-    ("r2", "r1"), [("donchian_scalp_r2", "donchian_scalp_r1"), ("donchian_scalp_r2_pepe", "donchian_scalp_r1_pepe")]
+    ("r2", "r1"),
+    [
+        ("donchian_scalp_r2", "donchian_scalp_r1"),
+        ("donchian_scalp_r2_pepe", "donchian_scalp_r1_pepe"),
+        # the reruns after the AC-5 amendment (AC-17 amended 2026-10-31): the same plan under a new name
+        ("donchian_scalp_r2_v2", "donchian_scalp_r1"),
+        ("donchian_scalp_r2_pepe_v2", "donchian_scalp_r1_pepe"),
+    ],
 )
 def test_each_study_is_r1_s_file_with_the_r2_name_and_the_maker_lines(r2, r1):
     with (STUDIES / f"{r2}.toml").open("rb") as f:
