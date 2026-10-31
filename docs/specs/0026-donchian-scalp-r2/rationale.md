@@ -117,6 +117,10 @@ The first BTC and PEPE screens each placed about 35 trades in their first week a
 
 Options: (1) also check the cached quote at the first fill, as spec 0017 AC-18 did first; (2) also settle a rejected stop by the cached quote or the next quote, AC-18's second and third amendments. Option 1 alone fixes the screens seen so far, but spec 0017 needed all three parts before its screens ran clean (the venue may judge the stop by a quote the strategy has not yet seen). Chosen: both, so r2 copies a rule that is already proven in this repo instead of finding the same gaps one screen at a time. Real failures (a denial, a stop not accepted in time, a stop cancelled by someone else) still fail closed with the block.
 
+### Amendment 2026-10-31: new study names for the reruns
+
+The rerun on the fixed code stopped at once: the lab stores each study by name, plan hash, and code hash, and refuses to resume a study whose code changed (exit 64, "give a new name"). That guard is right, it keeps one study from mixing runs of two versions. Options: (1) new `_v2` study files with new names; (2) delete the old studies from Postgres and reuse the names. Chosen: option 1, as spec 0017 did with its void screens. Deleting would hide two trials that did run, and the multiple testing count should include every run, so the family counts four trials, two of them invalid.
+
 ## References
 
 **Project sources**:
