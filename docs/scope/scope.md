@@ -566,7 +566,7 @@ spec [0024](../specs/0024-trade-journal-export/index.md)
   - [x] ECB rates: migration 0013 grant, `trading_core.fx.ecb` parser, `write_fx_rates`, the alerter's hourly fetch step and its settings (AC-15, AC-16, AC-18)
   - [x] Thin thread to a CSV: extended `journal_rows`, `trading_core.journal` bounds and formatting, `/trades/journal.csv` with its refusals, the bare form (AC-1 to AC-6, AC-13)
   - [x] Check panel and summary: totals, balances, the P&L check, the HTMX panel, `summary.csv` (AC-1, AC-7 to AC-11)
-  - [ ] Hardening and alert: monthly chunks, two pass stream in one snapshot, logging, auth and HTMX redirect, `fx_rates_stale`, styleguide states (AC-12, AC-14, AC-17)
+  - [x] Hardening and alert: monthly chunks, two pass stream in one snapshot, logging, auth and HTMX redirect, `fx_rates_stale`, styleguide states (AC-12, AC-14, AC-17)
   - [ ] VPS proof: rates backfilled, a demo paper export saved in `verify.md` (AC-5, AC-9, AC-11, AC-15)
 - [ ] Verify it: `/check verify trade journal export`
 - [ ] Test it: `/test trade journal export`

@@ -29,6 +29,7 @@ scripts/dashboard-credentials.sh --dev --write            # laptop: login files 
 - CSP is `'self'` only: no inline `<script>`, no `style=` attributes, no `hx-on`, nothing from another origin. Styles go in `static/css/`, behaviour in `static/js/`; JS may set styles through CSSOM or draw on a canvas.
 - Live values: one SSE connection per page, opened by `.workspace` in `shell.html`; every `sse-swap` target must sit inside it, and each event is a partial the poller (`live/poller.py`) renders and publishes only on change.
 - Third party browser assets are vendored under `static/vendor/` (or `static/fonts/`) with their licence and a `VERSIONS` line holding url and sha256.
+- Journal export (spec 0024, `web/journal.py`, `data/journal.py`): the HTMX Check endpoint always answers 200 (htmx skips 4xx and 5xx), so a refusal or a Postgres failure is a panel state; each request reads in one `REPEATABLE READ` read only transaction, and the CSV streams open their own session from the factory, never a request dependency.
 - Render money and times only through the `num`, `pnl`, and `ts` Jinja filters (`ui/format.py`): Decimals only, true minus sign, UTC with an Amsterdam tooltip.
 
 ## Agent skills
