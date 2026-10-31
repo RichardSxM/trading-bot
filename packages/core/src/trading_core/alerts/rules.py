@@ -266,6 +266,11 @@ ENGINE_ERROR: Final = Rule(
     key=lambda obs: f"engine_error:{obs.service}",
 )
 STALE_FEED: Final = _code_rule("stale_feed", Tier.WARNING, ["stale_feed"], services=_TRADER_ONLY)
+# donchian_scalp_r1 started without its seed and warms up from live bars (spec 0025 AC-9). Keyed by the
+# code alone, so a crash loop of restarts makes one alert.
+WARMUP_SEED_FAILED: Final = _code_rule(
+    "warmup_seed_failed", Tier.WARNING, ["warmup_seed_failed"], services=_TRADER_ONLY, level="WARNING"
+)
 TRADE_CAP: Final = Rule("trade_cap", Tier.INFO, RuleKind.EVENT, source="log", matches=_trade_cap, key=_event_key)
 # Live only: the engine drops it in demo (AC-8). The alerter adds the fills row's fields first.
 FILL: Final = _code_rule("fill", Tier.INFO, ["fill_seen"], services=_TRADER_ONLY, key=_subject("fill", "trade_id"))
@@ -305,6 +310,7 @@ RULES: Final[tuple[Rule, ...]] = (
     SNAPSHOT_WRITE_FAILED,
     ENGINE_ERROR,
     STALE_FEED,
+    WARMUP_SEED_FAILED,
     TRADE_CAP,
     FILL,
     ALERT_STORM,

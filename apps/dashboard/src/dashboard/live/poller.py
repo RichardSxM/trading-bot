@@ -7,7 +7,7 @@ Overview's Activity (AC-20), why entries are blocked (spec 0006 AC-18), and publ
 subscriber only when its HTML changed. With no subscriber it idles. A Redis error renders every
 partial ``no data`` and the next tick tries again.
 
-With a position renderer (spec 0006 AC-17) it also reads the ``position`` and ``account``
+With a position renderer (spec 0006 AC-17) it also reads the ``positions`` and ``account``
 snapshots every tick, and the P&L figures from Postgres at most every ``pnl_refresh_s``, off
 the event loop. A Postgres error keeps the live card and shows the figures as unavailable. With an
 exchange reader the card also shows Wanted, Trader, and Kraken (spec 0023 AC-18), the Kraken view
@@ -33,7 +33,7 @@ from dashboard.data.alerts import AlertLine
 from dashboard.data.pnl import PnlFigures
 from dashboard.live.alerts import MUTE_OFF, MuteView, merge_activity, mute_view
 from dashboard.live.position import LOST, PositionView, position_view
-from dashboard.live.sides import sides_view
+from dashboard.live.sides import Holding, SidesView, sides_view
 from dashboard.live.state import (
     COMMAND_NO_DATA,
     LOSSES_NO_DATA,
@@ -233,13 +233,10 @@ class Poller:
             partials[MUTE_EVENT] = self._render_mute(mute_view(alert_results, self._now()))
         if self._render_position is not None:
             await self._refresh_pnl()
-            raw_position, raw_account, raw_exchange = snapshots
-            view = position_view(raw_position, raw_account, self._pnl, self._clock_ns(), self._amber_s, self._red_s)
+            raw_positions, raw_account, raw_exchange = snapshots
+            view = position_view(raw_positions, raw_account, self._pnl, self._clock_ns(), self._amber_s, self._red_s)
             if self._read_exchange is not None:
-                sides = sides_view(
-                    raw_position, raw_exchange, state, self._clock_ns(), self._red_s, self._check_interval_s
-                )
-                view = dataclasses.replace(view, sides=sides)
+                view = self._with_sides(view, raw_exchange, state)
             partials[POSITION_EVENT] = self._render_position(view)
         return partials
 
@@ -266,6 +263,20 @@ class Poller:
 
     def _now(self) -> datetime:
         return datetime.fromtimestamp(self._clock_ns() / 1_000_000_000, tz=UTC)
+
+    def _with_sides(
+        self, view: PositionView, raw_exchange: str | bytes | None, raw_state: str | bytes | None
+    ) -> PositionView:
+        """Wanted, Trader, and Kraken on each coin row, or once on a card without rows (spec 0025 AC-21)."""
+        now_ns = self._clock_ns()
+
+        def sides(instrument_id: str | None, holding: Holding | None) -> SidesView:
+            return sides_view(instrument_id, holding, raw_exchange, raw_state, now_ns, self._check_interval_s)
+
+        if not view.rows:
+            return dataclasses.replace(view, sides=sides(None, None))
+        rows = tuple(dataclasses.replace(row, sides=sides(row.instrument_id, row.holding)) for row in view.rows)
+        return dataclasses.replace(view, rows=rows)
 
     def _blocked(self, view: BlockedView) -> dict[str, str]:
         partials: dict[str, str] = {}

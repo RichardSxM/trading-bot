@@ -118,6 +118,7 @@ PROMISES: Final[tuple[Promise, ...]] = (
     _line("0012", "recorder_flush_slow", "recorder_codes", "recorder", "WARNING"),
     Promise("review 2026-10-11", "recorder engine ERROR line", "engine_error", "recorder", text="[ERROR] RECORDER: x"),
     _line("scope", "fill_seen", "fill", "trader", "INFO", trade_id="T-1"),
+    _line("0025", "warmup_seed_failed", "warmup_seed_failed", "trader", "WARNING", reason="fetch_failed"),
 )
 
 PENDING: Final[Mapping[str, str]] = MappingProxyType({})

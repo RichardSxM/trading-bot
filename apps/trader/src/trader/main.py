@@ -21,7 +21,7 @@ import os
 import signal
 import sys
 import time
-from collections.abc import Awaitable, Callable, Iterator, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -55,8 +55,11 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from trader import paper_strategy
+from trader.coin_blocks import coin_blocks
+from trader.instrument_check import InstrumentCheck
 from trader.paper_strategy import StrategySettings, build_paper_strategy, paper_version
 from trader.snapshot_writer import log_writer_crash, write_heartbeats, write_snapshot
+from trader.warmup import warmup_seeds
 from trading_core import env_guard
 from trading_core.boot import boot
 from trading_core.control.consumer import ControlConsumer, Execute, Outcome
@@ -66,6 +69,7 @@ from trading_core.control.pause import pause_key
 from trading_core.control.records import PostgresCommandRecorder
 from trading_core.env_guard import SANDBOX, ExecClientAllowlist, allowed_exec_clients
 from trading_core.naming import node_id
+from trading_core.node import donchian_scalp_r1
 from trading_core.node.context_feed import ContextFeedActor, ContextFeedConfig
 from trading_core.node.control import (
     ControlActor,
@@ -83,7 +87,7 @@ from trading_core.node.key_actors import KeyAgeActor, KeyAgeConfig
 from trading_core.node.key_check import watch_key_check
 from trading_core.node.kraken import BTC_PERP, futures_data_client, futures_exec_client
 from trading_core.node.loss_limits import LossLimitActor
-from trading_core.node.paper_snapshots import account_snapshot, paper_status, position_snapshot
+from trading_core.node.paper_snapshots import PaperStrategyView, account_snapshot, paper_status, positions_snapshot
 from trading_core.node.placeholder import PlaceholderConfig
 from trading_core.node.reconcile import (
     Actions,
@@ -121,6 +125,7 @@ from trading_core.secrets import (
 )
 from trading_core.settings import LossLimitSettings, PaperLoopSettings, ReconcileSettings, Settings
 from trading_core.snapshot.envelope import snapshot_key
+from trading_core.strategy.bar_rule import BarInput
 from trading_core.strategy.blocks import EntryBlocks
 
 log = logging.getLogger("trader")
@@ -189,7 +194,8 @@ def build_config(
 
     In live it adds the Kraken execution client with the keys from the secret files.
     ``kraken_urls`` (http, ws) overrides the Kraken endpoints; only the canary leak test sets it.
-    The RiskEngine refuses any order over ``RISK_MAX_ORDER_NOTIONAL_USD`` in every env.
+    The RiskEngine refuses any order over ``RISK_MAX_ORDER_NOTIONAL_USD`` in every env, on BTC and on every
+    paper coin (spec 0025 AC-19), so no coin trades without a per order cap.
     """
     env = settings.trading_env
     exec_clients: dict[str, LiveExecClientConfig] = {}
@@ -224,7 +230,11 @@ def build_config(
         exec_engine=exec_engine_config(settings),
         risk_engine=LiveRiskEngineConfig(
             # Nautilus parses each value with Decimal(value), so the exact cap goes in as a string.
-            max_notional_per_order={BTC_PERP: str(settings.risk_max_order_notional_usd)},  # type: ignore[dict-item]
+            max_notional_per_order={
+                # The config is typed dict[str, int], but its values only ever go through Decimal().
+                coin: str(settings.risk_max_order_notional_usd)  # type: ignore[misc]
+                for coin in sorted({BTC_PERP, *settings.instrument_list})
+            },
         ),
         data_clients={KRAKEN: futures_data_client()},
         exec_clients=exec_clients,
@@ -607,6 +617,7 @@ def run_node(
     paper: PaperLoop | None = None,
     exchange: LiveExchange | None = None,
     loop: asyncio.AbstractEventLoop | None = None,
+    seeds: Mapping[str, Sequence[BarInput]] | None = None,
 ) -> int:
     """Build and run the node until it stops; return the process exit code.
 
@@ -618,15 +629,19 @@ def run_node(
     cannot connect, Nautilus never starts the trader, so an actor would never run. A failed
     check stops the node and makes this return 1 after ``fail_backoff_s``.
 
-    With ``paper`` (demo) it registers the recording actor and the ``placeholder_timed``
-    strategy after the control actor, writes the ``position`` and ``account`` snapshots, and
-    after the stop drains the recording queue and finishes the run.
+    With ``paper`` (demo) it registers the instrument check, the recording actor, and one
+    ``PAPER_STRATEGY`` strategy per ``PAPER_INSTRUMENTS`` coin after the control actor (spec 0025
+    AC-15, AC-16), writes the ``position`` and ``account`` snapshots, and after the stop drains the
+    recording queue and finishes the run. The strategies share the shared entry blocks, each through
+    its own ``CoinBlocks`` (AC-19).
 
     Every env runs the reconciliation actor before any strategy (spec 0023): against the sandbox
     in demo, against ``exchange`` (Kraken's view, required) in live, publishing the exchange
     snapshot and answering ``recheck``. ``loop`` is the event loop live's start fetch ran on. In
     every env a watchdog stops the node, and this returns 1 with no backoff, when the trader is
     not running ``RECONCILE_NAUTILUS_TIMEOUT_S`` + 30 s after the build (AC-5).
+
+    ``seeds`` is ``donchian_scalp_r1``'s warmup candles per coin, fetched before the node (spec 0025 AC-7).
     """
     env = settings.trading_env
     if env == "live" and exchange is None:
@@ -708,7 +723,7 @@ def run_node(
         ContextFeedActor(
             ContextFeedConfig(
                 ws_url=settings.context_ws_url,
-                instrument_ids=[BTC_PERP],
+                instrument_ids=settings.instrument_list,
                 reconnect_max_s=settings.context_reconnect_max_s,
                 idle_s=settings.context_idle_s,
                 lag_warn_s=settings.context_lag_warn_s,
@@ -738,13 +753,15 @@ def run_node(
         ),
     ]
     if paper is not None:
-        instrument_id = InstrumentId.from_str(BTC_PERP)
+        coins = settings.instrument_list
+        # Before the recording actor and the strategies, so a coin the venue does not list stops the start.
+        node.trader.add_actor(InstrumentCheck(coins, lambda: stop_now()))
         record = paper.writer.put
         node.trader.add_actor(
             RecordingActor(
                 env=Env(env),
                 run_id=paper.run_id,
-                instrument_id=instrument_id,
+                instrument_ids=[InstrumentId.from_str(coin) for coin in coins],
                 record=record,
                 blocks=paper.blocks,
                 maintenance_margin_rate=settings.risk_maintenance_margin_rate,
@@ -753,22 +770,36 @@ def run_node(
                 ledger=paper.ledger,
             )
         )
-        strategy, view = build_paper_strategy(
-            settings, paper.run_id, BTC_PERP, control.gate, paper.blocks, record, paper.ledger
-        )
-        node.trader.add_strategy(strategy)
+        per_coin = coin_blocks(paper.blocks, coins)
+        views: list[PaperStrategyView] = []
+        for coin in coins:
+            strategy, coin_view = build_paper_strategy(
+                settings,
+                paper.run_id,
+                coin,
+                control.gate,
+                per_coin[coin],
+                record,
+                paper.ledger,
+                () if seeds is None else seeds.get(coin, ()),
+            )
+            node.trader.add_strategy(strategy)
+            views.append(coin_view)
+        # One entry per coin in sorted order (spec 0025 AC-21); coins is already sorted.
+        instrument_ids = [InstrumentId.from_str(coin) for coin in coins]
+        coin_views = list(zip(instrument_ids, views, strict=True))
         control.kill_switch.attach(
             [s for s in node.trader.strategies() if isinstance(s, KfsStrategy)], record, paper.run_id
         )
         writer, blocks = paper.writer, paper.blocks
 
         def paper_state() -> PaperStatus:
-            return paper_status(control.gate, blocks, writer.backlog, view)
+            return paper_status(control.gate, blocks, writer.backlog, views)
 
         usd = Currency.from_str("USD")
         snapshot_readers += [
-            ("position", lambda: position_snapshot(node.cache, instrument_id, view)),
-            ("account", lambda: account_snapshot(node.portfolio, node.cache, instrument_id, usd)),
+            ("positions", lambda: positions_snapshot(node.cache, coin_views)),
+            ("account", lambda: account_snapshot(node.portfolio, node.cache, instrument_ids, usd)),
         ]
     if settings.drill_mode:
         # The only strategy in live drill mode; it acts only on a drill_step from cli (AC-22).
@@ -1009,6 +1040,10 @@ def main() -> None:
         if fetched is None:
             sys.exit(1)
 
+    # Before the node exists, never on its event loop; a failure is an empty seed and a warning (spec 0025 AC-9).
+    r1 = paper is not None and settings.paper_strategy == donchian_scalp_r1.STRATEGY_NAME
+    seeds = warmup_seeds(settings.instrument_list) if r1 else {}
+
     code = run_node(
         config,
         settings,
@@ -1017,6 +1052,7 @@ def main() -> None:
         paper=paper,
         exchange=exchange,
         loop=loop,
+        seeds=seeds,
     )
     if code:
         sys.exit(code)

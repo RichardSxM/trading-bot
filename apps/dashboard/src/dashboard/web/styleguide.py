@@ -10,7 +10,7 @@ from markupsafe import Markup
 from dashboard.data.alerts import AlertLine
 from dashboard.data.pnl import PnlFigures
 from dashboard.live.alerts import ALERTS_UNAVAILABLE, MuteView, merge_activity
-from dashboard.live.position import LOST, PositionView
+from dashboard.live.position import LOST, CoinRow, PositionView
 from dashboard.live.sides import KRAKEN_UNKNOWN, SidesView
 from dashboard.live.state import (
     COMMAND_NO_DATA,
@@ -109,27 +109,34 @@ SIDES_SAMPLES: Final[dict[str, SidesView]] = {
     "disagree": SidesView("flatten submitted", "long 0.0011", "flat", "4s", "disagree"),
     "unknown": SidesView("hold", "long 0.0011", KRAKEN_UNKNOWN, None, "unknown"),
 }
+_OPEN_BTC: Final = CoinRow(
+    "open",
+    "PF_XBTUSD.KRAKEN",
+    "BTC",
+    side="long",
+    quantity=Decimal("0.0011"),
+    avg_entry=Decimal("64210.50"),
+    mark=Decimal("64288.5"),
+    stop_px=Decimal("64018"),
+    stop_status="accepted",
+    unrealized=Decimal("0.09"),
+    exit_due_ns=int(SAMPLE_TIME.timestamp()) * 1_000_000_000,
+    sides=SIDES_SAMPLES["agree"],
+)
+_FLAT_BTC: Final = CoinRow("flat", "PF_XBTUSD.KRAKEN", "BTC", mark=Decimal("64288.5"))
+_FLAT_PEPE: Final = CoinRow("flat", "PF_PEPEUSD.KRAKEN", "PEPE", mark=Decimal("0.0000123456"))
+_UNKNOWN_PEPE: Final = CoinRow("unknown", "PF_PEPEUSD.KRAKEN", "PEPE")
 POSITION_SAMPLES: Final[dict[str, PositionView]] = {
-    "open": PositionView(
-        "open",
-        age=_FRESH,
-        side="long",
-        quantity=Decimal("0.0011"),
-        avg_entry=Decimal("64210.50"),
-        mark=Decimal("64288.5"),
-        stop_px=Decimal("64018"),
-        stop_status="accepted",
-        unrealized=Decimal("0.09"),
-        exit_due_ns=int(SAMPLE_TIME.timestamp()) * 1_000_000_000,
-        equity=Decimal("1003.27"),
-        pnl=SAMPLE_PNL,
-        sides=SIDES_SAMPLES["agree"],
+    "open": PositionView("live", age=_FRESH, rows=(_OPEN_BTC, _FLAT_PEPE), equity=Decimal("1003.27"), pnl=SAMPLE_PNL),
+    "flat": PositionView("live", age=_FRESH, rows=(_FLAT_BTC, _FLAT_PEPE), equity=Decimal("1003.18"), pnl=SAMPLE_PNL),
+    "unknown": PositionView("live", age=_FRESH, rows=(_FLAT_BTC, _UNKNOWN_PEPE), pnl=SAMPLE_PNL),
+    "row_bad": PositionView(
+        "live", age=_FRESH, rows=(_FLAT_BTC, CoinRow("bad", "PF_PEPEUSD.KRAKEN", "PEPE")), pnl=SAMPLE_PNL
     ),
-    "flat": PositionView("flat", age=_FRESH, mark=Decimal("64288.5"), equity=Decimal("1003.18"), pnl=SAMPLE_PNL),
     "offline": PositionView("offline", pnl=SAMPLE_PNL),
     "bad": PositionView("bad", pnl=SAMPLE_PNL),
     "lost": LOST,
-    "pnl_unavailable": PositionView("flat", age=_FRESH, mark=Decimal("64288.5"), pnl=None),
+    "pnl_unavailable": PositionView("live", age=_FRESH, rows=(_FLAT_BTC,), pnl=None),
 }
 
 
