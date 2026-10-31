@@ -87,7 +87,7 @@ from trading_core.node.key_actors import KeyAgeActor, KeyAgeConfig
 from trading_core.node.key_check import watch_key_check
 from trading_core.node.kraken import BTC_PERP, futures_data_client, futures_exec_client
 from trading_core.node.loss_limits import LossLimitActor
-from trading_core.node.paper_snapshots import PaperStrategyView, account_snapshot, paper_status, position_snapshot
+from trading_core.node.paper_snapshots import PaperStrategyView, account_snapshot, paper_status, positions_snapshot
 from trading_core.node.placeholder import PlaceholderConfig
 from trading_core.node.reconcile import (
     Actions,
@@ -785,20 +785,21 @@ def run_node(
             )
             node.trader.add_strategy(strategy)
             views.append(coin_view)
-        # Until the positions snapshot (spec 0025 AC-21), the position card follows the first coin.
-        instrument_id, view = InstrumentId.from_str(coins[0]), views[0]
+        # One entry per coin in sorted order (spec 0025 AC-21); coins is already sorted.
+        instrument_ids = [InstrumentId.from_str(coin) for coin in coins]
+        coin_views = list(zip(instrument_ids, views, strict=True))
         control.kill_switch.attach(
             [s for s in node.trader.strategies() if isinstance(s, KfsStrategy)], record, paper.run_id
         )
         writer, blocks = paper.writer, paper.blocks
 
         def paper_state() -> PaperStatus:
-            return paper_status(control.gate, blocks, writer.backlog, view)
+            return paper_status(control.gate, blocks, writer.backlog, views)
 
         usd = Currency.from_str("USD")
         snapshot_readers += [
-            ("position", lambda: position_snapshot(node.cache, instrument_id, view)),
-            ("account", lambda: account_snapshot(node.portfolio, node.cache, instrument_id, usd)),
+            ("positions", lambda: positions_snapshot(node.cache, coin_views)),
+            ("account", lambda: account_snapshot(node.portfolio, node.cache, instrument_ids, usd)),
         ]
     if settings.drill_mode:
         # The only strategy in live drill mode; it acts only on a drill_step from cli (AC-22).

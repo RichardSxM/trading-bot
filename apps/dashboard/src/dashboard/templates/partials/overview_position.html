@@ -1,8 +1,10 @@
-{# Overview's position card (spec 0006 AC-17), from live.position.PositionView.
-   open: the position with its stop and exit time; flat: the mark only; offline: no snapshot, or
-   one past the red limit, never shown as flat; bad: a snapshot that does not parse; lost: Redis
-   unreadable. The P&L figures sit under it in every state; view.pnl is None when Postgres failed.
-   Wanted, Trader, and Kraken (spec 0023 AC-18) lead every state but lost. #}
+{# Overview's position card (spec 0006 AC-17), from live.position.PositionView: one row per coin
+   (spec 0025 AC-21). Card states: live (the rows), offline (no snapshot, or one past the red limit,
+   never shown as flat), bad (a snapshot that does not parse), lost (Redis unreadable). Row states:
+   open (the position with its stop and exit time), flat (the mark only), unknown (no quote yet),
+   bad (an entry that does not parse). The P&L figures sit under it in every state; view.pnl is None
+   when Postgres failed. Wanted, Trader, and Kraken (spec 0023 AC-18) lead every row, or the card
+   while it has no rows, in every state but lost. #}
 {% from "components/states.html" import error_state %}
 {% from "components/stale.html" import stale %}
 {% from "components/stat.html" import stat %}
@@ -17,24 +19,41 @@
   {{ error_state("Position unavailable: no data from Redis", "The dashboard can't read Redis; this card updates once it can.") }}
 {%- elif view.status == "bad" %}
   {{ error_state("Position snapshot unreadable", "The trader wrote a position the dashboard does not understand; check the trader logs.") }}
-{%- elif view.status == "flat" %}
-  {% call stat("Position", note=view.age.text ~ " old") %}Flat{% endcall %}
-  <dl class="figures">
-    <div class="figures__row"><dt>Mark</dt><dd>{% call stale(view.age.text, view.age.level) %}<span class="num">{{ view.mark|num }}</span>{% endcall %}</dd></div>
-    {% if view.equity is not none %}<div class="figures__row"><dt>Equity</dt><dd><span class="num">{{ view.equity|num }}</span> <span class="figures__unit">{{ view.currency }}</span></dd></div>{% endif %}
-  </dl>
 {%- else %}
-  {% call stat("Unrealized P&L", note=view.age.text ~ " old") %}{{ view.unrealized|pnl }}{% endcall %}
+{%- for row in view.rows %}
+  <section class="position__coin position__coin--{{ row.status }}">
+    <h3 class="position__coin-title">{{ row.base or row.instrument_id or "Unknown coin" }}</h3>
+  {%- if row.sides is not none %}
+    {{ sides(row.sides) }}
+  {%- endif %}
+  {%- if row.status == "unknown" %}
+    {% call stat("Position", note="waiting for a quote") %}Unknown{% endcall %}
+  {%- elif row.status == "bad" %}
+    {{ error_state("Position unreadable", "The trader wrote a position for this coin the dashboard does not understand; check the trader logs.") }}
+  {%- elif row.status == "flat" %}
+    {% call stat("Position", note=view.age.text ~ " old") %}Flat{% endcall %}
+    <dl class="figures">
+      <div class="figures__row"><dt>Mark</dt><dd>{% call stale(view.age.text, view.age.level) %}<span class="num">{{ row.mark|num }}</span>{% endcall %}</dd></div>
+    </dl>
+  {%- else %}
+    {% call stat("Unrealized P&L", note=view.age.text ~ " old") %}{{ row.unrealized|pnl }}{% endcall %}
+    <dl class="figures">
+      <div class="figures__row"><dt>Side</dt><dd class="figures__side figures__side--{{ row.side }}">{{ row.side }}</dd></div>
+      <div class="figures__row"><dt>Size</dt><dd><span class="num">{{ row.quantity.copy_abs()|num }}</span>{% if row.base %} <span class="figures__unit">{{ row.base }}</span>{% endif %}</dd></div>
+      <div class="figures__row"><dt>Average entry</dt><dd><span class="num">{{ row.avg_entry|num }}</span></dd></div>
+      <div class="figures__row"><dt>Mark</dt><dd>{% call stale(view.age.text, view.age.level) %}<span class="num">{{ row.mark|num }}</span>{% endcall %}</dd></div>
+      <div class="figures__row"><dt>Stop</dt><dd>{% if row.stop_px is not none %}<span class="num">{{ row.stop_px|num }}</span>{% if row.stop_status %} <span class="figures__note">{{ row.stop_status|replace("_", " ") }}</span>{% endif %}{% else %}<span class="figures__warn">no stop</span>{% endif %}</dd></div>
+      {% if row.exit_due_ns is not none %}<div class="figures__row"><dt>Closes at</dt><dd>{{ row.exit_due_ns|ts }}</dd></div>{% endif %}
+    </dl>
+  {%- endif %}
+  </section>
+{%- endfor %}
+  {%- if (view.any_open and view.pnl is not none) or view.equity is not none %}
   <dl class="figures">
-    <div class="figures__row"><dt>Side</dt><dd class="figures__side figures__side--{{ view.side }}">{{ view.side }}</dd></div>
-    <div class="figures__row"><dt>Size</dt><dd><span class="num">{{ view.quantity.copy_abs()|num }}</span> <span class="figures__unit">BTC</span></dd></div>
-    <div class="figures__row"><dt>Average entry</dt><dd><span class="num">{{ view.avg_entry|num }}</span></dd></div>
-    <div class="figures__row"><dt>Mark</dt><dd>{% call stale(view.age.text, view.age.level) %}<span class="num">{{ view.mark|num }}</span>{% endcall %}</dd></div>
-    <div class="figures__row"><dt>Stop</dt><dd>{% if view.stop_px is not none %}<span class="num">{{ view.stop_px|num }}</span>{% if view.stop_status %} <span class="figures__note">{{ view.stop_status|replace("_", " ") }}</span>{% endif %}{% else %}<span class="figures__warn">no stop</span>{% endif %}</dd></div>
-    {% if view.pnl is not none %}<div class="figures__row"><dt>Funding so far</dt><dd>{{ view.pnl.open_funding|pnl }}</dd></div>{% endif %}
-    {% if view.exit_due_ns is not none %}<div class="figures__row"><dt>Closes at</dt><dd>{{ view.exit_due_ns|ts }}</dd></div>{% endif %}
+    {% if view.any_open and view.pnl is not none %}<div class="figures__row"><dt>Funding so far</dt><dd>{{ view.pnl.open_funding|pnl }}</dd></div>{% endif %}
     {% if view.equity is not none %}<div class="figures__row"><dt>Equity</dt><dd><span class="num">{{ view.equity|num }}</span> <span class="figures__unit">{{ view.currency }}</span></dd></div>{% endif %}
   </dl>
+  {%- endif %}
 {%- endif %}
   <h3 class="figures__title">Paper P&amp;L, net of fees and funding</h3>
 {%- if view.pnl is none %}

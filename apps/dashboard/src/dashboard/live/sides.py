@@ -1,7 +1,8 @@
 """The three columns on Overview's position card (spec 0023 AC-18), as a pure function of the raw snapshots.
 
-*Wanted* is ``trader_state.intent`` for the card's instrument, *Trader* the ``position`` snapshot (the
-Nautilus cache), and *Kraken* the ``exchange`` snapshot from the last check, with its age. A missing
+*Wanted* is ``trader_state.intent`` for a row's coin, *Trader* that coin's entry in the ``positions``
+snapshot (the Nautilus cache), and *Kraken* the ``exchange`` snapshot from the last check, with its age.
+Each coin row gets its own three (spec 0025 AC-21); a card without rows gets one, for no coin. A missing
 exchange snapshot, one with ``status: unknown``, or one older than 3 checks shows ``Kraken unknown``,
 never ``flat``. When Trader and Kraken are both known and differ in side or quantity, the card says so.
 """
@@ -81,19 +82,6 @@ def _words(holding: Holding | None, unknown: str) -> str:
     return "flat" if side == "flat" else f"{side} {num(size)}"
 
 
-def _trader(raw_position: str | bytes | None, now_ns: int, red_s: float) -> tuple[str | None, Holding | None]:
-    """The card's instrument and the cache's holding; None for a missing, unreadable, or red aged snapshot."""
-    found = _data(raw_position)
-    if found is None:
-        return None, None
-    ts_ns, data = found
-    instrument = data.get("instrument_id")
-    instrument_id = instrument if isinstance(instrument, str) else None
-    if now_ns - ts_ns > red_s * NS_PER_S:
-        return instrument_id, None
-    return instrument_id, _holding(data.get("side"), data.get("quantity", "0"))
-
-
 def _kraken(
     raw_exchange: str | bytes | None, instrument_id: str | None, now_ns: int, max_age_s: float
 ) -> tuple[Holding | None, str | None]:
@@ -136,19 +124,19 @@ def _wanted(raw_state: str | bytes | None, instrument_id: str | None) -> str:
 
 
 def sides_view(
-    raw_position: str | bytes | None,
+    instrument_id: str | None,
+    trader: Holding | None,
     raw_exchange: str | bytes | None,
     raw_state: str | bytes | None,
     now_ns: int,
-    red_s: float,
     interval_s: float,
 ) -> SidesView:
-    """The three columns for the raw ``position``, ``exchange``, and ``trader_state`` snapshots (None when missing).
+    """The three columns for one coin: its holding in the cache, and the raw ``exchange`` and ``trader_state``.
 
-    ``red_s`` is the heartbeat's red limit (a position older than it is unknown), ``interval_s`` the
-    check interval: an exchange view older than ``STALE_INTERVALS`` of them is unknown.
+    ``instrument_id`` is None on a card with no rows (offline or bad), and Kraken then shows any position.
+    ``trader`` is None while the trader's view is unknown. ``interval_s`` is the check interval: an
+    exchange view older than ``STALE_INTERVALS`` of them is unknown.
     """
-    instrument_id, trader = _trader(raw_position, now_ns, red_s)
     kraken, age = _kraken(raw_exchange, instrument_id, now_ns, STALE_INTERVALS * interval_s)
     if kraken is None:
         state: SidesState = "unknown"

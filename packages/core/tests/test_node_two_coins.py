@@ -1,5 +1,5 @@
 """covers: spec 0025 AC-18 (one recording actor for every coin), AC-19 (risk across coins, PEPE sizing), AC-16
-(a halt flattens a PEPE position).
+(a halt flattens a PEPE position), AC-21 (the ``positions`` and ``account`` snapshots, ``paper_status``).
 
 Runs the real ``RecordingActor`` with one strategy per coin in a BacktestEngine (TestClock, simulated venue)
 on synthetic trades and quotes for a PF_XBTUSD shaped instrument (tick 1) and a PF_PEPEUSD shaped one (tick
@@ -31,6 +31,7 @@ from nautilus_trader.model.objects import Currency, Money, Price, Quantity
 from trading_core.node import recording
 from trading_core.node.donchian_scalp_r1 import DonchianScalpR1, DonchianScalpR1Config
 from trading_core.node.funding import FundingLedger
+from trading_core.node.paper_snapshots import account_snapshot, paper_status, positions_snapshot
 from trading_core.node.random_taker import RandomTaker, RandomTakerConfig
 from trading_core.node.recording import RecordingActor
 from trading_core.node.strategy import PauseGate
@@ -442,3 +443,75 @@ def test_a_halt_flattens_an_open_pepe_position():
     closes = [o for o in engine.cache.orders(strategy_id=pepe_r1.id) if any("kill_switch" in t for t in o.tags or [])]
     assert closes
     assert all(o.is_closed for o in closes)
+
+
+# AC-21: the snapshots ---------------------------------------------------------------------------
+
+
+def _view(exiting=False, opened_ns=None):
+    return SimpleNamespace(exiting=exiting, position_opened_ns=opened_ns, exit_due_ns=None, stop_order=lambda: None)
+
+
+def _snapshots_at(minute, btc_entries, pepe=True):
+    """The ``positions`` and ``account`` snapshot data at ``minute`` past 12:00, read inside the run."""
+    taken: dict[str, Any] = {}
+
+    def take(pepe_r1, btc_r1, blocks):
+        coins = [(BTC_ID, _view()), (PEPE_ID, _view())]
+        taken["positions"] = positions_snapshot(pepe_r1.cache, coins)
+        taken["account"] = account_snapshot(pepe_r1.portfolio, pepe_r1.cache, [BTC_ID, PEPE_ID], USD)
+
+    _two_r1(
+        pepe_entries=[4] if pepe else [],
+        btc_entries=btc_entries,
+        actions=[(_ns(START) + minute * 60 * SECOND_NS, take)],
+        pepe=pepe,
+    )
+    return taken["positions"], taken["account"]
+
+
+def test_one_open_and_one_flat_coin_give_two_entries_in_order_each_with_its_base():
+    positions, _ = _snapshots_at(27, btc_entries=[])  # PEPE entered at bar 4 (20:00) and is open
+
+    btc, pepe = positions["coins"]
+    assert (btc["instrument_id"], btc["base"], btc["side"]) == (BTC_ID.value, "BTC", "flat")
+    assert btc["mark_px"] == str(D(BTC_MID))
+    assert (pepe["instrument_id"], pepe["base"], pepe["side"]) == (PEPE_ID.value, "PEPE", "long")
+
+
+def test_pepe_keeps_its_price_digits_while_btc_still_rounds_to_cents():
+    positions, _ = _snapshots_at(32, btc_entries=[6])  # BTC entered at bar 6 (30:00); both open
+
+    btc, pepe = positions["coins"]
+    assert D(btc["avg_entry_px"]).as_tuple().exponent == -2
+    pepe_entry = D(pepe["avg_entry_px"])
+    assert pepe_entry.as_tuple().exponent == -10
+    assert pepe_entry == pytest.approx(PEPE_MID, rel=D("0.0001"))
+
+
+def test_the_accounts_unrealized_pnl_sums_both_coins_each_at_its_own_mid():
+    positions, account = _snapshots_at(32, btc_entries=[6])
+
+    btc, pepe = positions["coins"]
+    assert (btc["side"], pepe["side"]) == ("long", "long")
+    unrealized = D(btc["unrealized_pnl"]) + D(pepe["unrealized_pnl"])
+    assert D(account["equity"]) - D(account["balance_total"]) == unrealized
+
+
+def test_pepe_without_a_quote_is_unknown_and_btc_still_shows():
+    positions, account = _snapshots_at(27, btc_entries=[], pepe=False)
+
+    btc, pepe = positions["coins"]
+    assert pepe == {"instrument_id": PEPE_ID.value, "base": "PEPE", "side": "unknown"}
+    assert (btc["side"], btc["mark_px"]) == ("flat", str(D(BTC_MID)))
+    assert account is not None
+
+
+def test_paper_status_is_exiting_when_any_coin_exits_and_takes_the_earliest_open_position():
+    status = paper_status(
+        PauseGate(), EntryBlocks(), 0, [_view(opened_ns=20), _view(exiting=True, opened_ns=10), _view()]
+    )
+
+    assert status.exiting is True
+    assert status.position_opened_ns == 10
+    assert paper_status(PauseGate(), EntryBlocks(), 0, [_view(), _view()]).position_opened_ns is None
