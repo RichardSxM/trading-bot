@@ -25,7 +25,15 @@ from nautilus_trader.backtest.engine import BacktestEngine, BacktestEngineConfig
 from nautilus_trader.config import LoggingConfig
 from nautilus_trader.model.currencies import USD
 from nautilus_trader.model.data import QuoteTick, TradeTick
-from nautilus_trader.model.enums import AccountType, AggressorSide, OmsType, OrderStatus, OrderType, TimeInForce
+from nautilus_trader.model.enums import (
+    AccountType,
+    AggressorSide,
+    OmsType,
+    OrderSide,
+    OrderStatus,
+    OrderType,
+    TimeInForce,
+)
 from nautilus_trader.model.events import OrderFilled, OrderUpdated
 from nautilus_trader.model.identifiers import TradeId, Venue
 from nautilus_trader.model.objects import Money, Price, Quantity
@@ -36,6 +44,7 @@ from trading_core.node.bar_rule_maker import (
     MakerBarRuleStrategy,
     Phase,
     entry_limit_px,
+    first_fill_through,
 )
 from trading_core.node.reconcile import resting_stop
 from trading_core.node.strategy import PauseGate
@@ -484,23 +493,231 @@ def test_a_first_fill_through_the_stop_exits_at_market_as_stop_through_with_no_s
     assert market.status == OrderStatus.FILLED
 
 
-class _StopRejected(MakerBarRuleStrategy):
-    """Its stop is refused by the venue (a trigger already through the market)."""
+# The stop already through, and the rejected stop settled by a quote (AC-5, amended 2026-10-31) -------
+# On FILL the entry fills at 85210 at 12:04:20, on a quote the strategy has not seen yet (the venue fills
+# before the cache updates): its cached bid is then 85222, and the next quote's bid is 85205.
+
+TWO_LONGS = {5: (Side.LONG, 100), 8: (Side.LONG, 100)}  # the second shows whether entries are still allowed
+
+
+@pytest.mark.parametrize(
+    ("side", "fill", "stop", "quote", "through"),
+    [
+        (Side.LONG, D("99.0"), D("94.0"), (D("93.5"), D("99.5")), True),  # the bid is through
+        (Side.LONG, D("99.0"), D("94.0"), None, False),  # no quote: the fill alone decides
+        (Side.LONG, D("94.0"), D("94.0"), None, True),
+        (Side.LONG, D("99.0"), D("94.0"), (D("98.5"), D("99.5")), False),
+        (Side.SHORT, D("99.0"), D("104.0"), (D("98.5"), D("104.0")), True),  # the ask is through
+        (Side.SHORT, D("99.0"), D("104.0"), None, False),
+        (Side.SHORT, D("104.5"), D("104.0"), (D("98.5"), D("99.5")), True),
+    ],
+)
+def test_first_fill_through_reads_the_fill_and_the_cached_quote(side, fill, stop, quote, through):
+    assert first_fill_through(side, fill, stop, quote) is through
+
+
+def _wide_before_the_fill(data):
+    """FILL's data with the quote just before the fill (12:04:10) wide: bid 85150, ask 85230."""
+    at = _ns(START + timedelta(seconds=250))
+    size = Quantity.from_str("5.0000")
+    wide = QuoteTick(INSTRUMENT_ID, Price(85150, 0), Price(85230, 0), size, size, at, at)
+    return [wide if isinstance(d, QuoteTick) and d.ts_event == at else d for d in data]
+
+
+class _StopInTheSpread(MakerBarRuleStrategy):
+    """The stop moves just under the entry limit (85207), above the cached bid of the wide quote."""
+
+    def _decide_entry(self, bar, atr, signal):
+        super()._decide_entry(bar, atr, signal)
+        if self._entry_id is not None:
+            self._stop_px = self.cache.order(self._entry_id).price.as_decimal() - 3
+
+
+def test_a_first_fill_with_the_bid_through_the_stop_exits_at_market_and_entries_go_on(caplog):
+    with caplog.at_level(logging.INFO):
+        engine, strategy, rows = _run(
+            Script(entries=TWO_LONGS), data=_wide_before_the_fill(_data(FILL, 20)), strategy_cls=_StopInTheSpread
+        )
+
+    exit_ = next(d for d in _decisions(rows) if d.reason == "stop_through")
+    assert D(exit_.inputs["bid"]) <= D(exit_.inputs["stop_px"]) < D(exit_.inputs["entry_px"])
+    assert exit_.inputs["exit_mode"] == "market"
+    assert all(o.ts_init > exit_.decided_ns for o in _orders(engine, OrderType.STOP_MARKET))  # the second's
+    assert _risk_events(rows) == []
+    assert not strategy._blocks.active()
+    assert len(_approved_entries(rows)) == 2
+    assert ("stop_through", None) in _codes(caplog)
+
+
+class _StopRejectedAt(MakerBarRuleStrategy):
+    """The venue rejects its stop (a trigger above the ask), while the strategy judges by ``bid + view``."""
+
+    view = 0
 
     def _submit_stop(self, position):
-        self._stop_px = self.cache.quote_tick(self._instrument_id).ask_price.as_decimal() + 50
+        quote = self.cache.quote_tick(self._instrument_id)
+        self._stop_px = quote.bid_price.as_decimal() + self.view
+        order = self.order_factory.stop_market(
+            self._instrument_id,
+            OrderSide.SELL,
+            position.quantity,
+            trigger_price=Price(quote.ask_price.as_decimal() + 50, 0),
+            reduce_only=True,
+            time_in_force=TimeInForce.GTC,
+        )
+        self._stop_id = order.client_order_id
+        self.submit_order(order)
+
+
+class _RejectedThroughNow(_StopRejectedAt):
+    view = 1  # the cached bid (85222) is at or below the stop (85223)
+
+
+class _RejectedThroughNext(_StopRejectedAt):
+    view = -10  # the cached bid is above the stop (85212), the next one (85205) is through
+
+
+class _RejectedNotThrough(_StopRejectedAt):
+    view = -100  # no quote reaches the stop (85122)
+
+
+def _approved_entries(rows):
+    return [d for d in _decisions(rows) if d.intent == Intent.ENTER and d.risk_verdict == RiskVerdict.APPROVED]
+
+
+def _stop_blocks(rows):
+    return [e for e in _risk_events(rows) if e.event_key.startswith("stop_not_accepted:")]
+
+
+def test_a_stop_rejected_with_the_cached_bid_through_exits_once_as_stop_through_with_no_block(caplog):
+    with caplog.at_level(logging.INFO):
+        engine, strategy, rows = _run(Script(entries=TWO_LONGS), strategy_cls=_RejectedThroughNow)
+
+    first_market = _orders(engine, OrderType.MARKET)[0]
+    exit_ = next(d for d in _decisions(rows) if d.reason == "stop_through")
+    assert first_market.status == OrderStatus.FILLED
+    assert first_market.tags == [f"{DECISION_TAG}{_decisions(rows)[0].id}"]  # no exit decision of its own
+    assert exit_.risk_verdict == RiskVerdict.APPROVED
+    assert _stop_blocks(rows) == []
+    assert not strategy._blocks.active()
+    assert ("stop_rejected", None) in _codes(caplog)
+    assert len(_approved_entries(rows)) == 2
+
+
+def test_a_stop_rejected_with_the_next_quote_through_records_stop_through_and_entries_go_on():
+    _, strategy, rows = _run(Script(entries=TWO_LONGS), strategy_cls=_RejectedThroughNext)
+
+    [exit_] = [d for d in _decisions(rows) if d.reason == "stop_through"]
+    assert D(exit_.inputs["bid"]) == 85205
+    assert _stop_blocks(rows) == []
+    assert not strategy._blocks.active()
+    assert len(_approved_entries(rows)) == 2
+
+
+def test_a_stop_rejected_with_no_quote_through_blocks_entries_with_a_critical_event():
+    engine, strategy, rows = _run(Script(entries=TWO_LONGS), strategy_cls=_RejectedNotThrough)
+
+    [event] = _stop_blocks(rows)
+    assert (event.kind, event.severity) == (RiskEventKind.ORDER_REJECTED, Severity.CRITICAL)
+    assert BlockReason.STOP_NOT_ACCEPTED in strategy._blocks.active()
+    assert [d for d in _decisions(rows) if d.reason == "stop_through"] == []
+    second = _decisions(rows)[-1]
+    assert (second.intent, second.risk_reason) == (Intent.ENTER, "blocked:stop_not_accepted")
+    [market] = _orders(engine, OrderType.MARKET)
+    assert market.status == OrderStatus.FILLED
+
+
+class _RejectedAfterTheQuotes(MakerBarRuleStrategy):
+    """Its stop is rejected (by hand: the venue accepted it) at the first bar close in the position."""
+
+    def on_bar(self, bar):
+        if self._stop_id is not None and self.bars_held >= 1:
+            self._stop_px = Decimal(1)  # never through, but no quote comes to say so
+            self._stop_rejected("stop rejected: by hand")
+        super().on_bar(bar)
+
+
+def test_a_rejected_stop_waiting_for_a_quote_refuses_entries_after_the_close_and_blocks_on_stop():
+    data = _data(FILL_FLAT, 20, quotes_until=4.4)  # the fill's quote is the last one
+    engine, strategy, rows = _run(Script(entries=TWO_LONGS), data=data, strategy_cls=_RejectedAfterTheQuotes)
+
+    refused = _decisions(rows)[-1]
+    assert (refused.intent, refused.risk_reason) == (Intent.ENTER, "blocked:stop_not_accepted")
+    assert engine.cache.positions_open() == []
+    [event] = _stop_blocks(rows)  # recorded by on_stop, after the refusal
+    assert event.occurred_ns > refused.decided_ns
+    assert BlockReason.STOP_NOT_ACCEPTED in strategy._blocks.active()
+
+
+class _RejectedWhileExitRests(MakerBarRuleStrategy):
+    """Its stop is rejected (by hand: the venue accepted it) just after the exit limit goes out."""
+
+    def _submit_exit_limit(self, position, limit_px):
+        super()._submit_exit_limit(position, limit_px)
+        if self._stop_id is not None:
+            self._stop_px = Decimal(1)  # never through, so the verdict is a block
+            self._stop_rejected("stop rejected: by hand")
+
+
+def test_a_stop_rejected_while_the_exit_limit_rests_cancels_it_and_sends_one_market(caplog):
+    with caplog.at_level(logging.INFO):
+        engine, strategy, rows = _run(
+            Script(entries=LONG, exits={8}), prices=FILL_FLAT, strategy_cls=_RejectedWhileExitRests
+        )
+
+    [limit] = _exit_limits(engine)
+    assert limit.status == OrderStatus.CANCELED
+    [market] = _orders(engine, OrderType.MARKET)
+    assert market.status == OrderStatus.FILLED
+    assert "exit_fallback_market" not in [code for code, _ in _codes(caplog)]
+    assert "maker_exit_cancel" not in strategy.clock.timer_names
+    assert len(_stop_blocks(rows)) == 1
+
+
+class _FlattenThenRejected(_RejectedNotThrough):
+    """The kill switch closes the position just before the stop that will be rejected goes out."""
+
+    def _submit_stop(self, position):
+        self.flatten(HALT_ID)
         super()._submit_stop(position)
 
 
-def test_a_refused_stop_blocks_entries_and_closes_at_market():
-    engine, strategy, rows = _run(Script(entries=LONG), strategy_cls=_StopRejected)
+def test_a_stop_rejected_during_a_kill_switch_close_sends_no_second_market():
+    engine, _, _ = _run(Script(entries=LONG), strategy_cls=_FlattenThenRejected)
 
-    [event] = _risk_events(rows)
-    assert (event.kind, event.severity) == (RiskEventKind.ORDER_REJECTED, Severity.CRITICAL)
+    [market] = _orders(engine, OrderType.MARKET)
+    assert f"{HALT_TAG}{HALT_ID}" in market.tags
+    assert engine.cache.positions_open() == []
+
+
+class _StopNeverSent(MakerBarRuleStrategy):
+    """Its stop never reaches the venue, so it is not accepted in time."""
+
+    def submit_order(self, order, position_id=None, client_id=None, params=None):
+        if order.order_type == OrderType.STOP_MARKET:
+            return
+        super().submit_order(order, position_id, client_id, params)
+
+
+def test_a_stop_not_accepted_in_time_still_blocks():
+    engine, strategy, rows = _run(Script(entries=LONG), strategy_cls=_StopNeverSent)
+
+    assert len(_stop_blocks(rows)) == 1
     assert BlockReason.STOP_NOT_ACCEPTED in strategy._blocks.active()
     [market] = _orders(engine, OrderType.MARKET)
     assert market.status == OrderStatus.FILLED
-    assert _exit_limits(engine) == []
+
+
+def test_both_stop_through_rows_carry_the_same_inputs():
+    _, _, first_fill = _run(
+        Script(entries=LONG), data=_wide_before_the_fill(_data(FILL, 20)), strategy_cls=_StopInTheSpread
+    )
+    _, _, rejected = _run(Script(entries=LONG), strategy_cls=_RejectedThroughNow)
+
+    [at_fill] = [d for d in _decisions(first_fill) if d.reason == "stop_through"]
+    [late] = [d for d in _decisions(rejected) if d.reason == "stop_through"]
+    assert set(at_fill.inputs) - {"position_qty", "exit_mode"} == set(late.inputs)
+    assert set(late.inputs) == {"stop_px", "bid", "ask", "mid", "entry_px", "bars_held", "bar_close"}
 
 
 def test_a_signal_while_the_entry_rests_is_consumed_and_dropped():
@@ -541,6 +758,18 @@ def test_an_exit_with_the_entry_part_filled_retires_it_and_a_late_fill_closes_at
     late_markets = [o for o in _orders(engine, OrderType.MARKET) if o.tags == [f"{DECISION_TAG}{late[0].id}"]]
     assert late_markets
     assert late_markets[0].is_reduce_only
+    assert engine.cache.positions_open() == []
+
+
+class _RejectedCancelLost(_RejectedNotThrough, _EntryCancelLost):
+    """A part filled entry whose remainder cancel never arrives, under a rejected stop."""
+
+
+def test_a_part_filled_entrys_remainder_after_a_rejected_stop_closes_as_a_late_fill():
+    data = _data(TOUCH_TWICE, 20, size="0.0500")
+    engine, _, rows = _run(Script(entries=LONG), data=data, strategy_cls=_RejectedCancelLost, consume=True)
+
+    assert [d for d in _decisions(rows) if d.reason == "late_entry_fill"]
     assert engine.cache.positions_open() == []
 
 

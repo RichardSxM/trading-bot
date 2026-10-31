@@ -15,7 +15,9 @@ decided before the rule and the ATR are ready.
 
 An approved entry is a post only GTC limit ``entry_offset_atr`` ATR behind the signal bar's close, sized
 by ``check_entry`` from that price (AC-2, AC-3). Its first fill rests the reduce only stop market order
-(or exits at once as ``stop_through``); each later fill moves the stop to the position's quantity (AC-5).
+(or exits at once as ``stop_through`` when the fill or the cached quote is already through it); each later
+fill moves the stop to the position's quantity. A stop the venue rejects closes the position at market, and a
+quote then settles it: through is ``stop_through`` with no block, else ``STOP_NOT_ACCEPTED`` (AC-5).
 A post only rejection drops the signal quietly; any other refusal raises the base's risk event (AC-6).
 A planned exit (``time_stop`` or the rule's) rests a post only, reduce only limit at the passive touch
 while the stop keeps resting, and falls back to market on its wait, on any refusal, or on a cancel this
@@ -23,6 +25,7 @@ strategy did not ask for (AC-7, AC-8). Every other exit is market (AC-9). ``_pre
 subclass hook for entry filters, called once the gate and the blocks are clear and before sizing.
 """
 
+import dataclasses
 import functools
 import logging
 import uuid
@@ -83,6 +86,7 @@ from trading_core.strategy.bar_rule import (
     floored_stop,
 )
 from trading_core.strategy.blocks import BlockReason, EntryBlocks
+from trading_core.strategy.scalp import stop_through
 
 log = logging.getLogger(__name__)
 
@@ -179,6 +183,31 @@ def entry_limit_px(side: Side, close: Decimal, atr: Decimal, offset_atr: Decimal
     return ((raw / tick).to_integral_value(rounding=rounding) * tick).quantize(tick)
 
 
+def first_fill_through(side: Side, fill_px: Decimal, stop_px: Decimal, quote: tuple[Decimal, Decimal] | None) -> bool:
+    """True when the stop is already through at the entry's first fill (AC-5, spec 0017 AC-18's rule).
+
+    With a cached ``quote`` (bid, ask) a long is through when the bid or the fill is at or below ``stop_px``,
+    a short when the ask or the fill is at or above it. With no quote the fill price alone decides.
+    """
+    long = side == Side.LONG
+    if quote is not None:
+        return stop_through(long, quote[0], quote[1], fill_px, stop_px)
+    return fill_px <= stop_px if long else fill_px >= stop_px
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _RejectedStop:
+    """A rejected stop awaiting a quote's verdict (AC-5); outlives the round trip."""
+
+    stop_id: ClientOrderId
+    long: bool
+    stop_px: Decimal
+    why: str
+    entry_decision: UUID | None
+    entry_px: Decimal | None
+    bars_held: int
+
+
 def _side_of(position: Position) -> Side:
     return Side.LONG if position.side == NautilusPositionSide.LONG else Side.SHORT
 
@@ -213,6 +242,8 @@ class MakerBarRuleStrategy(KfsStrategy, StaleQuoteBlock):
         # Entries whose remainder was cancelled for an exit or a close: a fill of one is a late entry fill.
         # Outlives the round trip, as the fill can land after the position closed.
         self._retired: set[ClientOrderId] = set()
+        # A rejected stop no quote has settled yet; outlives the round trip and blocks entries (AC-5).
+        self._rejected_stop: _RejectedStop | None = None
         self._reset()
 
     def _reset(self) -> None:
@@ -255,8 +286,17 @@ class MakerBarRuleStrategy(KfsStrategy, StaleQuoteBlock):
             stale_check_s=self._cfg.stale_check_s,
         )
 
+    def on_stop(self) -> None:
+        """The base's stop; a rejected stop no quote has settled yet is recorded as not accepted (fail closed)."""
+        super().on_stop()
+        rejected, self._rejected_stop = self._rejected_stop, None
+        if rejected is not None:
+            self._block_stop_not_accepted(rejected.stop_id, rejected.why, rejected.entry_decision)
+
     def on_quote_tick(self, tick: QuoteTick) -> None:
-        """The quote is read from the cache at the bar close; nothing to do here."""
+        """Settles a rejected stop (AC-5); the bar close reads the quote from the cache."""
+        if self._rejected_stop is not None and tick.instrument_id == self._instrument_id:
+            self._settle_rejected_stop(tick)
 
     def flatten(self, halt_id: UUID) -> None:
         """Cancel a resting entry and exit limit, then close the position at market for the kill switch (AC-11).
@@ -378,7 +418,8 @@ class MakerBarRuleStrategy(KfsStrategy, StaleQuoteBlock):
             log.warning("entry skipped, no quote", extra={"fields": {"code": "entry_skipped_no_quote"}})
             return
         # The base's own refusals first, so a halted, paused, or blocked trader records its real reason.
-        clear = not (self._gate.halted or self._gate.paused or self._blocks.active())
+        blocks = self._entry_blocks()
+        clear = not (self._gate.halted or self._gate.paused or blocks)
         if clear and not self._pre_entry(bar, atr, signal):
             return
         instrument = self._instrument()
@@ -429,7 +470,7 @@ class MakerBarRuleStrategy(KfsStrategy, StaleQuoteBlock):
                 has_position=False,
                 paused=self._gate.paused,
                 halted=self._gate.halted,
-                blocks=[str(r) for r in self._blocks.active()],
+                blocks=blocks,
             )
             verdict = check_entry(request, self._limits)
         except InvalidRiskInput:
@@ -546,14 +587,14 @@ class MakerBarRuleStrategy(KfsStrategy, StaleQuoteBlock):
         if self._stop_id is not None or self.phase != Phase.ENTERING:
             self._sync_stop()
             return
-        # The first fill: once, on its own price (later fills never trigger stop_through).
+        # The first fill: once, on its price and the cached quote (later fills never trigger stop_through).
         assert self._stop_px is not None  # set with the entry
-        first_px = event.last_px.as_decimal()
-        through = first_px <= self._stop_px if self._side == Side.LONG else first_px >= self._stop_px
-        if through:
-            inputs: JsonObject = {"entry_px": first_px, "stop": self._stop_px, "bars_held": self.bars_held}
-            if self._last_bar is not None:
-                inputs = {"bar_close": self._last_bar.close, **inputs}
+        assert self._side is not None
+        quote = self.cache.quote_tick(self._instrument_id)
+        touch = None if quote is None else (quote.bid_price.as_decimal(), quote.ask_price.as_decimal())
+        if first_fill_through(self._side, event.last_px.as_decimal(), self._stop_px, touch):
+            log.info("stop already through at the fill; exiting", extra={"fields": {"code": STOP_THROUGH}})
+            inputs = self._stop_through_inputs(self._stop_px, touch, self._entry_px, self.bars_held)
             self._decide_exit(position, STOP_THROUGH, inputs, maker=False)
             return
         self._submit_stop(position)
@@ -563,8 +604,15 @@ class MakerBarRuleStrategy(KfsStrategy, StaleQuoteBlock):
         self._refused(event.client_order_id, f"denied: {event.reason}", post_only=False)
 
     def on_order_rejected(self, event: OrderRejected) -> None:
-        """A rejection: see ``_refused``; the venue's post only flag decides the entry's and the exit's path."""
-        self._refused(event.client_order_id, f"rejected: {event.reason}", post_only=bool(event.due_post_only))
+        """A rejected stop waits for a quote's verdict (AC-5); else see ``_refused``.
+
+        The venue's post only flag decides the entry's and the exit's path.
+        """
+        why = f"rejected: {event.reason}"
+        if event.client_order_id == self._stop_id and self._position() is not None:
+            self._stop_rejected(f"stop {why}")
+            return
+        self._refused(event.client_order_id, why, post_only=bool(event.due_post_only))
 
     def on_order_canceled(self, event: OrderCanceled) -> None:
         """A cancel: see ``_canceled``."""
@@ -745,22 +793,98 @@ class MakerBarRuleStrategy(KfsStrategy, StaleQuoteBlock):
 
     def _stop_failed(self, why: str) -> None:
         self._cancel_timer(_STOP_ACCEPT)
-        self._blocks.add(BlockReason.STOP_NOT_ACCEPTED)
-        self._risk_event(
-            f"stop_not_accepted:{self._stop_id}",
-            RiskEventKind.ORDER_REJECTED,
-            Severity.CRITICAL,
-            f"{why}; closing the position",
-            self.entry_decision,
-            {"client_order_id": str(self._stop_id)},
-        )
+        self._block_stop_not_accepted(self._stop_id, why, self.entry_decision)
         self._stop_id = None  # forgotten, so no later event or bar close fails it again
+        self._close_unprotected()
+
+    def _close_unprotected(self) -> None:
+        # The position has no stop: retire the entry and close at market, unless a market close is under way.
         self.phase = Phase.EXITING
         self._retire_entry()
         if self._closing_at_market():
             return
         self._cancel_exit_limit()
         self._submit_exit()
+
+    def _block_stop_not_accepted(self, stop_id: ClientOrderId | None, why: str, decision: UUID | None) -> None:
+        self._blocks.add(BlockReason.STOP_NOT_ACCEPTED)
+        self._risk_event(
+            f"stop_not_accepted:{stop_id}",
+            RiskEventKind.ORDER_REJECTED,
+            Severity.CRITICAL,
+            f"{why}; closing the position",
+            decision,
+            {"client_order_id": str(stop_id)},
+        )
+
+    def _stop_rejected(self, why: str) -> None:
+        # The venue may judge the stop by a quote this strategy has not seen yet, so a quote settles it:
+        # the cached one at once when it shows the stop through, else the next one (spec 0017 AC-18).
+        # The position closes now either way, with no block until the verdict.
+        assert self._stop_id is not None  # the rejected stop is ours
+        assert self._stop_px is not None
+        self._cancel_timer(_STOP_ACCEPT)
+        rejected = _RejectedStop(
+            self._stop_id,
+            self._side == Side.LONG,
+            self._stop_px,
+            why,
+            self.entry_decision,
+            self._entry_px,
+            self.bars_held,
+        )
+        self._rejected_stop = rejected
+        log.warning("stop rejected; closing the position", extra={"fields": {"code": "stop_rejected", "reason": why}})
+        self._stop_id = None
+        self._close_unprotected()
+        quote = self.cache.quote_tick(self._instrument_id)
+        if quote is not None and self._rejected_stop is rejected and self._rejected_through(rejected, quote):
+            self._settle_rejected_stop(quote)
+
+    def _settle_rejected_stop(self, tick: QuoteTick) -> None:
+        rejected, self._rejected_stop = self._rejected_stop, None
+        assert rejected is not None  # checked by the caller
+        if not self._rejected_through(rejected, tick):
+            self._block_stop_not_accepted(rejected.stop_id, rejected.why, rejected.entry_decision)
+            return
+        log.info("rejected stop was already through", extra={"fields": {"code": STOP_THROUGH}})
+        touch = (tick.bid_price.as_decimal(), tick.ask_price.as_decimal())
+        inputs = self._stop_through_inputs(rejected.stop_px, touch, rejected.entry_px, rejected.bars_held)
+        closing = OrderSide.SELL if rejected.long else OrderSide.BUY
+        now = self.clock.timestamp_ns()
+        self._record_decision(uuid.uuid7(), Intent.EXIT, closing, STOP_THROUGH, inputs, True, None, now)
+
+    @staticmethod
+    def _rejected_through(rejected: _RejectedStop, tick: QuoteTick) -> bool:
+        # Only the quote decides here: the fill price was checked before the stop went out.
+        bid: Decimal = tick.bid_price.as_decimal()
+        ask: Decimal = tick.ask_price.as_decimal()
+        return bid <= rejected.stop_px if rejected.long else ask >= rejected.stop_px
+
+    def _stop_through_inputs(
+        self, stop_px: Decimal, touch: tuple[Decimal, Decimal] | None, entry_px: Decimal | None, bars_held: int
+    ) -> JsonObject:
+        # One input set for both stop_through rows (AC-5).
+        bid, ask = touch if touch is not None else (None, None)
+        mid = None if touch is None else (touch[0] + touch[1]) / 2
+        inputs: JsonObject = {
+            "stop_px": stop_px,
+            "bid": bid,
+            "ask": ask,
+            "mid": mid,
+            "entry_px": entry_px,
+            "bars_held": bars_held,
+        }
+        if self._last_bar is not None:
+            inputs = {**inputs, "bar_close": self._last_bar.close}
+        return inputs
+
+    def _entry_blocks(self) -> list[str]:
+        # The active blocks, plus stop_not_accepted while a rejected stop waits for its verdict (fail closed).
+        blocks = {str(r) for r in self._blocks.active()}
+        if self._rejected_stop is not None:
+            blocks.add(str(BlockReason.STOP_NOT_ACCEPTED))
+        return sorted(blocks)
 
     # Exit -----------------------------------------------------------------------------------
 
