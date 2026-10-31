@@ -9,7 +9,7 @@ from decimal import Decimal
 from typing import Final
 from uuid import UUID
 
-from trading_core.gate.series import DayEquity, annualized, daily_series, sharpe, to_decimal
+from trading_core.gate.series import DailySeries, DayEquity, annualized, daily_series, sharpe, to_decimal
 from trading_core.lab.daily import DayClose, TradeMeasures
 from trading_core.recording.enums import Env, EquityBasis, RunStatus, StrategyKind, StudyRole
 from trading_core.recording.rows import (
@@ -85,10 +85,20 @@ def daily_equity_rows(run_id: UUID, closes: Sequence[DayClose], basis: EquityBas
     ]
 
 
+def _series(closes: Sequence[DayClose], starting_balance: Decimal, *, chained: bool) -> DailySeries:
+    rows = [DayEquity(c.day, c.equity_close, c.trades_closed, c.fees, c.funding) for c in closes]
+    return daily_series(rows, starting_balance, chained=chained)
+
+
 def daily_sharpe(closes: Sequence[DayClose], starting_balance: Decimal, *, chained: bool) -> Decimal | None:
     """The run's annualized daily Sharpe (``run_results.risk_adjusted_ratio``), or None when undefined."""
-    rows = [DayEquity(c.day, c.equity_close, c.trades_closed, c.fees, c.funding) for c in closes]
-    return to_decimal(annualized(sharpe(daily_series(rows, starting_balance, chained=chained).returns)))
+    return to_decimal(annualized(sharpe(_series(closes, starting_balance, chained=chained).returns)))
+
+
+def ruin_close(closes: Sequence[DayClose], starting_balance: Decimal) -> DayClose | None:
+    """A chained run's ruin day (its first close at or below zero equity, spec 0015 AC-6), else None."""
+    day = _series(closes, starting_balance, chained=True).ruined_on
+    return next((c for c in closes if c.day == day), None)
 
 
 def measures_row(
