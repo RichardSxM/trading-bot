@@ -1,10 +1,12 @@
 """covers: spec 0024 AC-3 (one line per journal row, in order, header only when empty), AC-4 (EUR from the row's rate,
 rounded once), AC-5 (a missing or unpublished rate refuses), AC-6 (an inverse instrument refuses), AC-7 to AC-9 (the
 summary's totals, balances, and check over Postgres), AC-11 (the summary equals the journal.csv sums), AC-14 (month
-chunks give the same rows in the same order)."""
+chunks give the same rows in the same order, and a 200 000 row year streams with flat memory)."""
 
 import csv
 import io
+import tracemalloc
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -12,6 +14,7 @@ from uuid import UUID, uuid7
 
 import pytest
 from sqlalchemy import insert, update
+from sqlalchemy import text as sql
 from sqlalchemy.orm import Session
 
 from trading_core.journal.bounds import parse_range
@@ -362,3 +365,58 @@ def test_balances_take_the_latest_snapshot_of_the_mode_on_or_before_the_bound(se
     ]
     assert balances_at(session, Env.DEMO, {RunMode.PAPER}, _at(5)) == found  # captured at the bound counts
     assert balances_at(session, Env.DEMO, {RunMode.PAPER}, _at(2)) == []
+
+
+def _year_of_fills(session: Session, world: World, fills: int) -> None:
+    """``fills`` fills, each with a fee, every 300 s from 1 January 2032 UTC, and a rate for every day."""
+    _rates(session, {date(2031, 12, 31) + timedelta(days=d): "1.25" for d in range(367)})
+    order = world.order(decision_id=None, origin=OrderOrigin.RECONCILIATION)
+    repository.upsert_order(session, order)
+    session.execute(
+        sql(
+            """
+            insert into fills (id, env, run_id, order_id, instrument_id, trade_id, side, quantity, price, fee,
+                               fee_currency, liquidity, filled_at, filled_ns)
+            select gen_random_uuid(), o.env, o.run_id, o.id, o.instrument_id, 'T-mem-' || i, 'buy', 0.001,
+                   60000.5, 0.03, 'USD', 'maker', t, (extract(epoch from t) * 1000000)::bigint * 1000
+            from orders o,
+                 generate_series(0, :last) as i,
+                 lateral (select timestamptz '2032-01-01 00:00:00+00' + i * interval '300 seconds' as t) as at
+            where o.client_order_id = :order
+            """
+        ),
+        {"last": fills - 1, "order": order.client_order_id},
+    )
+
+
+def test_a_year_of_200_000_rows_streams_with_flat_memory(session: Session, world: World):
+    """AC-14: the refusal pass, the CSV, and the summary each hold one month of rows at most."""
+    _year_of_fills(session, world, 100_000)
+    journal_range = parse_range("2032-01-01", "2032-12-31", "paper", date(2033, 1, 10))
+    month = parse_range("2032-03-01", "2032-03-31", "paper", date(2033, 1, 10))
+
+    def peak(run: Callable[[], object]) -> int:
+        tracemalloc.start()
+        try:
+            run()
+            return tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+
+    rows = 0
+
+    def stream_year() -> None:
+        nonlocal rows
+        export = JournalCsv(session, Env.DEMO, journal_range)
+        for _chunk_text in export:
+            pass
+        rows = export.rows
+
+    one_month = peak(lambda: "".join(JournalCsv(session, Env.DEMO, month)))
+    year = peak(stream_year)
+    refusal = peak(lambda: journal_refusal(session, Env.DEMO, journal_range))
+    summary = peak(lambda: journal_summary(session, Env.DEMO, journal_range))
+
+    assert rows == 200_000
+    assert year < 2 * one_month  # a year costs about what its biggest month does, not twelve of them
+    assert max(year, refusal, summary) < 64 * 2**20  # far inside the dashboard's 256m mem_limit
