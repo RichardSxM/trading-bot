@@ -496,7 +496,7 @@ spec [0026](../specs/0026-donchian-scalp-r2/index.md)
 
 - [x] Design it (spec): `/architect donchian scalp r2`
 - [ ] Build it: `/develop donchian scalp r2`
-  - [ ] Hash baseline, spike, and thin thread: maker base with entry and stop, r2 node, trader wiring, laptop smoke (AC-1 to AC-4, AC-14 to AC-16)
+  - [x] Hash baseline, spike, and thin thread: maker base with entry and stop, r2 node, trader wiring, laptop smoke (AC-1 to AC-4, AC-14 to AC-16)
   - [x] Order paths: partial fills, post only rejection, maker exit and fallback, kill switch, restart (AC-5 to AC-12)
   - [x] Filters and seed: volatility floor, spread check, seed join (AC-13, AC-14, AC-16)
   - [ ] Lab screens: registry, two study files, `maker_figures.py`, `verify.md` table (AC-17)

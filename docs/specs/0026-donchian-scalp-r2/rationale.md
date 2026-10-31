@@ -111,6 +111,12 @@ The maker exit in the study was a limit at the exit bar's close, filled if the n
 
 Other filters tried on r1's trades (by quintile): breakout depth, bar range, EMA distance, and channel width showed no clear pattern. Volume below 0.48 of its 20 bar average was the worst quintile (−2.47). Hours 16 to 20 UTC were the least bad (−1.25), 04 to 12 UTC the worst (about −2.4). Only ATR as a share of price was monotone and has a structural reason (the fee is fixed in bps, the move is in ATR), so it is the one filter taken.
 
+### Amendment 2026-10-31: the stop already through at a maker fill
+
+The first BTC and PEPE screens each placed about 35 trades in their first week and then nothing. A maker entry filled at its limit while the bid (for a long) was already below the stop, because the spread was wide. AC-5 checked only the fill price, so the stop went out, the venue rejected it, and `STOP_NOT_ACCEPTED` blocked every later entry. That block clears only on a restart, and a backtest never restarts (BTC refused 29,647 entries, PEPE about 8,700). r1 never hit this, because its market entries fill at the touch.
+
+Options: (1) also check the cached quote at the first fill, as spec 0017 AC-18 did first; (2) also settle a rejected stop by the cached quote or the next quote, AC-18's second and third amendments. Option 1 alone fixes the screens seen so far, but spec 0017 needed all three parts before its screens ran clean (the venue may judge the stop by a quote the strategy has not yet seen). Chosen: both, so r2 copies a rule that is already proven in this repo instead of finding the same gaps one screen at a time. Real failures (a denial, a stop not accepted in time, a stop cancelled by someone else) still fail closed with the block.
+
 ## References
 
 **Project sources**:

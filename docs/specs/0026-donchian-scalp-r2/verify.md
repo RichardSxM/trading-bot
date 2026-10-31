@@ -56,3 +56,11 @@ trading_core.node.vwap_retest 44083de39ddf9f1b452b041dc81f1017ea3ee070315104e413
 | (2b) the same orders; price falls through the stop first | the stop fills; the limit is cancelled by the venue when its price is reached; no second position | the same |
 
 Both checks pass on both venues, so AC-6's `due_post_only` path is real on both and AC-7 (the stop resting beside the exit limit) needs no amendment. Because the venue itself cancels the leftover reduce only order once its price is reached, r2 also cancels everything that rests when the position closes.
+
+## Laptop smoke (task 2)
+
+2026-10-31, worktree stack on `kfs/trader:s0026` (built at 2000357), `TRADING_ENV=demo`, `PAPER_STRATEGY=donchian_scalp_r2`, `PAPER_INSTRUMENTS=PF_PEPEUSD.KRAKEN,PF_XBTUSD.KRAKEN`. The trader started, recorded version `01a19166-ee6f-767a-883c-a22c635ce734` (`donchian_scalp_r2`, kind `scalping`, `entry_offset_atr` 0.5, `atr_min_bps` 10, `instruments` both coins), logged `paper_promotion_required`, and exited 78, as an unpromoted version must. The stack was taken down after.
+
+## Tests at 2000357
+
+Core 2,134 passed, 5 skipped. Trader 175 passed (the 8 Redis ACL and demo purge tests need the Compose Redis and were not run). Lab 324 passed (the 5 `postgres` marked tests were not run). mypy strict clean on core, trader, lab, and `studies/maker_figures.py`.
