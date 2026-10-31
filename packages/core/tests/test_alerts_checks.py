@@ -1,15 +1,16 @@
 """covers: spec 0013 AC-4 (``disk_low``) and AC-6 (the stuck entry block, its since time, and the
-restart rule); spec 0023 AC-21 (the three check reasons join the alerting set).
+restart rule); spec 0023 AC-21 (the three check reasons join the alerting set); spec 0024 AC-17
+(``fx_rates_stale``).
 
 Pure: no clock, no I/O.
 """
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
 
-from trading_core.alerts.checks import ENTRY_BLOCK_REASONS, disk_check, entry_block_checks
+from trading_core.alerts.checks import ENTRY_BLOCK_REASONS, disk_check, entry_block_checks, fx_stale_check
 from trading_core.alerts.engine import AlertEngine, EngineConfig
 from trading_core.alerts.model import Delivery, Tier
 from trading_core.strategy.blocks import BlockReason
@@ -59,6 +60,40 @@ def test_low_disk_is_one_critical_push_that_resolves_with_a_note():
 
     [note] = engine.check(disk_check(9 * GB, Decimal(5), NOW + timedelta(minutes=10))).pushes
     assert note.tier is Tier.INFO
+
+
+# fx_rates_stale (spec 0024 AC-17) ------------------------------------------------------------
+
+TODAY = date(2026, 10, 16)
+
+
+@pytest.mark.parametrize(("age", "ok"), [(0, True), (5, True), (6, True), (7, False), (30, False), (-1, True)])
+def test_fx_stale_opens_only_past_the_limit(age, ok):
+    result = fx_stale_check(TODAY - timedelta(days=age), TODAY, 6, NOW)
+
+    assert (result.rule, result.ok) == ("fx_rates_stale", ok)
+    assert result.fields["age_days"] == max(0, age)
+
+
+def test_no_rate_at_all_is_stale():
+    result = fx_stale_check(None, TODAY, 6, NOW)
+
+    assert (result.ok, result.fields) == (False, {"missing": True, "stale_days": 6})
+
+
+def test_stale_rates_are_one_warning_that_a_fresh_row_closes():
+    engine = AlertEngine(CONFIG)
+
+    [push] = engine.check(fx_stale_check(date(2026, 10, 9), TODAY, 6, NOW)).pushes
+    assert push.tier is Tier.WARNING
+    assert "ECB rates stale" in push.title
+    assert push.message.startswith("The newest EUR/USD rate is from 2026-10-09, 7 days ago (the limit is 6).")
+    engine.record(push, Delivery.SENT, NOW)
+
+    assert not engine.check(fx_stale_check(date(2026, 10, 9), TODAY, 6, NOW + timedelta(hours=1))).pushes
+    [note] = engine.check(fx_stale_check(date(2026, 10, 15), TODAY, 6, NOW + timedelta(hours=2))).pushes
+    assert note.tier is Tier.INFO
+    assert "Resolved" in note.title
 
 
 # entry_block (AC-6) -------------------------------------------------------------------------

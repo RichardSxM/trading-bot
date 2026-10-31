@@ -126,7 +126,14 @@ async def serve(started: Boot[AlerterSettings]) -> None:
             mute=MuteKey(redis, settings.trading_env),
             daily_at=settings.alerts_daily_at,
             daily_tz=settings.alerts_daily_tz,
-            fx=FxFetcher(http, FxRepository(db), settings.fx_ecb_url, settings.fx_history_from, utc_now),
+            fx=FxFetcher(
+                http,
+                FxRepository(db),
+                settings.fx_ecb_url,
+                settings.fx_history_from,
+                utc_now,
+                stale_days=settings.fx_stale_days,
+            ),
         )
         log.info(
             "alerter running",

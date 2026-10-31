@@ -3,7 +3,8 @@
 At start and then every hour, whenever the newest stored rate is before today (Amsterdam), it
 asks for the days after it, or from ``FX_HISTORY_FROM`` when the table is empty. A failed fetch
 just waits for the next hour. A 404 is the API's answer for a period with no rates (a weekend,
-a TARGET holiday, today before about 16:00 CET), so it writes and logs nothing.
+a TARGET holiday, today before about 16:00 CET), so it writes and logs nothing. Each step then
+judges ``fx_rates_stale`` (AC-17) from the newest date it knows.
 """
 
 import asyncio
@@ -17,6 +18,8 @@ import httpx
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
+from trading_core.alerts.checks import fx_stale_check
+from trading_core.alerts.model import CheckResult
 from trading_core.fx.ecb import FxParseError, ecb_url, parse_ecb_csv
 from trading_core.recording import repository
 from trading_core.recording.errors import RecordConflictError
@@ -70,27 +73,39 @@ class FxFetcher:
         base_url: str,
         history_from: date,
         clock: Callable[[], datetime],
+        stale_days: int = 6,
     ) -> None:
         self._http = http
         self._store = store
         self._base_url = base_url
         self._history_from = history_from
         self._clock = clock
+        self._stale_days = stale_days
 
-    async def step(self) -> None:
-        """Fetch and store the missing days, if any; every failure is logged and left for the next hour."""
-        today = amsterdam_today(self._clock())
+    async def step(self) -> CheckResult | None:
+        """Fetch and store the missing days, if any; every failure is logged and left for the next hour.
+
+        Returns the ``fx_rates_stale`` check of the newest date after the fetch, or None when the
+        newest date could not be read (``postgres_unreachable`` covers that).
+        """
+        now = self._clock()
+        today = amsterdam_today(now)
         try:
             newest = await asyncio.to_thread(self._store.newest)
         except SQLAlchemyError as exc:
             _failed("database", error=type(exc).__name__)
-            return
+            return None
+        newest = await self._fill(newest, today)
+        return fx_stale_check(newest, today, self._stale_days, now)
+
+    async def _fill(self, newest: date | None, today: date) -> date | None:
+        """Store the days after ``newest`` up to ``today``; returns the newest date stored afterwards."""
         start = self._history_from if newest is None else newest + timedelta(days=1)
         if start > today:
-            return
+            return newest
         rows = await self._fetch(start, today)
         if not rows:
-            return
+            return newest
         try:
             inserted = await asyncio.to_thread(self._store.write, rows)
         except RecordConflictError as exc:
@@ -105,14 +120,15 @@ class FxFetcher:
                     }
                 },
             )
-            return
+            return newest
         except SQLAlchemyError as exc:
             _failed("database", error=type(exc).__name__)
-            return
+            return newest
         log.info(
             "fx rates fetched",
             extra={"fields": {"code": "fx_fetched", "count": inserted, "newest": rows[-1].rate_date.isoformat()}},
         )
+        return rows[-1].rate_date
 
     async def _fetch(self, start: date, end: date) -> list[FxRateRow]:
         """The parsed rows for ``start`` to ``end``; empty on a 404 or any logged failure."""

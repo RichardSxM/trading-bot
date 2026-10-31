@@ -1,6 +1,7 @@
 """covers: spec 0024 AC-15 (the hourly ECB fetch: from the day after the newest rate or ``FX_HISTORY_FROM``, 404 as
 zero rows, failures logged and left for the next hour, a differing rate kept) and AC-18 (the HTTP client is injected,
-no test reaches the network), plus the three ``FX_*`` settings."""
+no test reaches the network), AC-17 (each step returns ``fx_rates_stale`` from the newest date after it), plus the
+three ``FX_*`` settings."""
 
 import asyncio
 from datetime import UTC, date, datetime
@@ -13,6 +14,7 @@ from sqlalchemy.exc import OperationalError
 
 from alerter.fx import TIMEOUT_S, FxFetcher, amsterdam_today
 from alerter.settings import AlerterSettings
+from trading_core.alerts.model import CheckResult
 from trading_core.recording.errors import RecordConflictError
 from trading_core.recording.rows import FxRateRow
 
@@ -79,12 +81,14 @@ class Ecb:
         return httpx.Response(self.status, text=self.body)
 
 
-def _step(ecb: Ecb, store: FakeFxStore, at: datetime = FRIDAY, history_from: date = date(2026, 10, 1)) -> None:
-    async def run() -> None:
+def _step(
+    ecb: Ecb, store: FakeFxStore, at: datetime = FRIDAY, history_from: date = date(2026, 10, 1)
+) -> CheckResult | None:
+    async def run() -> CheckResult | None:
         async with httpx.AsyncClient(transport=httpx.MockTransport(ecb)) as http:
-            await FxFetcher(http, store, BASE, history_from, Clock(at)).step()
+            return await FxFetcher(http, store, BASE, history_from, Clock(at), stale_days=6).step()
 
-    asyncio.run(run())
+    return asyncio.run(run())
 
 
 def _codes(caplog) -> list[str]:
@@ -286,3 +290,38 @@ def test_every_row_is_a_decimal_eur_usd_ecb_row():
 
     assert {(r.base_currency, r.quote_currency, r.source) for r in store.written} == {("EUR", "USD", "ECB")}
     assert all(isinstance(r.rate, Decimal) for r in store.written)
+
+
+def test_a_step_judges_staleness_from_the_rows_it_just_stored():
+    result = _step(Ecb(), FakeFxStore(), at=datetime(2026, 10, 9, 10, 0, tzinfo=UTC))
+
+    assert result is not None
+    assert (result.rule, result.ok, result.fields["newest"], result.fields["age_days"]) == (
+        "fx_rates_stale",
+        False,
+        "2026-10-02",
+        7,
+    )
+
+
+def test_a_failed_fetch_still_judges_the_stored_rows():
+    store = FakeFxStore({date(2026, 9, 30): Decimal("1.1")})
+
+    result = _step(Ecb(status=500), store)
+
+    assert result is not None
+    assert (result.ok, result.fields["newest"], result.fields["age_days"]) == (True, "2026-09-30", 2)
+
+
+def test_an_empty_table_after_a_404_is_stale():
+    result = _step(Ecb(status=404), FakeFxStore())
+
+    assert result is not None
+    assert (result.ok, result.fields.get("missing")) == (False, True)
+
+
+def test_postgres_down_gives_no_verdict():
+    store = FakeFxStore()
+    store.down = True
+
+    assert _step(Ecb(), store) is None

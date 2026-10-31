@@ -264,6 +264,14 @@ class Alerter:
             )
             return "unknown"
 
+    async def fetch_fx(self) -> None:
+        """The hourly ECB fetch (spec 0024 AC-15), then ``fx_rates_stale`` from what it left (AC-17)."""
+        if self._fx is None:
+            return
+        result = await self._fx.step()
+        if result is not None:
+            self.apply(self._engine.check(result))
+
     async def check_postgres(self) -> None:
         """``postgres_unreachable`` from a ``SELECT 1`` (AC-4); alerts keep flowing either way (AC-15)."""
         ok = await self._store.ping()
@@ -432,7 +440,7 @@ class Alerter:
                 group.create_task(_supervise(name, _every(step, every)))
 
     def _loops(self) -> list[tuple[str, Callable[[], Awaitable[None]], float]]:
-        fx = [] if self._fx is None else [("fx", self._fx.step, FX_S)]
+        fx = [] if self._fx is None else [("fx", self.fetch_fx, FX_S)]
         return [
             *fx,
             ("heartbeat", self.check_heartbeat, CHECK_S),

@@ -250,6 +250,8 @@ RECORDER_CODES: Final = _code_rule(
     ],
 )
 KRAKEN_KEY_ROTATION_DUE: Final = _code_rule("kraken_key_rotation_due", Tier.WARNING, ["kraken_key_rotation_due"])
+# The newest ECB rate is too old for the journal export (spec 0024 AC-17); checked after each hourly fetch.
+FX_RATES_STALE: Final = Rule("fx_rates_stale", Tier.WARNING, RuleKind.CONDITION, source="postgres")
 # Fed by the engine's burst counter, not by one line (its matcher stays None).
 LOGIN_FAILED_BURST: Final = Rule(
     "login_failed_burst", Tier.WARNING, RuleKind.EVENT, source="log", codes=frozenset({"login_failed"})
@@ -306,6 +308,7 @@ RULES: Final[tuple[Rule, ...]] = (
     BOOK_SEQUENCE_HOLE,
     RECORDER_CODES,
     KRAKEN_KEY_ROTATION_DUE,
+    FX_RATES_STALE,
     LOGIN_FAILED_BURST,
     SNAPSHOT_WRITE_FAILED,
     ENGINE_ERROR,
