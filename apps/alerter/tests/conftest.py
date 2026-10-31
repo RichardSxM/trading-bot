@@ -8,7 +8,7 @@ from trading_core.alerts.daily import DailyFigures
 from trading_core.alerts.model import Delivery, Episode, Push
 from trading_core.secrets import reset_registry
 
-_ENV_PREFIXES = ("TRADING_ENV", "ALERTS_", "REDIS_", "POSTGRES_", "SECRETS_DIR", "GIT_COMMIT", "PROCESS_NAME")
+_ENV_PREFIXES = ("TRADING_ENV", "ALERTS_", "REDIS_", "POSTGRES_", "SECRETS_DIR", "GIT_COMMIT", "PROCESS_NAME", "FX_")
 
 NOW = datetime(2026, 10, 16, 3, 0, tzinfo=UTC)
 

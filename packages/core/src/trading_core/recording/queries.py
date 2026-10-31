@@ -7,22 +7,25 @@ Trades page lists (spec 0006 AC-19), paper runs only. ``reconciliations_page`` i
 page list (spec 0023 AC-19).
 """
 
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import MAX_EMAX, MAX_PREC, MIN_EMIN, Context, Decimal
 from enum import StrEnum
-from typing import Final
+from typing import Final, NamedTuple
 from uuid import UUID
 
-from sqlalchemy import Date, ScalarSelect, String, cast, func, literal, select, true
+from sqlalchemy import ColumnElement, Date, String, and_, cast, func, literal, or_, select, true
 from sqlalchemy.orm import InstrumentedAttribute, Session, aliased
+from sqlalchemy.sql.selectable import LateralFromClause
 
+from trading_core.journal.summary import PositionFigures, Snapshot
 from trading_core.recording import models
 from trading_core.recording.enums import (
     ControlOutcome,
     Env,
     Intent,
+    Liquidity,
     OrderOrigin,
     OrderSide,
     OrderType,
@@ -71,6 +74,21 @@ class JournalRow:
     currency: str
     eur_amount: Decimal | None
     fx_missing: bool
+    # Spec 0024 AC-13: the run's mode and strategy, the fill's liquidity, and the rate row used.
+    mode: RunMode
+    liquidity: Liquidity | None = None
+    strategy: str
+    strategy_version: str
+    fx_rate: Decimal | None
+    fx_rate_date: date | None
+
+
+def newest_fx_date(session: Session) -> date | None:
+    """The newest stored EUR/USD ``rate_date``, or None when ``fx_rates`` holds none (spec 0024 AC-5, AC-15)."""
+    fx = models.FxRate
+    return session.execute(
+        select(func.max(fx.rate_date)).where(fx.base_currency == "EUR", fx.quote_currency == _FX_CURRENCY)
+    ).scalar_one()
 
 
 def _utc_ns(name: str, value: datetime) -> int:
@@ -79,11 +97,11 @@ def _utc_ns(name: str, value: datetime) -> int:
     return (value - _EPOCH) // timedelta(microseconds=1) * 1000
 
 
-def _eur_rate(at: InstrumentedAttribute[datetime]) -> ScalarSelect[Decimal]:
-    """USD per EUR on the event's UTC date, or the latest earlier date (weekends, holidays)."""
+def _eur_rate(at: InstrumentedAttribute[datetime]) -> LateralFromClause:
+    """The ``fx_rates`` row used for an event: USD per EUR on its UTC date, or the latest earlier one."""
     fx = models.FxRate
     return (
-        select(fx.rate)
+        select(fx.rate.label("fx_rate"), fx.rate_date.label("fx_rate_date"))
         .where(
             fx.base_currency == "EUR",
             fx.quote_currency == _FX_CURRENCY,
@@ -91,20 +109,47 @@ def _eur_rate(at: InstrumentedAttribute[datetime]) -> ScalarSelect[Decimal]:
         )
         .order_by(fx.rate_date.desc())
         .limit(1)
-        .scalar_subquery()
+        .lateral()
     )
 
 
-def _eur(amount: Decimal, currency: str, rate: Decimal | None) -> tuple[Decimal | None, bool]:
-    if currency != _FX_CURRENCY or rate is None:
-        return None, True
-    return amount / rate, False
+@dataclass(frozen=True)
+class _Rate:
+    """The rate row used, or ``None`` and ``None`` when no rate is on or before the event's date."""
+
+    rate: Decimal | None
+    rate_date: date | None
 
 
-def _fill_rows(fill: models.Fill, settle_currency: str, multiplier: Decimal, rate: Decimal | None) -> list[JournalRow]:
+@dataclass(frozen=True)
+class _Context:
+    """What every row of one fill or payment shares: its run's mode, strategy, and version."""
+
+    mode: RunMode
+    strategy: str
+    strategy_version: str
+
+
+class _Fx(NamedTuple):
+    eur_amount: Decimal | None
+    fx_missing: bool
+    fx_rate: Decimal | None
+    fx_rate_date: date | None
+
+
+def _eur(amount: Decimal, currency: str, rate: _Rate) -> _Fx:
+    """``eur_amount``, ``fx_missing``, and the rate used; a non USD amount uses no rate."""
+    if currency != _FX_CURRENCY or rate.rate is None:
+        return _Fx(None, True, None, None)
+    return _Fx(amount / rate.rate, False, rate.rate, rate.rate_date)
+
+
+def _fill_rows(
+    fill: models.Fill, settle_currency: str, multiplier: Decimal, rate: _Rate, context: _Context
+) -> list[JournalRow]:
     value = _EXACT.multiply(_EXACT.multiply(fill.quantity, fill.price), multiplier)
     amount = _EXACT.minus(value) if fill.side == OrderSide.BUY else value
-    eur_amount, fx_missing = _eur(amount, settle_currency, rate)
+    fx = _eur(amount, settle_currency, rate)
     trade = JournalRow(
         kind=JournalKind.FILL,
         at=fill.filled_at,
@@ -117,13 +162,19 @@ def _fill_rows(fill: models.Fill, settle_currency: str, multiplier: Decimal, rat
         price=fill.price,
         amount=amount,
         currency=settle_currency,
-        eur_amount=eur_amount,
-        fx_missing=fx_missing,
+        mode=context.mode,
+        liquidity=Liquidity(fill.liquidity),
+        strategy=context.strategy,
+        strategy_version=context.strategy_version,
+        eur_amount=fx.eur_amount,
+        fx_missing=fx.fx_missing,
+        fx_rate=fx.fx_rate,
+        fx_rate_date=fx.fx_rate_date,
     )
     if fill.fee == 0:
         return [trade]
     fee = _EXACT.minus(fill.fee)
-    eur_fee, fee_fx_missing = _eur(fee, fill.fee_currency, rate)
+    fee_fx = _eur(fee, fill.fee_currency, rate)
     return [
         trade,
         replace(
@@ -134,14 +185,16 @@ def _fill_rows(fill: models.Fill, settle_currency: str, multiplier: Decimal, rat
             price=None,
             amount=fee,
             currency=fill.fee_currency,
-            eur_amount=eur_fee,
-            fx_missing=fee_fx_missing,
+            eur_amount=fee_fx.eur_amount,
+            fx_missing=fee_fx.fx_missing,
+            fx_rate=fee_fx.fx_rate,
+            fx_rate_date=fee_fx.fx_rate_date,
         ),
     ]
 
 
-def _funding_row(funding: models.FundingPayment, rate: Decimal | None) -> JournalRow:
-    eur_amount, fx_missing = _eur(funding.amount, funding.currency, rate)
+def _funding_row(funding: models.FundingPayment, rate: _Rate, context: _Context) -> JournalRow:
+    fx = _eur(funding.amount, funding.currency, rate)
     return JournalRow(
         kind=JournalKind.FUNDING,
         at=funding.paid_at,
@@ -151,45 +204,159 @@ def _funding_row(funding: models.FundingPayment, rate: Decimal | None) -> Journa
         position_id=funding.position_id,
         amount=funding.amount,
         currency=funding.currency,
-        eur_amount=eur_amount,
-        fx_missing=fx_missing,
+        mode=context.mode,
+        strategy=context.strategy,
+        strategy_version=context.strategy_version,
+        eur_amount=fx.eur_amount,
+        fx_missing=fx.fx_missing,
+        fx_rate=fx.fx_rate,
+        fx_rate_date=fx.fx_rate_date,
     )
 
 
-def journal_rows(session: Session, env: Env, start: datetime, end: datetime) -> Sequence[JournalRow]:
-    """Every fill, fee, and funding payment of ``env``'s paper and live runs in ``[start, end)``.
+def journal_rows(
+    session: Session,
+    env: Env,
+    start: datetime,
+    end: datetime,
+    modes: Collection[RunMode] = _TRADING_MODES,
+) -> Sequence[JournalRow]:
+    """Every fill, fee, and funding payment of ``env``'s runs of ``modes`` in ``[start, end)``.
 
     Rows are signed cash flows ordered by ``at``, then ``source_id``, then kind (``fill``
     before ``fee``). A fee row appears only when the fee is not zero. ``eur_amount`` is the
-    USD amount divided by the ECB rate of the event's UTC date (or the latest earlier one);
-    any other currency, or no rate, gives ``None`` and ``fx_missing``. Raises ``ValueError``
-    for a naive or non UTC bound, and ``UnsupportedInstrumentError`` when a fill in range is
-    on an inverse instrument.
+    USD amount divided by the ECB rate of the event's UTC date (or the latest earlier one),
+    and ``fx_rate`` and ``fx_rate_date`` name that rate; any other currency, or no rate, gives
+    ``None`` for all three and ``fx_missing``. ``modes`` is a non empty set of ``paper`` and
+    ``live`` (spec 0024 AC-13), both by default. Raises ``ValueError`` for a naive or non UTC
+    bound or a bad ``modes``, and ``UnsupportedInstrumentError`` when a fill in range is on an
+    inverse instrument.
     """
     start_ns, end_ns = _utc_ns("start", start), _utc_ns("end", end)
-    fill, funding, run, instrument = models.Fill, models.FundingPayment, models.StrategyRun, models.Instrument
+    wanted = _wanted(modes)
+    fill, funding, instrument = models.Fill, models.FundingPayment, models.Instrument
+    run, version, strategy = models.StrategyRun, models.StrategyVersion, models.Strategy
+    context = (run.mode, strategy.name, version.version_hash)
 
+    fill_rate = _eur_rate(fill.filled_at)
     fills = session.execute(
-        select(
-            fill, instrument.settle_currency, instrument.multiplier, instrument.is_inverse, _eur_rate(fill.filled_at)
-        )
+        select(fill, instrument.settle_currency, instrument.multiplier, instrument.is_inverse, *context)
+        .add_columns(fill_rate.c.fx_rate, fill_rate.c.fx_rate_date)
         .join(run, run.id == fill.run_id)
+        .join(version, version.id == run.strategy_version_id)
+        .join(strategy, strategy.id == version.strategy_id)
         .join(instrument, instrument.instrument_id == fill.instrument_id)
-        .where(fill.env == env, run.mode.in_(_TRADING_MODES), fill.filled_ns >= start_ns, fill.filled_ns < end_ns)
+        .outerjoin(fill_rate, true())
+        .where(fill.env == env, run.mode.in_(wanted), fill.filled_ns >= start_ns, fill.filled_ns < end_ns)
     ).all()
-    inverse = sorted({row.instrument_id for row, _, _, is_inverse, _ in fills if is_inverse})
+    inverse = sorted({row[0].instrument_id for row in fills if row.is_inverse})
     if inverse:
         raise UnsupportedInstrumentError(f"the journal supports linear contracts only; inverse in range: {inverse}")
 
+    funding_rate = _eur_rate(funding.paid_at)
     payments = session.execute(
-        select(funding, _eur_rate(funding.paid_at))
+        select(funding, *context)
+        .add_columns(funding_rate.c.fx_rate, funding_rate.c.fx_rate_date)
         .join(run, run.id == funding.run_id)
-        .where(funding.env == env, run.mode.in_(_TRADING_MODES), funding.paid_ns >= start_ns, funding.paid_ns < end_ns)
+        .join(version, version.id == run.strategy_version_id)
+        .join(strategy, strategy.id == version.strategy_id)
+        .outerjoin(funding_rate, true())
+        .where(funding.env == env, run.mode.in_(wanted), funding.paid_ns >= start_ns, funding.paid_ns < end_ns)
     ).all()
 
-    rows = [r for f, currency, multiplier, _, rate in fills for r in _fill_rows(f, currency, multiplier, rate)]
-    rows += [_funding_row(payment, rate) for payment, rate in payments]
+    rows = [
+        r
+        for f, currency, multiplier, _, mode, name, version_hash, rate, rate_date in fills
+        for r in _fill_rows(
+            f, currency, multiplier, _Rate(rate, rate_date), _Context(RunMode(mode), name, version_hash)
+        )
+    ]
+    rows += [
+        _funding_row(payment, _Rate(rate, rate_date), _Context(RunMode(mode), name, version_hash))
+        for payment, mode, name, version_hash, rate, rate_date in payments
+    ]
     return sorted(rows, key=lambda r: (r.at, r.source_id, _KIND_ORDER[r.kind]))
+
+
+def _wanted(modes: Collection[RunMode]) -> set[RunMode]:
+    wanted = set(modes)
+    if not wanted or not wanted <= set(_TRADING_MODES):
+        raise ValueError(f"modes must be a non empty set of paper and live, got {sorted(wanted)}")
+    return wanted
+
+
+def fx_rate_on(session: Session, day: date) -> Decimal | None:
+    """The EUR/USD rate of ``day`` or the latest earlier one, None when none is stored (spec 0024 AC-8)."""
+    fx = models.FxRate
+    return session.execute(
+        select(fx.rate)
+        .where(fx.base_currency == "EUR", fx.quote_currency == _FX_CURRENCY, fx.rate_date <= day)
+        .order_by(fx.rate_date.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+
+
+def balances_at(session: Session, env: Env, modes: Collection[RunMode], at: datetime) -> list[Snapshot]:
+    """Per ``(account_ref, currency)``, the latest ``account_snapshots`` row of ``env`` with ``captured_at <= at``
+    whose run has one of ``modes`` (spec 0024 AC-8).
+
+    A row with NULL ``run_id`` counts as ``live``, and only in the live env.
+    """
+    _utc_ns("at", at)
+    wanted = _wanted(modes)
+    snap, run = models.AccountSnapshot, models.StrategyRun
+    mode_ok: ColumnElement[bool] = run.mode.in_(wanted)
+    if env == Env.LIVE and RunMode.LIVE in wanted:
+        mode_ok = or_(mode_ok, snap.run_id.is_(None))
+    newest = (
+        func.row_number()
+        .over(
+            partition_by=(snap.account_ref, snap.currency), order_by=(snap.captured_at.desc(), snap.captured_ns.desc())
+        )
+        .label("newest")
+    )
+    ranked = (
+        select(snap.account_ref, snap.currency, snap.balance_total, snap.captured_at, snap.run_id, newest)
+        .outerjoin(run, run.id == snap.run_id)
+        .where(snap.env == env, snap.captured_at <= at, mode_ok)
+        .subquery()
+    )
+    rows = session.execute(
+        select(ranked.c.account_ref, ranked.c.currency, ranked.c.balance_total, ranked.c.captured_at, ranked.c.run_id)
+        .where(ranked.c.newest == 1)
+        .order_by(ranked.c.account_ref, ranked.c.currency)
+    ).all()
+    return [Snapshot(*row) for row in rows]
+
+
+def journal_check_positions(
+    session: Session, env: Env, modes: Collection[RunMode], start: datetime, end: datetime
+) -> PositionFigures:
+    """The dashboard side of the P&L check (spec 0024 AC-9) over ``env``'s positions of ``modes``.
+
+    ``dashboard_net`` is ``sum(realized_pnl + funding_total)`` of positions closed in ``[start, end)``,
+    the per position formula of the dashboard's P&L. A position crosses an edge when it was open
+    at ``start`` (opened before, not closed by then) or at ``end``.
+    """
+    _utc_ns("start", start)
+    _utc_ns("end", end)
+    wanted = _wanted(modes)
+    pos, run = models.Position, models.StrategyRun
+    closed = and_(pos.status == PositionStatus.CLOSED, pos.closed_at >= start, pos.closed_at < end)
+    crosses = or_(
+        and_(pos.opened_at < start, or_(pos.closed_at.is_(None), pos.closed_at > start)),
+        and_(pos.opened_at < end, or_(pos.closed_at.is_(None), pos.closed_at >= end)),
+    )
+    net, counted, crossing = session.execute(
+        select(
+            func.coalesce(func.sum(pos.realized_pnl + pos.funding_total).filter(closed), 0),
+            func.count().filter(closed),
+            func.count().filter(crosses),
+        )
+        .join(run, run.id == pos.run_id)
+        .where(pos.env == env, run.env == env, run.mode.in_(wanted))
+    ).one()
+    return PositionFigures(dashboard_net=Decimal(net), counted=counted, crossing=crossing)
 
 
 @dataclass(frozen=True, kw_only=True)

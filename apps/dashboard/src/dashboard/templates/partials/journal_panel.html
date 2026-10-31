@@ -1,0 +1,71 @@
+{#- The journal Check panel (spec 0024 AC-1, AC-5 to AC-9), swapped into #journal-panel by HTMX.
+    ``state`` is match, mismatch, or not_comparable with a ``summary``; refused or error with a
+    ``message`` and no links. Every figure comes from one JournalSummary, the same one summary.csv
+    renders, so the two always agree (AC-11). -#}
+{% from "components/states.html" import error_state %}
+{% from "components/badge.html" import badge %}
+{% from "components/icon.html" import icon %}
+{% from "components/table.html" import table %}
+{%- macro balances(title, lines) -%}
+{%- set rows = [] -%}
+{%- for line in lines -%}
+{%- if line.snapshot is none -%}
+{%- set _ = rows.append([line.account_ref, line.currency, "none recorded", "", "", ""]) -%}
+{%- else -%}
+{%- set _ = rows.append([line.account_ref, line.currency, line.snapshot.balance_total | num, line.eur | num if line.eur is not none else "", line.snapshot.captured_at | ts, line.snapshot.run_id or "none"]) -%}
+{%- endif -%}
+{%- endfor -%}
+{{ table(title, [("Account", False), ("Currency", False), ("Balance", True), ("EUR", True), ("Captured", False), ("Run", False)], rows, "No balance recorded on or before this bound.") }}
+{%- endmacro -%}
+{%- if summary is none -%}
+{%- if state == "error" -%}
+{{ error_state("Check failed.", " " ~ message) }}
+{%- else -%}
+<div class="journal-panel__refused" role="alert"><span class="journal-panel__icon">{{ icon("octagon-alert") }}</span><p><strong>Nothing to export.</strong> {{ message }}</p></div>
+{%- endif -%}
+{%- else -%}
+{%- set check = summary.check -%}
+<div class="journal-panel journal-panel--{{ state }}">
+  <section class="journal-panel__check" aria-labelledby="journal-check-h">
+    <h3 class="journal-panel__title" id="journal-check-h">P&amp;L check
+      {% if state == "match" %}{{ badge("match", "ok") }}
+      {% elif state == "mismatch" %}<span class="badge badge--warn">{{ icon("triangle-alert") }}mismatch</span>
+      {% else %}{{ badge("not comparable", "neutral") }}{% endif %}
+    </h3>
+    {% if check.reason == "edge" %}<p class="journal-panel__why">{{ check.crossing }} position{{ "s" if check.crossing != 1 }} crossed a range edge, so the journal and the dashboard count different trades.</p>
+    {% elif check.reason == "unlinked" %}<p class="journal-panel__why">{{ check.unlinked_rows }} journal row{{ "s" if check.unlinked_rows != 1 }} belong to no position, so the dashboard cannot count them.</p>
+    {% elif state == "mismatch" %}<p class="journal-panel__why">The journal and the dashboard differ by more than the tolerance. A recording bug may be the cause; the files still download.</p>{% endif %}
+    <dl class="journal-panel__figures">
+      <div><dt>Journal net</dt><dd>{{ check.journal_net | pnl }} USD</dd></div>
+      <div><dt>Dashboard net</dt><dd>{{ check.dashboard_net | pnl }} USD</dd></div>
+      <div><dt>Difference</dt><dd>{{ check.difference | num }} USD</dd></div>
+      <div><dt>Tolerance</dt><dd>{{ check.tolerance | num }} USD</dd></div>
+      <div><dt>Positions counted</dt><dd>{{ check.counted }}</dd></div>
+      <div><dt>Crossing an edge</dt><dd>{{ check.crossing }}</dd></div>
+      <div><dt>Unlinked rows</dt><dd>{{ check.unlinked_rows }} · {{ check.unlinked_net | num }} USD</dd></div>
+      <div><dt>Rows</dt><dd>{{ summary.rows }}</dd></div>
+    </dl>
+  </section>
+  {%- set total_rows = [] -%}
+  {%- for currency, totals in summary.native.items() -%}
+  {%- for item, value in totals.items() -%}{%- set _ = total_rows.append([item, currency, value | num]) -%}{%- endfor -%}
+  {%- endfor -%}
+  {%- for item, value in summary.eur.items() -%}{%- set _ = total_rows.append([item, "EUR", value | num]) -%}{%- endfor -%}
+  <section aria-labelledby="journal-totals-h">
+    <h3 class="journal-panel__title" id="journal-totals-h">Totals</h3>
+    {{ table("Totals", [("Item", False), ("Currency", False), ("Value", True)], total_rows, "No rows in this range.") }}
+  </section>
+  <section aria-labelledby="journal-balances-h">
+    <h3 class="journal-panel__title" id="journal-balances-h">Balances</h3>
+    {% if summary.journal_range.mode.value == "paper" %}<p class="journal-panel__why">Paper balances belong to simulated accounts that reset at each run start; paper trading, not real trades.</p>{% endif %}
+    <h4 class="journal-panel__sub">At the start</h4>
+    {{ balances("Balances at the start", summary.balance_start) }}
+    <h4 class="journal-panel__sub">At the end</h4>
+    {{ balances("Balances at the end", summary.balance_end) }}
+  </section>
+  <p class="journal-panel__downloads">
+    <a class="button button--primary" href="/trades/journal.csv?{{ query }}" download>{{ icon("download") }}<span class="button__label">journal.csv</span></a>
+    <a class="button" href="/trades/journal-summary.csv?{{ query }}" download>{{ icon("download") }}<span class="button__label">summary.csv</span></a>
+  </p>
+</div>
+{%- endif -%}

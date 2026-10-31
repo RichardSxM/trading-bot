@@ -21,7 +21,9 @@ The shared library every process imports: settings, JSON logging, the startup cl
 | `src/trading_core/boot.py` | Common process startup: settings, logs, env guard, secrets, config guard, clock check; returns `Boot(settings, secrets)` |
 | `src/trading_core/db.py` | Shared metadata, constraint naming convention, and column type map (Decimal to numeric, datetime to timestamptz) |
 | `src/trading_core/db_roles.py` | Creates or updates the `trader_app`, `dashboard_app`, `backup_app` roles before migrations (spec 0002) |
-| `src/trading_core/recording/` | Postgres business records (spec 0002): `enums`, `rows` (frozen row values), `models` (18 tables), `errors`, `repository` (the idempotent write API), `queries` (`journal_rows`, the trade journal read) |
+| `src/trading_core/recording/` | Postgres business records (spec 0002): `enums`, `rows` (frozen row values), `models` (18 tables), `errors`, `repository` (the idempotent write API), `queries` (`journal_rows`, the trade journal read), `journal_export` (the export's sync session work: `JournalCsv` streams one Amsterdam month at a time, `journal_refusal`, `journal_summary`) |
+| `src/trading_core/journal/` | Pure trade journal export (spec 0024): `bounds` (Amsterdam date ranges to UTC), `export` (the `journal.csv` columns, EUR rounding, the rate check), `summary` (totals, balances, the P&L check, `summary.csv`) |
+| `src/trading_core/fx/` | Pure ECB Data Portal request and parser for the daily USD per EUR rate (spec 0024); a format change fails closed |
 | `src/trading_core/control/` | The control command and result formats on the `{env}:control` and `{env}:control:results` Redis streams (spec 0004) |
 | `src/trading_core/snapshot/` | The `{env}:snapshot:<name>` key and its JSON envelope (`schema_version`, `ts_ns`, `data`) that every snapshot writer and reader shares |
 | `src/trading_core/migrations/` | Alembic env and versions (`alembic.ini` at package root) |

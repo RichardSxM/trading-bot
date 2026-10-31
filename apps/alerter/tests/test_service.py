@@ -1,13 +1,16 @@
 """covers: spec 0013 AC-1 (trader down from the heartbeat, its note, nothing while Redis is down), AC-2 (no
 ping while the Redis read is stale), AC-9 (a restart pushes nothing twice, even with a slow load), AC-13
-(dry run), AC-14 (/fail while a push fails), AC-15 (a push never waits for Postgres)."""
+(dry run), AC-14 (/fail while a push fails), AC-15 (a push never waits for Postgres); spec 0024 AC-17 (the fx
+loop feeds ``fx_rates_stale`` to the engine)."""
 
 import asyncio
 import contextlib
 from dataclasses import replace
+from datetime import date
 
 from alerter.service import Alerter
 from alerter.store import StoreWriter
+from trading_core.alerts.checks import fx_stale_check
 from trading_core.alerts.engine import AlertEngine, EngineConfig
 from trading_core.alerts.model import Delivery, PushReason, Tier
 from trading_core.snapshot.envelope import encode
@@ -26,7 +29,7 @@ class FakeWatchdog:
         return True
 
 
-def make(tmp_path, *, store=None, delivery=Delivery.DRY_RUN, watchdog=None, clock=None):
+def make(tmp_path, *, store=None, delivery=Delivery.DRY_RUN, watchdog=None, clock=None, fx=None):
     clock = clock or Clock()
     engine = AlertEngine(EngineConfig(env="demo"))
     store = store or FakeStore()
@@ -43,6 +46,7 @@ def make(tmp_path, *, store=None, delivery=Delivery.DRY_RUN, watchdog=None, cloc
         watchdog=watchdog,
         clock=clock,
         liveness_file=tmp_path / "alive",
+        fx=fx,
     )
     return alerter, clock, redis, deliverer, writer, store, engine
 
@@ -370,3 +374,41 @@ def test_a_failed_resolved_note_turns_the_ping_into_fail(tmp_path):
 
     assert alerter.push_failing
     assert watchdog.pings == [True]
+
+
+class FakeFx:
+    """An ``FxFetcher`` whose step gives the next queued result."""
+
+    def __init__(self, results) -> None:
+        self.results = list(results)
+
+    async def step(self):
+        return self.results.pop(0)
+
+
+def test_the_fx_loop_opens_fx_rates_stale_and_a_fresh_rate_closes_it(tmp_path):
+    clock = Clock()
+    now = clock()
+    stale = fx_stale_check(date(2026, 10, 1), date(2026, 10, 9), 6, now)
+    fresh = fx_stale_check(date(2026, 10, 9), date(2026, 10, 9), 6, now)
+
+    async def run():
+        alerter, _, _, deliverer, writer, *_ = make(tmp_path, clock=clock, fx=FakeFx([None, stale, fresh]))
+        assert await writer.load_once()
+        await alerter.fetch_fx()  # no verdict: nothing happens
+        await settle(alerter)
+        assert deliverer.sent == []
+        await alerter.fetch_fx()
+        await settle(alerter)
+        clock.advance(3600)
+        await alerter.fetch_fx()
+        await settle(alerter)
+        return deliverer
+
+    deliverer = asyncio.run(run())
+
+    assert [(p.reason, p.tier) for p in deliverer.sent] == [
+        (PushReason.OPEN, Tier.WARNING),
+        (PushReason.RESOLVED, Tier.INFO),
+    ]
+    assert "ECB rates stale" in deliverer.sent[0].title

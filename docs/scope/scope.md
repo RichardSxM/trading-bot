@@ -36,7 +36,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 26 | Donchian scalp r1 | Slice 7 | in-progress |
 | 27 | Donchian scalp r2 | Slice 7 | in-progress |
 | 17 | Hour level strategy candidates | Slice 7 | in-progress |
-| 18 | Trade journal export | Slice 8 | planned |
+| 18 | Trade journal export | Slice 8 | in-progress |
 | 19 | Go live with small capital | Slice 9 | planned |
 
 ## Foundations
@@ -557,10 +557,19 @@ spec [0018](../specs/0018-hour-level-strategy-candidates/index.md)
 
 ## Slice 8: Records
 
-### 18. Trade journal export · Beta
+### 18. Trade journal export · in-progress · Beta
 Export every fill, fee, and funding payment as CSV for your own analysis and your Dutch tax records.
 **Done when:** you can export any date range to CSV, and its totals match the P&L on the dashboard.
+spec [0024](../specs/0024-trade-journal-export/index.md)
+- [x] Design it (spec): `/architect trade journal export`
 - [ ] Build it: `/develop trade journal export`
+  - [x] ECB rates: migration 0013 grant, `trading_core.fx.ecb` parser, `write_fx_rates`, the alerter's hourly fetch step and its settings (AC-15, AC-16, AC-18)
+  - [x] Thin thread to a CSV: extended `journal_rows`, `trading_core.journal` bounds and formatting, `/trades/journal.csv` with its refusals, the bare form (AC-1 to AC-6, AC-13)
+  - [x] Check panel and summary: totals, balances, the P&L check, the HTMX panel, `summary.csv` (AC-1, AC-7 to AC-11)
+  - [x] Hardening and alert: monthly chunks, two pass stream in one snapshot, logging, auth and HTMX redirect, `fx_rates_stale`, styleguide states (AC-12, AC-14, AC-17)
+  - [ ] VPS proof: rates backfilled, a demo paper export saved in `verify.md` (AC-5, AC-9, AC-11, AC-15)
+- [ ] Verify it: `/check verify trade journal export`
+- [ ] Test it: `/test trade journal export`
 
 ## Slice 9: Live
 

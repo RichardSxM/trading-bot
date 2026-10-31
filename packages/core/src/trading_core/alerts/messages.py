@@ -191,7 +191,19 @@ def check(
         reason = str(subject or fields.get("reason") or "")
         plain = PLAIN_WORDS.get(BlockReason(reason)) if reason in BlockReason else None
         return f"Entries blocked for over {span(entry_block_s)}", f"{plain or words(reason)} ({reason})."
+    if rule_id == "fx_rates_stale":
+        return "ECB rates stale", fx_stale(fields)
     return words(rule_id), ""
+
+
+def fx_stale(fields: Mapping[str, object]) -> str:
+    """The ``fx_rates_stale`` body: how old the newest rate is, and what that blocks."""
+    if fields.get("missing"):
+        return "fx_rates holds no EUR/USD rate, so every journal export is refused."
+    return (
+        f"The newest EUR/USD rate is from {fields.get('newest', '?')}, {fields.get('age_days', '?')} days ago "
+        f"(the limit is {fields.get('stale_days', '?')}). Journal exports past that date are refused."
+    )
 
 
 SUMMARY_TITLES: Final = 10

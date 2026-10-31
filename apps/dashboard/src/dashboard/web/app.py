@@ -24,6 +24,7 @@ from dashboard.auth.proxy import default_gateway
 from dashboard.auth.session import SessionCodec
 from dashboard.auth.totp import TotpGuard
 from dashboard.data.alerts import AlertLine, recent_alerts
+from dashboard.data.journal import JournalExport, open_journal, read_summary
 from dashboard.data.pnl import PnlFigures, pnl_figures
 from dashboard.data.reconciliations import reconciliations_view
 from dashboard.data.strategies import StrategiesView, promotions_view, strategies_view, study_view
@@ -44,12 +45,14 @@ from dashboard.live.state import (
 )
 from dashboard.settings import DashboardSettings, normalize_seed
 from dashboard.ui.format import local_hm, num, pnl, ts
-from dashboard.web import alert_routes, auth_routes, control_routes, page_routes
+from dashboard.web import alert_routes, auth_routes, control_routes, journal, page_routes
 from dashboard.web.context import AppContext, LiveRedis
 from dashboard.web.middleware import ShellMiddleware
 from dashboard.web.session import CsrfRefused, LoginRequired, handle_login_required
 from trading_core.control.alerts import alerts_results_stream
 from trading_core.control.messages import control_stream, results_stream
+from trading_core.journal.bounds import JournalRange
+from trading_core.journal.summary import JournalSummary
 from trading_core.recording.gate_queries import PromotionLine, StudyDetail
 from trading_core.recording.queries import ReconciliationLine
 from trading_core.secrets import (
@@ -113,11 +116,14 @@ def create_app(
     read_promotions: Callable[[int], Sequence[PromotionLine]] | None = None,
     read_alerts: Callable[[], Sequence[AlertLine]] | None = None,
     read_reconciliations: Callable[[int], Sequence[ReconciliationLine]] | None = None,
+    open_export: Callable[[JournalRange], JournalExport] | None = None,
+    read_journal_summary: Callable[[JournalRange], JournalSummary] | None = None,
 ) -> FastAPI:
     """Build the dashboard app. Tests pass fake settings, secrets, a fake Redis, fake clocks, and Postgres readers.
 
-    ``read_pnl``, ``read_trades``, ``read_strategies``, ``read_alerts``, and ``read_reconciliations`` are
-    blocking (they query Postgres as ``dashboard_app``); the poller and the page routes run them in a thread.
+    ``read_pnl``, ``read_trades``, ``read_strategies``, ``read_alerts``, ``read_reconciliations``,
+    ``open_export``, and ``read_journal_summary`` are blocking (they query Postgres as ``dashboard_app``); the
+    poller and the page routes run them in a thread.
     """
     client: LiveRedis = redis if redis is not None else redis_client(settings, secrets[REDIS_PASSWORD])
     engine = None
@@ -130,10 +136,13 @@ def create_app(
         or read_study is None
         or read_promotions is None
         or read_reconciliations is None
+        or open_export is None
+        or read_journal_summary is None
     ):
-        # Two connections: a Trades page load never waits behind the poller's P&L read.
+        # Three connections: a Trades page load never waits behind the poller's P&L read, nor behind a
+        # journal export, which holds one for as long as its download streams.
         engine = create_engine(
-            settings.database_url(secrets[POSTGRES_PASSWORD]), pool_size=2, max_overflow=0, pool_pre_ping=True
+            settings.database_url(secrets[POSTGRES_PASSWORD]), pool_size=3, max_overflow=0, pool_pre_ping=True
         )
         sessions = sessionmaker(engine)
 
@@ -164,10 +173,19 @@ def create_app(
         read_study = read_study or postgres_study
         read_promotions = read_promotions or postgres_promotions
         read_alerts = read_alerts or postgres_alerts
+
+        def postgres_export(journal_range: JournalRange) -> JournalExport:
+            return open_journal(sessions, env, journal_range)
+
+        def postgres_summary(journal_range: JournalRange) -> JournalSummary:
+            return read_summary(sessions, env, journal_range)
+
         read_reconciliations = read_reconciliations or postgres_reconciliations
+        open_export = open_export or postgres_export
+        read_journal_summary = read_journal_summary or postgres_summary
     pnl_reader, trades_reader, alerts_reader = read_pnl, read_trades, read_alerts
     strategies_reader, study_reader, promotions_reader = read_strategies, read_study, read_promotions
-    reconciliations_reader = read_reconciliations
+    reconciliations_reader, export_opener, summary_reader = read_reconciliations, open_export, read_journal_summary
     templates = Jinja2Templates(directory=PACKAGE_DIR / "templates")
     templates.env.filters.update(num=num, pnl=pnl, ts=ts, local_hm=local_hm)
     age_template = templates.get_template("partials/topbar_age.html")
@@ -277,6 +295,8 @@ def create_app(
         read_study=lambda study_id: asyncio.to_thread(study_reader, study_id),
         read_promotions=lambda page: asyncio.to_thread(promotions_reader, page),
         read_reconciliations=lambda page: asyncio.to_thread(reconciliations_reader, page),
+        open_journal=lambda journal_range: asyncio.to_thread(export_opener, journal_range),
+        read_journal_summary=lambda journal_range: asyncio.to_thread(summary_reader, journal_range),
         trusted_peers=trusted_peers(),
     )
 
@@ -314,4 +334,5 @@ def create_app(
     app.include_router(page_routes.router)
     app.include_router(control_routes.router)
     app.include_router(alert_routes.router)
+    app.include_router(journal.router)
     return app

@@ -1,19 +1,21 @@
-"""covers: spec 0002 AC-14 (journal rows: signed cash flows, EUR amounts, range and filters)."""
+"""covers: spec 0002 AC-14 (journal rows: signed cash flows, EUR amounts, range and filters), spec 0024 AC-13 (the
+``modes`` filter, and each row's mode, liquidity, strategy, version, and the rate row used)."""
 
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
-from uuid import uuid7
+from uuid import UUID, uuid7
 
 import pytest
 from sqlalchemy import insert
 from sqlalchemy.orm import Session
 
 from trading_core.recording import models, repository
-from trading_core.recording.enums import Env, FundingSource, OrderOrigin, OrderSide, RunMode
+from trading_core.recording.enums import Env, FundingSource, Liquidity, OrderOrigin, OrderSide, RunMode
 from trading_core.recording.errors import UnsupportedInstrumentError
 from trading_core.recording.queries import JournalKind, journal_rows
-from trading_core.recording.rows import FundingRow, FxRateRow, column_values
+from trading_core.recording.rows import FundingRow, FxRateRow, RunRow, column_values, ns_to_utc
+from trading_core.settings import get_settings
 
 from .conftest import INSTRUMENT, World, instrument_row
 
@@ -155,3 +157,95 @@ def test_an_inverse_instrument_in_range_refuses_the_whole_journal(session: Sessi
     with pytest.raises(UnsupportedInstrumentError, match="FI_XBTUSD"):
         _journal(session)
     assert len(_journal(session, JAN[6], JAN[7])) == 2
+
+
+def _run(session: Session, world: World, env: Env, mode: RunMode) -> UUID:
+    """A run of the world's version, inserted directly: the promotion gates are not this test's concern."""
+    row = RunRow(
+        env=env,
+        mode=mode,
+        strategy_version_id=world.version_id,
+        trader_id=f"T-{mode}-{uuid7().hex[-8:]}",
+        run_config={},
+        started_at=ns_to_utc(_ns(JAN[1])),
+    )
+    session.execute(insert(models.StrategyRun).values(column_values(row)))
+    return row.id
+
+
+def _funding(session: Session, world: World, at: datetime, env: Env = Env.DEMO) -> None:
+    repository.record_funding(
+        session,
+        FundingRow(
+            env=env,
+            run_id=world.run_id,
+            instrument_id=INSTRUMENT,
+            amount=Decimal("-0.0123"),
+            currency="USD",
+            source=FundingSource.KRAKEN_LOG,
+            external_id=f"LOG-{uuid7().hex[-8:]}",
+            paid_ns=_ns(at),
+        ),
+    )
+
+
+def test_modes_pick_paper_or_live_and_both_by_default(session: Session, world: World, monkeypatch):
+    monkeypatch.setenv("TRADING_ENV", "live")  # live runs exist only in the live env
+    get_settings.cache_clear()
+    paper = replace(world, run_id=_run(session, world, Env.LIVE, RunMode.PAPER))
+    live = replace(world, run_id=_run(session, world, Env.LIVE, RunMode.LIVE))
+    for at, run in ((JAN[6], paper), (JAN[7], live)):  # stub orders: the order is not this test's concern
+        repository.record_fill(
+            session, run.fill(f"O-{uuid7().hex[-8:]}", env=Env.LIVE, filled_ns=_ns(at), fee=Decimal(0))
+        )
+    _funding(session, paper, JAN[8], Env.LIVE)
+    _funding(session, live, JAN[9], Env.LIVE)
+
+    paper_rows = journal_rows(session, Env.LIVE, JAN[1], JAN[31], {RunMode.PAPER})
+    live_rows = journal_rows(session, Env.LIVE, JAN[1], JAN[31], {RunMode.LIVE})
+    both = journal_rows(session, Env.LIVE, JAN[1], JAN[31])
+
+    assert [(r.kind, r.mode, r.run_id) for r in paper_rows] == [
+        ("fill", RunMode.PAPER, paper.run_id),
+        ("funding", RunMode.PAPER, paper.run_id),
+    ]
+    assert [(r.kind, r.mode, r.run_id) for r in live_rows] == [
+        ("fill", RunMode.LIVE, live.run_id),
+        ("funding", RunMode.LIVE, live.run_id),
+    ]
+    assert both == sorted([*paper_rows, *live_rows], key=lambda r: r.at)
+    assert journal_rows(session, Env.DEMO, JAN[1], JAN[31]) == []  # never the other env
+
+
+@pytest.mark.parametrize("modes", [set(), {RunMode.BACKTEST}, {RunMode.PAPER, RunMode.REPLAY}])
+def test_modes_must_be_a_non_empty_set_of_paper_and_live(session: Session, world: World, modes):
+    with pytest.raises(ValueError, match="modes"):
+        journal_rows(session, Env.DEMO, JAN[1], JAN[31], modes)
+
+
+def test_each_row_names_its_strategy_version_liquidity_and_rate(session: Session, world: World):
+    _rate(session, JAN[5], "1.2345")
+    _trade(session, world, JAN[6] + timedelta(hours=1), liquidity=Liquidity.TAKER)
+    _funding(session, world, JAN[6] + timedelta(hours=2))
+    version = session.get(models.StrategyVersion, world.version_id)
+    assert version is not None
+
+    fill, fee, funding = _journal(session)
+
+    for row in (fill, fee, funding):
+        assert (row.mode, row.strategy, row.strategy_version) == (RunMode.PAPER, "tracer", version.version_hash)
+        assert (row.fx_rate, row.fx_rate_date) == (Decimal("1.2345"), date(2031, 1, 5))  # latest on or before the 6th
+        assert row.eur_amount == row.amount / Decimal("1.2345")
+    assert (fill.liquidity, fee.liquidity, funding.liquidity) == (Liquidity.TAKER, Liquidity.TAKER, None)
+
+
+def test_the_rate_fields_are_empty_when_no_rate_is_used(session: Session, world: World):
+    _rate(session, JAN[6], "1.25")
+    _trade(session, world, JAN[5], fee=Decimal(0))  # before any rate
+    _trade(session, world, JAN[7], fee=Decimal("0.0000001"), fee_currency="BTC")  # a non USD fee
+
+    early, fill, btc_fee = _journal(session)
+
+    assert (early.fx_rate, early.fx_rate_date, early.fx_missing) == (None, None, True)
+    assert (fill.fx_rate, fill.fx_rate_date) == (Decimal("1.25"), date(2031, 1, 6))
+    assert (btc_fee.fx_rate, btc_fee.fx_rate_date, btc_fee.eur_amount, btc_fee.fx_missing) == (None, None, None, True)

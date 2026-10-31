@@ -1,12 +1,12 @@
 """Pure condition checks the alerter feeds the engine (spec 0013, *Value sourcing*)."""
 
 from collections.abc import Iterable, Mapping
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import ROUND_DOWN, Decimal
 from typing import Final
 
 from trading_core.alerts.model import CheckResult
-from trading_core.alerts.rules import DISK_LOW, ENTRY_BLOCK, TRADER_DOWN
+from trading_core.alerts.rules import DISK_LOW, ENTRY_BLOCK, FX_RATES_STALE, TRADER_DOWN
 from trading_core.strategy.blocks import BlockReason
 
 _GB: Final = 1_000_000_000
@@ -59,6 +59,19 @@ def disk_check(free_bytes: int, floor_gb: Decimal, now: datetime) -> CheckResult
     free_gb = (Decimal(free_bytes) / _GB).quantize(Decimal("0.1"), rounding=ROUND_DOWN)
     fields = {"free_gb": str(free_gb), "floor_gb": str(floor_gb)}
     return CheckResult(DISK_LOW.id, ok=free_bytes >= floor_gb * _GB, at=now, fields=fields)
+
+
+def fx_stale_check(newest: date | None, today: date, stale_days: int, now: datetime) -> CheckResult:
+    """``fx_rates_stale`` from the newest stored EUR/USD ``rate_date`` (spec 0024 AC-17).
+
+    Fails when there is no rate at all, or when the newest is more than ``stale_days`` calendar
+    days before ``today`` (Europe/Amsterdam, the caller's job). A rate dated after today counts as fresh.
+    """
+    if newest is None:
+        return CheckResult(FX_RATES_STALE.id, ok=False, at=now, fields={"missing": True, "stale_days": stale_days})
+    age_days = max(0, (today - newest).days)
+    fields = {"newest": newest.isoformat(), "age_days": age_days, "stale_days": stale_days}
+    return CheckResult(FX_RATES_STALE.id, ok=age_days <= stale_days, at=now, fields=fields)
 
 
 def entry_block_checks(blocked: Iterable[str], since_ns: Mapping[str, int], now: datetime) -> list[CheckResult]:

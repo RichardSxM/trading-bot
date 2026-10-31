@@ -581,3 +581,32 @@ time[title] { text-decoration: underline dotted var(--edge); text-underline-offs
 .losses__row dt { color: var(--muted); }
 .losses__row dd { margin: 0; font-variant-numeric: tabular-nums; }
 .losses__unknown, .losses__lost { color: var(--muted); }
+
+/* ---------- Journal export (spec 0024 AC-1) ---------- */
+.journal-form {
+  display: grid; gap: var(--space-16); align-items: end;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  max-width: 56rem; margin-top: var(--space-12);
+}
+.journal-form__actions { display: flex; gap: var(--space-12); }
+
+/* Journal Check panel (spec 0024 AC-1, AC-5 to AC-9) */
+.journal-panel-area:not(:empty) { margin-top: var(--space-16); }
+.journal-panel { display: grid; gap: var(--space-24); }
+.journal-panel__title { display: flex; align-items: center; gap: var(--space-12); margin: 0 0 var(--space-8); }
+.journal-panel__sub { margin: var(--space-12) 0 var(--space-8); color: var(--muted); font-weight: 600; }
+.journal-panel__why { margin: 0 0 var(--space-12); color: var(--muted); max-width: 64ch; }
+.journal-panel__figures {
+  display: grid; gap: var(--space-8) var(--space-24); margin: 0;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+}
+.journal-panel__figures div { display: flex; justify-content: space-between; gap: var(--space-12); }
+.journal-panel__figures dt { color: var(--muted); }
+.journal-panel__figures dd { margin: 0; font-variant-numeric: tabular-nums; }
+.journal-panel--mismatch .journal-panel__check { border-left: 2px solid var(--warn); padding-left: var(--space-12); }
+.journal-panel .badge .icon { width: 14px; height: 14px; margin-right: var(--space-4); }
+.journal-panel__downloads { display: flex; flex-wrap: wrap; gap: var(--space-12); margin: 0; }
+.journal-panel__downloads .button { text-decoration: none; }
+.journal-panel__refused { display: flex; gap: var(--space-12); align-items: flex-start; color: var(--warn); }
+.journal-panel__refused p { margin: 0; color: var(--text); }
+.journal-panel__icon .icon { width: 20px; height: 20px; }

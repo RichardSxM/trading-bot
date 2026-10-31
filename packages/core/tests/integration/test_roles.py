@@ -1,5 +1,6 @@
 """covers: spec 0002 AC-11 (what each app role may do), AC-13 (role setup is idempotent), spec 0008 AC-17 (lab_app),
-spec 0013 Security model (alerter_app writes only alerts; nobody else writes them)."""
+spec 0013 Security model (alerter_app writes only alerts; nobody else writes them), spec 0024 AC-16 (alerter_app
+inserts fx_rates, never updates them)."""
 
 from collections.abc import Callable, Iterator, Sequence
 
@@ -76,7 +77,10 @@ LAB_READS = {"promotions", "promotion_folds", "promotion_evidence"}
 
 
 # The alerter (spec 0013): reads and writes alerts (no DELETE), reads fills, their instruments, and positions.
+# Spec 0024 AC-16: it also reads and inserts the ECB rates, never updates them.
 ALERTER_GRANTS = {
+    ("fx_rates", "SELECT"),
+    ("fx_rates", "INSERT"),
     ("alerts", "SELECT"),
     ("alerts", "INSERT"),
     ("alerts", "UPDATE"),

@@ -15,7 +15,8 @@ ALEMBIC_INI = Path(__file__).resolve().parents[1] / "alembic.ini"
 def test_alembic_has_one_head_the_data_model_on_top_of_the_baseline():
     scripts = ScriptDirectory.from_config(Config(str(ALEMBIC_INI)))
 
-    assert scripts.get_heads() == ["0012_reconciliations"]
+    assert scripts.get_heads() == ["0013_alerter_fx_rates"]
+    assert scripts.get_revision("0013_alerter_fx_rates").down_revision == "0012_reconciliations"
     assert scripts.get_revision("0012_reconciliations").down_revision == "0011_gate_default_select"
     assert scripts.get_revision("0011_gate_default_select").down_revision == "0010_one_holdout_per_study"
     assert scripts.get_revision("0010_one_holdout_per_study").down_revision == "0009_gate"

@@ -14,6 +14,7 @@ from dashboard.data.strategies import StrategiesView
 from dashboard.data.trades import TradesView
 from dashboard.settings import DashboardSettings
 from dashboard.web.app import create_app
+from trading_core.journal.summary import JournalTotals, PositionFigures, summarize
 from trading_core.snapshot.envelope import encode
 
 PASSWORD = "correct horse battery"
@@ -128,6 +129,40 @@ ZERO_PNL = PnlFigures(realized_today=Decimal(0), realized_all=Decimal(0), fees_t
 NO_TRADES = TradesView(round_trips=(), fills=())
 
 
+class FakeExport:
+    """A journal export that passed its checks, streaming ``chunks`` (just the header by default)."""
+
+    def __init__(self, chunks=("env,kind\r\n",), rows=0, error=None):
+        self._chunks = chunks
+        self._rows = rows
+        self._error = error
+        self.closed = False
+
+    @property
+    def rows(self):
+        return self._rows
+
+    def chunks(self):
+        try:
+            for i, chunk in enumerate(self._chunks):
+                if self._error is not None and i == 1:
+                    raise self._error
+                yield chunk
+        finally:
+            self.closed = True
+
+
+def summary_of(journal_range, totals=None, start=((), None), end=((), None), positions=None):
+    """A real summary from the pure core; an empty range that matches by default."""
+    return summarize(
+        journal_range,
+        totals or JournalTotals(),
+        start,
+        end,
+        positions or PositionFigures(dashboard_net=Decimal(0), counted=0, crossing=0),
+    )
+
+
 def make_app(
     redis,
     clock,
@@ -139,6 +174,8 @@ def make_app(
     read_study=lambda study_id: None,
     read_promotions=lambda page: (),
     read_reconciliations=lambda page: (),
+    open_export=None,
+    read_journal_summary=None,
     **settings,
 ):
     settings.setdefault("dashboard_cookie_secure", False)
@@ -155,6 +192,8 @@ def make_app(
         read_study=read_study,
         read_promotions=read_promotions,
         read_reconciliations=read_reconciliations,
+        open_export=open_export or (lambda journal_range: FakeExport()),
+        read_journal_summary=read_journal_summary or summary_of,
     )
 
 

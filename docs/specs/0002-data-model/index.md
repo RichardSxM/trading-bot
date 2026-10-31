@@ -247,7 +247,7 @@ Tracer Bullet within one migration: land the whole schema (it is a foundation an
 - [ ] Feature 6: build the recording actor and the Nautilus event to row mappers on this write API, put `decision:<uuid>` in order tags, and decide who polls Kraken's account log for funding. Also define how `positions.realized_pnl` comes to include funding (Nautilus does not know about it) and how it is rounded, including a Kraken log funding row that arrives after the position closed.
 - [ ] Feature 11: compare `orders` and `positions` with the exchange during reconciliation; decide how an instrument spec change is applied.
 - [ ] Feature 15: define `risk_adjusted_ratio` and `ratio_kind`, and the in sample and out of sample windows.
-- [ ] Feature 18: the ECB rate fetcher that fills `fx_rates`; rounding of EUR amounts in the CSV; reconciling journal sums with `positions.realized_pnl` (positions span restarts and side flips, and Nautilus rounds P&L, so allow a stated tolerance).
+- [ ] Feature 18: the ECB rate fetcher that fills `fx_rates`; rounding of EUR amounts in the CSV; reconciling journal sums with `positions.realized_pnl` (positions span restarts and side flips, and Nautilus rounds P&L, so allow a stated tolerance). Designed in [spec 0024](../0024-trade-journal-export/index.md).
 - [ ] Revisit sim fill volume once replays run: if sim tables pass a few GB, move sim fills to Parquet per run (Option 3 in rationale).
 - [ ] `/scope`: feature 3's line lists market data (trades, book snapshots, candles) as Postgres records; this spec keeps market data in Parquet per spec 0001.
 
