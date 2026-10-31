@@ -1,7 +1,7 @@
 # 0026. donchian_scalp_r2: maker orders and a volatility floor on r1's signals
 
 **Date**: 2026-10-31
-**Status**: Proposed
+**Status**: In Progress
 
 ## Summary
 
@@ -168,10 +168,10 @@ No new environment variable. On the VPS, after the manual promote, change `PAPER
 
 Tracer Bullet: the first slice is a thin real thread (maker base with entry and stop, r2 node, trader wiring, laptop demo smoke). The lab screens follow as soon as the order paths are complete, because they give the earliest answer. Demo comes last, whatever the verdicts.
 
-1. [ ] Hash baseline: record every registered strategy version's code hash and the module hash list to a scratch file, as spec 0025 task 1 did. Satisfies **AC-15**.
+1. [x] Hash baseline: record every registered strategy version's code hash and the module hash list to a scratch file, as spec 0025 task 1 did. Satisfies **AC-15**.
 2. [ ] Spike, then thin thread. The spike (see *Spike first*) records the post only rejection event and the two reduce only orders on both venues; a failure stops the build for an amendment. Then `MakerBarRuleStrategy` with the bar loop, the maker entry (AC-2, AC-3), the entry wait for the no fill case, a full fill with its stop, and market exits only; `DonchianScalpR2` and its config without the seed; the trader wiring (`PaperStrategyName`, config builder, `paper_version`, `build_paper_strategy`, `MakerBarRuleView`, the multi coin check). Unit tests for each. Laptop smoke on demo with `PAPER_STRATEGY=donchian_scalp_r2`: the trader starts and records a version. Then take the stack down. Satisfies **AC-1**, **AC-2**, **AC-3**, **AC-4**, **AC-14**, **AC-16**.
-3. [ ] Order paths: partial fills and the stop following the quantity, the post only entry rejection, the maker exit with its fallback, the late fill close, one order in flight, `flatten`, `resume_position`, with the test scenarios above. Satisfies **AC-5**, **AC-6**, **AC-7**, **AC-8**, **AC-9**, **AC-10**, **AC-11**, **AC-12**.
-4. [ ] Filters and seed: the volatility floor and the spread check in `_pre_entry`, the seed join in r2's `on_bar`, the seed fetch running for r2 in `trader/main.py`, with tests. Satisfies **AC-13**, **AC-14**, **AC-16**.
+3. [x] Order paths: partial fills and the stop following the quantity, the post only entry rejection, the maker exit with its fallback, the late fill close, one order in flight, `flatten`, `resume_position`, with the test scenarios above. Satisfies **AC-5**, **AC-6**, **AC-7**, **AC-8**, **AC-9**, **AC-10**, **AC-11**, **AC-12**.
+4. [x] Filters and seed: the volatility floor and the spread check in `_pre_entry`, the seed join in r2's `on_bar`, the seed fetch running for r2 in `trader/main.py`, with tests. Satisfies **AC-13**, **AC-14**, **AC-16**.
 5. [ ] Lab screens: register r2, commit both study files and `maker_figures.py` (with its fixture test), run `lab study` and `lab screen` for each coin, write the AC-17 table into `verify.md`. Satisfies **AC-17**.
 6. [ ] Close out and demo: compare hashes against task 1, merge, deploy (`--no-deps`), get r2's two coin version id (`trader.version` with both settings set), promote it by hand, set `PAPER_STRATEGY=donchian_scalp_r2` in `kfs.env` (backed up first), redeploy the trader, check the first decisions and the card for both coins. Satisfies **AC-15**, **AC-18**.
 7. [ ] Demo week: after 7 days, record the AC-18 fill and fallback counts in `verify.md`. Satisfies **AC-18**.

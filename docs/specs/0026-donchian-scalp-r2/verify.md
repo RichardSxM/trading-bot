@@ -1,0 +1,58 @@
+# Verify: donchian_scalp_r2 · spec 0026 · updated 2026-10-31
+
+## Hash baseline (task 1, AC-15)
+
+The code hash of every `trading_core.node` module closure at 49fd591 (its code is main 6f3a8ac), from `scripts/spikes/hash_check.py` on a `git archive` of that commit, run in `kfs/lab:s0025p`. 38 modules; the list sha256 is `654edb45aa7c12d48ce44b87c1ae36f366a511d298c932dd94cd89502b882a31`. `bar_rule` still matches spec 0025's baseline. At close out (task 6) the branch list, minus the new `trading_core.node.bar_rule_maker` and `trading_core.node.donchian_scalp_r2` lines, must match it line for line.
+
+```
+trading_core.node.bar_rule 5cc159481242cbb4053852ba357c73d2e67aec671009699ccd8d84ded7c02090
+trading_core.node.bollinger_rsi 4aab13885be110144e287a5f580f0b06642b51f65b738c77ed7e6ce9dc74cf15
+trading_core.node.book_imbalance d9165c167559b7c263938bf6d5a69f8a1689163f8da81c0ef0bedf34093f24d9
+trading_core.node.buy_and_hold 78a8687e9452ac6eb119f174263d228bb29078cdcf5c890bb450af8e04d0bfd1
+trading_core.node.connors_rsi 260861201aed6881d9176ef281d149a7451e2b0cd7f9a01dbdcb0d0f3bfa1e39
+trading_core.node.context_feed 6dc6991676f491f373c26c295441523edad1a0b6158686def9246ae8079004ba
+trading_core.node.context_types 8747b288db8a0073f300b2afa50f622ede8257061ddb85e211d6659542472cd9
+trading_core.node.control 3844b938b941eb260bf096ea0fd0a63c19ce42fb074ba242ca7f3a4ac0a34664
+trading_core.node.delta_divergence 30b0e4fa2b91c580972e85bfef0a0138e75796949b25ba32a3175a3d16e71f79
+trading_core.node.donchian_4h 0e9f748720633f0a1e0d4b3eb05b6726e179d32a5bd0862d95c29e70e4b06b30
+trading_core.node.donchian_4h_r1 5799dc6ff03e6d1cc4deb70d14ddf04d1e74d6e296e6c6829afe631acffadfab
+trading_core.node.donchian_scalp 6be87d38456e2b7e2e4ae22faf6c55ec192c51a061c52d6304dbd47a7eb7ef26
+trading_core.node.donchian_scalp_r1 197e7a68b0a18dedbfe4f0bbf8e90e40dc38e3d4fc8c3ba48b6de3b052742bad
+trading_core.node.ema_pullback f86006e5fec416ad465224eb0c45a508110575c1405fb8ae7973ff1c7ce0ace1
+trading_core.node.funding 2d17e1a332a3866aa1a36c2223af26267a2d94abdf20626b0228fed1f5bcb6e4
+trading_core.node.guard 09b1119332780a084fe39da4b71cf85b0e67fabfe72c519450b94d15de095bba
+trading_core.node.heartbeat 46e360bcd780b2e2f3b640e7cd7246019b352aed5b9df064cd3f144f9b0a9003
+trading_core.node.imbalance_fade 3421033fba4d9d0089d6a1ae5634923f36ebb7eacdc15eb9874ea74cccc65fce
+trading_core.node.key_actors 726764267181c0103ffb8c26b6f6a2b1807f557d8dfeda768ce3d5d5b037d017
+trading_core.node.key_check 97e7f68a7a8a62c95a69e024f7ab287af1bb71bbef16dbd9b3a9b018c59b2c05
+trading_core.node.kraken 57a8abe320bebd0f97b5f576a82637ff5740d55c9cc863b1fc0282faad9c232c
+trading_core.node.loss_limits 4007e086d840912205e29648744324f56f97af5bdf6f9c97bba1aed36c9e0cc1
+trading_core.node.macd_baseline 2a8730b8f75ae125d0a5296423763c63a72489efb0e600a0a012bcf9c9622c94
+trading_core.node.maker_probe 533b50a674962e0c7c2be878153279a91e8f3f1398824a78ff1a8091e1d3753e
+trading_core.node.noise_breakout 5c0b94cb0ac39be9c054e605e14d880ee1b011418f82bc030e1166dc657b6b6f
+trading_core.node.paper_snapshots aa5447bfac5f7b663de8f0df329a60f276b25d5abd88128d0e855eb885765a64
+trading_core.node.placeholder ec0b98bab810d682114cc70bffbca2ff5e7862f4848441dc270f9b67d14b6713
+trading_core.node.random_taker ab290066d43a8e40ba525623fa6f412723d4ff049aba0eb76161ccebb140c4c2
+trading_core.node.reconcile e483a2e1e3d7a3d4d82961e79d2c497eddff5708273b48448eafe2e6131e5967
+trading_core.node.reconcile_drill 13427e34e8ae73a6a86dfc4161638264fa81a1b84e4eb2e9d4eb635994acb07a
+trading_core.node.reconcile_executor 6452e398a20a77a7abbfc3695e036762436ff2243d33b125416aa8e7f4b0e1ad
+trading_core.node.recording f649c12c6535590139e086eac534af98b7d1cd35c91a871e8a5c47560e4a2cd8
+trading_core.node.sandbox 1d58312ced855746654af75243e0c87cd133e0cbfd1a65f381ab3238c0a75a52
+trading_core.node.scalp_base 92b0b3718e3c01ad8a5c9702b3fa9884d0301311262eb198abbf835313da45be
+trading_core.node.stale 1822c251d1e9616cef189aef6bf0200407d0547e70505e6f17b62df663bff96d
+trading_core.node.strategy 128786a5b6cb990991a819ba636ca9ed53b20355d9135b88410ef09089408a3e
+trading_core.node.untrusted 83451616d6433f9f6d3d9b1a329ec7ff2c9a956821d537e76ad911d3ded7ceec
+trading_core.node.vwap_retest 44083de39ddf9f1b452b041dc81f1017ea3ee070315104e4131f52789fefdc52
+```
+
+## Spike (task 2, *Spike first*)
+
+`scripts/spikes/maker_spike.py`, run in `kfs/lab:s0025p` on 2026-10-31. Two venues, each fed scripted PF_XBTUSD quotes (spread 1 tick): **lab** is the candle lab's own `make_candle_engine`; **sandbox** is a backtest venue built from the demo trader's `sandbox_exec_client` settings, which are the same `SimulatedExchange` arguments the Nautilus sandbox client passes (L1 book, quotes only, no latency, reduce only checks on), with quotes through `deep_quote`. The live sandbox client itself was not driven: it wraps this same matching engine, so the events are the same.
+
+| Check | lab | sandbox |
+|---|---|---|
+| (1) a post only buy limit at the ask, and a sell at the bid | both `OrderRejected`, `due_post_only = true`, reason `POST_ONLY LIMIT BUY order limit px of 85001 would have been a TAKER: bid=85000, ask=85001` | the same |
+| (2a) long under a reduce only stop market and a reduce only post only exit limit, both for the full size; price reaches the limit first | both `OrderAccepted` and open together; the limit fills; the stop is cancelled by the venue when its trigger is reached (no position to reduce); no second position | the same |
+| (2b) the same orders; price falls through the stop first | the stop fills; the limit is cancelled by the venue when its price is reached; no second position | the same |
+
+Both checks pass on both venues, so AC-6's `due_post_only` path is real on both and AC-7 (the stop resting beside the exit limit) needs no amendment. Because the venue itself cancels the leftover reduce only order once its price is reached, r2 also cancels everything that rests when the position closes.
