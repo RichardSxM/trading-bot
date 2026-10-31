@@ -1,4 +1,5 @@
-"""``donchian_scalp_r1``'s warmup seed fetch (spec 0025 AC-7 to AC-9, AC-20): Kraken's public 5 minute candles.
+"""The warmup seed fetch of ``donchian_scalp_r1`` and ``donchian_scalp_r2`` (spec 0025 AC-7 to AC-9, AC-20; spec 0026
+AC-16): Kraken's public 5 minute candles.
 
 One unauthenticated ``GET`` per coin to Kraken production's charts API, before the node exists, so it never runs on
 the node's event loop and sends no key. A 5 s timeout per try and at most 3 tries: a timeout, connection
