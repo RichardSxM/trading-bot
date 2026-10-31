@@ -1,4 +1,5 @@
-"""covers: spec 0018 AC-19 (N and the trial Sharpes span every study of the same strategy kind and lab).
+"""covers: spec 0018 AC-19 (N and the trial Sharpes span every study of the same strategy kind and lab);
+spec 0027 AC-5 (a trend study's N adds the frozen ``prior_trials``) and AC-6 (long only from the version config).
 
 Other tests in the session may commit studies to the same database, so each check is the change in the
 family's counts after this test's own imports (rolled back at the end).
@@ -23,14 +24,14 @@ def study_bundle(*args, **kwargs):
     return _study_bundle(*args, tick=Decimal("0.5"), **kwargs)
 
 
-def _import_study(session, hashes, *, kind=StrategyKind.HOUR_LEVEL, lab=StudyLab.CANDLE, failed=()):
+def _import_study(session, hashes, *, kind=StrategyKind.HOUR_LEVEL, lab=StudyLab.CANDLE, failed=(), config=None):
     """A study of a fresh strategy with one development run per hash index (``failed`` ones fail) and a
     holdout of the last; returns its name."""
     name = f"fam-{uuid4().hex[:8]}"
     strategy = f"cand_{uuid4().hex[:8]}"
     strategy_id = uuid7()
     the_study = replace(study(strategy_id, name), lab=lab)
-    points = [version(strategy_id, {"point": i, "study": name}) for i in range(hashes)]
+    points = [version(strategy_id, {"point": i, "study": name, **(config or {})}) for i in range(hashes)]
     bundles = [
         study_bundle(
             the_study,
@@ -79,3 +80,33 @@ def test_a_failed_run_counts_in_n_but_gives_no_trial_sharpe(session: Session):
     _import_study(session, 3, failed={0})
     n, pool = family_trials(session, StrategyKind.HOUR_LEVEL, StudyLab.CANDLE)
     assert (n - before_n, len(pool) - len(before_pool)) == (3, 2)
+
+
+def test_a_trend_study_adds_its_prior_trials_to_n_and_other_kinds_do_not(session: Session):
+    before_trend, before_pool = family_trials(session, StrategyKind.TREND, StudyLab.CANDLE)
+    before_hour, _ = family_trials(session, StrategyKind.HOUR_LEVEL, StudyLab.CANDLE)
+
+    trend = _import_study(session, 4, kind=StrategyKind.TREND, config={"long_only": True})
+    hour = _import_study(session, 3)
+
+    n, pool = family_trials(session, StrategyKind.TREND, StudyLab.CANDLE)
+    assert n - before_trend == 4  # the database count stays database only
+    assert len(pool) - len(before_pool) == 4
+    evidence = study_evidence(session, trend)
+    assert evidence.inputs.thresholds.trend is not None
+    assert evidence.inputs.prior_trials == 13
+    assert evidence.inputs.trial_count == 13 + n
+    assert evidence.inputs.trial_sharpes == pool  # the variance ignores the outside trials
+    assert evidence.inputs.long_only is True
+
+    hour_n, _ = family_trials(session, StrategyKind.HOUR_LEVEL, StudyLab.CANDLE)
+    hour_evidence = study_evidence(session, hour)
+    assert hour_n - before_hour == 3
+    assert (hour_evidence.inputs.prior_trials, hour_evidence.inputs.trial_count) == (0, hour_n)
+    assert hour_evidence.inputs.long_only is False
+
+
+def test_long_only_is_read_only_when_the_config_says_true(session: Session):
+    for value, expected in ((False, False), ("true", False), (1, False), (True, True)):
+        name = _import_study(session, 1, kind=StrategyKind.TREND, config={"long_only": value})
+        assert study_evidence(session, name).inputs.long_only is expected

@@ -37,6 +37,7 @@ from trading_core.recording.enums import (
     RunStatus,
     Sample,
     Stage,
+    StrategyKind,
     StudyLab,
     StudyRole,
     Verdict,
@@ -231,6 +232,7 @@ def study_evidence(session: Session, name: str) -> StudyEvidence:
     final_version_id: UUID | None = None
     final_frozen: str | None = None
     code_hash: str | None = None
+    long_only = False
     trades: tuple[TradeReturn, ...] = ()
     chosen = holdout or next((r for r in runs if r.role == Role.DEVELOPMENT and r.completed), None)
     chosen = chosen or next((r for r in runs if r.role != Role.BENCHMARK), None)
@@ -240,20 +242,27 @@ def study_evidence(session: Session, name: str) -> StudyEvidence:
         version = session.get(models.StrategyVersion, run.strategy_version_id)
         assert version is not None
         final_version_id, final_frozen, code_hash = version.id, version.frozen_hash, version.code_hash
+        # Spec 0027 AC-6: long only is known only from the final version's frozen config.
+        long_only = version.config.get("long_only") is True
     if holdout is not None and holdout.starting_balance is not None:
         trades = holdout_trades(session, holdout.run_id, holdout.starting_balance)
+    thresholds = Thresholds.from_json(study.thresholds)
+    # Spec 0027 AC-5: a trend study's N also counts the trials run outside the database.
+    prior_trials = thresholds.trend.prior_trials if kind == StrategyKind.TREND and thresholds.trend is not None else 0
     inputs = CandidateInputs(
         study_id=study.id,
         lab=Lab(study.lab),
         strategy_name=strategy_name,
         strategy_kind=kind,
-        thresholds=Thresholds.from_json(study.thresholds),
+        thresholds=thresholds,
         seed=seed if isinstance(seed, int) else 0,
         code_hash=code_hash,
         runs=runs,
         holdout_trades=trades,
-        trial_count=max(1, trials),
+        trial_count=max(1, prior_trials + trials),
         trial_sharpes=trial_sharpes,
+        prior_trials=prior_trials,
+        long_only=long_only,
         fold_overrides=tuple(sorted((k, v) for k, v in folds.items() if isinstance(v, int)))
         if isinstance(folds, Mapping)
         else (),

@@ -27,6 +27,7 @@ class Role(StrEnum):
 BUY_AND_HOLD = "buy_and_hold"
 MACD_BASELINE = "macd_baseline"
 HOUR_LEVEL = "hour_level"
+TREND = "trend"
 COMPLETED = "completed"
 
 
@@ -113,7 +114,9 @@ class CandidateInputs:
     attempts; spec 0018 AC-19). ``trial_sharpes`` are that family's per day Sharpes, one per frozen
     hash with a completed development run, for the deflated Sharpe's trial variance.
     ``final_grid_point`` is the development winner as the lab ranks it (``repository.final_grid_point``),
-    the only grid point the holdout may run.
+    the only grid point the holdout may run. ``prior_trials`` are trials run outside the database and
+    already added to ``trial_count`` (only for kind ``trend``, spec 0027 AC-5; else 0). ``long_only`` is
+    the final version's frozen ``config["long_only"] is True`` (spec 0027 AC-6).
     """
 
     study_id: UUID
@@ -129,6 +132,8 @@ class CandidateInputs:
     trial_sharpes: tuple[float, ...] = ()
     fold_overrides: tuple[tuple[str, int], ...] = ()
     final_grid_point: int | None = None
+    prior_trials: int = 0
+    long_only: bool = False
 
     def by_role(self, role: Role) -> list[StudyRunInput]:
         """This role's runs, in grid point order then run id."""

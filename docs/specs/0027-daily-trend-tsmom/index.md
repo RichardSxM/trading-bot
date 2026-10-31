@@ -1,7 +1,7 @@
 # 0027. A trend kind in the promotion gate, and the daily momentum candidate `tsmom` on BTC, ETH, SOL and XRP
 
 **Date**: 2026-10-31
-**Status**: Proposed
+**Status**: In Progress
 
 ## Summary
 
@@ -74,9 +74,9 @@ Reasoning, options, and the pre check evidence: see [rationale.md](rationale.md)
 
 Tracer Bullet: first a thin thread from the new kind through a fixture study to a gate verdict, then real data, then the one real study.
 
-1. Record the AC-1 baseline in `verify.md`, satisfies **AC-1**
-2. `StrategyKind.TREND`, migration `0014_trend_kind` with its integration test, `check_version` test, satisfies **AC-2**, **AC-3**, **AC-11**
-3. `thresholds.toml` v3 and the `trend` gate rules in `trading_core.gate` and `recording.gate_queries`, with unit tests, satisfies **AC-4** to **AC-8**
+1. [x] Record the AC-1 baseline in `verify.md`, satisfies **AC-1**
+2. [x] `StrategyKind.TREND`, migration `0014_trend_kind` with its integration test, `check_version` test, satisfies **AC-2**, **AC-3**, **AC-11**
+3. [x] `thresholds.toml` v3 and the `trend` gate rules in `trading_core.gate` and `recording.gate_queries`, with unit tests, satisfies **AC-4** to **AC-8**
 4. Thin thread: the `tsmom` rule, node, and registry entry, the lab accepting kind `trend` with its warmup pre roll, one fixture (synthetic candles) four coin study run end to end through `lab study`, `lab holdout`, and `gate evaluate` in the integration tests, satisfies **AC-10**, **AC-10a**, **AC-12** to **AC-14**, **AC-17**
 5. SOL and XRP pinned instruments, candles, and funding on the laptop, with data quality in `verify.md`, satisfies **AC-15**, **AC-16**
 6. Rerun the pre check as built on development data, results in `verify.md`; stop here if lookback 30 no longer passes, satisfies **AC-18a**

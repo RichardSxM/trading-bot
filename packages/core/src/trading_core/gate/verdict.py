@@ -208,8 +208,10 @@ def _deflated(inputs: CandidateInputs, holdout: StudyRunInput, points: dict[int,
     """``deflated_sharpe``: the final version's development Sharpe deflated by every trial of its family.
 
     N and the trial variance span the strategy kind and lab (spec 0018 AC-19), not the study's own grid.
+    For kind ``trend``, N also holds ``prior_trials`` (spec 0027 AC-5); the variance stays database only.
     """
     out.metric("trial_count", inputs.trial_count)
+    out.metric("prior_trials", inputs.prior_trials)
     out.metric("trial_scope", TRIAL_SCOPE)
     out.metric("trial_pool", len(inputs.trial_sharpes))
     series = None if holdout.grid_point is None else points.get(holdout.grid_point)

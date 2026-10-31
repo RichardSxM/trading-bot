@@ -1,6 +1,7 @@
 """covers: spec 0015 AC-4 (the shared benchmark rule), AC-10, AC-12 (the checks, the inconsistent evidence
 reasons, and the fail before insufficient before pass rule); spec 0022 AC-13 (``concentration_instrument``,
-and a single coin study judged the same under thresholds v1 and v2)."""
+and a single coin study judged the same under thresholds v1 and v2); spec 0027 AC-5 to AC-8 (the ``trend`` kind's
+direction, top trades, and benchmark rules, and ``prior_trials`` in the metrics)."""
 
 import random
 from dataclasses import replace
@@ -358,7 +359,7 @@ def test_one_coin_or_no_profit_skips_the_coin_share():
 
 
 def test_a_single_coin_study_gets_the_same_verdict_under_v1_and_v2():
-    v1 = replace(THRESHOLDS, version=1, instrument_max_share=None)
+    v1 = replace(THRESHOLDS, version=1, instrument_max_share=None, trend=None)
     trades = tuple(replace(t, instrument_id=BTC) for t in _coin_trades(700, 300))
     for inputs in (_inputs(), _inputs(holdout_drift=-0.004), replace(_inputs(), holdout_trades=trades)):
         under_v2 = evaluate_candidate(inputs)
@@ -369,3 +370,90 @@ def test_a_single_coin_study_gets_the_same_verdict_under_v1_and_v2():
             under_v2.reasons,
             under_v2.metrics,
         )
+
+
+# Spec 0027: the trend kind ---------------------------------------------------------------------
+
+LONG_ONLY = replace(MEASURES, long_trades=100, long_net_pnl=Decimal(950), short_trades=0, short_net_pnl=Decimal(0))
+
+
+def _trend(**changes) -> CandidateInputs:
+    """A long only trend study that passes: buy and hold is its only benchmark, so no MACD run."""
+    inputs = _holdout_with(_inputs(kind="trend", long_only=True, **changes), measures=LONG_ONLY)
+    return replace(inputs, runs=tuple(r for r in inputs.runs if r.strategy != MACD_BASELINE))
+
+
+def _tail_trades() -> tuple[TradeReturn, ...]:
+    """100 trades whose top 5 carry 1.4 times the net profit (five of 280 against a total of 1000)."""
+    return tuple(
+        TradeReturn(Decimal(280 if i < 5 else -400) / (1 if i < 5 else 95), Decimal("0.001"), BTC) for i in range(100)
+    )
+
+
+def test_a_long_only_trend_study_skips_the_direction_check_and_records_its_share():
+    result = evaluate_candidate(_trend())
+
+    assert result.reasons == ()
+    assert result.verdict == GateVerdict.PASS
+    assert result.metrics["direction_applicable"] is False
+    assert result.metrics["direction_share"] == "1.000000"
+    assert result.metrics["top_trades_applicable"] is False
+
+
+def test_a_short_trade_in_a_long_only_holdout_fails():
+    inputs = _holdout_with(_trend(), measures=replace(LONG_ONLY, short_trades=1, short_net_pnl=Decimal(-5)))
+
+    result = evaluate_candidate(inputs)
+
+    assert _codes(result) == [("long_only_violated", "failed")]
+    assert result.reasons[0].value == "1"
+    assert result.verdict == GateVerdict.FAIL
+
+
+def test_a_long_only_holdout_without_measures_fails_closed():
+    codes = _codes(evaluate_candidate(_holdout_with(_trend(), measures=None)))
+
+    assert ("long_only_violated", "missing_metric") in codes
+    assert "concentration_direction" not in {check for check, _ in codes}
+
+
+def test_a_trend_study_not_declared_long_only_keeps_the_direction_check():
+    one_sided = replace(LONG_ONLY, long_net_pnl=Decimal(900), short_trades=10, short_net_pnl=Decimal(100))
+    result = evaluate_candidate(_holdout_with(replace(_trend(), long_only=False), measures=one_sided))
+
+    assert _codes(result) == [("concentration_direction", "failed")]
+    assert result.metrics["direction_applicable"] is True
+
+
+def test_long_only_changes_nothing_for_an_hour_level_study():
+    one_sided = replace(MEASURES, long_net_pnl=Decimal(900), short_net_pnl=Decimal(100))
+    for long_only in (False, True):
+        result = evaluate_candidate(_holdout_with(_inputs(long_only=long_only), measures=one_sided))
+
+        assert _codes(result) == [("concentration_direction", "failed")]
+        assert result.metrics["direction_applicable"] is True
+        assert result.metrics["top_trades_applicable"] is True
+
+
+def test_a_trend_study_records_the_top_trades_share_without_failing_it():
+    trend = evaluate_candidate(replace(_trend(), holdout_trades=_tail_trades()))
+    scalping = _inputs(kind="scalping", holdout_trades=_tail_trades())
+    scalping = replace(scalping, runs=tuple(r for r in scalping.runs if r.strategy != MACD_BASELINE))
+
+    assert "concentration_top_trades" not in {check for check, _ in _codes(trend)}
+    assert trend.metrics["top_trades_share"] == "1.400000"
+    assert _codes(evaluate_candidate(scalping)) == [("concentration_top_trades", "failed")]
+
+
+def test_a_trend_study_is_judged_against_buy_and_hold_only():
+    losing = evaluate_candidate(_trend(holdout_drift=-0.004, bench_drift=0.0))
+
+    assert benchmark_names("trend", "tsmom") == (BUY_AND_HOLD,)
+    assert ("beats_buy_and_hold", "failed") in _codes(losing)
+    assert "beats_macd_baseline_applicable" not in evaluate_candidate(_trend()).metrics
+
+
+def test_prior_trials_are_recorded_and_zero_for_other_kinds():
+    assert evaluate_candidate(_trend(prior_trials=13, trial_count=17)).metrics["prior_trials"] == 13
+    assert evaluate_candidate(_trend(prior_trials=13, trial_count=17)).metrics["trial_count"] == 17
+    assert evaluate_candidate(_inputs()).metrics["prior_trials"] == 0

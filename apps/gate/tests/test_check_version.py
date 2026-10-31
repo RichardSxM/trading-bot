@@ -7,7 +7,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.orm import Session
 
-from gate.check_version import CheckVersionRefused, check_version
+from gate.check_version import CheckVersionRefused, check_version, parse_version
 from gate.main import EXIT_NOT_PROMOTED, EXIT_OK, EXIT_REFUSED, _check_version
 from gate.settings import GateSettings
 from trading_core.recording import repository
@@ -75,6 +75,33 @@ def test_a_version_without_a_promotion_is_missing_and_its_row_stays(gate_engine)
             "stage_needed": "paper",
             "verdict": "missing",
         }
+
+
+def test_a_trend_payload_parses_as_kind_trend():
+    """covers: spec 0027 AC-3, AC-11 (``trader.version`` JSON with kind ``trend``)."""
+    printed = _version_json(kind="trend", config={"lookback_days": 30, "long_only": True})
+    name, kind, config, _, _ = parse_version(json.dumps(printed))
+    assert (name, kind, config) == (printed["strategy"], StrategyKind.TREND, printed["config"])
+    assert StrategyKind("trend") is StrategyKind.TREND
+
+
+@pytest.mark.postgres
+def test_a_trend_version_is_written_as_kind_trend(gate_engine):
+    """covers: spec 0027 AC-11 (``gate check-version`` writes a ``trend`` version as for the other kinds)."""
+    printed = _version_json(kind="trend", config={"lookback_days": 30, "long_only": True})
+    with Session(gate_engine) as session:
+        checked = check_version(session, json.dumps(printed), "demo")
+        session.commit()
+        assert checked.verdict == "missing"
+        same = repository.ensure_strategy_version(
+            session,
+            str(printed["strategy"]),
+            StrategyKind.TREND,
+            str(printed["git_commit"]),
+            printed["config"],  # type: ignore[arg-type]  # a JSON object built above
+            FrozenHashes(str(printed["code_hash"]), str(printed["frozen_hash"])),
+        )
+        assert same == checked.version_id
 
 
 @pytest.mark.postgres
