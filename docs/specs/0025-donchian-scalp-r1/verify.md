@@ -83,3 +83,23 @@ Read this with care: both accounts were drained to near zero long before the end
 So the r1 minus baseline column compares two strategies that each lost the account. It does not measure the EMA filter and the midline exit over a full span. Neither change turned the gross edge per trade positive. The fee hurdle (gross per trade must exceed 1.5 times cost) fails by a wide margin for both.
 
 AC-13a (spread filter skip rate on the VPS quote ticks) is not run yet. Task 3 stays open until it is.
+
+## PEPE candles (task 10, AC-23), 2026-10-31
+
+`lab fetch-candles 2023-05 2026-09 --instrument PF_PEPEUSD.KRAKEN --refetch` on `kfs/lab:s0025p` (b1b0850, the per coin `price_noise` bound) ran from 00:23 to 00:35 UTC (01:23 to 01:35 Amsterdam) and exited 0. All 41 months are complete, and no month failed. The rounded rows match the stored months from before the refetch exactly: 2023-10 has 2, 2023-11 has 4, 2024-02 has 53, 2024-03 has 1,081, 2024-04 has 50, and every other month has 0, so 1,190 in total out of about 1.8 million one minute rows. 2023-05 starts at the listing (35,298 missing minutes before the first trade, one gap). Funding misses 1 to 4 charges in 6 months from 2025-07 on, as for BTC.
+
+## PEPE screen (task 10, AC-24), 2026-10-31
+
+`donchian_scalp_r1_pepe` ran on `kfs/lab:s0025p` from the main checkout's lab catalog: 871 days of 5 minute candles from 2023-06-01, `slippage_bps` 5, `LAB_WORKERS=2`. The study took 934 s (01:46 to 02:01 UTC, 02:46 to 03:01 Amsterdam), and the screen took 12 s and exited 3 (fail). Batch `01a18fa3-8061-7141-8ec4-0133c7f9a5ab`, run `569d06d3-7753-4517-a376-255bae69e325`.
+
+| Figure | r1 on BTC | r1 on PEPE |
+|---|---|---|
+| Screen verdict | fail (walk_forward_sharpe, fee_hurdle, trades_per_day) | fail (missing walk_forward_sharpe, fee_hurdle, trades_per_day) |
+| Trades | 5,002 | 21 |
+| Trades per day (minimum 17) | 3.86 | 0.024 |
+| Net P&L (USD, from 10,000) | −9,991.05 (−99.91 %) | −865.14 (−8.65 %) |
+| Gross P&L per trade (USD) | −1.0031 | −31.63 |
+| Cost per trade, round trip (USD) | 0.9953 | 9.57 |
+| Daily Sharpe (walk forward) | −5.0948 | none (too few trades) |
+
+Read the PEPE column with even more care than the BTC one. All 21 trades fall in the first four days. On 2023-06-04 at 09:10 UTC a short's buy stop at 0.0000012808 was rejected as "in the market" (bid 0.0000012800, ask 0.0000012814, a 14 tick spread). That set the permanent `blocked:stop_not_accepted`, and the node refused every entry after that (20,515 refusals in the log). So the PEPE screen measures r1 over four days, not 871. Even over those four days the gross edge per trade is negative, at about 3.3 times the cost, so the fee hurdle fails without the block too. On PEPE the 3 ATR stop can sit inside the spread, and the same block can happen on demo. Because the blocks are shared across coins (AC-19), it would then stop BTC's entries too.
