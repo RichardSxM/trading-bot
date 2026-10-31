@@ -1,7 +1,7 @@
-"""covers: spec 0024 AC-15 (the hourly ECB fetch: from the day after the newest rate or ``FX_HISTORY_FROM``, 404 as
-zero rows, failures logged and left for the next hour, a differing rate kept) and AC-18 (the HTTP client is injected,
-no test reaches the network), AC-17 (each step returns ``fx_rates_stale`` from the newest date after it), plus the
-three ``FX_*`` settings."""
+"""covers: spec 0024 AC-15 (the hourly ECB fetch: from the day after the newest rate or ``FX_HISTORY_FROM``,
+a 404 or an empty 200 as zero rows, failures logged and left for the next hour, a differing rate kept) and AC-18
+(the HTTP client is injected, no test reaches the network), AC-17 (each step returns ``fx_rates_stale`` from the
+newest date after it), plus the three ``FX_*`` settings."""
 
 import asyncio
 from datetime import UTC, date, datetime
@@ -151,6 +151,18 @@ def test_a_404_is_zero_rows_written_and_nothing_logged(caplog):
     store = FakeFxStore({date(2026, 10, 1): Decimal("1.1298")})
 
     _step(Ecb(404, "No results found."), store)
+
+    assert store.writes == 0
+    assert _codes(caplog) == []
+
+
+@pytest.mark.parametrize("body", ["", "\r\n"])
+def test_an_empty_200_is_zero_rows_written_and_nothing_logged(caplog, body):
+    # what the ECB actually sent for Saturday 2026-10-31: 200 text/csv with no bytes
+    caplog.set_level("INFO")
+    store = FakeFxStore({date(2026, 10, 1): Decimal("1.1298")})
+
+    _step(Ecb(200, body), store)
 
     assert store.writes == 0
     assert _codes(caplog) == []
