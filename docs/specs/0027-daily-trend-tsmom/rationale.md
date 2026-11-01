@@ -42,6 +42,14 @@ Constraints: the gate's thresholds are frozen per study, so existing verdicts mu
 **`tsmom` long and short.** Pros: more trades (124 a year). Cons: drawdown 12.2 %, and the top trades share stays above 1.
 **Donchian 20/10 or 55/20 long only.** Pros: high gross per trade. Cons: 12 to 24 trades a year, far under the 60 holdout floor.
 
+### XRP tick (AC-15 amendment, 2026-11-01)
+
+The endpoint gives today's XRP tick, 0.0001, but Kraken traded PF_XRPUSD on 0.00001 until about 2026-08-20, so XRP's first fetched month failed with 10,434 opens and closes off tick (verify.md).
+
+**Pin the historical tick 0.00001 (chosen, by you).** Pros: every old price and every new one sits on it, the data checks stay exactly as for BTC, ETH and SOL, and no code changes. Cons: the lab rounds XRP stops a little finer than the venue does today (at most 0.0001, under 4 bps), and the pin no longer matches the live instrument.
+**Keep 0.0001 and loosen the off tick check for XRP.** Pros: the pin matches today's venue. Cons: a coin specific exception in a data check, and old prices snapped to a tick Kraken didn't use then.
+**Drop XRP, study three coins.** Pros: no change. Cons: fewer trades (the pre check's trade count was borderline), and the study departs from the pre registered four coin set.
+
 ## Rationale
 
 The direction check measures whether profit leans on one side. For a strategy that can only be long, it can't tell luck from design, so skipping it only for a declared long only strategy removes no information. The `long_only_violated` check makes sure the declaration can't hide a short. The top 5 % check fails every one year window of `tsmom` (0.92 to 24) and of the long and short variants. That's the signature of trend following, not of luck. The bootstrap lower bound and the DSR test luck directly, so they take its place. N gets the 13 trials run outside the database (10 pre registered rules, 3 robustness lookbacks), so the search is paid for.

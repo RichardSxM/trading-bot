@@ -28,6 +28,10 @@ Crypto trends persist for weeks. Being long only while the 1 to 2 month return i
   - Source, in order: the VPS catalog's newest instrument row for the coin, if the recorder has one (the ETH method, spec 0022 AC-2). Otherwise Kraken Futures' public instruments endpoint (`/derivatives/api/v3/instruments`): `tickSize` gives the tick size, `contractSize` the multiplier, `contractValueTradePrecision` the size step, and the first entry of `marginLevels` (the tier from size 0) gives `initialMargin` and `maintenanceMargin` for the ETH file's margin fields.
   - `maker_fee` `0.0002` and `taker_fee` `0.0005` are written in by hand, with a `_note` saying the source and the date read.
   - If neither source gives a field the pin needs, stop and come back to `/architect` (no guessed value).
+  - **XRP tick (amended 2026-11-01)**: `PF_XRPUSD.KRAKEN.json` pins `price_increment` `"0.00001"` and `price_precision` `5`, Kraken's historical tick, not today's `0.0001`. Reason: Kraken traded PF_XRPUSD on 0.00001 until about 2026-08-20, so every XRP month from 2022-03 to 2026-08 has opens and closes off today's tick and fails AC-16 (verify.md). Today's prices are multiples of 0.0001, so they sit on the finer tick too. Every other XRP field stays as read from the endpoint. The `_note` says the tick comes from Kraken's own candles, not the endpoint, and gives the change date.
+  - The finer tick is a lab pin only. It changes stop and fill rounding by at most 0.0001 (under 4 bps at XRP's lowest price in the data), small next to the 14 bps cost and the pre check's ~300 bps gross. The paper follow up trades the venue's live instrument (0.0001), not this file.
+  - Before the XRP refetch, the lab catalog holds no XRP instrument or candle row at the old tick (today only the funding tree exists). If one exists, it is removed first, so two precisions never mix in one tree.
+  - If an XRP month still fails `lab_candles_bad_rows` at 0.00001, stop and come back to `/architect` (no further tick change, no relaxed threshold).
 - **AC-16** (SOL and XRP data): `lab fetch-candles --instrument` and `lab import-funding --instrument` run for both coins on the laptop, from the first minute Kraken has through the last complete UTC day before the run (the holdout needs data to its end, not only to 2025-10-18). The study's holdout ends at `last_complete_day`, the earliest last day over the four coins, so `verify.md` records each coin's last day and flags one more than 2 days behind the others. The data passes the checks BTC and ETH pass (spec 0014 AC-1 to AC-3, spec 0022 AC-2 and AC-2a, the off tick rounding included). `verify.md` records per coin the first candle minute, the first whole month, per year the missing minutes, gap rows, and funding coverage. If Kraken's funding export holds no SOL or XRP history before 2025-10, the study does not run: stop and come back to `/architect`.
 - **AC-17** (four coin unit and daily bars): a candle run file with four `instrument_ids` runs as spec 0022's multi coin unit (one engine, one margin account, sizing over every open position, shared ruin, per coin gaps and funding). The base aggregates `1-DAY-LAST` bars from the lab's 1 minute candles. The bar stamped 00:00 UTC on day D holds only the minute candles that opened on day D − 1 (00:00 to 23:59). The 00:00 candle of day D belongs to the next bar, so the decision at the close can't see a later price. A fixture test (synthetic candles for four coins) proves:
   - each daily bar's close equals the last minute candle of the day before, and no minute after the bar's timestamp is in it (the `--lookahead-check` of `lab backtest`, run on the fixture only)
@@ -76,7 +80,7 @@ Crypto trends persist for weeks. Being long only while the 1 to 2 month return i
 | daily bar | OHLC | the base's `1-DAY-LAST` internal aggregation of the 1 minute candles |
 | funding | per coin rate | `lab import-funding` samples per coin (spec 0022 AC-8) |
 | entry | funding budget | `funding_periods` over the 30 bar time stop, at the coin's rate at entry |
-| pins | tick, size step, margins | the VPS catalog row, else Kraken public instruments endpoint with the AC-15 field mapping; fees by hand |
+| pins | tick, size step, margins | the VPS catalog row, else Kraken public instruments endpoint with the AC-15 field mapping; fees by hand; XRP tick 0.00001 from Kraken's historical candles (AC-15 amendment) |
 | study | `from` | AC-16's first whole month common to all four coins |
 | verdict | every metric | `gate evaluate`'s promotion row (AC-19) |
 
@@ -90,7 +94,7 @@ Crypto trends persist for weeks. Being long only while the 1 to 2 month return i
 - Config refuses `long_only=False`, a `4-HOUR-LAST` bar spec, a lookback of 0, and a stop of 0. Verifies **AC-13**.
 - `tsmom` registry entry has kind `trend`, and the study file's `[strategy.config]` alone passes `check_strategy` (the `lookback_days` default). Verifies **AC-13**, **AC-14**.
 - At a funding rate of 3 bps a day and the 30 bar time stop, a fixture entry is sized (not refused with `zero_quantity`). Verifies **AC-18**.
-- The pinned SOL and XRP files load, and an unpinned id still exits 64. Verifies **AC-15**, **AC-16**.
+- The pinned SOL and XRP files load, and an unpinned id still exits 64. The XRP pin loads with tick 0.00001 and precision 5, and a price on today's 0.0001 tick counts as on tick. Verifies **AC-15**, **AC-16**.
 - The four coin fixture study runs end to end, with per coin positions in one account. Verifies **AC-17**.
 
 ## Results

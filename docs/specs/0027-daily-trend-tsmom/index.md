@@ -107,6 +107,6 @@ Tracer Bullet: first a thin thread from the new kind through a fixture study to 
 
 ## Follow-up
 
-- [ ] On a pass: enrol a paper feature (multi coin daily trader on demo replacing `donchian_scalp_r2`, a daily warmup seed from Kraken's public 1d candles, quotes for SOL and XRP) and run `/architect` for it. It carries the paper floor agreed on 2026-10-31: 60 days and 8 trades for `trend` (as `thresholds.toml` fields keyed on the kind, with a refusal for a trend paper step on thresholds that lack them).
+- [ ] On a pass: enrol a paper feature (multi coin daily trader on demo replacing `donchian_scalp_r2`, a daily warmup seed from Kraken's public 1d candles, quotes for SOL and XRP) and run `/architect` for it. The trader uses the venue's live XRP instrument (tick 0.0001), not the lab pin's historical 0.00001 (child 2 AC-15). It carries the paper floor agreed on 2026-10-31: 60 days and 8 trades for `trend` (as `thresholds.toml` fields keyed on the kind, with a refusal for a trend paper step on thresholds that lack them).
 - [ ] On a fail: no revision in this spec. Any new trend idea starts from N = 17 or more.
 - [ ] `apps/lab/AGENTS.md` and `packages/core/AGENTS.md` lines for the `trend` kind and the new coins via `/sync`.
