@@ -86,7 +86,7 @@ The time stop splits long trends into 30 bar pieces. That raises the trade count
 
 ## AC-19 command log (2026-11-01)
 
-Every look at real candles for `tsmom`, in order. Development range only (2022-04-01 to 2025-10-18); no holdout day read yet.
+Every look at real candles for `tsmom`, in order. Rows 1 to 5 read the development range only (2022-04-01 to 2025-10-18); row 6 is the one holdout run.
 
 | # | command | start to end (UTC) | exit | result |
 |---|---|---|---|---|
@@ -95,6 +95,7 @@ Every look at real candles for `tsmom`, in order. Development range only (2022-0
 | 3 | `lab backtest /lab-reports/scratch/tsmom_20usd_10x.toml` | 13:39:06 to 14:30:39 | 0 | extra look (below) |
 | 4 | `lab study studies/tsmom.toml` (resume) | 14:30:39 to 15:40:44 | 0 | batch `01a19787-0211-722e-94bd-eaad2bbdd468`: grid-4 only, done |
 | 5 | `lab backtest /lab-reports/scratch/tsmom_100usd_10x.toml` | 16:03:12 to 18:07:45 | 0 | extra look (below), batch `01a197dc-29ae-762a-84a4-a49cb9e32a15` |
+| 6 | `lab holdout tsmom` | 18:14:21 to 19:34:31 | 0 | the one holdout (below): batch `01a19852-83a7-75f1-b53d-9643a44f3930` (grid-2), baseline batch `01a1986f-9580-71ed-a835-4700a9b4e6bb` |
 
 **The grid-4 failure.** The last daily bar closes on the same nanosecond as the range end close. The bar handler ran first, so an entry sent on that bar was still in flight when the close looked for a position, found none, and the entry then filled. The fix (e90100a, lab runner only, strategy code hash unchanged so the resume was allowed) closes a position that opens after the range end close; a synthetic test reproduces it.
 
@@ -110,3 +111,5 @@ Every look at real candles for `tsmom`, in order. Development range only (2022-0
 **Extra look, counted (row 3).** The user asked to see the strategy with a 20 USD start at 10x leverage (`starting_balance_usd = "20"`, `leverage = "10"`, `[risk] max_leverage = "10"`, lookback 30, development range only). It is one more trial on the development data and is logged here as such; it informs no study or holdout choice. Run `3dbf1b84`: +12.59 % (20.00 to 22.52 USD), max DD 1.30 %, 58 trades, all on SOL and XRP; 2,025 entries refused as `zero_quantity` (0.5 % risk on a 20 USD account is below one size step on BTC and ETH, and on SOL and XRP whenever their price was high). One XRP trade (2024-11-07, +1.89 USD) made most of the gain. Leverage did not bind: the risk sizing, not the margin, sets the size.
 
 **Extra look, counted (row 5).** The user asked for the same check with a 100 USD start at 10x leverage (the same file as row 3 with `starting_balance_usd = "100"`). Again one more trial on the development data that informs no study or holdout choice. Run `130014cd`: +30.90 % (100.00 to 130.90 USD), max DD 2.51 %, ratio 1.56, win rate 39.8 %, 211 trades on all four coins (ETH 60, SOL 54, BTC 28, XRP 69); 414 entries refused as `zero_quantity`. P&L by coin: XRP +13.69, BTC +7.01, SOL +6.92, ETH +6.05 USD; one XRP trade made +15.11 USD. Funding cost 2.77 USD. Recorded fees are 0.01 USD because each fill's fee (average position about 2.90 USD notional) rounds to under a cent in USD money; at about 5 bps a side the true fee would be roughly 0.60 USD, which does not change the result. Leverage did not bind.
+
+**Holdout (row 6), run once.** `lab holdout tsmom` picked grid point 1 (grid-2, lookback 30, the best development ratio) and ran 2025-10-19 to 2026-10-17 at the 10,000 USD start. Run `7afd64e1`: −1.28 % (−127.96 USD), max DD 5.13 %, ratio −0.21 (sharpe_daily), win rate 28.75 %, 80 trades (BTC 22, ETH 20, SOL 17, XRP 21), fees 29.04 USD, funding −32.55 USD. By coin: ETH +90.82, BTC +5.59, SOL −0.27, XRP −191.55 USD. The buy and hold baseline (`base`, run `2a6f97a8`) lost 39.39 % (max DD 39.39 %) over the same days, so the strategy held capital well in a falling year but made no profit. The gate verdict comes from `gate evaluate tsmom` on the VPS.
