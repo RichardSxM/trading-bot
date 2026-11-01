@@ -516,7 +516,7 @@ spec [0027](../specs/0027-daily-trend-tsmom/index.md)
 - [ ] Build it: `/develop daily trend tsmom`
   - [x] Kind and gate: hash baseline, `StrategyKind.TREND`, migration 0014, `check_version`, thresholds v3, trend gate rules (AC-1 to AC-8, AC-11)
   - [x] Thin thread: `tsmom` rule, node, registry, lab admits `trend` with the warmup pre roll, four coin fixture study through the gate (AC-10, AC-10a, AC-12 to AC-14, AC-17)
-  - [ ] Data and pre check rerun: SOL and XRP pins, candles, funding, the as built pre check (AC-15, AC-16, AC-18a)
+  - [x] Data and pre check rerun: SOL and XRP pins, candles, funding, the as built pre check (AC-15, AC-16, AC-18a)
   - [ ] Deploy, study, verdict: PR and deploy, your manual promote of r2, study file, `lab study`, `lab holdout`, `gate evaluate`, results, close out (AC-1, AC-18 to AC-22)
 - [ ] Verify it: `/check verify daily trend tsmom`
 - [ ] Test it: `/test daily trend tsmom`
