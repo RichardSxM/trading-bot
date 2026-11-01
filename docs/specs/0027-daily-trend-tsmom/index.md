@@ -79,7 +79,7 @@ Tracer Bullet: first a thin thread from the new kind through a fixture study to 
 3. [x] `thresholds.toml` v3 and the `trend` gate rules in `trading_core.gate` and `recording.gate_queries`, with unit tests, satisfies **AC-4** to **AC-8**
 4. [x] Thin thread: the `tsmom` rule, node, and registry entry, the lab accepting kind `trend` with its warmup pre roll, one fixture (synthetic candles) four coin study run end to end through `lab study`, `lab holdout`, and `gate evaluate` in the integration tests, satisfies **AC-10**, **AC-10a**, **AC-12** to **AC-14**, **AC-17**
 5. SOL and XRP pinned instruments, candles, and funding on the laptop, with data quality in `verify.md`, satisfies **AC-15**, **AC-16**
-6. Rerun the pre check as built on development data, results in `verify.md`; stop here if lookback 30 no longer passes, satisfies **AC-18a**
+6. [x] Rerun the pre check as built on development data, results in `verify.md`; stop here if lookback 30 no longer passes, satisfies **AC-18a**
 7. PR, merge, deploy with `--no-deps`; you run the manual promote of `donchian_scalp_r2` (its code hash changed, AC-1), satisfies **AC-1**, **AC-2**
 8. Commit `apps/lab/studies/tsmom.toml`, rebuild the lab image with `GIT_COMMIT`, satisfies **AC-18**, **AC-22**
 9. Run `lab study`, `lab holdout tsmom`, push bundles, `gate import`, `gate evaluate` on the VPS, satisfies **AC-19**
