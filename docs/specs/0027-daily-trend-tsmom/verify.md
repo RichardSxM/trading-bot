@@ -83,3 +83,44 @@ Lookback 30 still clears every bar, so the study goes ahead. These are the exits
 | stop | 19 |
 
 The time stop splits long trends into 30 bar pieces. That raises the trade count, but it also lowers the gross per trade and adds a round trip of costs at each re-entry. The 3 ATR stop also cuts the drawdown. The halves' P&L (lookback 30: +1,298 and +1,851 USD) is in USD on the compounding account. This rerun is not a database trial and changes no value in the spec.
+
+## AC-19 command log (2026-11-01)
+
+Every look at real candles for `tsmom`, in order. Rows 1 to 5 read the development range only (2022-04-01 to 2025-10-18); row 6 is the one holdout run.
+
+| # | command | start to end (UTC) | exit | result |
+|---|---|---|---|---|
+| 1 | `lab study studies/tsmom.toml` | 08:55:07 to 08:55:23 | 1 | refused before any run: PF_XRPUSD tick size conflict in the instrument table, fixed in SQL |
+| 2 | `lab study studies/tsmom.toml` | 08:56:32 to 12:10:21 | 1 | batch `01a19656-d49c-711d-8186-dcfb30545ec0`: grid-1 to grid-3 done, grid-4 failed "a position is open after the range end close" |
+| 3 | `lab backtest /lab-reports/scratch/tsmom_20usd_10x.toml` | 13:39:06 to 14:30:39 | 0 | extra look (below) |
+| 4 | `lab study studies/tsmom.toml` (resume) | 14:30:39 to 15:40:44 | 0 | batch `01a19787-0211-722e-94bd-eaad2bbdd468`: grid-4 only, done |
+| 5 | `lab backtest /lab-reports/scratch/tsmom_100usd_10x.toml` | 16:03:12 to 18:07:45 | 0 | extra look (below), batch `01a197dc-29ae-762a-84a4-a49cb9e32a15` |
+| 6 | `lab holdout tsmom` | 18:14:21 to 19:34:31 | 0 | the one holdout (below): batch `01a19852-83a7-75f1-b53d-9643a44f3930` (grid-2), baseline batch `01a1986f-9580-71ed-a835-4700a9b4e6bb` |
+
+**The grid-4 failure.** The last daily bar closes on the same nanosecond as the range end close. The bar handler ran first, so an entry sent on that bar was still in flight when the close looked for a position, found none, and the entry then filled. The fix (e90100a, lab runner only, strategy code hash unchanged so the resume was allowed) closes a position that opens after the range end close; a synthetic test reproduces it.
+
+**Study results** (full development range, 10,000 USD start):
+
+| point | lookback | run | return | max DD | ratio | trades |
+|---|---|---|---|---|---|---|
+| grid-1 | 20 | `9792ed48` | +27.59 % | 6.01 % | 1.16 | 317 |
+| grid-2 | 30 | `51e19953` | +31.16 % | 4.30 % | 1.27 | 257 |
+| grid-3 | 40 | `3b59a8a6` | +23.60 % | 6.62 % | 1.05 | 233 |
+| grid-4 | 60 | `c854aecd` | +26.48 % | 5.48 % | 1.03 | 234 |
+
+**Extra look, counted (row 3).** The user asked to see the strategy with a 20 USD start at 10x leverage (`starting_balance_usd = "20"`, `leverage = "10"`, `[risk] max_leverage = "10"`, lookback 30, development range only). It is one more trial on the development data and is logged here as such; it informs no study or holdout choice. Run `3dbf1b84`: +12.59 % (20.00 to 22.52 USD), max DD 1.30 %, 58 trades, all on SOL and XRP; 2,025 entries refused as `zero_quantity` (0.5 % risk on a 20 USD account is below one size step on BTC and ETH, and on SOL and XRP whenever their price was high). One XRP trade (2024-11-07, +1.89 USD) made most of the gain. Leverage did not bind: the risk sizing, not the margin, sets the size.
+
+**Extra look, counted (row 5).** The user asked for the same check with a 100 USD start at 10x leverage (the same file as row 3 with `starting_balance_usd = "100"`). Again one more trial on the development data that informs no study or holdout choice. Run `130014cd`: +30.90 % (100.00 to 130.90 USD), max DD 2.51 %, ratio 1.56, win rate 39.8 %, 211 trades on all four coins (ETH 60, SOL 54, BTC 28, XRP 69); 414 entries refused as `zero_quantity`. P&L by coin: XRP +13.69, BTC +7.01, SOL +6.92, ETH +6.05 USD; one XRP trade made +15.11 USD. Funding cost 2.77 USD. Recorded fees are 0.01 USD because each fill's fee (average position about 2.90 USD notional) rounds to under a cent in USD money; at about 5 bps a side the true fee would be roughly 0.60 USD, which does not change the result. Leverage did not bind.
+
+**Holdout (row 6), run once.** `lab holdout tsmom` picked grid point 1 (grid-2, lookback 30, the best development ratio) and ran 2025-10-19 to 2026-10-17 at the 10,000 USD start. Run `7afd64e1`: −1.28 % (−127.96 USD), max DD 5.13 %, ratio −0.21 (sharpe_daily), win rate 28.75 %, 80 trades (BTC 22, ETH 20, SOL 17, XRP 21), fees 29.04 USD, funding −32.55 USD. By coin, before funding: ETH +90.82, BTC +5.59, SOL −0.27, XRP −191.55 USD (after funding: +80.61, −6.48, −6.03, −196.06). The buy and hold baseline (`base`, run `2a6f97a8`) lost 39.39 % (max DD 39.39 %) over the same days, so the strategy held capital well in a falling year but made no profit. The gate verdict comes from `gate evaluate tsmom` on the VPS.
+
+**Push**: `scripts/push-bundles.sh` on the four gate batches (`01a19656`, `01a19787`, `01a19852`, `01a1986f`, 7 bundle files; the extra looks `01a19757` and `01a197dc` left out), 20:00:31 to 21:47:45 UTC, exit 0: loaded 7, already there 63, refused 0.
+
+**AC-19 gate**: `gate evaluate tsmom` run once on the VPS, 21:51:06 to 21:51:35 UTC, exit 0: `fail`, promotion `01a19918-b12c-73d2-923c-6923c3300db4`, N 17 (prior trials 13, pool 4, scope kind+lab). Four checks failed: fee hurdle (gross edge −0.83 vs threshold 1.15), holdout sharpe (−0.21 vs 0), bootstrap lower bound (−0.000277 vs 0), PBO (0.46 vs 0.30). Other metrics: deflated sharpe 0.98, walk forward sharpe 1.53 (5 folds, return +27.35 %), buy and hold sharpe −0.63, holdout max DD 5.96 % (marked basis; the lab's 5.13 % is on closed equity).
+
+## AC-21 close out and AC-1 comparison (2026-11-01)
+
+- **Node modules**: the same method as the baseline (`scripts/spikes/hash_check.py` in `kfs/lab:s0026` on a `git archive` of the commit's `packages/core/src`). On main 1ae0c68 (the merged feature; `packages/core/src` is the same on this branch's HEAD): 41 modules, list sha256 `0d9b7dd8777238cfc61a1b3a6a332d027598b34bb5c57827e57cad464f9ea53c`. Rerun on 0be15e1 the same way gives the baseline `8a8f4622…` again, so the method is unchanged.
+- **What changed**: the only `trading_core.node` file added or edited is the new `trading_core.node.tsmom` (one new line). 32 lines moved and 8 match (`context_feed`, `context_types`, `funding`, `heartbeat`, `key_actors`, `key_check`, `kraken`, `sandbox`). A closure check on 1ae0c68 shows every one of the 32 moved closures holds `recording/enums.py`, which AC-3 changed (`StrategyKind.TREND`), and none of the 8 matching ones does. No other changed core file (`gate/*`, `recording/gate_queries.py`, `lab/pre_roll.py`, `strategy/tsmom.py`) is in a moved closure, except `strategy/tsmom.py` in the new `tsmom` closure. So every moved line is explained by the expected enum change.
+- **`donchian_scalp_r2` on demo**: `python -m trader.version` on the VPS (git commit 1ae0c68) gives `code_hash` `a96368ab0435b1187f36fd10910fb847d2d3d17bc2de525eb7cf37df83f5572e` (the `donchian_scalp_r2` line of the list above) and `frozen_hash` `1cd371f93679a7d28501a41af461e62cb11f218d69f45cdc683f21f9faeb2b3c`. Both changed as AC-1 expected; you ran the manual promote after the deploy.
+- **Verdict close out**: `fail` (Results in [0002-tsmom.md](0002-tsmom.md)), so no paper follow up is enrolled and no revision of `tsmom` runs in this spec. A later trend idea starts from N = 17 or more.

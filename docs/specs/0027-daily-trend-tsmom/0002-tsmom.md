@@ -99,7 +99,52 @@ Crypto trends persist for weeks. Being long only while the 1 to 2 month return i
 
 ## Results
 
-_Filled in by AC-20 after the run._
+**Verdict: `fail`.** Label: BTC and ETH holdout seen (specs 0020, 0022); trend rules set after the development pre check.
+
+| Field | Value |
+|---|---|
+| Study | `tsmom` (study `01a19653-4ba1-744b-bb3f-a0fd960002ee`, study file committed 2026-11-01 in 0695852, study batch `01a19656-d49c-711d-8186-dcfb30545ec0` plus the grid-4 resume `01a19787-0211-722e-94bd-eaad2bbdd468`, holdout batch `01a19852-83a7-75f1-b53d-9643a44f3930`, buy and hold benchmark `01a1986f-9580-71ed-a835-4700a9b4e6bb`) |
+| Promotion id | `01a19918-b12c-73d2-923c-6923c3300db4` (VPS, gate commit 1ae0c68) |
+| Evaluation date | 2026-11-01 (21:51 UTC) |
+| Chosen grid point | grid-2 (`lookback_days` 30) |
+| Walk forward Sharpe | 1.533712 (5 folds; return +27.35 %) |
+| Holdout Sharpe | −0.214007, against buy and hold −0.630819 |
+| Holdout return after costs | −1.28 % (−127.96 USD), run `7afd64e1-ade0-445c-be53-3b7ba2faa235`, 364 days |
+| Holdout marked max drawdown | 5.96 % (realized 5.13 %) |
+| Deflated Sharpe probability | 0.981027 |
+| PBO | 0.464286 (`pbo_applicable` true) |
+| Holdout trades | 80 (all long; win rate 28.75 %, profit factor 0.83) |
+| Trial count N | 17 (`prior_trials` 13 plus a pool of 4, `kind+lab`, VPS) |
+| Holdout gross per trade | −0.830 USD |
+| Holdout cost per trade | 0.770 USD (fee hurdle threshold 1.155) |
+| Holdout fees, funding | 29.04 USD, −32.55 USD |
+
+Per coin, holdout (net P&L after fees and funding):
+
+| Coin | Trades | Net P&L (USD) | Funding (USD) | Buy and hold |
+|---|---|---|---|---|
+| PF_ETHUSD | 20 | 80.61 | −10.21 | −38.33 % |
+| PF_XBTUSD | 22 | −6.48 | −12.07 | −24.10 % |
+| PF_SOLUSD | 17 | −6.03 | −5.76 | −44.96 % |
+| PF_XRPUSD | 21 | −196.06 | −4.51 | −45.24 % |
+
+Coin share of profit (`instrument_share`): null, the holdout has no profit to share.
+
+Not applied trend checks (child 1), metrics as recorded: `direction_applicable` false, `direction_share` null (every trade long); `top_trades_applicable` false, `top_trades_share` null.
+
+Walk forward folds (out of sample net, USD, grid point 1 chosen in every fold): 2023-04 to 2023-09 −156.23 (30 trades), 2023-10 to 2024-03 +1363.19 (40), 2024-04 to 2024-09 −494.04 (40), 2024-10 to 2025-03 +1525.22 (38), 2025-04 to 2025-09 +630.25 (41). Fold share 0.531734.
+
+Reasons that failed (code, value, threshold):
+- `fee_hurdle`: `failed`, −0.829625, 1.154819
+- `holdout_sharpe`: `failed`, −0.214007, 0
+- `bootstrap_lower_bound`: `failed`, −0.000277, 0
+- `pbo`: `failed`, 0.464286, 0.30
+
+Every other check passed, among them beating buy and hold, walk forward Sharpe above 0, the deflated Sharpe probability, fold share, the 60 trade floor, the drawdown budget, and long only.
+
+Extra looks (AC-22 deviation): on your request, two `lab backtest` runs read `tsmom` on real candles, development range only, after the study and before the holdout: 20 USD at 10x (run `3dbf1b84`) and 100 USD at 10x (run `130014cd`). AC-22 says `lab backtest` is never run on real candles for `tsmom`. Neither run informed the grid pick or the holdout, neither is in the gate's trial pool, and both are logged in `verify.md`. The holdout ran once and no holdout ran again.
+
+Reading: the development years looked like a real edge (walk forward Sharpe 1.53, deflated Sharpe 0.98 even at N 17), but the unseen year did not. In a falling year, momentum mostly kept the account flat: it lost 1.3 % while holding the four coins lost 39 %, so the drawdown guard did its job. It earned nothing, though: the average trade lost 0.83 USD before costs, XRP alone lost 196 USD on whipsaws, and only ETH made money. PBO 0.46 says the best lookback is close to a coin flip among the four, so the pick carried little information. Two of five walk forward folds lost money too, so the edge was uneven before the holdout. The rule earns in long trends and gives back in chop, and this year had more chop than trend.
 
 ## Rationale (short)
 

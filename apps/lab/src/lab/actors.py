@@ -27,7 +27,7 @@ from nautilus_trader.model.data import Bar, BarType, QuoteTick
 from nautilus_trader.model.enums import OrderSide as NautilusOrderSide
 from nautilus_trader.model.enums import PositionSide as NautilusPositionSide
 from nautilus_trader.model.enums import TimeInForce
-from nautilus_trader.model.events import OrderFilled, OrderInitialized
+from nautilus_trader.model.events import OrderFilled, OrderInitialized, PositionOpened
 from nautilus_trader.model.identifiers import ClientOrderId, InstrumentId
 from nautilus_trader.model.objects import Currency
 from nautilus_trader.model.position import Position
@@ -63,6 +63,8 @@ RANGE_END: Final = "range_end"
 LIQUIDATED: Final = "liquidated"
 RUINED: Final = "ruined"
 USD: Final = Currency.from_str("USD")
+# Every position event; the late open check keeps only `PositionOpened`.
+POSITION_EVENTS_TOPIC: Final = "events.position.*"
 _UNUSED_STALE_QUOTE_S: Final = Decimal(10)
 
 
@@ -307,6 +309,7 @@ class SegmentEndCloser(Actor):  # type: ignore[misc]  # Actor is Cython with no 
         close_at_ns: int,
         reason: str = SEGMENT_END,
         component_id: str | None = None,
+        close_late_opens: bool = False,
     ) -> None:
         # A multi coin unit names each coin's closer, since component ids are unique in an engine.
         super().__init__(None if component_id is None else ActorConfig(component_id=component_id))
@@ -318,20 +321,37 @@ class SegmentEndCloser(Actor):  # type: ignore[misc]  # Actor is Cython with no 
         self._close_instrument_id = instrument_id
         self._close_at_ns = close_at_ns
         self._reason = reason
+        # The candle lab's bar closing at the range end shares the close's nanosecond: an entry sent on
+        # it is still in flight when the close runs and opens after it, so the closer closes that too.
+        self._close_late_opens = close_late_opens
+        self._ended = False
         # The close order and its decision, once sent; the unit settles any rest the book left (AC-8).
         self.close_id: str | None = None
         self.close_decision: UUID | None = None
 
     def on_start(self) -> None:
-        """Set the one alert at the end of the data."""
+        """Set the one alert at the end of the data, and with ``close_late_opens`` watch for a late open."""
         self.clock.set_time_alert_ns(name="segment-end", alert_time_ns=self._close_at_ns, callback=self._on_end)
+        if self._close_late_opens:
+            self.msgbus.subscribe(topic=POSITION_EVENTS_TOPIC, handler=self._on_position_opened)
 
     def _on_end(self, event: object) -> None:
+        self._ended = True
         self._gate.pause_in_memory()  # no new entry from here on; exits are reduce only and still pass
         self._strategy.cancel_all_orders(self._close_instrument_id)
         position = next(iter(self.cache.positions_open(instrument_id=self._close_instrument_id)), None)
         if position is None:
             return
+        self._close(position)
+
+    def _on_position_opened(self, event: object) -> None:
+        # An entry already in flight at the close filled after it: close that position as well.
+        if self._ended and isinstance(event, PositionOpened) and event.instrument_id == self._close_instrument_id:
+            position = self.cache.position(event.position_id)
+            if position is not None and position.is_open:
+                self._close(position)
+
+    def _close(self, position: Position) -> None:
         decision = self.record_close_decision(
             closing_side(position), position.quantity.as_decimal(), self.clock.timestamp_ns()
         )
