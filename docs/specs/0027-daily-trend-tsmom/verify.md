@@ -83,3 +83,27 @@ Lookback 30 still clears every bar, so the study goes ahead. These are the exits
 | stop | 19 |
 
 The time stop splits long trends into 30 bar pieces. That raises the trade count, but it also lowers the gross per trade and adds a round trip of costs at each re-entry. The 3 ATR stop also cuts the drawdown. The halves' P&L (lookback 30: +1,298 and +1,851 USD) is in USD on the compounding account. This rerun is not a database trial and changes no value in the spec.
+
+## AC-19 command log (2026-11-01)
+
+Every look at real candles for `tsmom`, in order. Development range only (2022-04-01 to 2025-10-18); no holdout day read yet.
+
+| # | command | start to end (UTC) | exit | result |
+|---|---|---|---|---|
+| 1 | `lab study studies/tsmom.toml` | 08:55:07 to 08:55:23 | 1 | refused before any run: PF_XRPUSD tick size conflict in the instrument table, fixed in SQL |
+| 2 | `lab study studies/tsmom.toml` | 08:56:32 to 12:10:21 | 1 | batch `01a19656-d49c-711d-8186-dcfb30545ec0`: grid-1 to grid-3 done, grid-4 failed "a position is open after the range end close" |
+| 3 | `lab backtest /lab-reports/scratch/tsmom_20usd_10x.toml` | 13:39:06 to 14:30:39 | 0 | extra look (below) |
+| 4 | `lab study studies/tsmom.toml` (resume) | 14:30:39 to 15:40:44 | 0 | batch `01a19787-0211-722e-94bd-eaad2bbdd468`: grid-4 only, done |
+
+**The grid-4 failure.** The last daily bar closes on the same nanosecond as the range end close. The bar handler ran first, so an entry sent on that bar was still in flight when the close looked for a position, found none, and the entry then filled. The fix (e90100a, lab runner only, strategy code hash unchanged so the resume was allowed) closes a position that opens after the range end close; a synthetic test reproduces it.
+
+**Study results** (full development range, 10,000 USD start):
+
+| point | lookback | run | return | max DD | ratio | trades |
+|---|---|---|---|---|---|---|
+| grid-1 | 20 | `9792ed48` | +27.59 % | 6.01 % | 1.16 | 317 |
+| grid-2 | 30 | `51e19953` | +31.16 % | 4.30 % | 1.27 | 257 |
+| grid-3 | 40 | `3b59a8a6` | +23.60 % | 6.62 % | 1.05 | 233 |
+| grid-4 | 60 | `c854aecd` | +26.48 % | 5.48 % | 1.03 | 234 |
+
+**Extra look, counted (row 3).** The user asked to see the strategy with a 20 USD start at 10x leverage (`starting_balance_usd = "20"`, `leverage = "10"`, `[risk] max_leverage = "10"`, lookback 30, development range only). It is one more trial on the development data and is logged here as such; it informs no study or holdout choice. Run `3dbf1b84`: +12.59 % (20.00 to 22.52 USD), max DD 1.30 %, 58 trades, all on SOL and XRP; 2,025 entries refused as `zero_quantity` (0.5 % risk on a 20 USD account is below one size step on BTC and ETH, and on SOL and XRP whenever their price was high). One XRP trade (2024-11-07, +1.89 USD) made most of the gain. Leverage did not bind: the risk sizing, not the margin, sets the size.
