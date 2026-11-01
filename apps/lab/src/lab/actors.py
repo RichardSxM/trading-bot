@@ -153,6 +153,7 @@ class LabRecorder(RecordingActor):
         risk: RiskLimits,
         funding_boundaries: Sequence[int] = (),
         bar_types: Sequence[BarType] = (),
+        segment_start_ns: int | None = None,
     ) -> None:
         # The stale quote age and the ledger feed only the snapshots and the booked funding, which
         # the lab never starts (it samples funding at ``funding_boundaries`` instead), and the lab's
@@ -178,6 +179,8 @@ class LabRecorder(RecordingActor):
         # (spec 0014 gate G-3b), and its volume 0 bars are the report's ``zero_volume_bars`` (AC-16).
         self._bar_types = tuple(bar_types)
         self.zero_volume_by_coin = {b.instrument_id.value: 0 for b in self._bar_types}
+        # A trend run's pre roll bars (closed at or before the segment start) are not the run's (spec 0027.1 AC-10a).
+        self._bars_after_ns = segment_start_ns
 
     @property
     def zero_volume_bars(self) -> int:
@@ -208,6 +211,8 @@ class LabRecorder(RecordingActor):
 
     def on_bar(self, bar: Bar) -> None:
         """Count the strategies' bars with no volume (quiet hours, or hours with no candles at all)."""
+        if self._bars_after_ns is not None and bar.ts_event <= self._bars_after_ns:
+            return
         if bar.bar_type in self._bar_types and bar.volume.as_decimal() == 0:
             self.zero_volume_by_coin[bar.bar_type.instrument_id.value] += 1
 

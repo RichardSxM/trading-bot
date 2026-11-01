@@ -546,10 +546,10 @@ def candle_run_from_raw(
     except StrategyConfigError as exc:
         raise RunFileError([f"strategy.config: {p}" for p in exc.problems]) from None
     issues: list[str] = []
-    if entry.kind != StrategyKind.HOUR_LEVEL and not entry.candle_screen:
+    if entry.kind not in (StrategyKind.HOUR_LEVEL, StrategyKind.TREND) and not entry.candle_screen:
         issues.append(
             f"strategy.name {run.strategy.name!r} is a {entry.kind} strategy; lab backtest runs hour_level "
-            "strategies and the scalping candidates with a candle screen"
+            "strategies, trend strategies, and the scalping candidates with a candle screen"
         )
     bar_problem = bar_spec_problem(bar_spec)
     if bar_problem is not None:

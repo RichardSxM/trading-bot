@@ -54,6 +54,8 @@ from trading_core.node.placeholder import STRATEGY_NAME as PLACEHOLDER
 from trading_core.node.placeholder import PlaceholderConfig, PlaceholderTimed, Record
 from trading_core.node.random_taker import RandomTaker, RandomTakerConfig
 from trading_core.node.strategy import KfsStrategy, PauseGate
+from trading_core.node.tsmom import STRATEGY_NAME as TSMOM
+from trading_core.node.tsmom import Tsmom, TsmomConfig
 from trading_core.node.vwap_retest import STRATEGY_NAME as VWAP_RETEST
 from trading_core.node.vwap_retest import VwapRetest, VwapRetestConfig
 from trading_core.recording.enums import Env, StrategyKind
@@ -366,6 +368,12 @@ def _donchian_4h(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, r
     return Donchian4h(config, gate, blocks, record)
 
 
+def _tsmom(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
+    if not isinstance(config, TsmomConfig):
+        raise TypeError(f"tsmom needs a TsmomConfig, not {type(config).__name__}")
+    return Tsmom(config, gate, blocks, record)
+
+
 def _donchian_4h_r1(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
     if not isinstance(config, Donchian4hR1Config):
         raise TypeError(f"donchian_4h_r1 needs a Donchian4hR1Config, not {type(config).__name__}")
@@ -559,6 +567,17 @@ REGISTRY: Final[Mapping[str, StrategyEntry]] = {
         run_fields=_candle_fields,
         kind=StrategyKind.SCALPING,
         candle_screen=True,
+        candle_gate=False,
+    ),
+    # Daily momentum, long only (spec 0027.2 AC-14): the trend kind, with the warmup pre roll (0027.1 AC-10a).
+    TSMOM: StrategyEntry(
+        name=TSMOM,
+        module=Tsmom.__module__,
+        config_cls=TsmomConfig,
+        factory=_tsmom,
+        run_fields=_candle_fields,
+        kind=StrategyKind.TREND,
+        candle_screen=False,
         candle_gate=False,
     ),
 }
