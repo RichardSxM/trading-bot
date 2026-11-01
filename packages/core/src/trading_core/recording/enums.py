@@ -26,6 +26,7 @@ class StrategyKind(StrEnum):
 
     SCALPING = "scalping"
     HOUR_LEVEL = "hour_level"
+    TREND = "trend"
 
 
 class Stage(StrEnum):

@@ -410,8 +410,8 @@ def test_an_eth_import_reads_only_its_member_and_tradeable(settings, tmp_path):
 @pytest.mark.parametrize(
     "argv",
     [
-        ["fetch-candles", "2026-09", "2026-09", "--instrument", "PF_SOLUSD.KRAKEN"],
-        ["import-funding", "/nonexistent/export.zip", "--instrument", "PF_SOLUSD.KRAKEN"],
+        ["fetch-candles", "2026-09", "2026-09", "--instrument", "PF_DOGEUSD.KRAKEN"],
+        ["import-funding", "/nonexistent/export.zip", "--instrument", "PF_DOGEUSD.KRAKEN"],
         ["import-funding", "/nonexistent/export.zip", "--instrument", "../runs/donchian_4h"],
     ],
     ids=["fetch-candles", "import-funding", "a path"],

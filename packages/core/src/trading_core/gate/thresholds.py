@@ -12,9 +12,11 @@ from datetime import date
 from decimal import Decimal
 from typing import Final
 
-SUPPORTED_VERSIONS: Final = (1, 2)
+SUPPORTED_VERSIONS: Final = (1, 2, 3)
 # A field added in a later version: absent before it (loads as None, its check skipped), required from it on.
-_ADDED_IN: Final[Mapping[str, int]] = {"instrument_max_share": 2}
+_ADDED_IN: Final[Mapping[str, int]] = {"instrument_max_share": 2, "trend": 3}
+# Integer fields where 0 is a valid value (every other integer must be at least 1).
+_ZERO_OK: Final = frozenset({"trend.prior_trials"})
 
 
 class ThresholdsError(ValueError):
@@ -55,6 +57,13 @@ class PaperThresholds:
 
 
 @dataclass(frozen=True)
+class TrendThresholds:
+    """What only the ``trend`` kind reads (spec 0027 AC-4): the trials run outside the database."""
+
+    prior_trials: int
+
+
+@dataclass(frozen=True)
 class Thresholds:
     """Every threshold of one ``thresholds.toml`` version."""
 
@@ -75,6 +84,8 @@ class Thresholds:
     paper: PaperThresholds
     # The largest coin's share of holdout net profit (spec 0022 AC-13); None in version 1.
     instrument_max_share: Decimal | None = None
+    # The trend kind's own table (spec 0027 AC-4); None before version 3.
+    trend: TrendThresholds | None = None
 
     def to_json(self) -> dict[str, object]:
         """Plain JSON: Decimals as fixed notation strings, the date as ISO."""
@@ -101,8 +112,9 @@ def _coerce(kind: object, value: object, where: str) -> object:
     if kind in (int, "int"):
         if isinstance(value, bool) or not isinstance(value, int):
             raise ThresholdsError(f"{where} must be an integer, not {value!r}")
-        if value < 1:
-            raise ThresholdsError(f"{where} must be at least 1, not {value}")
+        least = 0 if where in _ZERO_OK else 1
+        if value < least:
+            raise ThresholdsError(f"{where} must be at least {least}, not {value}")
         return value
     if kind in (Decimal, "Decimal"):
         if isinstance(value, bool) or not isinstance(value, str | int | Decimal):
@@ -127,6 +139,7 @@ _NESTED: Final[Mapping[str, type]] = {
     "candle": CandleThresholds,
     "replay": ReplayThresholds,
     "paper": PaperThresholds,
+    "trend": TrendThresholds,
 }
 
 

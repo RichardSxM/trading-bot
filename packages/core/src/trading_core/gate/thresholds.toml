@@ -2,7 +2,8 @@
 # Editing this file never changes an existing study. Change a value only in a new version, as a
 # deliberate commit, and never after looking at a result.
 # v2 (spec 0022) adds instrument_max_share; every v1 value is unchanged.
-version = 2
+# v3 (spec 0027) adds the [trend] table; every v2 value is unchanged.
+version = 3
 # The final holdout: every day from here on is unseen until `lab holdout` (today minus 12 months, fixed in v1).
 holdout_start = 2025-10-19
 fee_hurdle_k = 1.5
@@ -34,3 +35,9 @@ min_trades_scalping = 100
 min_trades_hour_level = 20
 fill_rate_tolerance = 0.25
 slippage_tolerance_bps = 2
+
+# Read only for kind trend (spec 0027 AC-5): trials run outside the database before the study,
+# added to the trial count N. 13 = the 10 pre registered rules of the 2026-10-31 development pre
+# check plus its 3 robustness neighbours (tsmom 20, 40, 60).
+[trend]
+prior_trials = 13

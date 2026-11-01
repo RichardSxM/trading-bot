@@ -19,7 +19,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
-from typing import Final
+from typing import Final, Protocol, runtime_checkable
 
 from nautilus_trader.backtest.engine import BacktestEngine, BacktestEngineConfig
 from nautilus_trader.backtest.models import MakerTakerFeeModel
@@ -42,9 +42,18 @@ from trading_core.lab.candle_path import FINAL_QUOTE_DELAY_NS
 from trading_core.lab.candles import CANDLE_STALE_CHECK_S, Month, expected_charge_times
 from trading_core.lab.errors import RecordingFailedError
 from trading_core.lab.funding import FundingSample
+from trading_core.lab.pre_roll import pre_roll_start
 from trading_core.node.strategy import KfsStrategy, PauseGate
-from trading_core.recording.enums import Env
-from trading_core.recording.rows import DecisionRow, FillRow, OrderEventRow, OrderRow, PositionRow, RiskEventRow
+from trading_core.recording.enums import Env, StrategyKind
+from trading_core.recording.rows import (
+    DecisionRow,
+    FillRow,
+    OrderEventRow,
+    OrderRow,
+    PositionRow,
+    RiskEventRow,
+    ns_to_utc,
+)
 from trading_core.risk.check import RiskLimits
 from trading_core.strategy.blocks import BlockReason, EntryBlocks
 
@@ -173,6 +182,51 @@ class _Coin:
     guard: LiquidationGuard
 
 
+@runtime_checkable
+class _WarmsUp(Protocol):
+    """A trend strategy's config: how many of its bars a cold start needs (spec 0027.1 AC-10a)."""
+
+    bar_interval_ns: int
+
+    def warmup_bars(self) -> int: ...
+
+
+def _data_start(kind: StrategyKind, config: object, tree: CandleTree, start_ns: int) -> int:
+    """Where a coin's candles start being read: a trend run's pre roll start, else the segment start.
+
+    Raises ``RecordingFailedError`` for a trend config without ``warmup_bars`` (a registry mistake).
+    """
+    if kind != StrategyKind.TREND:
+        return start_ns
+    if not isinstance(config, _WarmsUp):
+        raise RecordingFailedError(f"trend config {type(config).__name__} has no warmup_bars()")
+    return pre_roll_start(
+        start_ns, config.warmup_bars(), config.bar_interval_ns, lambda month: tree.bar_file(month).exists()
+    )
+
+
+def _keep_segment_rows(rows: UnitRows, plan: CandleUnitPlan) -> None:
+    """After a pre roll (spec 0027.1 AC-10a): no trading row may come before the segment start, and the
+    pre roll's risk events (a ``stale_feed`` over a candle gap) are not the run's.
+
+    Raises ``RecordingFailedError`` for a decision, order event, fill, or position before the start (the
+    pre roll must never trade, so one is a bug that fails the variant).
+    """
+    start = ns_to_utc(plan.start_ns)
+    early = (
+        [r.decided_at for _, r in rows.decisions.values() if r.decided_at < start]
+        + [r.occurred_at for _, r in rows.order_events.values() if r.occurred_at < start]
+        + [r.filled_at for _, r in rows.fills.values() if r.filled_at < start]
+        + [r.opened_at for _, r in rows.positions.values() if r.opened_at < start]
+    )
+    if early:
+        raise RecordingFailedError(
+            f"variant {plan.variant}: the pre roll traded at {min(early).isoformat()}, before the segment start"
+        )
+    for key in [k for k, (_, r) in rows.risk_events.items() if r.occurred_at < start]:
+        del rows.risk_events[key]
+
+
 def run_candle_unit(plan: CandleUnitPlan) -> CandleUnitResult:
     """Run one variant over the whole range and return its rows.
 
@@ -217,6 +271,8 @@ def run_candle_unit(plan: CandleUnitPlan) -> CandleUnitResult:
         return done
 
     coins: list[_Coin] = []
+    # Every coin's pre roll start, for the engine's start (spec 0027.1 AC-10a); just the segment start otherwise.
+    data_starts: list[int] = []
     for number, coin in enumerate(plan.instrument_ids, start=1):
         tag = f"C{number}"
         instrument_id = InstrumentId.from_str(coin)
@@ -240,7 +296,20 @@ def run_candle_unit(plan: CandleUnitPlan) -> CandleUnitResult:
         strategy = entry.build(config, gate, blocks, rows)
         flag = SideFlag()
         tree = CandleTree(plan.candles_root, pinned_instrument(coin))
-        stream = CandleStream(tree, plan.start_ns, plan.end_ns, plan.slippage_bps, flag, on_month=month_done(coin))
+        data_start = _data_start(entry.kind, config, tree, plan.start_ns)
+        data_starts.append(data_start)
+        stream = CandleStream(
+            tree,
+            data_start,
+            plan.end_ns,
+            plan.slippage_bps,
+            flag,
+            on_month=month_done(coin),
+            segment_start_ns=plan.start_ns,
+        )
+        if data_start < plan.start_ns:
+            # The pre roll feeds bars and indicators only: an entry signal from before the segment is dropped.
+            strategy.signals_after(plan.start_ns)
         last_point = stream.last_point_ns()
         if last_point is None:
             raise RecordingFailedError(
@@ -293,6 +362,7 @@ def run_candle_unit(plan: CandleUnitPlan) -> CandleUnitResult:
         risk=plan.risk,
         funding_boundaries=expected_charge_times(plan.start_ns, plan.end_ns),
         bar_types=[c.bar_type for c in coins],
+        segment_start_ns=plan.start_ns if min(data_starts) < plan.start_ns else None,
     )
     for c in coins:
         # The funding row known at the range start, so the first entry is not refused as funding_stale (AC-6).
@@ -309,11 +379,13 @@ def run_candle_unit(plan: CandleUnitPlan) -> CandleUnitResult:
             engine.add_actor(c.closer)
         streams = [c.stream for c in coins]
         engine.add_data_iterator("candles", merged_chunks(streams) if multi else streams[0].chunks())
-        engine.run(start=plan.start_ns, end=final_ts)
+        engine.run(start=min(data_starts), end=final_ts)
         if any(BlockReason.RECORDING_FAILED in c.blocks.active() for c in coins):
             raise RecordingFailedError(f"variant {plan.variant}: an event could not be recorded")
         if any(engine.cache.positions_open(instrument_id=c.instrument_id) for c in coins):
             raise RecordingFailedError(f"variant {plan.variant}: a position is open after the range end close")
+        if min(data_starts) < plan.start_ns:
+            _keep_segment_rows(rows, plan)
     finally:
         engine.dispose()
 

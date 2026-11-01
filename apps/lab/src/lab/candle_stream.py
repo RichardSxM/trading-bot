@@ -84,9 +84,14 @@ class CandleStream:
         flag: SideFlag,
         *,
         on_month: MonthDone | None = None,
+        segment_start_ns: int | None = None,
     ) -> None:
         self._tree = tree
         self._start = start_ns
+        # A trend run's pre roll (spec 0027.1 AC-10a): candles are read from ``start_ns``, the segment
+        # starts here. ``first_trade_ns`` reports the segment's first trade, not the pre roll's.
+        self._segment_start = start_ns if segment_start_ns is None else segment_start_ns
+        self._traded = False
         self._end = end_ns
         self._slippage = slippage_bps
         self._flag = flag
@@ -144,9 +149,11 @@ class CandleStream:
             for candle in self._tree.read_bars(month):
                 if candle.open_ns < self._start or candle.ts_ns > self._end:
                     continue
-                if self.first_trade_ns is None:
+                if not self._traded:
                     if candle.quiet:
                         continue
+                    self._traded = True
+                if self.first_trade_ns is None and not candle.quiet and candle.open_ns >= self._segment_start:
                     self.first_trade_ns = candle.open_ns
                 points = path_points(candle, self._flag.side, self._slippage, self._tick, self._step)
                 chunk: list[Data] = []
@@ -183,9 +190,11 @@ class CandleStream:
             for candle in self._tree.read_bars(month):
                 if candle.open_ns < self._start or candle.ts_ns > self._end:
                     continue
-                if self.first_trade_ns is None:
+                if not self._traded:
                     if candle.quiet:
                         continue
+                    self._traded = True
+                if self.first_trade_ns is None and not candle.quiet and candle.open_ns >= self._segment_start:
                     self.first_trade_ns = candle.open_ns
                 yield candle
             if self._on_month is not None:

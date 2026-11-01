@@ -14,6 +14,7 @@ from typing import Final
 from trading_core.gate.inputs import (
     BUY_AND_HOLD,
     MACD_BASELINE,
+    TREND,
     CandidateInputs,
     Lab,
     Role,
@@ -34,6 +35,8 @@ MISSING_METRIC: Final = "missing_metric"
 NULL_CODE_HASH: Final = "null_code_hash"
 FOLD_WITHOUT_RUN: Final = "fold_without_run"
 INCONSISTENT_EVIDENCE: Final = "inconsistent_evidence"
+# The check that stands in for the direction check on a long only trend strategy (spec 0027 AC-6).
+LONG_ONLY_VIOLATED: Final = "long_only_violated"
 
 type MetricValue = str | int | bool | list[MetricValue] | dict[str, MetricValue] | None
 
@@ -175,6 +178,7 @@ def check_beats_benchmark(
 BENCHMARKS: Final[Mapping[str, tuple[str, ...]]] = {
     "scalping": (BUY_AND_HOLD,),
     "hour_level": (BUY_AND_HOLD, MACD_BASELINE),
+    TREND: (BUY_AND_HOLD,),
 }
 
 
@@ -222,14 +226,19 @@ def check_drawdown(inputs: CandidateInputs, holdout: StudyRunInput, out: Outcome
         out.reason(FAILED, "drawdown_budget", value, budget)
 
 
-def _share_check(check: str, part: Decimal, total: Decimal, limit: Decimal, metric: str, out: Outcome) -> None:
-    """A concentration check: skipped when the total is not a profit (another check fails it)."""
+def _share_check(
+    check: str, part: Decimal, total: Decimal, limit: Decimal, metric: str, out: Outcome, *, applied: bool = True
+) -> None:
+    """A concentration check: skipped when the total is not a profit (another check fails it).
+
+    ``applied`` false records the share without ever giving a reason (a check the kind does not apply).
+    """
     if total <= 0:
         out.metric(metric, None)
         return
     share = part / total
     out.metric(metric, share.quantize(Decimal("0.000001")))
-    if share > limit:
+    if applied and share > limit:
         out.reason(FAILED, check, share.quantize(Decimal("0.000001")), limit)
 
 
@@ -240,20 +249,57 @@ def check_concentration_folds(inputs: CandidateInputs, fold_nets: list[Decimal],
         _share_check("concentration_fold", max(fold_nets), sum(fold_nets, Decimal(0)), limit, "fold_share", out)
 
 
+def check_long_only(holdout: StudyRunInput, out: Outcome) -> None:
+    """``long_only_violated`` (spec 0027 AC-6): a strategy declared long only must have no short holdout trade.
+
+    Without holdout measures it fails closed (``missing_metric``), as ``fee_hurdle`` does.
+    """
+    if holdout.measures is None:
+        out.reason(MISSING_METRIC, LONG_ONLY_VIOLATED)
+    elif holdout.measures.short_trades > 0:
+        out.reason(FAILED, LONG_ONLY_VIOLATED, holdout.measures.short_trades, 0)
+
+
 def check_concentration(inputs: CandidateInputs, holdout: StudyRunInput, out: Outcome) -> None:
     """``concentration_direction``, ``concentration_top_trades`` (AC-10), and ``concentration_instrument``
-    (spec 0022 AC-13) over the holdout."""
+    (spec 0022 AC-13) over the holdout.
+
+    For kind ``trend`` (spec 0027): the direction check is not applied to a strategy declared long only
+    (``long_only_violated`` stands in for it, AC-6), and the top trades check is never applied (AC-7).
+    Their shares are still recorded, with ``direction_applicable`` and ``top_trades_applicable``.
+    """
     limit = inputs.thresholds.concentration_max_share
+    trend = inputs.strategy_kind == TREND
+    direction_applied = not (trend and inputs.long_only)
+    out.metric("direction_applicable", direction_applied)
+    if not direction_applied:
+        check_long_only(holdout, out)
     if holdout.measures is not None:
         m = holdout.measures
         total = m.long_net_pnl + m.short_net_pnl
         _share_check(
-            "concentration_direction", max(m.long_net_pnl, m.short_net_pnl), total, limit, "direction_share", out
+            "concentration_direction",
+            max(m.long_net_pnl, m.short_net_pnl),
+            total,
+            limit,
+            "direction_share",
+            out,
+            applied=direction_applied,
         )
+    top_trades_applied = not trend
+    out.metric("top_trades_applicable", top_trades_applied)
     nets = sorted((t.net_pnl for t in inputs.holdout_trades), reverse=True)
     if nets:
         top = sum(nets[: math.ceil(len(nets) * inputs.thresholds.top_trades_quantile)], Decimal(0))
-        _share_check("concentration_top_trades", top, sum(nets, Decimal(0)), limit, "top_trades_share", out)
+        _share_check(
+            "concentration_top_trades",
+            top,
+            sum(nets, Decimal(0)),
+            limit,
+            "top_trades_share",
+            out,
+            applied=top_trades_applied,
+        )
     coin_limit = inputs.thresholds.instrument_max_share
     by_coin: dict[str, Decimal] = {}
     for t in inputs.holdout_trades:

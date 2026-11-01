@@ -148,7 +148,7 @@ def _load(raw):
         ({"instrument_ids": None}, "exactly one of instrument_id or instrument_ids"),
         ({"instrument_ids": [BTC]}, "at least 2 coins"),
         ({"instrument_ids": [BTC, BTC]}, "names a coin twice"),
-        ({"instrument_ids": [BTC, "PF_SOLUSD.KRAKEN"]}, "no pinned instrument for PF_SOLUSD.KRAKEN"),
+        ({"instrument_ids": [BTC, "PF_DOGEUSD.KRAKEN"]}, "no pinned instrument for PF_DOGEUSD.KRAKEN"),
     ],
 )
 def test_a_run_file_names_its_coins_exactly_one_way(changes, problem):
@@ -158,8 +158,8 @@ def test_a_run_file_names_its_coins_exactly_one_way(changes, problem):
 
 
 def test_an_unpinned_single_coin_is_refused_at_load():
-    with pytest.raises(RunFileError, match=r"no pinned instrument for PF_SOLUSD\.KRAKEN"):
-        _load(_raw(instrument_ids=None, instrument_id="PF_SOLUSD.KRAKEN"))
+    with pytest.raises(RunFileError, match=r"no pinned instrument for PF_DOGEUSD\.KRAKEN"):
+        _load(_raw(instrument_ids=None, instrument_id="PF_DOGEUSD.KRAKEN"))
 
 
 def test_coins_load_sorted_and_only_a_multi_coin_version_carries_them():
