@@ -288,7 +288,7 @@ def test_a_trend_run_file_with_a_short_side_is_refused():
 
 @pytest.mark.parametrize(
     ("coin", "tick", "step", "margins"),
-    [(SOL, "0.01", "0.01", ("0.01", "0.005")), (XRP, "0.0001", "1", ("0.02", "0.01"))],
+    [(SOL, "0.01", "0.01", ("0.01", "0.005")), (XRP, "0.00001", "1", ("0.02", "0.01"))],
 )
 def test_the_sol_and_xrp_pins_load(coin, tick, step, margins):
     instrument = pinned_instrument(coin)
@@ -296,6 +296,16 @@ def test_the_sol_and_xrp_pins_load(coin, tick, step, margins):
     assert (str(instrument.margin_init), str(instrument.margin_maint)) == margins
     assert (str(instrument.maker_fee), str(instrument.taker_fee)) == ("0.0002", "0.0005")
     assert not is_pinned("PF_DOGEUSD.KRAKEN")
+
+
+def test_the_xrp_pin_holds_the_historical_tick_and_todays_prices_sit_on_it():
+    """AC-15 amendment: tick 0.00001, precision 5; an old tick price and a 0.0001 price are both on tick."""
+    instrument = pinned_instrument(XRP)
+    tick = instrument.price_increment.as_decimal()
+    assert (tick, instrument.price_precision) == (Decimal("0.00001"), 5)
+    for price in (Decimal("0.53217"), Decimal("2.4581")):
+        assert price % tick == 0
+        assert instrument.make_price(price).as_decimal() == price
 
 
 # AC-17: no daily bar holds a minute after its timestamp (the --lookahead-check method) -------------
