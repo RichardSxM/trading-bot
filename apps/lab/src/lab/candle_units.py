@@ -334,6 +334,7 @@ def run_candle_unit(plan: CandleUnitPlan) -> CandleUnitResult:
                     close_at_ns=last_point + CLOSE_DELAY_NS,
                     reason=RANGE_END,
                     component_id=f"SegmentEndCloser-{tag}" if multi else None,
+                    close_late_opens=True,
                 ),
                 guard=LiquidationGuard(
                     strategy=strategy,

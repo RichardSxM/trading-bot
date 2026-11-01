@@ -223,6 +223,34 @@ def test_the_coins_trade_in_one_account(unit):
     assert set(unit.per_instrument) == {BTC, ETH, SOL, XRP}
 
 
+def test_an_entry_on_the_bar_closing_at_the_range_end_is_closed_by_the_range_end_close(tmp_path):
+    """The daily bar stamped at the range end closes on the same nanosecond as the range end close. Flat
+    for 11 days, then up on the last: the entry it sends is still in flight when the closer looks, fills
+    on the last quote after it, and the closer closes it too (spec 0014 AC-8: nothing is left open)."""
+    root = tmp_path
+    closes = [100] * (DAYS - 1) + [110]
+    rows = [
+        CandleRow(T0 + day * DAY_NS + (minute + 1) * MINUTE_NS, D(c), D(c) + 1, D(c) - 1, D(c), D(1), False)
+        for day, c in enumerate(closes)
+        for minute in range(24 * 60)
+    ]
+    tree = candle_tree(root, ETH)
+    tree.write_bars(SEP, rows)
+    tree.write_funding(
+        SEP, [FundingRow(T0 + h * HOUR_NS, D("0.0000125"), HOUR_NS, "api") for h in range(DAYS * 24 + 1)]
+    )
+    tree.write_gaps(SEP, [])
+    manifest = MonthManifest(
+        "2026-09", len(rows), 0, 0, 0, 0, 0, [], rows[0].ts_ns, rows[-1].ts_ns, 0, 0, 0, False, "2026-10-01T00:00:00Z"
+    )
+    tree.write_manifest(manifest.with_funding(tree.read_funding(SEP)))
+    unit = run_candle_unit(_plan(root, instrument_ids=(ETH,)))
+    entries = _decisions(unit, ETH, Intent.ENTER)
+    assert [e.decided_ns for e in entries] == [_day(DAYS)]
+    assert [e.reason for e in _decisions(unit, ETH, Intent.EXIT)] == ["range_end"]
+    assert [p.closed_at is not None for _, p in unit.positions] == [True]
+
+
 # AC-10a: the pre roll ----------------------------------------------------------------------------
 
 

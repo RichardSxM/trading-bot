@@ -80,10 +80,10 @@ Tracer Bullet: first a thin thread from the new kind through a fixture study to 
 4. [x] Thin thread: the `tsmom` rule, node, and registry entry, the lab accepting kind `trend` with its warmup pre roll, one fixture (synthetic candles) four coin study run end to end through `lab study`, `lab holdout`, and `gate evaluate` in the integration tests, satisfies **AC-10**, **AC-10a**, **AC-12** to **AC-14**, **AC-17**
 5. [x] SOL and XRP pinned instruments, candles, and funding on the laptop, with data quality in `verify.md`, satisfies **AC-15**, **AC-16**
 6. [x] Rerun the pre check as built on development data, results in `verify.md`; stop here if lookback 30 no longer passes, satisfies **AC-18a**
-7. PR, merge, deploy with `--no-deps`; you run the manual promote of `donchian_scalp_r2` (its code hash changed, AC-1), satisfies **AC-1**, **AC-2**
-8. Commit `apps/lab/studies/tsmom.toml`, rebuild the lab image with `GIT_COMMIT`, satisfies **AC-18**, **AC-22**
-9. Run `lab study`, `lab holdout tsmom`, push bundles, `gate import`, `gate evaluate` on the VPS, satisfies **AC-19**
-10. Results and the run log in its own commit, the AC-1 comparison again, the scope ticks, and a paper follow up enrolled on a pass, satisfies **AC-20**, **AC-21**, **AC-1**
+7. [x] PR, merge, deploy with `--no-deps`; you run the manual promote of `donchian_scalp_r2` (its code hash changed, AC-1), satisfies **AC-1**, **AC-2**
+8. [x] Commit `apps/lab/studies/tsmom.toml`, rebuild the lab image with `GIT_COMMIT`, satisfies **AC-18**, **AC-22**
+9. [x] Run `lab study`, `lab holdout tsmom`, push bundles, `gate import`, `gate evaluate` on the VPS, satisfies **AC-19**
+10. [x] Results and the run log in its own commit, the AC-1 comparison again, the scope ticks, and a paper follow up enrolled on a pass, satisfies **AC-20**, **AC-21**, **AC-1**
 
 ## Consequences
 
@@ -108,5 +108,5 @@ Tracer Bullet: first a thin thread from the new kind through a fixture study to 
 ## Follow-up
 
 - [ ] On a pass: enrol a paper feature (multi coin daily trader on demo replacing `donchian_scalp_r2`, a daily warmup seed from Kraken's public 1d candles, quotes for SOL and XRP) and run `/architect` for it. The trader uses the venue's live XRP instrument (tick 0.0001), not the lab pin's historical 0.00001 (child 2 AC-15). It carries the paper floor agreed on 2026-10-31: 60 days and 8 trades for `trend` (as `thresholds.toml` fields keyed on the kind, with a refusal for a trend paper step on thresholds that lack them).
-- [ ] On a fail: no revision in this spec. Any new trend idea starts from N = 17 or more.
+- [x] On a fail: no revision in this spec. Any new trend idea starts from N = 17 or more.
 - [ ] `apps/lab/AGENTS.md` and `packages/core/AGENTS.md` lines for the `trend` kind and the new coins via `/sync`.
