@@ -491,8 +491,8 @@ spec [0025](../specs/0025-donchian-scalp-r1/index.md) · code in [donchian_midli
 - [ ] Document it: `/document donchian scalp r1`
 
 ### 27. Donchian scalp r2 · in-progress
-r1's signals traded with maker orders, from the exit and maker studies of 2026-10-31: the entry rests as a post only limit 0.5 ATR behind the signal close for 3 bars, the midline exit and the time stop rest at the touch for 3 bars and then go to market, and entries are skipped when ATR is below 10 bps of price. The stop and every forced close stay market. A new maker base sits beside the frozen `BarRuleStrategy`. Screened on BTC and PEPE, then it replaces r1 on demo whatever the verdict. From spec 0025's results.
-**Done when:** the BTC and PEPE screens are recorded with the entry fill share and maker exit share, no existing strategy's hash moved, the VPS demo runs `donchian_scalp_r2` on both coins with a working seed, and one demo week of fill and fallback counts is recorded.
+r1's signals traded with maker orders, from the exit and maker studies of 2026-10-31: the entry rests as a post only limit 0.5 ATR behind the signal close for 3 bars, the midline exit and the time stop rest at the touch for 3 bars and then go to market, and entries are skipped when ATR is below 10 bps of price. The stop and every forced close stay market. A new maker base sits beside the frozen `BarRuleStrategy`. Screened on BTC and PEPE, then it replaces r1 on demo whatever the verdict. From spec 0025's results. Amended 2026-11-02: PEPE never passes the spread check, so demo moves to the coins among BTC ETH SOL XRP LINK UNI ZEC TRX DOGE QNT that pass a 1 hour quote gap check, the recorder goes back to BTC only, and the demo week restarts on that set.
+**Done when:** the BTC and PEPE screens are recorded with the entry fill share and maker exit share, no existing strategy's hash moved, the quote gap check picks the coin set, the VPS demo runs `donchian_scalp_r2` on that set with a working seed for each coin, and one demo week of fill and fallback counts per coin is recorded.
 spec [0026](../specs/0026-donchian-scalp-r2/index.md)
 
 - [x] Design it (spec): `/architect donchian scalp r2`
@@ -501,7 +501,9 @@ spec [0026](../specs/0026-donchian-scalp-r2/index.md)
   - [x] Order paths: partial fills, post only rejection, maker exit and fallback, kill switch, restart (AC-5 to AC-12)
   - [x] Filters and seed: volatility floor, spread check, seed join (AC-13, AC-14, AC-16)
   - [ ] Lab screens: registry, two study files, `maker_figures.py`, `verify.md` table (AC-17)
-  - [ ] Close out, demo switch, and demo week (AC-15, AC-18)
+  - [ ] Close out and two coin demo switch (AC-15, AC-18)
+  - [ ] Quote gap check and per coin figures: `quote_gaps.py`, `maker_figures.py` by coin (AC-19, AC-20)
+  - [ ] Coin set switch and demo week: old run note, new version promote, env switch, per coin week review (AC-18, AC-20)
 - [ ] Verify it: `/check verify donchian scalp r2`
 - [ ] Test it: `/test donchian scalp r2`
 - [ ] Review it (fresh model): `/check review donchian scalp r2`
