@@ -54,6 +54,10 @@ trading_core.node.bar_rule_maker 134ee61a670e72b4ebb49cb4a1a321d9d799f148c8cad08
 trading_core.node.donchian_scalp_r2 dc96df87a2bab7c152e7d7d1184e1d72aa88784c954d757154598e90c08eced2
 ```
 
+### Two coin demo switch (task 6, AC-18)
+
+PR #113 merged (a82cce8) and deployed with `--no-deps`. Version `01a192cb-3b83-7216-955d-5904c85d1f0f` (BTC and PEPE) was promoted by hand, and the VPS runs `donchian_scalp_r2` since 2026-10-31 16:31 UTC (17:31 Amsterdam), paper run `01a1930b…` since the 17:39 UTC deploy. Both coins seeded with no `warmup_seed_failed`, the first decision rows show `ema` and `midline` with values (all rejected, BTC `vol_low`, PEPE `spread_wide`), and the Overview card shows both coins. The coin set amendment (2026-11-02) replaces this run as the demo week.
+
 ## Spike (task 2, *Spike first*)
 
 `scripts/spikes/maker_spike.py`, run in `kfs/lab:s0025p` on 2026-10-31. Two venues, each fed scripted PF_XBTUSD quotes (spread 1 tick): **lab** is the candle lab's own `make_candle_engine`; **sandbox** is a backtest venue built from the demo trader's `sandbox_exec_client` settings, which are the same `SimulatedExchange` arguments the Nautilus sandbox client passes (L1 book, quotes only, no latency, reduce only checks on), with quotes through `deep_quote`. The live sandbox client itself was not driven: it wraps this same matching engine, so the events are the same.
