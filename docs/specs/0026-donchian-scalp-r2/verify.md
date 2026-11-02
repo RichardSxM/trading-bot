@@ -121,3 +121,15 @@ Core 2,156 passed, 5 skipped. One failure, `test_recording_writer.py::test_a_ful
 ## Tests at 2000357
 
 Core 2,134 passed, 5 skipped. Trader 175 passed (the 8 Redis ACL and demo purge tests need the Compose Redis and were not run). Lab 324 passed (the 5 `postgres` marked tests were not run). mypy strict clean on core, trader, lab, and `studies/maker_figures.py`.
+
+## Quote gap check (task 7, AC-19)
+
+`scripts/spikes/quote_gaps.py` with its gap counter test `scripts/spikes/test_quote_gaps.py` (6 passed in `kfs/trader:dev`, which covers the four Critical test scenarios and the report's start at the first quote of any coin). mypy strict and ruff clean.
+
+**Smoke, 2026-11-02 12:29 UTC (13:29 Amsterdam), 60 s, not the result.** All 10 candidates loaded and quoted, no gap over 10 s, the longest 3.18 s (DOGE). The node stopped on its own after writing `lab-reports/scratch/quote_gaps-2026-11-02-smoke.json`. A busy afternoon minute says little about the quiet hour, so the full run still decides the set.
+
+**Full run:** to do, 3600 s starting between 02:00 and 03:00 UTC. Per coin table and passing set go here.
+
+## Per coin figures (task 8, AC-20)
+
+`maker_figures.py` now prints `{"total": ..., "by_coin": {...}}`, and the `decisions.csv` query exports `instrument_id` (over a list of runs, `run_id = ANY (:'runs'::uuid[])`). On both AC-17 bundles, run with the old script (HEAD before the change) and the new one, `total` is identical to the old output, and the one coin in each bundle equals `total`: BTC `_v3` (`01a191f9…`) and PEPE `_v3` (`01a19255…`). The fixture test gains the two coin case, the CSV source with the coin, and the exit 64 for a `decisions.csv` without `instrument_id`.

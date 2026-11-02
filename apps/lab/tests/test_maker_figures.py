@@ -1,5 +1,6 @@
 """covers: spec 0026 AC-17 (``studies/maker_figures.py``: the entry fill share leaves refused rows out, a part filled
-exit counts as a fallback, and the bundle and CSV sources give the same figures)."""
+exit counts as a fallback, and the bundle and CSV sources give the same figures) and AC-20 (the figures per coin,
+``total`` unchanged, orphans in ``total`` only, an old ``decisions.csv`` exits 64)."""
 
 import csv
 import importlib.util
@@ -35,11 +36,14 @@ D = Decimal
 RUN = uuid.uuid7()
 
 
-def _decision(intent, reason, approved=True, risk_reason=None):
+BTC, ETH = "PF_XBTUSD.KRAKEN", "PF_ETHUSD.KRAKEN"
+
+
+def _decision(intent, reason, approved=True, risk_reason=None, coin=BTC):
     return DecisionRow(
         env=Env.DEMO,
         run_id=RUN,
-        instrument_id="PF_XBTUSD.KRAKEN",
+        instrument_id=coin,
         intent=intent,
         side=OrderSide.BUY,
         reason=reason,
@@ -54,10 +58,10 @@ def _order(cid, decision, kind, qty, filled, status, reduce_only=False):
     return OrderRow(
         env=Env.DEMO,
         run_id=RUN,
-        decision_id=decision.id,
+        decision_id=None if decision is None else decision.id,
         origin=OrderOrigin.STRATEGY,
         client_order_id=cid,
-        instrument_id="PF_XBTUSD.KRAKEN",
+        instrument_id=BTC if decision is None else decision.instrument_id,
         side=OrderSide.BUY,
         order_type=kind,
         time_in_force=TimeInForce.GTC,
@@ -149,8 +153,8 @@ def _write_csv(folder, decisions, orders, fills):
     # As the module docstring's COPY queries write them (Postgres booleans as t and f, NULL as empty).
     tables = {
         "decisions.csv": [
-            {"id": d.id, "intent": d.intent, "reason": d.reason, "risk_verdict": d.risk_verdict,
-             "risk_reason": d.risk_reason or ""}
+            {"id": d.id, "instrument_id": d.instrument_id, "intent": d.intent, "reason": d.reason,
+             "risk_verdict": d.risk_verdict, "risk_reason": d.risk_reason or ""}
             for d in decisions
         ],
         "orders.csv": [
@@ -186,3 +190,72 @@ def test_the_bundle_and_csv_sources_give_the_same_figures(tmp_path):
 def test_no_entries_gives_no_share():
     figures = mf.maker_figures([], [], [])
     assert (figures.entry_fill_share, figures.maker_exit_share, figures.fees_per_round_trip) == (None, None, None)
+
+
+def _two_coins():
+    """The BTC fixture plus ETH: one entry filled in full and a planned exit that fell back to market."""
+    decisions, orders, fills = _fixture()
+    eth_full = _decision(Intent.ENTER, "donchian_short", coin=ETH)
+    eth_none = _decision(Intent.ENTER, "donchian_short", coin=ETH)
+    eth_wide = _decision(Intent.ENTER, "donchian_short", approved=False, risk_reason="spread_wide", coin=ETH)
+    eth_exit = _decision(Intent.EXIT, "midline_exit", coin=ETH)
+    L, M, R = OrderType.LIMIT, OrderType.MARKET, True
+    decisions += [eth_full, eth_none, eth_wide, eth_exit]
+    orders += [
+        _order("EE1", eth_full, L, "2", "2", OrderStatus.FILLED),
+        _order("EE2", eth_none, L, "2", "0", OrderStatus.CANCELED),
+        _order("EX1", eth_exit, L, "2", "0", OrderStatus.CANCELED, R),
+        _order("EX2", eth_exit, M, "2", "2", OrderStatus.FILLED, R),
+        _order("ORPHAN", None, M, "1", "1", OrderStatus.FILLED, R),  # no decision: total only
+    ]
+    fills += [
+        _fill("EE1", "2", fee="0.02"),
+        _fill("EX2", "2", Liquidity.TAKER, fee="0.10"),
+        _fill("ORPHAN", "1", Liquidity.TAKER, fee="0.07"),
+        _fill("NO-ORDER", "1", Liquidity.TAKER, fee="0.30"),  # no order: total only
+    ]
+    return decisions, orders, fills
+
+
+def test_each_coin_gets_its_own_figures_and_the_total_is_all_the_rows():
+    decisions, orders, fills = _two_coins()
+    rows = mf.from_rows(decisions, orders, fills)
+
+    coins = mf.by_coin(*rows)
+    report = mf.report(*rows)
+
+    assert sorted(coins) == [ETH, BTC]
+    btc_only = _fixture()
+    assert coins[BTC] == mf.maker_figures(*mf.from_rows(*btc_only))
+    eth = coins[ETH]
+    assert (eth.approved_entries, eth.entries_filled_full, eth.entries_unfilled) == (2, 1, 1)
+    assert eth.entry_fill_share == D(1) / D(2)
+    assert (eth.planned_exits, eth.maker_exits, eth.fallback_exits) == (1, 0, 1)
+    assert eth.skips == {"vol_low": 0, "spread_wide": 1, "bad_signal": 0}
+    assert eth.fees_total == D("0.12")
+    # total is today's single run output over every row, the orphan order and fill included.
+    assert report["total"] == mf.asdict(mf.maker_figures(*rows))
+    assert mf.maker_figures(*rows).fees_total == D("0.09") + D("0.12") + D("0.07") + D("0.30")
+    assert set(report["by_coin"]) == {BTC, ETH}
+
+
+def test_the_csv_source_keeps_the_coin(tmp_path):
+    decisions, orders, fills = _two_coins()
+    _write_csv(tmp_path, decisions, orders, fills)
+
+    assert mf.report(*mf.from_csv(tmp_path)) == mf.report(*mf.from_rows(decisions, orders, fills))
+
+
+def test_a_decisions_csv_without_the_coin_exits_64(tmp_path, capsys):
+    decisions, orders, fills = _fixture()
+    _write_csv(tmp_path, decisions, orders, fills)
+    path = tmp_path / "decisions.csv"
+    with path.open(newline="") as f:
+        rows = list(csv.DictReader(f))
+    with path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=[k for k in rows[0] if k != "instrument_id"], extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+
+    assert mf.main(["csv", str(tmp_path)]) == 64
+    assert "instrument_id" in capsys.readouterr().err

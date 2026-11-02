@@ -1,4 +1,5 @@
-"""The maker figures of a ``donchian_scalp_r2`` run (spec 0026 AC-17, AC-18), from its decisions, orders, and fills.
+"""The maker figures of a ``donchian_scalp_r2`` run (spec 0026 AC-17, AC-18, AC-20), from its decisions, orders,
+and fills, in total and per coin.
 
 Two sources, one count:
 
@@ -7,13 +8,16 @@ Two sources, one count:
 
 Run the bundle form in the lab image with ``-I``. For the demo week, export r2's paper run rows from the VPS
 Postgres read only (``tailscale ssh kfs@kfs-vps``, then ``psql`` in the Postgres container as ``dashboard_app``),
-one ``COPY ... TO STDOUT WITH CSV HEADER`` per file, ``:'run'`` being the paper run id:
+one ``COPY ... TO STDOUT WITH CSV HEADER`` per file, ``:'runs'`` being the paper run ids as ``{id1,id2}``:
 
-  decisions.csv: SELECT id, intent, reason, risk_verdict, risk_reason FROM decisions WHERE run_id = :'run'
+  decisions.csv: SELECT id, instrument_id, intent, reason, risk_verdict, risk_reason FROM decisions
+                 WHERE run_id = ANY (:'runs'::uuid[])
   orders.csv:    SELECT client_order_id, decision_id, order_type, reduce_only, status, quantity, filled_qty
-                 FROM orders WHERE run_id = :'run'
+                 FROM orders WHERE run_id = ANY (:'runs'::uuid[])
   fills.csv:     SELECT o.client_order_id, f.quantity, f.fee, f.liquidity FROM fills f
-                 JOIN orders o ON o.id = f.order_id WHERE f.run_id = :'run'
+                 JOIN orders o ON o.id = f.order_id WHERE f.run_id = ANY (:'runs'::uuid[])
+
+A ``decisions.csv`` without ``instrument_id`` (an export from before AC-20) exits 64.
 
 What it counts, as the spec defines it:
 
@@ -26,6 +30,11 @@ What it counts, as the spec defines it:
   fallbacks.
 - **Fees per round trip**: every fill's fee over the entries that filled. ``limit_taker_fills`` counts limit
   fills the venue marked taker; it should be 0, since both limits are post only.
+
+**Per coin** (AC-20): a decision's coin is its ``instrument_id``; its orders follow it by ``decision_id`` and their
+fills by ``client_order_id``, so every count stays tied to the decision that made it. The output is
+``{"total": <figures>, "by_coin": {<instrument_id>: <figures>}}``, ``total`` being the figures of all the rows. An
+order with no decision, or a fill with no order, counts in ``total`` only.
 
 The candle lab fills a limit at the touch from synthetic quotes with no queue, so its maker exit share is an
 upper bound.
@@ -53,6 +62,7 @@ class Decision:
     """The decision columns the figures need."""
 
     id: str
+    instrument_id: str
     intent: str
     reason: str
     risk_verdict: str
@@ -100,6 +110,10 @@ class MakerFigures:
     fees_total: Decimal
     fees_per_round_trip: Decimal | None
     limit_taker_fills: int
+
+
+class MissingColumnError(ValueError):
+    """A CSV export lacks a column the figures need."""
 
 
 def _share(part: int, whole: int) -> Decimal | None:
@@ -159,6 +173,33 @@ def maker_figures(decisions: Iterable[Decision], orders: Iterable[Order], fills:
     )
 
 
+def by_coin(decisions: Iterable[Decision], orders: Iterable[Order], fills: Iterable[Fill]) -> dict[str, MakerFigures]:
+    """The figures of each coin's decisions with the orders and fills that follow them (module docstring)."""
+    decisions, orders, fills = list(decisions), list(orders), list(fills)
+    coin_of_decision = {d.id: d.instrument_id for d in decisions}
+    coin_of_order = {
+        o.client_order_id: coin_of_decision[o.decision_id] for o in orders if o.decision_id in coin_of_decision
+    }
+    coins = sorted(set(coin_of_decision.values()))
+    return {
+        coin: maker_figures(
+            (d for d in decisions if d.instrument_id == coin),
+            (o for o in orders if coin_of_order.get(o.client_order_id) == coin),
+            (f for f in fills if coin_of_order.get(f.client_order_id) == coin),
+        )
+        for coin in coins
+    }
+
+
+def report(decisions: Iterable[Decision], orders: Iterable[Order], fills: Iterable[Fill]) -> dict[str, object]:
+    """The JSON output: ``total`` over all the rows and ``by_coin``."""
+    decisions, orders, fills = list(decisions), list(orders), list(fills)
+    return {
+        "total": asdict(maker_figures(decisions, orders, fills)),
+        "by_coin": {coin: asdict(figures) for coin, figures in by_coin(decisions, orders, fills).items()},
+    }
+
+
 # Sources ----------------------------------------------------------------------------------------
 
 
@@ -167,7 +208,10 @@ def from_rows(
 ) -> tuple[list[Decision], list[Order], list[Fill]]:
     """The figure columns of recording rows (a bundle's, or rows built in a test)."""
     return (
-        [Decision(str(d.id), str(d.intent), d.reason, str(d.risk_verdict), d.risk_reason) for d in decisions],
+        [
+            Decision(str(d.id), d.instrument_id, str(d.intent), d.reason, str(d.risk_verdict), d.risk_reason)
+            for d in decisions
+        ],
         [
             Order(
                 o.client_order_id,
@@ -202,8 +246,12 @@ def _csv(path: Path) -> list[dict[str, str]]:
 
 def from_csv(folder: Path) -> tuple[list[Decision], list[Order], list[Fill]]:
     """The rows of the three CSV files the module docstring's queries export."""
+    with (folder / "decisions.csv").open(newline="") as f:
+        columns = csv.DictReader(f).fieldnames or []
+    if "instrument_id" not in columns:
+        raise MissingColumnError("decisions.csv has no instrument_id column; export it with the docstring's query")
     decisions = [
-        Decision(r["id"], r["intent"], r["reason"], r["risk_verdict"], r["risk_reason"] or None)
+        Decision(r["id"], r["instrument_id"], r["intent"], r["reason"], r["risk_verdict"], r["risk_reason"] or None)
         for r in _csv(folder / "decisions.csv")
     ]
     orders = [
@@ -230,8 +278,12 @@ def main(argv: Sequence[str]) -> int:
     if len(argv) != 2 or argv[0] not in ("bundle", "csv"):
         print(__doc__.split("\n\n")[1], file=sys.stderr)
         return 64
-    rows = from_bundle(Path(argv[1])) if argv[0] == "bundle" else from_csv(Path(argv[1]))
-    print(json.dumps(asdict(maker_figures(*rows)), default=str, indent=2))
+    try:
+        rows = from_bundle(Path(argv[1])) if argv[0] == "bundle" else from_csv(Path(argv[1]))
+    except MissingColumnError as exc:
+        print(exc, file=sys.stderr)
+        return 64
+    print(json.dumps(report(*rows), default=str, indent=2))
     return 0
 
 
