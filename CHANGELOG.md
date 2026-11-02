@@ -72,6 +72,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A trend run in the candle lab warms up on the bars before each segment, so a daily rule can decide on the segment's first close. The pre roll only feeds bars and indicators: a decision, order, fill, or position before the segment start fails the run, and the pre roll never reaches before a coin's first stored month.
 - `tsmom`, a long only daily momentum strategy: long while the daily close is above the close `lookback_days` bars before it, out on the first close at or below it, with a 3 ATR stop and a 30 bar time stop. Its study file `apps/lab/studies/tsmom.toml` runs BTC, ETH, SOL, and XRP in one shared account over lookbacks 20, 30, 40, and 60.
 - Pinned `PF_SOLUSD` and `PF_XRPUSD` instruments, with SOL and XRP daily candles and funding from 2022-04 in the lab catalog. The XRP pin uses the 0.00001 tick Kraken traded on until about 2026-08, so the older months load; the venue's tick today is 0.0001.
+- The look ahead check works on 15 minute bars: each cut lands 1 to 14 minutes past a quarter hour, so the cut run always has the bar that closed just before it. Hour bar cuts are drawn as before (see spec 0019).
 
 ### Changed
 - The recorder records the BTC perp (`PF_XBTUSD`) only. With BTC and ETH at 3.2 GB/h, the 2 CPU VPS could not drain its data queue. Backtests use free Tardis days instead of our own long history. The old raw backlog was dropped, not converted, after a check that B2 holds it.
@@ -86,6 +87,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `lab fetch-candles` no longer refuses a candle only because its open or close is off the price tick. It rounds that price to the nearest tick inside the candle's high and low, as Kraken's ETH history needs twice. A month with more than 10 such candles still fails, since that points to a real tick change. No stored BTC month changes.
 - The first multi coin study, `donchian_4h_pair` (BTC and ETH), failed the gate on 2026-10-29: 118 holdout trades and +5.60 % after costs, but too much profit from one fold and from ETH (70 %), and no luck margin. Results are in spec 0022.
+- The first 15 minute studies on BTC, `connors_rsi_15m` and `ema_pullback`, failed the gate on 2026-10-24 and 2026-10-26. Both earn less per trade than they pay in costs (gross 3.64 and −4.83 USD a trade, against 6.44 and 5.64 USD of cost), so the family stopped after these two, and both fail again at the final N of 16. Results are in spec 0019.
 - The first trend study, `tsmom` on BTC, ETH, SOL, and XRP, failed the gate on 2026-11-01 at N 17: a walk forward Sharpe of 1.53, but −1.28 % on the unseen year (80 trades, all long), against −39 % for buy and hold. It failed the fee hurdle, the holdout Sharpe, the bootstrap lower bound, and PBO (0.46). Results are in spec 0027. A later trend idea starts from N 19 or more.
 
 ### Removed
