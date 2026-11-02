@@ -518,7 +518,7 @@ spec [0027](../specs/0027-daily-trend-tsmom/index.md)
   - [x] Thin thread: `tsmom` rule, node, registry, lab admits `trend` with the warmup pre roll, four coin fixture study through the gate (AC-10, AC-10a, AC-12 to AC-14, AC-17)
   - [x] Data and pre check rerun: SOL and XRP pins, candles, funding, the as built pre check (AC-15, AC-16, AC-18a)
   - [x] Deploy, study, verdict: PR and deploy, your manual promote of r2, study file, `lab study`, `lab holdout`, `gate evaluate`, results, close out (AC-1, AC-18 to AC-22)
-- [ ] Verify it: `/check verify daily trend tsmom`
+- [x] Verify it: `/check verify daily trend tsmom`
 - [ ] Test it: `/test daily trend tsmom`
 - [ ] Review it (fresh model): `/check review daily trend tsmom`
 - [ ] Document it: `/document daily trend tsmom`
