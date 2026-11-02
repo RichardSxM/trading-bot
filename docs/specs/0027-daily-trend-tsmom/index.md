@@ -1,7 +1,7 @@
 # 0027. A trend kind in the promotion gate, and the daily momentum candidate `tsmom` on BTC, ETH, SOL and XRP
 
 **Date**: 2026-10-31
-**Status**: In Progress
+**Status**: Accepted
 
 ## Summary
 
@@ -49,7 +49,7 @@ Reasoning, options, and the pre check evidence: see [rationale.md](rationale.md)
 - The gate reads `long_only` only from the final strategy version's frozen `config` (`strategy_versions.config["long_only"] is True`). A strategy that does not write the key is not long only.
 - `tsmom`'s study is created only on code where `thresholds.toml` is version 3, so its frozen thresholds always hold the `trend` table.
 - `tsmom` exposes `warmup_bars()`, and the lab's trend pre roll (child 1 AC-10a) reads it. No other strategy needs it.
-- Every look at real candles for `tsmom` is a counted trial: `lab study`, then `lab holdout` once. No `lab backtest` on real candles.
+- Every look at real candles for `tsmom` is a counted trial: `lab study`, then `lab holdout` once. No `lab backtest` on real candles, except the two development range looks you approved (child 2 AC-22 amendment).
 
 **Value sourcing** (shared):
 | Action | Value | Source |
@@ -108,5 +108,5 @@ Tracer Bullet: first a thin thread from the new kind through a fixture study to 
 ## Follow-up
 
 - [ ] On a pass: enrol a paper feature (multi coin daily trader on demo replacing `donchian_scalp_r2`, a daily warmup seed from Kraken's public 1d candles, quotes for SOL and XRP) and run `/architect` for it. The trader uses the venue's live XRP instrument (tick 0.0001), not the lab pin's historical 0.00001 (child 2 AC-15). It carries the paper floor agreed on 2026-10-31: 60 days and 8 trades for `trend` (as `thresholds.toml` fields keyed on the kind, with a refusal for a trend paper step on thresholds that lack them).
-- [x] On a fail: no revision in this spec. Any new trend idea starts from N = 17 or more.
+- [x] On a fail: no revision in this spec. Any new trend idea starts from N = 19 or more (17 from the gate, plus the two approved extra looks of child 2 AC-22).
 - [ ] `apps/lab/AGENTS.md` and `packages/core/AGENTS.md` lines for the `trend` kind and the new coins via `/sync`.

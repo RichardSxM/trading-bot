@@ -41,6 +41,8 @@ docker compose --profile lab run --rm -T --entrypoint pytest lab -q -m postgres 
 - A strategy is never subclassed or patched for the lab; register the paper loop's own class and config in `strategies.py`.
 - Lab catalog data lives in the git ignored `./catalog-lab` (`tardis/` and `own/`), reports in `./lab-reports`. The whole catalog is capped at `LAB_CATALOG_CAP_GB` (40 GB, exit 3 when an import would pass it).
 - Run files are baked into the image, so a new or edited one needs a rebuild. Put scratch run files under `lab-reports/scratch/` and pass that path.
+- A new coin needs a pinned instrument JSON in `src/lab/instruments/` (BTC, ETH, PEPE, SOL, XRP today). Pin the tick the venue used over the stored history, not today's: XRP is pinned at 0.00001 because Kraken moved it to 0.0001 around 2026-08 (spec 0027 AC-15). The paper trader uses the venue's live instrument instead.
+- A strategy of kind `trend` must expose `warmup_bars()`: the candle lab reads that many bars before each segment start (`trading_core.lab.pre_roll`) to feed bars and indicators only. Any decision, order, fill, or position before the segment start fails the variant (spec 0027 AC-10a). Other kinds start cold at the segment start.
 
 ## Gotchas
 

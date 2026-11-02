@@ -68,6 +68,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `lab fetch-candles` and `lab import-funding` take `--instrument <id>` (default `PF_XBTUSD.KRAKEN`, so every existing command works as before), plus a pinned `PF_ETHUSD` instrument. ETH candles from 2022-03 and its funding history are in the lab catalog.
 - A new gate check, `concentration_instrument`: a portfolio fails when one coin earns more than 60 % of the holdout profit (`instrument_max_share` in `thresholds.toml`, now version 2). The check is skipped for a single coin study, and studies frozen under version 1 load and score as before. The Strategies page shows the "Coin share of profit" when a verdict has one.
 - Bundle files carry every coin of a run, and `gate import` adds each one. Older bundles import as before.
+- A third strategy kind, `trend`, with gate rules that fit trend following (see spec 0027). Migration 0014 lets `strategies.kind` hold `trend`; its downgrade refuses while a trend row exists. `thresholds.toml` is now version 3 and adds a `[trend]` table: `prior_trials` (13) counts the trials of the development pre check in a trend study's N. For a trend strategy whose frozen config says `long_only = true`, the direction check gives way to a new `long_only_violated` check (any short holdout trade fails). The top 5 % trades check is never applied to `trend`. Both shares are still recorded, with `direction_applicable` and `top_trades_applicable`. Every other check, and every scalping and hour level study, works as before.
+- A trend run in the candle lab warms up on the bars before each segment, so a daily rule can decide on the segment's first close. The pre roll only feeds bars and indicators: a decision, order, fill, or position before the segment start fails the run, and the pre roll never reaches before a coin's first stored month.
+- `tsmom`, a long only daily momentum strategy: long while the daily close is above the close `lookback_days` bars before it, out on the first close at or below it, with a 3 ATR stop and a 30 bar time stop. Its study file `apps/lab/studies/tsmom.toml` runs BTC, ETH, SOL, and XRP in one shared account over lookbacks 20, 30, 40, and 60.
+- Pinned `PF_SOLUSD` and `PF_XRPUSD` instruments, with SOL and XRP daily candles and funding from 2022-04 in the lab catalog. The XRP pin uses the 0.00001 tick Kraken traded on until about 2026-08, so the older months load; the venue's tick today is 0.0001.
 
 ### Changed
 - The recorder records the BTC perp (`PF_XBTUSD`) only. With BTC and ETH at 3.2 GB/h, the 2 CPU VPS could not drain its data queue. Backtests use free Tardis days instead of our own long history. The old raw backlog was dropped, not converted, after a check that B2 holds it.
@@ -82,6 +86,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `lab fetch-candles` no longer refuses a candle only because its open or close is off the price tick. It rounds that price to the nearest tick inside the candle's high and low, as Kraken's ETH history needs twice. A month with more than 10 such candles still fails, since that points to a real tick change. No stored BTC month changes.
 - The first multi coin study, `donchian_4h_pair` (BTC and ETH), failed the gate on 2026-10-29: 118 holdout trades and +5.60 % after costs, but too much profit from one fold and from ETH (70 %), and no luck margin. Results are in spec 0022.
+- The first trend study, `tsmom` on BTC, ETH, SOL, and XRP, failed the gate on 2026-11-01 at N 17: a walk forward Sharpe of 1.53, but −1.28 % on the unseen year (80 trades, all long), against −39 % for buy and hold. It failed the fee hurdle, the holdout Sharpe, the bootstrap lower bound, and PBO (0.46). Results are in spec 0027. A later trend idea starts from N 19 or more.
 
 ### Removed
 - `PLACEHOLDER_NOTIONAL_USD`. The order notional cap covers it.
@@ -103,6 +108,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A promotion's decision time was taken before the study lock or the typed name, so a slower evaluation could look older than one that committed after it. It is now read once the lock is held or the name is typed.
 - Every bundle push left a full unpacked copy of its files in `/var/lib/kfs/bundles/.incoming.*` on the VPS, because the receive script's cleanup never ran.
 - A failed read of the promotion log showed the ranking page instead of the log page's own error.
+- A candle run could stop with "a position is open after the range end close": an entry sent on the last bar was still in flight when the range end close ran, and opened just after it. The range end close now closes such a late open too.
 
 ### Security
 - Each Compose service gets only the variables it reads, instead of the whole `.env`. Kraken keys put in `.env` reach no service, so the dashboard and recorder can never receive them. Docker builds also leave out key and certificate files (`*.key`, `*.pem`, `secrets`).
