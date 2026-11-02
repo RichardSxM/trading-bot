@@ -35,7 +35,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 25 | Multi coin portfolio | Slice 7 | done |
 | 26 | Donchian scalp r1 | Slice 7 | in-progress |
 | 27 | Donchian scalp r2 | Slice 7 | in-progress |
-| 28 | Daily trend candidate (tsmom) | Slice 7 | in-progress |
+| 28 | Daily trend candidate (tsmom) | Slice 7 | done |
 | 17 | Hour level strategy candidates | Slice 7 | in-progress |
 | 18 | Trade journal export | Slice 8 | in-progress |
 | 19 | Go live with small capital | Slice 9 | planned |
@@ -507,7 +507,7 @@ spec [0026](../specs/0026-donchian-scalp-r2/index.md)
 - [ ] Review it (fresh model): `/check review donchian scalp r2`
 - [ ] Document it: `/document donchian scalp r2`
 
-### 28. Daily trend candidate (tsmom) · in-progress
+### 28. Daily trend candidate (tsmom) · done
 Daily momentum, long only: hold a coin while its daily close is above its close some days ago, else stay flat. It runs on BTC, ETH, SOL and XRP in one shared account. It passed a pre registered check on development data (2026-10-31) where every scalping idea failed on fees. The gate gets a new `trend` kind whose rules fit trend following (no long versus short check for a long only rule, no top 5% trades check, the 13 outside trials counted in N, a warmup before each segment), and every luck test stays. Then one study, holdout once, evaluate once.
 **Done when:** scalping and hour level verdicts and N are unchanged, migration 0014 accepts `trend`, SOL and XRP have pinned instruments, candles, and funding, the pre check rerun as built is recorded, and `tsmom` has a recorded gate verdict with the "BTC and ETH holdout seen" label.
 spec [0027](../specs/0027-daily-trend-tsmom/index.md)
@@ -521,7 +521,7 @@ spec [0027](../specs/0027-daily-trend-tsmom/index.md)
 - [x] Verify it: `/check verify daily trend tsmom`
 - [x] Test it: `/test daily trend tsmom`
 - [x] Review it (fresh model): `/check review daily trend tsmom`
-- [ ] Document it: `/document daily trend tsmom`
+- [x] Document it: `/document daily trend tsmom`
 
 ### 17. Hour level strategy candidates · in-progress
 The fallback set: trend following and mean reversion on 1h to 4h candles, tested in the candle lab.

@@ -1,7 +1,7 @@
 # 0027. A trend kind in the promotion gate, and the daily momentum candidate `tsmom` on BTC, ETH, SOL and XRP
 
 **Date**: 2026-10-31
-**Status**: In Progress
+**Status**: Accepted
 
 ## Summary
 
