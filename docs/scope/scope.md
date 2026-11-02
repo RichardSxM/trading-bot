@@ -520,7 +520,7 @@ spec [0027](../specs/0027-daily-trend-tsmom/index.md)
   - [x] Deploy, study, verdict: PR and deploy, your manual promote of r2, study file, `lab study`, `lab holdout`, `gate evaluate`, results, close out (AC-1, AC-18 to AC-22)
 - [x] Verify it: `/check verify daily trend tsmom`
 - [x] Test it: `/test daily trend tsmom`
-- [ ] Review it (fresh model): `/check review daily trend tsmom`
+- [x] Review it (fresh model): `/check review daily trend tsmom`
 - [ ] Document it: `/document daily trend tsmom`
 
 ### 17. Hour level strategy candidates · in-progress
