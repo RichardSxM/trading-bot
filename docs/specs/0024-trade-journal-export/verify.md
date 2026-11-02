@@ -9,3 +9,9 @@ Ran 2026-10-31 17:41 UTC (18:41 Amsterdam) on the VPS at 2b7b728 (deployed 17:39
 - [x] Check: `match`. journal net 4.36558045 USD, dashboard net 4.36228045 USD, difference 0.0033 within the 0.06 tolerance (6 positions counted), 0 crossing an edge, 0 unlinked rows → AC-9
 - [x] `summary.csv` totals: trading 5.8133, fees −1.45, funding 0.00228045, net 4.36558045 USD; trading 6.01, fees −1.33, funding −0.01, net 4.67 EUR. Sums of `journal.csv` (38 rows): `amount` 4.36558045 USD, `eur_amount` 4.67 EUR. Both equal the summary's net → AC-11
 - [x] Balances: start KRAKEN-001 1008.22 USD (905.86 EUR, captured 2026-10-29 22:59:51 UTC), end 998.29 USD (893.56 EUR, captured 2026-10-30 22:59:54 UTC) → AC-7. Open question: the balance fell 9.93 USD while the paper net was +4.37 USD. In paper mode the fills are simulated and the balance is the Kraken demo wallet, so the two need not agree, but this is worth a look.
+
+## AC-15 recheck (empty ECB 200)
+The first `/check verify` (2026-10-31) failed AC-15 only: on Saturday the ECB answered 200 with an empty body and the alerter logged `fx_fetch_failed` (parse, missing column) every hour. Fixed in 2a0dbc9, AC-15 amended in 85c2079 (PR #118, merged 0be15e1). Rechecked 2026-10-31 22:14 UTC (23:14 Amsterdam) on the VPS at 0be15e1 (deployed 22:12 UTC, no promote).
+
+- [x] A request from the alerter container for 2026-10-31 got `200` with a 0 byte body, the same answer that caused the failure
+- [x] The new alerter's first fetch after start (newest stored rate 2026-10-30, so it asked for 2026-10-31) logged no `fx_fetch_failed`, no `fx_fetched`, and no error, and `fx_rates` was not written → AC-15

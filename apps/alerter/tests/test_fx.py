@@ -168,6 +168,17 @@ def test_an_empty_200_is_zero_rows_written_and_nothing_logged(caplog, body):
     assert _codes(caplog) == []
 
 
+def test_a_header_only_200_is_zero_rows_written_and_nothing_logged(caplog):
+    # covers: AC-15, the other shape a period with no observations could take
+    caplog.set_level("INFO")
+    store = FakeFxStore({date(2026, 10, 1): Decimal("1.1298")})
+
+    _step(Ecb(200, "KEY,FREQ,TIME_PERIOD,OBS_VALUE\r\n"), store)
+
+    assert store.writes == 0
+    assert _codes(caplog) == []
+
+
 def test_fetching_days_already_stored_with_equal_rates_is_a_no_op(caplog):
     caplog.set_level("INFO")
     store = FakeFxStore()

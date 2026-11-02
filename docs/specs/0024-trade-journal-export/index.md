@@ -1,7 +1,7 @@
 # 0024. Export the trade journal as CSV from the Trades page, with EUR amounts from a daily ECB rate fetch
 
 **Date**: 2026-10-30
-**Status**: In Progress
+**Status**: Accepted
 
 ## Summary
 
