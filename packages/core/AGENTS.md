@@ -45,6 +45,7 @@ docker compose run --rm -T migrate pytest -q -m integration tests/integration   
 - Only `node/` and `catalog/` may import NautilusTrader, and only `catalog/` may import `pyarrow` or `numpy`; everything else in core stays importable without the `node` extra (spec 0008 Code placement, enforced by `tests/test_core_boundary.py`). The existing I/O adapters (`secrets`, `recording/`, `control/`, `db*`, `clock`, `health`, `logs`) may use files, `sqlalchemy`, `psycopg`, and `redis`.
 - New tables go through `db.py`'s metadata so constraint names follow the naming convention.
 - Every schema change ships as an Alembic migration.
+- A new `StrategyKind` value needs a migration that replaces the `ck_strategies_kind_valid` check (created by name in migration 0002, not declared in `models.py`; see migration 0014). Gate rules for a kind are keyed on `strategy_kind`, and a new rule goes into a new `thresholds.toml` version, so studies frozen on an older version score as before.
 - Writes go through `recording.repository`, never raw ORM inserts: it checks `env`, keeps writes idempotent, and raises `RecordConflictError` on a contradiction.
 - Tests that need Postgres live in `tests/integration/` (auto marked `integration`, skipped by the default `pytest -q`).
 
