@@ -502,7 +502,7 @@ spec [0026](../specs/0026-donchian-scalp-r2/index.md)
   - [x] Filters and seed: volatility floor, spread check, seed join (AC-13, AC-14, AC-16)
   - [x] Lab screens: registry, two study files, `maker_figures.py`, `verify.md` table (AC-17)
   - [x] Close out and two coin demo switch (AC-15, AC-18)
-  - [ ] Quote gap check and per coin figures: `quote_gaps.py`, `maker_figures.py` by coin (AC-19, AC-20)
+  - [x] Quote gap check and per coin figures: `quote_gaps.py`, `maker_figures.py` by coin (AC-19, AC-20)
   - [ ] Coin set switch and demo week: old run note, new version promote, env switch, per coin week review (AC-18, AC-20)
 - [ ] Verify it: `/check verify donchian scalp r2`
 - [ ] Test it: `/test donchian scalp r2`

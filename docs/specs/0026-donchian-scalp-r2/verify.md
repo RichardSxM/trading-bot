@@ -128,7 +128,22 @@ Core 2,134 passed, 5 skipped. Trader 175 passed (the 8 Redis ACL and demo purge 
 
 **Smoke, 2026-11-02 12:29 UTC (13:29 Amsterdam), 60 s, not the result.** All 10 candidates loaded and quoted, no gap over 10 s, the longest 3.18 s (DOGE). The node stopped on its own after writing `lab-reports/scratch/quote_gaps-2026-11-02-smoke.json`. A busy afternoon minute says little about the quiet hour, so the full run still decides the set.
 
-**Full run:** to do, 3600 s starting between 02:00 and 03:00 UTC. Per coin table and passing set go here.
+**Full run, 2026-11-03 02:05:21 to 03:05:21 UTC (03:05 to 04:05 Amsterdam), 3600 s.** Run in `kfs/trader:dev` on the laptop, exit 0, the node stopped on its own after writing `lab-reports/scratch/quote_gaps-2026-11-03.json` (not committed, `lab-reports/scratch` is scratch). All 10 loaded; the first quote came in the run's first second.
+
+| Coin | Quotes | Longest gap (s) | Gaps over 10 s | Result |
+|---|---:|---:|---:|---|
+| BTC `PF_XBTUSD` | 2,534,731 | 0.631 | 0 | pass |
+| ETH `PF_ETHUSD` | 1,111,805 | 0.881 | 0 | pass |
+| SOL `PF_SOLUSD` | 369,542 | 1.257 | 0 | pass |
+| XRP `PF_XRPUSD` | 144,275 | 3.172 | 0 | pass |
+| LINK `PF_LINKUSD` | 114,541 | 3.239 | 0 | pass |
+| UNI `PF_UNIUSD` | 274,349 | 1.809 | 0 | pass |
+| ZEC `PF_ZECUSD` | 624,677 | 0.635 | 0 | pass |
+| TRX `PF_TRXUSD` | 43,880 | 10.098 | 4 | **fail** |
+| DOGE `PF_DOGEUSD` | 144,196 | 3.212 | 0 | pass |
+| QNT `PF_QNTUSD` | 100,048 | 4.486 | 0 | pass |
+
+**Passing set (9 coins):** BTC, ETH, SOL, XRP, LINK, UNI, ZEC, DOGE, QNT. TRX drops out (4 gaps just over 10 s, the longest 10.098 s); per AC-18 it gets no replacement. Every other coin's longest gap is under half the limit, the closest QNT at 4.5 s.
 
 ## Per coin figures (task 8, AC-20)
 
