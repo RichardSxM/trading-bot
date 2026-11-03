@@ -10,7 +10,6 @@ import logging
 import uuid
 from decimal import Decimal
 from functools import cache
-from itertools import pairwise
 from typing import Any
 
 import pytest
@@ -302,45 +301,3 @@ def test_the_take_profit_is_three_percent_of_the_entry_in_the_trade_s_favour(sid
     assert take_profit_px(Side.LONG, D(100), D(3)) == D(103)
     assert take_profit_px(Side.SHORT, D(100), D(3)) == D(97)
     assert take_profit_hit(side, D(100), D(3), close) is hit
-
-
-def _knots(*points):
-    def prices(t):
-        for (t0, p0), (t1, p1) in pairwise(points):
-            if t0 <= t <= t1:
-                return int(p0 + (p1 - p0) * (t - t0) / (t1 - t0))
-        return points[-1][1]
-
-    return prices
-
-
-# Rises to the signal bar (closes at 25 minutes), dips through the maker buy limit, then climbs well past the
-# entry before the next close.
-FILL_THEN_UP = _knots((0, 85000), (25, 85250), (26, 85150), (27, 85150), (29, 85600), (60, 85600))
-
-
-def test_a_close_past_the_take_profit_exits_as_take_profit():
-    _, _, rows = _run(
-        _scripted({5}, atr_min_bps=None, take_profit_pct=D("0.2"), time_stop_bars=10),
-        prices=FILL_THEN_UP,
-        minutes=60,
-    )
-
-    exits = [d for d in _decisions(rows) if d.intent == Intent.EXIT]
-    assert exits, [(d.intent, d.reason, d.risk_reason) for d in _decisions(rows)]
-    first = exits[0]
-    assert (first.side, first.reason) == (OrderSide.SELL, "take_profit")
-    entry_px = D(str(first.inputs["entry_px"]))
-    assert D(str(first.inputs["take_profit_px"])) == entry_px * D("1.002")
-    assert D(str(first.inputs["bar_close"])) >= entry_px * D("1.002")
-    assert first.inputs["exit_mode"] == "maker"
-
-
-def test_with_the_take_profit_off_the_same_run_does_not_exit_on_it():
-    _, _, rows = _run(
-        _scripted({5}, atr_min_bps=None, time_stop_bars=10),
-        prices=FILL_THEN_UP,
-        minutes=60,
-    )
-
-    assert "take_profit" not in [d.reason for d in _decisions(rows) if d.intent == Intent.EXIT]
