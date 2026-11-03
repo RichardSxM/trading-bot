@@ -14,6 +14,16 @@ from markupsafe import Markup
 MINUS: Final = "\N{MINUS SIGN}"
 NS_PER_S: Final = 1_000_000_000
 AMSTERDAM: Final = ZoneInfo("Europe/Amsterdam")
+# Funding is a rate times a notional, so its USD amounts carry 20 or more digits; money shows at most 4.
+MONEY_STEP: Final = Decimal("0.0001")
+
+
+def money(value: Decimal) -> Decimal:
+    """A USD amount cut to at most 4 decimals (half even); shorter values keep their own precision."""
+    exponent = value.as_tuple().exponent
+    if isinstance(exponent, int) and exponent < MONEY_STEP.as_tuple().exponent:
+        return value.quantize(MONEY_STEP)
+    return value
 
 
 def _finite_decimal(value: object) -> Decimal:

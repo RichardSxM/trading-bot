@@ -67,6 +67,16 @@ def test_the_trades_page_needs_a_session(client):
     assert response.headers["location"] == "/login?next=%2Ftrades"
 
 
+def test_long_funding_shows_at_most_four_decimals(redis, clock):
+    trip = replace(TRIP, funding=Decimal("0.00581094089807325115360"))
+    with _logged_in(redis, clock, lambda page, fills_page: TradesView(round_trips=[trip], fills=[])) as client:
+        page = client.get("/trades").text
+
+    assert "0.0058<" in page  # funding
+    assert "0.0958<" in page  # net P&L: 0.09 realized + 0.0058 funding
+    assert "0.00581" not in page
+
+
 def test_rows_render_with_the_number_filters(redis, clock):
     calls = []
 

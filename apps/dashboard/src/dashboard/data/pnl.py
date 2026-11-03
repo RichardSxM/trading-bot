@@ -13,6 +13,7 @@ from decimal import Decimal
 from sqlalchemy import ColumnElement, Select, func, select
 from sqlalchemy.orm import InstrumentedAttribute, Session
 
+from dashboard.ui.format import money
 from trading_core.recording import models
 from trading_core.recording.enums import PositionStatus, RunMode
 
@@ -78,8 +79,8 @@ def pnl_figures(sessions: Callable[[], Session], env: str, now: datetime) -> Pnl
     with sessions() as session:
         open_funding = _open_funding(session, env)
         return PnlFigures(
-            realized_today=_realized(session, env, midnight) + open_funding,
-            realized_all=_realized(session, env, None) + open_funding,
-            fees_today=_fees(session, env, midnight),
-            open_funding=open_funding,
+            realized_today=money(_realized(session, env, midnight) + open_funding),
+            realized_all=money(_realized(session, env, None) + open_funding),
+            fees_today=money(_fees(session, env, midnight)),
+            open_funding=money(open_funding),
         )
