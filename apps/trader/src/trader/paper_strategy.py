@@ -70,6 +70,8 @@ R2_ENTRY_OFFSET_ATR: Final = Decimal("0.5")
 R2_ENTRY_WAIT_BARS: Final = 3
 R2_EXIT_WAIT_BARS: Final = 3
 R2_ATR_MIN_BPS: Final = Decimal(10)
+# donchian_scalp_r2's take profit: a bar close 3 % of the entry price in the trade's favour exits.
+R2_TAKE_PROFIT_PCT: Final = Decimal(3)
 # The strategies that trade more than one coin (spec 0025 AC-15, spec 0026 AC-16).
 _MULTI_COIN: Final = (donchian_scalp_r1.STRATEGY_NAME, donchian_scalp_r2.STRATEGY_NAME)
 # The strategies the trader fetches a warmup seed for before the node (spec 0025 AC-7, spec 0026 AC-16).
@@ -124,6 +126,7 @@ def paper_version(settings: StrategySettings) -> PaperVersion:
             "exit_wait_bars": R2_EXIT_WAIT_BARS,
             "atr_min_bps": str(R2_ATR_MIN_BPS),
             "spread_max_atr": str(R1_SPREAD_MAX_ATR),
+            "take_profit_pct": str(R2_TAKE_PROFIT_PCT),
             "instruments": list(settings.instrument_list),
         }
         frozen = versioning.freeze(DonchianScalpR2.__module__, r2_config)
@@ -343,6 +346,7 @@ def donchian_scalp_r2_config(settings: StrategySettings, run_id: UUID, instrumen
         exit_wait_bars=R2_EXIT_WAIT_BARS,
         atr_min_bps=R2_ATR_MIN_BPS,
         spread_max_atr=R1_SPREAD_MAX_ATR,
+        take_profit_pct=R2_TAKE_PROFIT_PCT,
         max_order_notional_usd=settings.risk_max_order_notional_usd,
         max_leverage=settings.risk_max_leverage,
         max_total_exposure_usd=settings.risk_max_total_exposure_usd,

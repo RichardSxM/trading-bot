@@ -62,6 +62,7 @@ def test_r2_s_version_records_every_setting_and_the_coin_set(r2, monkeypatch):
             "exit_wait_bars",
             "atr_min_bps",
             "spread_max_atr",
+            "take_profit_pct",
             "instruments",
         )
     } == {
@@ -71,6 +72,7 @@ def test_r2_s_version_records_every_setting_and_the_coin_set(r2, monkeypatch):
         "exit_wait_bars": 3,
         "atr_min_bps": "10",
         "spread_max_atr": "0.1",
+        "take_profit_pct": "3",
         "instruments": [PEPE, BTC_PERP],
     }
     shared = {key: value for key, value in r1.config.items() if key != "paper_strategy"}
@@ -99,7 +101,7 @@ def test_r2_builds_the_demo_config(r2, monkeypatch):
 
     assert (config.entry_bars, config.stop_atr, config.time_stop_bars, config.ema_period) == (20, D(3), 60, 200)
     assert (config.entry_offset_atr, config.entry_wait_bars, config.exit_wait_bars) == (D("0.5"), 3, 3)
-    assert (config.atr_min_bps, config.spread_max_atr) == (D(10), D("0.1"))
+    assert (config.atr_min_bps, config.spread_max_atr, config.take_profit_pct) == (D(10), D("0.1"), D(3))
     assert config.taker_fee == settings.sandbox_taker_fee
     assert config.order_id_tag == "XBTUSD"
 
