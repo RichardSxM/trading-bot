@@ -8,7 +8,7 @@ from urllib.parse import urlencode
 from markupsafe import Markup
 
 from dashboard.data.trades import TradesView
-from dashboard.ui.format import num, pnl, ts
+from dashboard.ui.format import money, num, pnl, ts
 from trading_core.recording.queries import PAGE_SIZE, FillLine, RoundTrip
 
 # (heading, is_number) for the fills table: the Trades page heads and the styleguide sample.
@@ -61,9 +61,9 @@ def round_trip_cells(trip: RoundTrip) -> list[Cell]:
         num(trip.size),
         num(trip.avg_entry_px),
         "" if trip.avg_exit_px is None else num(trip.avg_exit_px),
-        pnl(trip.net_pnl),
-        pnl(-trip.fees),
-        pnl(trip.funding),
+        pnl(money(trip.net_pnl)),
+        pnl(money(-trip.fees)),
+        pnl(money(trip.funding)),
         "" if trip.exit_reason is None else trip.exit_reason.value.replace("_", " "),
     ]
 
@@ -76,7 +76,7 @@ def fill_cells(fill: FillLine) -> list[Cell]:
         fill.side.value,
         num(fill.quantity),
         num(fill.price),
-        pnl(-fill.fee),
+        pnl(money(-fill.fee)),
     ]
 
 

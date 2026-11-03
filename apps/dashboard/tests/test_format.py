@@ -5,7 +5,7 @@ from decimal import Decimal
 
 import pytest
 
-from dashboard.ui.format import local_hm, num, pnl, ts
+from dashboard.ui.format import local_hm, money, num, pnl, ts
 
 
 @pytest.mark.parametrize(
@@ -149,3 +149,19 @@ def test_local_hm_shows_amsterdam_time_with_utc_in_the_title(moment, local):
     """covers: spec 0013 AC-16"""
     stamp = moment.strftime("%Y-%m-%dT%H:%M:%SZ")
     assert local_hm(moment) == f'<time datetime="{stamp}" title="22:30:00Z UTC">{local}</time>'
+
+
+@pytest.mark.parametrize(
+    ("value", "shown"),
+    [
+        (Decimal("0.00581094089807325115360"), Decimal("0.0058")),
+        (Decimal("-0.003710739488500000"), Decimal("-0.0037")),
+        (Decimal("0.07"), Decimal("0.07")),
+        (Decimal("0.0353"), Decimal("0.0353")),
+        (Decimal("12"), Decimal("12")),
+    ],
+)
+def test_money_shows_at_most_four_decimals(value, shown):
+    result = money(value)
+    assert result == shown
+    assert str(result) == str(shown)

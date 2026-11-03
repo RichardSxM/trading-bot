@@ -137,6 +137,23 @@ You picked three things. The rule lives in spec 0015 AC-6, shared by the lab, th
 
 The study resumes under its `_v3` name because its one grid point wrote no run and `gate/series.py` is outside r2's code hash. If the hash did change, the lab refuses, and that comes back here rather than a new name being picked during the build.
 
+### Amendment 2026-11-02: a 10 coin demo set
+
+**Context.** In its first two days on demo (from 2026-10-31), r2 made no order: every BTC decision was refused as `vol_low` (ATR about 6.5 bps against the 10 bps floor), and every PEPE decision as `spread_wide`. A research pass on 2026-11-02 (public Kraken tickers, 6 spread samples, 3 days of 5 minute candles) scored Kraken perps by the share of bars that pass both entry filters (spread at most 0.1 ATR, ATR at least 10 bps): UNI 100 %, LINK 100, QNT 98, SOL 83, ZEC 81, TRX 65, XRP 62, ETH 51, DOGE 39, BTC 34, ADA 18, HYPE 17, PEPE 5. A week of a coin set that cannot trade answers nothing about maker fills. The trader already runs any number of coins (one r2 per coin, per coin seed, per coin Overview row), but three things are shared across coins: the risk caps, any entry block, and the `STALE_FEED` block, which goes on for every coin when any one coin goes 10 s without a quote (spec 0025 AC-19). On the VPS the recorder was also recording PEPE next to BTC.
+
+**What you picked, with the runner up for each:**
+
+- Amend spec 0026 in place, as the earlier amendments did (runner up: a new small spec, which splits feature 27's close out across two specs).
+- Measure each coin's quote gaps for one hour before the switch and drop a coin with any gap over 10 s (runners up: make a stale coin block only itself, more code and an amendment of spec 0025; or switch and watch day 1, which risks phone alerts and lost entries on every coin). One gap in an hour is about 24 stale blocks a day, each one stopping all coins and sending a WARNING, so the bar is strict. No replacement for a dropped coin: the next best (ADA, HYPE) pass the filters on under 20 % of bars.
+- The check runs Nautilus's own Kraken data client in the trader image, so it sees the quote ticks the stale check sees (runner up: a plain websocket script, quicker but it may not match how Nautilus builds quotes). It runs in the quietest hour, 02:00 to 03:00 UTC, the worst case for thin coins (runners up: any hour, which can hide night gaps; two runs, more complete but more to start).
+- Keep the risk caps as they are (runners up: raise exposure and trades per day, or all caps). The caps are the safety net, every refusal is recorded, and r2's filters make it trade rarely, so the review can show how often the caps bind before anyone changes them.
+- The recorder goes back to BTC only (runner up: keep PEPE), for less disk and write load; PEPE has no use on demo any more.
+- No lab screens for the nine new coins (runners up: ETH only, or fetch candles and screen all). r2 runs on demo whatever its verdict, BTC and PEPE already failed by far, and each screen would add a trial to the scalping family.
+- The two coin run gets a short note in `verify.md`, and the demo week runs on the new set only, 7 days from its start (runner up: no record).
+- The week's review shows one row per coin plus a total (runner up: totals only), so it is clear which coins actually trade. That needs `maker_figures.py` to group by coin; decided here: decisions carry `instrument_id`, orders and fills follow them, and `total` stays exactly today's output so the AC-17 figures stand.
+
+**Why it is safe.** Nothing in any strategy's code or version closure changes. The new coin list is a new version (spec 0025 AC-17), so it needs your manual promote, and the two coin version stays promoted as a one step rollback. The quote gap script and the figures change run on the laptop only, so the VPS gets env changes and restarts, no code deploy.
+
 ## References
 
 **Project sources**:
@@ -145,6 +162,8 @@ The study resumes under its `_v3` name because its one grid point wrote no run a
 - Spec 0018 AC-7: the frozen base rule (`node/bar_rule.py`)
 - Spec 0017 (`ScalpStrategy`): maker entry, entry timeout, partial fills, maker target, and its candle lab caveats (maker fills are optimistic, adverse selection seen in `maker_probe`)
 - `node/sandbox.py` and `lab/candle_units.py`: how demo and the candle lab fill limit orders
+- `node/stale.py` and `trader/coin_blocks.py` (spec 0025 AC-19): the stale quote test and why one coin's stale feed blocks every coin
+- The 2026-11-02 coin research (Kraken public tickers and 5 minute candles), for the 10 candidates
 - The r1 BTC study bundle (`lab-reports/01a18df4-...`) and the exit and maker studies above
 
 **Practices & standards**:
