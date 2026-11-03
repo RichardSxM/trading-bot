@@ -58,6 +58,23 @@ trading_core.node.donchian_scalp_r2 dc96df87a2bab7c152e7d7d1184e1d72aa88784c954d
 
 PR #113 merged (a82cce8) and deployed with `--no-deps`. Version `01a192cb-3b83-7216-955d-5904c85d1f0f` (BTC and PEPE) was promoted by hand, and the VPS runs `donchian_scalp_r2` since 2026-10-31 16:31 UTC (17:31 Amsterdam), paper run `01a1930b…` since the 17:39 UTC deploy. Both coins seeded with no `warmup_seed_failed`, the first decision rows show `ema` and `midline` with values (all rejected, BTC `vol_low`, PEPE `spread_wide`), and the Overview card shows both coins. The coin set amendment (2026-11-02) replaces this run as the demo week.
 
+### Old run note (task 9, AC-18 item 5)
+
+The two coin set ran on four r2 versions, one per deploy (the version holds the git commit): `01a192cb` (a82cce8), `01a1930a` (2b7b728), `01a19404` (0be15e1), and `01a19645` (1ae0c68). Their paper runs are `01a192cd…`, `01a1930b…`, `01a19405…`, and `01a19650…` (running since 2026-11-01 08:53 UTC), from 2026-10-31 16:31 UTC up to the switch. Counts from the VPS Postgres on 2026-11-03 07:20 UTC:
+
+- **PEPE:** 72 entry decisions, all refused: 71 `spread_wide`, 1 `blocked:loss_cooldown`. No orders, no fills.
+- **BTC:** 49 entry decisions, 11 approved and 38 refused `vol_low`; 9 approved exits. 31 orders (22 filled, 9 cancelled), 22 fills (20 maker, fees 1.00 USD; 2 taker, fees 0.24 USD).
+
+Both coins were flat at the switch. This run is not the demo week: PEPE's spread fails the spread check on about 95% of bars, so half the set could never trade, and the coin set amendment moves the week to the AC-19 set.
+
+### Nine coin switch (task 9, AC-18)
+
+On 2026-11-03 version `01a1a048-d47e-71e1-a562-78dd12b99cc2` (r2 on BTC ETH SOL XRP LINK UNI ZEC DOGE QNT, image 1ae0c68, no code deploy) was promoted by hand, `kfs.env` was backed up to `/etc/kfs/kfs.env.bak-20261103-coinset`, `PAPER_INSTRUMENTS` was set to the 9 coins and `RECORDER_INSTRUMENTS` to `PF_XBTUSD.KRAKEN`, and the trader, recorder, and compactor were recreated with `--no-deps` at 07:25 UTC (08:25 Amsterdam). All three were healthy within about 60 s.
+
+That first start (paper run `01a1a04d-0c8c…`, 07:26 UTC) blocked entries on every coin with `record_conflict` (risk event `01a1a04d-101f…`): the stored `instruments` row for `PF_XRPUSD.KRAKEN` had tick size `0.00001`, written 2026-11-01 21:39 UTC by the spec 0027 tsmom bundle push (the lab pins XRP's historical tick), while the venue now sends `0.0001`. The trader failed closed as designed, and all coins were flat. Fix: a deliberate one row update of that row's `tick_size` to `0.0001` (as the `trading` owner role), then the trader alone was recreated with `--no-deps` at 07:32 UTC (08:32 Amsterdam).
+
+Start checks on the second start, paper run `01a1a053-06a6-729f-b682-606e388fc091` (07:32:38 UTC): healthy within 30 s, all 9 coins `warmup_seed_fetched` with no `warmup_seed_failed`, `InstrumentCheck: READY`, `reconcile_clean`, no new `record_conflict` or other risk event, trades flowing on the coins. The demo week counts from this run, so it ends 2026-11-10 07:32 UTC.
+
 ## Spike (task 2, *Spike first*)
 
 `scripts/spikes/maker_spike.py`, run in `kfs/lab:s0025p` on 2026-10-31. Two venues, each fed scripted PF_XBTUSD quotes (spread 1 tick): **lab** is the candle lab's own `make_candle_engine`; **sandbox** is a backtest venue built from the demo trader's `sandbox_exec_client` settings, which are the same `SimulatedExchange` arguments the Nautilus sandbox client passes (L1 book, quotes only, no latency, reduce only checks on), with quotes through `deep_quote`. The live sandbox client itself was not driven: it wraps this same matching engine, so the events are the same.
