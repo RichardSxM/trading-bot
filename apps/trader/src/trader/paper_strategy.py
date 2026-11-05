@@ -70,8 +70,8 @@ R2_ENTRY_OFFSET_ATR: Final = Decimal("0.5")
 R2_ENTRY_WAIT_BARS: Final = 3
 R2_EXIT_WAIT_BARS: Final = 3
 R2_ATR_MIN_BPS: Final = Decimal(10)
-# donchian_scalp_r2's take profit: a bar close 3 % of the entry price in the trade's favour exits.
-R2_TAKE_PROFIT_PCT: Final = Decimal(3)
+# donchian_scalp_r2's take profit: a bar close 0.5 % of the entry price in the trade's favour exits.
+R2_TAKE_PROFIT_PCT: Final = Decimal("0.5")
 # The strategies that trade more than one coin (spec 0025 AC-15, spec 0026 AC-16).
 _MULTI_COIN: Final = (donchian_scalp_r1.STRATEGY_NAME, donchian_scalp_r2.STRATEGY_NAME)
 # The strategies the trader fetches a warmup seed for before the node (spec 0025 AC-7, spec 0026 AC-16).
