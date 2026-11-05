@@ -39,7 +39,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 29 | Market context candidates | Slice 7 | done |
 | 17 | Hour level strategy candidates | Slice 7 | dropped |
 | 18 | Trade journal export | Slice 8 | done |
-| 19 | Go live with small capital | Slice 9 | planned |
+| 19 | Go live with small capital | Slice 9 | in-progress |
 
 ## Foundations
 
@@ -477,15 +477,15 @@ spec [0025](../specs/0025-donchian-scalp-r1/index.md) · code in [donchian_midli
 
 - [x] Design it (spec): `/architect donchian scalp r1`
 - [ ] Build it: `/develop donchian scalp r1`
-  - [ ] Thin thread: hash baseline, midline rule, r1 node and config, paper wiring, laptop smoke (AC-1 to AC-5, AC-11, AC-12)
-  - [ ] Lab screens: registry, two study files, `lab study` and `lab screen`, real spread query, `verify.md` table (AC-13, AC-13a)
-  - [ ] Spread filter and warmup seed: entry override, seed checks, fetch, first bar join, alert rule (AC-6 to AC-10)
+  - [x] Thin thread: hash baseline, midline rule, r1 node and config, paper wiring, laptop smoke (AC-1 to AC-5, AC-11, AC-12). The laptop smoke was replaced by the VPS start on 2026-10-31.
+  - [ ] Lab screens: registry, two study files, `lab study` and `lab screen`, real spread query, `verify.md` table (AC-13, AC-13a). Screens done 2026-10-30, both fail. Only AC-13a is open: the VPS catalog has no quote ticks.
+  - [x] Spread filter and warmup seed: entry override, seed checks, fetch, first bar join, alert rule (AC-6 to AC-10). Both coins seeded 600 bars on the VPS on 2026-10-31.
   - [x] Two coin thread: `PAPER_INSTRUMENTS`, one r1 per coin, blocks wrapper, version, recording, risk caps (AC-15 to AC-19)
   - [x] Seed per coin (AC-20)
   - [x] Snapshots and dashboard: `positions` snapshot, a card row per coin (AC-21)
   - [x] Lab: off tick guard per coin, PEPE screen (AC-23, AC-24)
-  - [ ] Close out and demo: hash comparison, deploy, manual promote of the two coin version, `PAPER_STRATEGY`, `PAPER_INSTRUMENTS` and `RECORDER_INSTRUMENTS`, first decisions checked for both coins (AC-5, AC-13a, AC-14, AC-22)
-  - [ ] PEPE spread check after 7 recorded days (AC-25)
+  - [ ] Close out and demo: hash comparison, deploy, manual promote of the two coin version, `PAPER_STRATEGY`, `PAPER_INSTRUMENTS` and `RECORDER_INSTRUMENTS`, first decisions checked for both coins (AC-5, AC-13a, AC-14, AC-22). All done 2026-10-31 except the first decision rows per coin and AC-13a.
+  - [ ] PEPE spread check after 7 recorded days (AC-25). Cannot run as written: r2 replaced r1 and the recorder went back to BTC only on 2026-11-03, so PEPE never got 7 days. Close it in r1's close out.
 - [ ] Verify it: `/check verify donchian scalp r1`
 - [ ] Test it: `/test donchian scalp r1`
 - [ ] Review it (fresh model): `/check review donchian scalp r1`
@@ -600,7 +600,7 @@ spec [0024](../specs/0024-trade-journal-export/index.md)
 
 ## Slice 9: Live
 
-### 19. Go live with small capital · needs a decision
+### 19. Go live with small capital · in-progress
 Switch one promoted strategy from paper trading in demo to your live Kraken futures account with under €1k and max 2x leverage.
 **Done when:** live trading only starts if the strategy passed the gate and features 9 to 12 are done, capital and leverage caps are enforced, and demo and live can never be confused.
 **Carried over from specs 0001 and 0006:**
@@ -616,7 +616,19 @@ Switch one promoted strategy from paper trading in demo to your live Kraken futu
 - **After launch:** reconcile the ledger with Kraken daily during the canary, halt on any unexplained order, position, or P&L mismatch or when live fills drift from the paper and lab assumptions, and never scale capital or leverage without a new risk decision.
 - **Sign off:** your approval of the capital amount and risk settings is recorded; configuration alone never counts as approval.
 - **Prerequisites:** features 11, 15, and 18 also belong in the "live only starts if" list next to 9 to 12.
-- [ ] Design it (spec): `/architect go live with small capital`
+spec [0028](../specs/0028-go-live-small-capital/index.md)
+
+- [x] Design it (spec): `/architect go live with small capital`
+- [ ] Build it: `/develop go live with small capital` (after the demo week review, 2026-11-12)
+  - [ ] Thin thread: live modes, `trader_live` beside demo, signed Kraken client, BTC canary on the VPS after the 0023 drill (AC-1 to AC-3, AC-5, AC-6, AC-10)
+  - [ ] Ledger and fees: account log matching, fee check, log outage block (AC-7, AC-13 to AC-15)
+  - [ ] Execution and risk: mark price stops (sandbox spike first), partial entry stops, capital cap, daily and drawdown stops, review halts, dead man's switch, hash record (AC-11, AC-12, AC-17 to AC-20, AC-22)
+  - [ ] Sign off and live start: typed `gate promote --manual --step paper-live`, live start checks, cost drift, live dashboard and alerts (AC-4, AC-8, AC-9, AC-16, AC-21)
+  - [ ] Close out: canary on every coin, live journal export, lab latency, runbook, `verify.md` (AC-5, AC-7, AC-22, AC-23)
+- [ ] Verify it: `/check verify go live with small capital`
+- [ ] Test it: `/test go live with small capital`
+- [ ] Review it (fresh model): `/check review go live with small capital`
+- [ ] Document it: `/document go live with small capital`
 
 ## Deferred
 Out of scope for the current build pass, kept so the plan stays honest.
