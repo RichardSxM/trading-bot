@@ -36,7 +36,8 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 26 | Donchian scalp r1 | Slice 7 | in-progress |
 | 27 | Donchian scalp r2 | Slice 7 | in-progress |
 | 28 | Daily trend candidate (tsmom) | Slice 7 | done |
-| 17 | Hour level strategy candidates | Slice 7 | in-progress |
+| 29 | Market context candidates | Slice 7 | done |
+| 17 | Hour level strategy candidates | Slice 7 | dropped |
 | 18 | Trade journal export | Slice 8 | done |
 | 19 | Go live with small capital | Slice 9 | planned |
 
@@ -525,7 +526,13 @@ spec [0027](../specs/0027-daily-trend-tsmom/index.md)
 - [x] Review it (fresh model): `/check review daily trend tsmom`
 - [x] Document it: `/document daily trend tsmom`
 
-### 17. Hour level strategy candidates · in-progress
+### 29. Market context candidates · done
+Slower strategies (hold hours to days) driven by the perp market's own context instead of price patterns: funding rate extremes, open interest building or flushing, liquidation cascades, and mark versus index basis, from feature 20's feed. Few trades, so the fee hurdle is small. From the 2026-11-05 research: every price pattern scalper failed, and at Kraken's fees there is no edge in candle patterns, the Binance lead, or passive market making (busy or long tail coins).
+**Done when:** a pre check on the available history (our own recording since 2026-10-17 plus whatever funding, open interest, and basis history can be fetched free) has a recorded verdict per signal, and any signal that passes has a study with a recorded gate verdict.
+**Carried over from feature 20 (2026-10-04, an article, rules of thumb only):** funding above +0.05 % per period reads as crowded longs, below −0.02 % as crowded shorts; rising open interest in a tight range reads as pressure before a breakout. Hypotheses to test, not thresholds to hard code.
+- [x] Pre check (2026-11-05, no spec needed since nothing passed): Kraken's free hourly chart history on BTC, ETH, SOL, XRP (liquidations, mark and index since 2022-03, open interest since 2023-03, long/short ratio since 2023-05), development range only, holdout untouched. Five signals × holds of 4, 12, 24, 72 h = 20 trials. Pass bar: net of 14 bps, t at least 3, at least 30 trades, consistent across years and coins. Verdict per signal: basis fade (the funding proxy) **fail**, open interest flush fade **fail**, open interest build follow **fail**, liquidation spike fade **fail** (cascades tend to continue), long/short ratio contrarian **fail** (best, +12 to +42 bps net at 12 to 72 h, but t at most 1.5). 0 of 20 pass. Follow up the same day: the long/short signal with a take profit of 1, 2, or 3 % and a stop of 1 or 2 % (72 h time limit, 6 more trials, 26 in all) **fail**. Tighter exits are worse (1 % / 1 % nets −17 bps per trade, t −9), and the best (3 % / 2 %) nets +5 bps, t 0.8.
+
+### 17. Hour level strategy candidates · dropped
 The fallback set: trend following and mean reversion on 1h to 4h candles, tested in the candle lab.
 **Done when:** each candidate has a scored result over several years of candles, and the gate's verdict is recorded.
 **Carried over from research (2026-10-04), a candidate to weigh:** Al Brooks style price action on 1h candles.
@@ -561,6 +568,7 @@ Two cautions. RSI and MACD are both built from recent price momentum, so they of
 - **Volatility contraction:** an NR4 bar (narrower range than the three before it) or an inside bar, then enter on a break of its high or low. Few settings and fully rule based, so a good early candidate, and a possible 15 minute variant for feature 16.
 - **Skip single candle patterns:** the source rates the hammer, hanging man, harami and doji at average or below, often breaking either way at random.
 spec [0018](../specs/0018-hour-level-strategy-candidates/index.md)
+**Dropped 2026-11-05:** stalled since 2026-10-22 after `connors_rsi` failed the gate and the `bollinger_rsi` family closed. Features 22, 23 and 28 since tested the same ground (15m swing, intraday trend, daily momentum) and all failed, so the open candidates below are not worth their trial count. The ticked boxes stay as history.
 
 - [x] Design it (spec): `/architect hour level strategy candidates`
 - [ ] Build it: `/develop hour level strategy candidates`
