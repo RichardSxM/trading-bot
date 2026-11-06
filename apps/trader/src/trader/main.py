@@ -62,12 +62,15 @@ from trader.paper_strategy import (
     SEEDED_STRATEGIES,
     SIX_SEED_BARS,
     SIX_SEED_MIN_BARS,
+    TP_SEED_DAYS,
+    TP_SEED_MIN_DAYS,
     StrategySettings,
     build_paper_strategy,
+    build_trend_portfolio,
     paper_version,
 )
 from trader.snapshot_writer import log_writer_crash, write_heartbeats, write_snapshot
-from trader.warmup import warmup_seed, warmup_seeds
+from trader.warmup import daily_seed, warmup_seed, warmup_seeds
 from trading_core import env_guard
 from trading_core.boot import boot
 from trading_core.control.consumer import ControlConsumer, Execute, Outcome
@@ -77,7 +80,7 @@ from trading_core.control.pause import pause_key
 from trading_core.control.records import PostgresCommandRecorder
 from trading_core.env_guard import SANDBOX, ExecClientAllowlist, allowed_exec_clients
 from trading_core.naming import node_id
-from trading_core.node import six_vote_trend
+from trading_core.node import six_vote_trend, trend_portfolio
 from trading_core.node.context_feed import ContextFeedActor, ContextFeedConfig
 from trading_core.node.control import (
     ControlActor,
@@ -120,7 +123,13 @@ from trading_core.reconcile.views import ExchangePort, ExchangeUnavailable
 from trading_core.recording import repository
 from trading_core.recording.enums import Env, RunMode, RunStatus
 from trading_core.recording.errors import PromotionRequiredError
-from trading_core.recording.queries import LossSeed, loss_seed, recorded_stop_trigger, run_funding_total
+from trading_core.recording.queries import (
+    LossSeed,
+    last_decision_ns,
+    loss_seed,
+    recorded_stop_trigger,
+    run_funding_total,
+)
 from trading_core.recording.rows import JsonObject
 from trading_core.recording.writer import RecordingWriter, deadletter_path, replay_spool, spool_path
 from trading_core.redis_check import redis_reachable
@@ -135,6 +144,7 @@ from trading_core.settings import LossLimitSettings, PaperLoopSettings, Reconcil
 from trading_core.snapshot.envelope import snapshot_key
 from trading_core.strategy.bar_rule import BarInput
 from trading_core.strategy.blocks import EntryBlocks
+from trading_core.strategy.trend_portfolio import DailyClose
 
 log = logging.getLogger("trader")
 
@@ -461,6 +471,8 @@ class PaperLoop:
     writer: RecordingWriter
     sessions: Callable[[], Session]
     ledger: FundingLedger
+    # trend_portfolio's last ``start`` rebalance of this trader, its crash loop guard (spec 0030 AC-4).
+    last_start_ns: int | None = None
 
 
 def run_config(settings: PaperLoopSettings) -> JsonObject:
@@ -494,6 +506,10 @@ def start_paper_loop(settings: TraderSettings, secrets: Mapping[str, SecretStr],
         version_id = repository.ensure_strategy_version(
             session, version.name, version.kind, None, version.config, version.frozen
         )
+    last_start_ns = None
+    if settings.paper_strategy == trend_portfolio.STRATEGY_NAME:
+        with sessions.begin() as session:
+            last_start_ns = last_decision_ns(session, env, trader_id, trend_portfolio.START)
     with sessions.begin() as session:
         run_id = repository.start_run(
             session,
@@ -523,7 +539,9 @@ def start_paper_loop(settings: TraderSettings, secrets: Mapping[str, SecretStr],
         "paper run started",
         extra={"fields": {"code": "paper_run_started", "run_id": str(run_id), "spool_replayed": replayed}},
     )
-    return PaperLoop(run_id=run_id, blocks=blocks, writer=writer, sessions=sessions, ledger=ledger)
+    return PaperLoop(
+        run_id=run_id, blocks=blocks, writer=writer, sessions=sessions, ledger=ledger, last_start_ns=last_start_ns
+    )
 
 
 def finish_paper_loop(paper: PaperLoop, settings: PaperLoopSettings, positions_open: int) -> None:
@@ -626,6 +644,7 @@ def run_node(
     exchange: LiveExchange | None = None,
     loop: asyncio.AbstractEventLoop | None = None,
     seeds: Mapping[str, Sequence[BarInput]] | None = None,
+    daily_seeds: Mapping[str, Sequence[DailyClose]] | None = None,
 ) -> int:
     """Build and run the node until it stops; return the process exit code.
 
@@ -652,6 +671,8 @@ def run_node(
     ``seeds`` is ``donchian_scalp_r1``'s, ``donchian_scalp_r2``'s, or ``six_vote_trend``'s warmup candles per coin,
     fetched before the node (spec 0025 AC-7, spec 0026 AC-16, spec 0029 AC-8). ``six_vote_trend`` also gets BTC's
     seed as ``btc_seed``; its config builder requires BTC in ``PAPER_INSTRUMENTS``, so BTC's seed is fetched once.
+    ``trend_portfolio`` is one instance over every coin, seeded from ``daily_seeds``, and also writes the
+    ``portfolio_plan`` snapshot (spec 0030 AC-8, AC-10, AC-13).
     """
     env = settings.trading_env
     if env == "live" and exchange is None:
@@ -780,9 +801,18 @@ def run_node(
                 ledger=paper.ledger,
             )
         )
-        per_coin = coin_blocks(paper.blocks, coins)
         views: list[PaperStrategyView] = []
-        for coin in coins:
+        if settings.paper_strategy == trend_portfolio.STRATEGY_NAME:
+            portfolio, portfolio_views = build_trend_portfolio(
+                settings, paper.run_id, control.gate, paper.blocks, record, daily_seeds or {}, paper.last_start_ns
+            )
+            node.trader.add_strategy(portfolio)
+            views.extend(portfolio_views)
+            snapshot_readers.append(("portfolio_plan", portfolio.plan_snapshot))
+        # trend_portfolio is one instance over every coin, built above; every other strategy is one per coin.
+        per_coin_coins = () if settings.paper_strategy == trend_portfolio.STRATEGY_NAME else coins
+        per_coin = coin_blocks(paper.blocks, coins)
+        for coin in per_coin_coins:
             strategy, coin_view = build_paper_strategy(
                 settings,
                 paper.run_id,
@@ -1055,6 +1085,11 @@ def main() -> None:
     # Before the node exists, never on its event loop; a failure is an empty seed and a warning (spec 0025 AC-9).
     seeded = paper is not None and settings.paper_strategy in SEEDED_STRATEGIES
     seeds = warmup_seeds(settings.instrument_list, seed_fetch(settings.paper_strategy)) if seeded else {}
+    daily_seeds: dict[str, tuple[DailyClose, ...]] = {}
+    if settings.paper_strategy == trend_portfolio.STRATEGY_NAME:
+        today = datetime.now(UTC).date()
+        daily_seeds = {coin: daily_seed(coin, bars, today) for coin, bars in seeds.items()}
+        seeds = {}
 
     code = run_node(
         config,
@@ -1065,13 +1100,17 @@ def main() -> None:
         exchange=exchange,
         loop=loop,
         seeds=seeds,
+        daily_seeds=daily_seeds,
     )
     if code:
         sys.exit(code)
 
 
 def seed_fetch(strategy: str) -> Callable[[str], tuple[BarInput, ...]]:
-    """The seed fetch for ``strategy``: 1 hour candles (300, at least 250) for ``six_vote_trend``, else 5 minute."""
+    """The seed fetch for ``strategy``: 1 hour candles (300, at least 250) for ``six_vote_trend``, daily candles
+    (150, at least 121) for ``trend_portfolio``, else 5 minute."""
+    if strategy == trend_portfolio.STRATEGY_NAME:
+        return functools.partial(warmup_seed, interval="1d", keep_bars=TP_SEED_DAYS, min_bars=TP_SEED_MIN_DAYS)
     if strategy == six_vote_trend.STRATEGY_NAME:
         return functools.partial(warmup_seed, interval="1h", keep_bars=SIX_SEED_BARS, min_bars=SIX_SEED_MIN_BARS)
     return warmup_seed

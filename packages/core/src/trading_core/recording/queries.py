@@ -756,3 +756,17 @@ def reconciliations_page(session: Session, env: Env, page: int, size: int = PAGE
         )
         for c in checks
     ]
+
+
+def last_decision_ns(session: Session, env: Env, trader_id: str, reason: str) -> int | None:
+    """The newest ``decided_ns`` of a decision with ``reason`` in any of ``trader_id``'s ``env`` runs, else None.
+
+    ``trend_portfolio`` reads its last ``start`` rebalance with it, its crash loop guard (spec 0030 AC-4).
+    """
+    decision, run = models.Decision, models.StrategyRun
+    newest: int | None = session.execute(
+        select(func.max(decision.decided_ns))
+        .join(run, run.id == decision.run_id)
+        .where(run.env == env, run.trader_id == trader_id, decision.env == env, decision.reason == reason)
+    ).scalar_one()
+    return newest
