@@ -543,7 +543,7 @@ spec [0029](../specs/0029-six-vote-trend/index.md) · code in [six_vote.py](../.
   - [x] Hash baseline and thin thread: rule, node with the BTC vote, 1 hour seed, trader wiring, values log, laptop smoke (AC-1 to AC-3, AC-7, AC-8, AC-8a, AC-10, AC-11)
   - [x] Order paths: stop modify spike, maker then market entry, tick trail with its switch, time exit, restart (AC-4 to AC-6, AC-9)
   - [x] Close out and switch: hashes, deploy, your promote, `PAPER_STRATEGY=six_vote_trend`, start checks per coin (AC-11, AC-12)
-- [ ] Verify it: `/check verify six vote trend`
+- [x] Verify it: `/check verify six vote trend`
 - [ ] Test it: `/test six vote trend`
 - [ ] Review it (fresh model): `/check review six vote trend`
 - [ ] Document it: `/document six vote trend`
