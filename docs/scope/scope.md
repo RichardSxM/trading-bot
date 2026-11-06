@@ -545,7 +545,7 @@ spec [0029](../specs/0029-six-vote-trend/index.md) · code in [six_vote.py](../.
   - [x] Close out and switch: hashes, deploy, your promote, `PAPER_STRATEGY=six_vote_trend`, start checks per coin (AC-11, AC-12)
 - [x] Verify it: `/check verify six vote trend`
 - [x] Test it: `/test six vote trend`
-- [ ] Review it (fresh model): `/check review six vote trend`
+- [x] Review it (fresh model): `/check review six vote trend`
 - [ ] Document it: `/document six vote trend`
 
 ### 17. Hour level strategy candidates · dropped
