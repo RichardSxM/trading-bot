@@ -38,6 +38,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 28 | Daily trend candidate (tsmom) | Slice 7 | done |
 | 29 | Market context candidates | Slice 7 | done |
 | 30 | Six vote trend (demo forward test) | Slice 7 | in-progress |
+| 31 | Trend portfolio beside six vote | Slice 7 | in-progress |
 | 17 | Hour level strategy candidates | Slice 7 | dropped |
 | 18 | Trade journal export | Slice 8 | done |
 | 19 | Go live with small capital | Slice 9 | in-progress |
@@ -547,6 +548,23 @@ spec [0029](../specs/0029-six-vote-trend/index.md) · code in [six_vote.py](../.
 - [x] Test it: `/test six vote trend`
 - [x] Review it (fresh model): `/check review six vote trend`
 - [x] Document it: `/document six vote trend`
+
+### 31. Trend portfolio beside six vote · in-progress
+Hold all 12 demo coins long or short by the sign of each coin's 30 day return, scaled by volatility, gross at most 2 times equity, rebalanced every Monday 00:05 UTC with market orders. It runs as a second demo trader with its own sandbox account beside `six_vote_trend`, which keeps its version and its figures. One stop button stops both, and a new Portfolio page shows the book. Straight to demo as a forward test; a lab study and gate verdict are owed before live. From the 2026-11-06 and 2026-11-07 research: the only idea that held on data it never saw (Binance 2018 to 2022, Sharpe 1.36 on these coins, every year positive).
+**Done when:** every existing strategy hash is unchanged, the `main` trader keeps every key and name, the VPS demo runs `trader-portfolio` with a start rebalance on all 12 coins, both traders answer one pause and unpause, and the Portfolio page shows the book.
+spec [0030](../specs/0030-trend-portfolio/index.md)
+
+- [x] Design it (spec): `/architect trend portfolio`
+- [ ] Build it: `/develop trend portfolio`
+  - [ ] Strategy thin thread: rule, risk check, node, daily seed, single instance wiring and version, laptop smoke as the main slot (AC-1 to AC-4, AC-7, AC-8, AC-10, AC-11 baseline)
+  - [ ] Second trader: slots module, keys and names, consumer group and results, migration, loss seed and dashboard reads per trader, compose service with its caps (AC-12 to AC-16, AC-18)
+  - [ ] Order paths: reductions first, flips, clips, held and resume, retries, start cooldown, flatten, resume (AC-3 to AC-6, AC-9)
+  - [ ] Alerts, deploy, and the Portfolio page (AC-17 to AC-21)
+  - [ ] Close out and VPS start: hashes, deploy, your promote, profile on, start checks (AC-11, AC-22, AC-23)
+- [ ] Verify it: `/check verify trend portfolio`
+- [ ] Test it: `/test trend portfolio`
+- [ ] Review it (fresh model): `/check review trend portfolio`
+- [ ] Document it: `/document trend portfolio`
 
 ### 17. Hour level strategy candidates · dropped
 The fallback set: trend following and mean reversion on 1h to 4h candles, tested in the candle lab.
