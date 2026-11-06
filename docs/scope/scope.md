@@ -536,12 +536,12 @@ Slower strategies (hold hours to days) driven by the perp market's own context i
 ### 30. Six vote trend (demo forward test) · in-progress
 Trade a coin on 1 hour bars only when six votes agree: its own EMA 200 trend, BTC's EMA 200 trend, 9/21 EMA, RSI 14 (55/45), a 20 bar breakout, and a volume spike. A maker entry falls back to market, a 3 ATR stop trails on every tick, and a trade ends after about 24 hours. It replaces r2 on the VPS demo on the same 12 coins as soon as it is promoted, with no lab screen and no gate, as a live forward test. From the 2026-11-06 research: about 870 backtest trials failed fresh data after fees; this rule made +70 and +33 bps a trade on the development year and −12 on the fresh year.
 **Done when:** every existing strategy hash is unchanged, the VPS demo runs `six_vote_trend` on the 12 coins with a `six_vote_values` line (V2 set) for each coin, and r2's last run is noted.
-spec [0029](../specs/0029-six-vote-trend/index.md)
+spec [0029](../specs/0029-six-vote-trend/index.md) · code in [six_vote.py](../../packages/core/src/trading_core/strategy/six_vote.py), [six_vote_trend.py](../../packages/core/src/trading_core/node/six_vote_trend.py), [trader/paper_strategy.py](../../apps/trader/src/trader/paper_strategy.py), [trader/warmup.py](../../apps/trader/src/trader/warmup.py)
 
 - [x] Design it (spec): `/architect six vote trend`
 - [ ] Build it: `/develop six vote trend`
-  - [ ] Hash baseline and thin thread: rule, node with the BTC vote, 1 hour seed, trader wiring, values log, laptop smoke (AC-1 to AC-3, AC-7, AC-8, AC-8a, AC-10, AC-11)
-  - [ ] Order paths: stop modify spike, maker then market entry, tick trail with its switch, time exit, restart (AC-4 to AC-6, AC-9)
+  - [x] Hash baseline and thin thread: rule, node with the BTC vote, 1 hour seed, trader wiring, values log, laptop smoke (AC-1 to AC-3, AC-7, AC-8, AC-8a, AC-10, AC-11)
+  - [x] Order paths: stop modify spike, maker then market entry, tick trail with its switch, time exit, restart (AC-4 to AC-6, AC-9)
   - [ ] Close out and switch: hashes, deploy, your promote, `PAPER_STRATEGY=six_vote_trend`, start checks per coin (AC-11, AC-12)
 - [ ] Verify it: `/check verify six vote trend`
 - [ ] Test it: `/test six vote trend`
