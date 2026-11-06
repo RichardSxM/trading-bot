@@ -91,15 +91,26 @@ def _fields(**overrides):
     } | overrides
 
 
-def _ticks(instrument_id, prices, minutes, size=lambda t: "0.0100", every_s=10):
+def _ticks(
+    instrument_id,
+    prices,
+    minutes,
+    size=lambda t: "0.0100",
+    every_s=10,
+    quote_size="5.0000",
+    quote_shift=0,
+    quotes_until=None,
+):
     data, at = [], START
     for step in range(int(minutes * 60 / every_s)):
         t = step * every_s / 60
         mid, ts = prices(t), _ns(at)
         data.append(TradeTick(instrument_id, Price(mid, 0), Quantity.from_str(size(t)), AggressorSide.BUYER,
                               TradeId(f"{instrument_id.symbol}-{step}"), ts, ts))  # fmt: skip
-        q = Quantity.from_str("5.0000")
-        data.append(QuoteTick(instrument_id, Price(mid - 1, 0), Price(mid + 1, 0), q, q, ts, ts))
+        if quotes_until is None or t < quotes_until:
+            q = Quantity.from_str(quote_size)
+            bid, ask = mid - 1 + quote_shift, mid + 1 + quote_shift
+            data.append(QuoteTick(instrument_id, Price(bid, 0), Price(ask, 0), q, q, ts, ts))
         at += timedelta(seconds=every_s)
     return data
 
@@ -132,6 +143,8 @@ def _run(
     coin_data=None,
     seed=(),
     btc_seed=FLAT_BTC_SEED,
+    gate=None,
+    consume=False,
     **overrides,
 ):
     engine = BacktestEngine(BacktestEngineConfig(logging=LoggingConfig(bypass_logging=True)))
@@ -143,6 +156,7 @@ def _run(
         base_currency=USD,
         trade_execution=False,
         bar_execution=False,
+        liquidity_consumption=consume,
     )
     engine.add_instrument(INSTRUMENT)
     engine.add_instrument(COIN)
@@ -152,7 +166,7 @@ def _run(
         engine.add_data(coin)
     records: list[WriteItem] = []
     values: dict[str, Any] = _fields(**overrides)
-    strategy = strategy_cls(_MinuteConfig(**values), PauseGate(), EntryBlocks(), records.append, seed, btc_seed)
+    strategy = strategy_cls(_MinuteConfig(**values), gate or PauseGate(), EntryBlocks(), records.append, seed, btc_seed)
     engine.add_strategy(strategy)
 
     async def run():
