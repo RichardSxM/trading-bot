@@ -38,6 +38,10 @@ Judgement calls made in the spec:
 - **The spread check stays, the volatility floor goes.** A 1 hour ATR is far above 10 bps.
 - **The market fallback is skipped when the mid is already beyond the stop.** That avoids entering a trade that is already lost.
 
+### Loss limits off for the demo (amendment 2026-11-06)
+
+At the switch r2 had already hit the demo's daily loss limit (50 USD), so the new strategy would have started halted. You asked for the limits to be raised or removed, since you are busy testing. The settings have no off switch (`risk_daily_loss_limit_usd` must be above 0, and the total limit at least the daily one), so both are set to 1000000 USD, which never trips on demo sizes, and the cooldown to 0. The other caps stay, so one order and the total exposure stay bounded. The cost: a losing day runs on, and since the risk settings are part of the version, the forward test runs on a version that is not the one that would ever go live. That is why the limits go back before the result is judged.
+
 ### Backtest evidence (2026-11-06, scratchpad scripts, not committed)
 
 Kraken Futures candles, 12 coins, taker entry at the next open plus 1 bp, 5 bps a side, 3 ATR stop, exit after 24 bars:

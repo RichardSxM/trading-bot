@@ -102,3 +102,14 @@ PR #129 merged as `c6a9548`. Deployed with `scripts/deploy.sh` (`--no-deps`), do
 - At 17:00 UTC (18:00 Amsterdam, the second live close): one `six_vote_values` line for each of the 12 coins, each with `score` and all six votes. V2 is −1 on every coin (BTC under its EMA 200), so BTC's vote is ready and gets through. No entry: scores ran from −4 (UNI) to +2 (ZEC). No ERROR, no CRITICAL, no `seed_stale`, no `seed_failed`.
 - The BTC warning `Aggregator for PF_XBTUSD.KRAKEN-1-HOUR-LAST-INTERNAL is currently in use` is expected: the instances share one aggregator. The `context_message_bad` warnings (`unknown_trade_type`) come from the market context feed, not this strategy.
 - The coins showing on the dashboard Overview was not checked here. It is left for `/check verify`.
+
+## /check verify (2026-11-06, PASS after the AC-12 amendment)
+
+Checked at about 17:58 UTC (18:58 Amsterdam) on main 659be51, release c6a9548 on the VPS:
+
+- AC-2, AC-10: version `01a1b17a` is `six_vote_trend`, kind `hour_level`, with `trail_atr` 3, `time_stop_bars` 24, `entry_wait_bars` 1, `spread_max_atr` 0.1, `btc_instrument_id` `PF_XBTUSD.KRAKEN`, and 12 instruments. Run `01a1b17f` is running, mode paper.
+- AC-10 (Overview): `demo:snapshot:positions`, which the Overview cards read, lists all 12 coins. `trader_state` is ACTIVE, not paused, on c6a9548.
+- AC-3, AC-8, AC-8a: the start checks above. No `btc_bar_late`, no ERROR or CRITICAL since the start, and the only risk event is the resume.
+- AC-1, AC-4 to AC-7, AC-9: no trade yet (0 decisions), so these were proven by tests on main: core `test_strategy_six_vote.py`, `test_node_six_vote_trend.py`, `test_node_six_vote_trend_orders.py` 70 passed; trader `test_paper_six_vote.py`, `test_paper_strategy.py`, `test_warmup.py` 36 passed. The first live trade is the first real run of the fallback, the trail, and a decision row.
+- AC-11: `hash_check.py` on main gives 42 lines, the baseline plus `trading_core.node.six_vote_trend 1358dfa5…`; `bar_rule_maker` and `donchian_scalp_r2` unchanged.
+- AC-12 (amended): met as amended, with the backup, old values, and halt row file named in the VPS switch section.
