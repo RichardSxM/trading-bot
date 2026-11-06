@@ -5,8 +5,9 @@
 chose (spec 0022 *Results*). ``donchian_scalp`` is the same rule and point on 5 minute bars, for quicker
 trades. ``donchian_scalp_r1`` (spec 0025) adds an EMA 200 trend filter, a midline exit, and a spread check,
 and is seeded from Kraken's candles at start (``trader.warmup``). ``donchian_scalp_r2`` (spec 0026) trades r1's
-signals with maker orders and skips entries when ATR is small next to the fee, with the same seed. None passed
-the gate, so on demo each paper
+signals with maker orders and skips entries when ATR is small next to the fee, with the same seed.
+``six_vote_trend`` (spec 0029) enters on 1 hour bars when six votes agree, on the same maker base, seeded from
+1 hour candles plus BTC's (every coin reads BTC's trend). None passed the gate, so on demo each paper
 trades only after a manual ``candidate → paper`` promote; live never runs them (the config builders refuse).
 They build their own bars from trades, so without a seed they need about 21 bars after every start before
 the first entry (3.5 days on 4 hours, under 2 hours on 5 minutes), and r1 about 200 (17 hours).
@@ -31,6 +32,7 @@ from trading_core.node import (
     donchian_scalp_r1,
     donchian_scalp_r2,
     placeholder,
+    six_vote_trend,
 )
 from trading_core.node.bar_rule import BarRuleStrategy, Phase
 from trading_core.node.bar_rule_maker import MakerBarRuleStrategy
@@ -42,6 +44,7 @@ from trading_core.node.funding import FundingLedger
 from trading_core.node.kraken import BTC_PERP
 from trading_core.node.paper_snapshots import PaperStrategyView
 from trading_core.node.placeholder import PlaceholderConfig, PlaceholderTimed
+from trading_core.node.six_vote_trend import SixVoteTrend, SixVoteTrendConfig
 from trading_core.node.strategy import KfsStrategy, PauseGate
 from trading_core.recording.enums import StrategyKind
 from trading_core.recording.rows import JsonObject
@@ -52,7 +55,7 @@ from trading_core.strategy.blocks import EntryBlocks
 from trading_core.versioning import FrozenHashes
 
 type PaperStrategyName = Literal[
-    "placeholder_timed", "donchian_4h", "donchian_scalp", "donchian_scalp_r1", "donchian_scalp_r2"
+    "placeholder_timed", "donchian_4h", "donchian_scalp", "donchian_scalp_r1", "donchian_scalp_r2", "six_vote_trend"
 ]
 
 # The donchian_4h_pair study's chosen grid point (spec 0022 Results: grid-2), also used by donchian_scalp.
@@ -72,10 +75,30 @@ R2_EXIT_WAIT_BARS: Final = 3
 R2_ATR_MIN_BPS: Final = Decimal(10)
 # donchian_scalp_r2's take profit: a bar close 0.5 % of the entry price in the trade's favour exits.
 R2_TAKE_PROFIT_PCT: Final = Decimal("0.5")
-# The strategies that trade more than one coin (spec 0025 AC-15, spec 0026 AC-16).
-_MULTI_COIN: Final = (donchian_scalp_r1.STRATEGY_NAME, donchian_scalp_r2.STRATEGY_NAME)
-# The strategies the trader fetches a warmup seed for before the node (spec 0025 AC-7, spec 0026 AC-16).
-SEEDED_STRATEGIES: Final = (donchian_scalp_r1.STRATEGY_NAME, donchian_scalp_r2.STRATEGY_NAME)
+# six_vote_trend's settings (spec 0029 AC-2); the rest are its config defaults, recorded in its version.
+SIX_TIME_STOP_BARS: Final = 24
+SIX_ATR_PERIOD: Final = 14
+SIX_ATR_FLOOR_MULT: Final = Decimal(1)
+SIX_ENTRY_OFFSET_ATR: Final = Decimal(0)
+SIX_ENTRY_WAIT_BARS: Final = 1
+SIX_EXIT_WAIT_BARS: Final = 1
+SIX_SPREAD_MAX_ATR: Final = Decimal("0.1")
+SIX_TRAIL_ATR: Final[Decimal | None] = Decimal(3)
+SIX_TRAIL_MIN_STEP_ATR: Final = Decimal("0.1")
+SIX_TRAIL_MIN_INTERVAL_S: Final = 5
+SIX_TRAIL_MAX_REFUSALS: Final = 5
+SIX_BTC_WAIT_S: Final = 3
+# Its 1 hour seed (AC-8): keep and minimum bars, outside every version hash.
+SIX_SEED_BARS: Final = 300
+SIX_SEED_MIN_BARS: Final = 250
+# The strategies that trade more than one coin (spec 0025 AC-15, spec 0026 AC-16, spec 0029 AC-10).
+_MULTI_COIN: Final = (donchian_scalp_r1.STRATEGY_NAME, donchian_scalp_r2.STRATEGY_NAME, six_vote_trend.STRATEGY_NAME)
+# The strategies the trader fetches a warmup seed for before the node (spec 0025 AC-7, spec 0026 AC-16, spec 0029).
+SEEDED_STRATEGIES: Final = (
+    donchian_scalp_r1.STRATEGY_NAME,
+    donchian_scalp_r2.STRATEGY_NAME,
+    six_vote_trend.STRATEGY_NAME,
+)
 # A PAPER_INSTRUMENTS entry: a Kraken perpetual (spec 0025 AC-15).
 _PAPER_INSTRUMENT: Final = re.compile(r"PF_[A-Z0-9]+\.KRAKEN")
 
@@ -117,6 +140,29 @@ class PaperVersion:
 
 def paper_version(settings: StrategySettings) -> PaperVersion:
     """The version for ``PAPER_STRATEGY``; ``placeholder_timed``'s config is unchanged by this setting."""
+    if settings.paper_strategy == six_vote_trend.STRATEGY_NAME:
+        six_config: JsonObject = {
+            "paper_strategy": six_vote_trend.STRATEGY_NAME,
+            "bar_spec": six_vote_trend.BAR_SPEC,
+            "time_stop_bars": SIX_TIME_STOP_BARS,
+            "atr_period": SIX_ATR_PERIOD,
+            "atr_floor_mult": str(SIX_ATR_FLOOR_MULT),
+            "entry_offset_atr": str(SIX_ENTRY_OFFSET_ATR),
+            "entry_wait_bars": SIX_ENTRY_WAIT_BARS,
+            "exit_wait_bars": SIX_EXIT_WAIT_BARS,
+            "atr_min_bps": None,
+            "spread_max_atr": str(SIX_SPREAD_MAX_ATR),
+            "trail_atr": None if SIX_TRAIL_ATR is None else str(SIX_TRAIL_ATR),
+            "trail_min_step_atr": str(SIX_TRAIL_MIN_STEP_ATR),
+            "trail_min_interval_s": SIX_TRAIL_MIN_INTERVAL_S,
+            "trail_max_refusals": SIX_TRAIL_MAX_REFUSALS,
+            "btc_instrument_id": six_vote_trend.BTC_INSTRUMENT_ID,
+            "btc_wait_s": SIX_BTC_WAIT_S,
+            **{key: value for key, value in settings.strategy_config().items() if key.startswith("risk_")},
+            "instruments": list(settings.instrument_list),
+        }
+        frozen = versioning.freeze(SixVoteTrend.__module__, six_config)
+        return PaperVersion(six_vote_trend.STRATEGY_NAME, StrategyKind.HOUR_LEVEL, six_config, frozen)
     if settings.paper_strategy == donchian_scalp_r2.STRATEGY_NAME:
         r2_config: JsonObject = {
             **_donchian_version_config(settings, donchian_scalp_r2.STRATEGY_NAME, donchian_scalp_r2.BAR_SPEC),
@@ -366,6 +412,57 @@ def donchian_scalp_r2_config(settings: StrategySettings, run_id: UUID, instrumen
     )
 
 
+def six_vote_trend_config(settings: StrategySettings, run_id: UUID, instrument_id: str) -> SixVoteTrendConfig:
+    """``six_vote_trend`` (spec 0029 AC-2) with the ``RISK_*`` and ``CONTEXT_*`` settings, under ``run_id``.
+
+    Its ``order_id_tag`` is the coin's symbol without ``PF_``, as r2's. Raises ``ValueError`` outside demo, and
+    when ``PAPER_INSTRUMENTS`` does not hold BTC (every coin reads BTC's trend, so BTC's trades must be fed).
+    """
+    _demo_only(settings)
+    if six_vote_trend.BTC_INSTRUMENT_ID not in settings.instrument_list:
+        raise ValueError(
+            f"six_vote_trend needs {six_vote_trend.BTC_INSTRUMENT_ID} in PAPER_INSTRUMENTS "
+            "(every coin reads BTC's trend)"
+        )
+    return SixVoteTrendConfig(
+        order_id_tag=order_id_tag(instrument_id),
+        env=settings.trading_env,
+        run_id=str(run_id),
+        instrument_id=instrument_id,
+        bar_spec=six_vote_trend.BAR_SPEC,
+        time_stop_bars=SIX_TIME_STOP_BARS,
+        atr_period=SIX_ATR_PERIOD,
+        atr_floor_mult=SIX_ATR_FLOOR_MULT,
+        entry_offset_atr=SIX_ENTRY_OFFSET_ATR,
+        entry_wait_bars=SIX_ENTRY_WAIT_BARS,
+        exit_wait_bars=SIX_EXIT_WAIT_BARS,
+        atr_min_bps=None,
+        spread_max_atr=SIX_SPREAD_MAX_ATR,
+        trail_atr=SIX_TRAIL_ATR,
+        trail_min_step_atr=SIX_TRAIL_MIN_STEP_ATR,
+        trail_min_interval_s=SIX_TRAIL_MIN_INTERVAL_S,
+        trail_max_refusals=SIX_TRAIL_MAX_REFUSALS,
+        btc_instrument_id=six_vote_trend.BTC_INSTRUMENT_ID,
+        btc_wait_s=SIX_BTC_WAIT_S,
+        max_order_notional_usd=settings.risk_max_order_notional_usd,
+        max_leverage=settings.risk_max_leverage,
+        max_total_exposure_usd=settings.risk_max_total_exposure_usd,
+        risk_per_trade=settings.risk_per_trade,
+        maintenance_margin_rate=settings.risk_maintenance_margin_rate,
+        min_liq_distance_pct=settings.risk_min_liq_distance_pct,
+        liq_stop_multiple=settings.risk_liq_stop_multiple,
+        stop_slippage_bps=settings.risk_stop_slippage_bps,
+        taker_fee=settings.sandbox_taker_fee,
+        stale_quote_s=settings.risk_stale_quote_s,
+        use_market_context=True,
+        context_max_age_mark_s=settings.context_max_age_mark_s,
+        context_max_age_index_s=settings.context_max_age_index_s,
+        context_max_age_open_interest_s=settings.context_max_age_open_interest_s,
+        context_max_age_funding_s=settings.context_max_age_funding_s,
+        context_liquidation_window_s=settings.context_liquidation_window_s,
+    )
+
+
 class BarRuleView:
     """``PaperStrategyView`` over a ``BarRuleStrategy``, read from its phase and the cache.
 
@@ -442,8 +539,15 @@ def build_paper_strategy(
     record: Callable[[WriteItem], None],
     ledger: FundingLedger,
     seed: Sequence[BarInput] = (),
+    btc_seed: Sequence[BarInput] = (),
 ) -> tuple[KfsStrategy, PaperStrategyView]:
-    """The ``PAPER_STRATEGY`` strategy and the view the snapshots read from it; only r1 and r2 take the ``seed``."""
+    """The ``PAPER_STRATEGY`` strategy and the view the snapshots read from it.
+
+    Only r1, r2, and ``six_vote_trend`` take the ``seed``; only ``six_vote_trend`` takes ``btc_seed`` (spec 0029 AC-8).
+    """
+    if settings.paper_strategy == six_vote_trend.STRATEGY_NAME:
+        six = SixVoteTrend(six_vote_trend_config(settings, run_id, instrument_id), gate, blocks, record, seed, btc_seed)
+        return six, MakerBarRuleView(six)
     if settings.paper_strategy == donchian_scalp_r2.STRATEGY_NAME:
         r2 = DonchianScalpR2(donchian_scalp_r2_config(settings, run_id, instrument_id), gate, blocks, record, seed)
         return r2, MakerBarRuleView(r2)

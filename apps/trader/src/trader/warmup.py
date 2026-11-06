@@ -1,5 +1,5 @@
-"""The warmup seed fetch of ``donchian_scalp_r1`` and ``donchian_scalp_r2`` (spec 0025 AC-7 to AC-9, AC-20; spec 0026
-AC-16): Kraken's public 5 minute candles.
+"""The warmup seed fetch of ``donchian_scalp_r1``, ``donchian_scalp_r2``, and ``six_vote_trend`` (spec 0025 AC-7 to
+AC-9, AC-20; spec 0026 AC-16; spec 0029 AC-8): Kraken's public 5 minute or 1 hour candles.
 
 One unauthenticated ``GET`` per coin to Kraken production's charts API, before the node exists, so it never runs on
 the node's event loop and sends no key. A 5 s timeout per try and at most 3 tries: a timeout, connection
@@ -14,7 +14,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Sequence
-from typing import Final
+from typing import Final, Literal
 
 from trading_core.strategy.bar_rule import BarInput
 from trading_core.strategy.warmup import SeedRefusedError, parse_candles, seed_bars
@@ -23,10 +23,11 @@ log = logging.getLogger("trader")
 
 # Market data always comes from Kraken production (its futures demo closed on 14 July 2026), so this is a
 # constant, not a setting. ``{symbol}`` is the instrument id's symbol, such as ``PF_XBTUSD``.
-CHARTS_URL: Final = "https://futures.kraken.com/api/charts/v1/trade/{symbol}/5m"
-INTERVAL_S: Final = 300
-INTERVAL_NS: Final = INTERVAL_S * 1_000_000_000
-# 3 x the EMA period, so the EMA has settled; the minimum is the EMA period. Outside every version hash.
+# ``{interval}`` is one of ``INTERVALS_S``.
+CHARTS_URL: Final = "https://futures.kraken.com/api/charts/v1/trade/{symbol}/{interval}"
+type Interval = Literal["5m", "1h"]
+INTERVALS_S: Final[dict[Interval, int]] = {"5m": 300, "1h": 3600}
+# r2's: 3 x the EMA period, so the EMA has settled; the minimum is the EMA period. Outside every version hash.
 SEED_BARS: Final = 600
 SEED_MIN_BARS: Final = 200
 SEED_MARGIN_BARS: Final = 20
@@ -57,14 +58,22 @@ def _retryable(exc: Exception) -> bool:
     return isinstance(exc, (urllib.error.URLError, TimeoutError, ConnectionError))
 
 
-def fetch_body(symbol: str, now_s: int, get: Get = _get, sleep: Callable[[float], None] = time.sleep) -> bytes:
-    """The charts API body for ``symbol``'s ``SEED_BARS + SEED_MARGIN_BARS`` candles before ``now_s``.
+def fetch_body(
+    symbol: str,
+    now_s: int,
+    get: Get = _get,
+    sleep: Callable[[float], None] = time.sleep,
+    *,
+    interval: Interval = "5m",
+    keep_bars: int = SEED_BARS,
+) -> bytes:
+    """The charts API body for ``symbol``'s ``keep_bars + SEED_MARGIN_BARS`` ``interval`` candles before ``now_s``.
 
     Raises ``SeedFetchError`` (reason ``fetch_failed``) after the last retry, or at once for an error
     that is not worth retrying.
     """
-    start = now_s - (SEED_BARS + SEED_MARGIN_BARS) * INTERVAL_S
-    url = f"{CHARTS_URL.format(symbol=symbol)}?from={start}&to={now_s}"
+    start = now_s - (keep_bars + SEED_MARGIN_BARS) * INTERVALS_S[interval]
+    url = f"{CHARTS_URL.format(symbol=symbol, interval=interval)}?from={start}&to={now_s}"
     waits = iter(RETRY_WAITS_S)
     while True:
         try:
@@ -81,8 +90,14 @@ def warmup_seed(
     now_ns: Callable[[], int] = time.time_ns,
     get: Get = _get,
     sleep: Callable[[float], None] = time.sleep,
+    *,
+    interval: Interval = "5m",
+    keep_bars: int = SEED_BARS,
+    min_bars: int = SEED_MIN_BARS,
 ) -> tuple[BarInput, ...]:
-    """The coin's latest ``SEED_BARS`` complete candles, oldest first, or ``()`` after one warning.
+    """The coin's latest ``keep_bars`` complete ``interval`` candles, oldest first, or ``()`` after one warning.
+
+    Fewer than ``min_bars`` complete candles is a failure (``too_few``). The defaults are r2's (5m, 600, 200).
 
     The warning is ``warmup_seed_failed``. ``instrument_id`` is the Nautilus id (``PF_XBTUSD.KRAKEN``);
     its symbol picks the candles. ``now_ns`` (the wall clock, UTC) is read once before the fetch, so a
@@ -91,12 +106,13 @@ def warmup_seed(
     symbol = instrument_id.split(".", 1)[0]
     fetched_ns = now_ns()
     try:
-        body = fetch_body(symbol, fetched_ns // 1_000_000_000, get, sleep)
+        body = fetch_body(symbol, fetched_ns // 1_000_000_000, get, sleep, interval=interval, keep_bars=keep_bars)
         try:
             payload: object = json.loads(body)
         except (ValueError, UnicodeDecodeError) as exc:
             raise SeedRefusedError("not_json", str(exc)) from exc
-        bars = seed_bars(parse_candles(payload), INTERVAL_NS, fetched_ns, SEED_BARS, SEED_MIN_BARS)
+        interval_ns = INTERVALS_S[interval] * 1_000_000_000
+        bars = seed_bars(parse_candles(payload), interval_ns, fetched_ns, keep_bars, min_bars)
     except (SeedFetchError, SeedRefusedError) as exc:
         _failed(instrument_id, exc.reason, str(exc))
         return ()
@@ -110,6 +126,7 @@ def warmup_seed(
             "fields": {
                 "code": "warmup_seed_fetched",
                 "instrument": instrument_id,
+                "interval": interval,
                 "bars": len(bars),
                 "last_close_ns": bars[-1].ts_ns,
             }

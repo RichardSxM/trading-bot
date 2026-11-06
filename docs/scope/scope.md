@@ -37,6 +37,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 27 | Donchian scalp r2 | Slice 7 | in-progress |
 | 28 | Daily trend candidate (tsmom) | Slice 7 | done |
 | 29 | Market context candidates | Slice 7 | done |
+| 30 | Six vote trend (demo forward test) | Slice 7 | in-progress |
 | 17 | Hour level strategy candidates | Slice 7 | dropped |
 | 18 | Trade journal export | Slice 8 | done |
 | 19 | Go live with small capital | Slice 9 | in-progress |
@@ -531,6 +532,21 @@ Slower strategies (hold hours to days) driven by the perp market's own context i
 **Done when:** a pre check on the available history (our own recording since 2026-10-17 plus whatever funding, open interest, and basis history can be fetched free) has a recorded verdict per signal, and any signal that passes has a study with a recorded gate verdict.
 **Carried over from feature 20 (2026-10-04, an article, rules of thumb only):** funding above +0.05 % per period reads as crowded longs, below −0.02 % as crowded shorts; rising open interest in a tight range reads as pressure before a breakout. Hypotheses to test, not thresholds to hard code.
 - [x] Pre check (2026-11-05, no spec needed since nothing passed): Kraken's free hourly chart history on BTC, ETH, SOL, XRP (liquidations, mark and index since 2022-03, open interest since 2023-03, long/short ratio since 2023-05), development range only, holdout untouched. Five signals × holds of 4, 12, 24, 72 h = 20 trials. Pass bar: net of 14 bps, t at least 3, at least 30 trades, consistent across years and coins. Verdict per signal: basis fade (the funding proxy) **fail**, open interest flush fade **fail**, open interest build follow **fail**, liquidation spike fade **fail** (cascades tend to continue), long/short ratio contrarian **fail** (best, +12 to +42 bps net at 12 to 72 h, but t at most 1.5). 0 of 20 pass. Follow up the same day: the long/short signal with a take profit of 1, 2, or 3 % and a stop of 1 or 2 % (72 h time limit, 6 more trials, 26 in all) **fail**. Tighter exits are worse (1 % / 1 % nets −17 bps per trade, t −9), and the best (3 % / 2 %) nets +5 bps, t 0.8.
+
+### 30. Six vote trend (demo forward test) · in-progress
+Trade a coin on 1 hour bars only when six votes agree: its own EMA 200 trend, BTC's EMA 200 trend, 9/21 EMA, RSI 14 (55/45), a 20 bar breakout, and a volume spike. A maker entry falls back to market, a 3 ATR stop trails on every tick, and a trade ends after about 24 hours. It replaces r2 on the VPS demo on the same 12 coins as soon as it is promoted, with no lab screen and no gate, as a live forward test. From the 2026-11-06 research: about 870 backtest trials failed fresh data after fees; this rule made +70 and +33 bps a trade on the development year and −12 on the fresh year.
+**Done when:** every existing strategy hash is unchanged, the VPS demo runs `six_vote_trend` on the 12 coins with a `six_vote_values` line (V2 set) for each coin, and r2's last run is noted.
+spec [0029](../specs/0029-six-vote-trend/index.md) · code in [six_vote.py](../../packages/core/src/trading_core/strategy/six_vote.py), [six_vote_trend.py](../../packages/core/src/trading_core/node/six_vote_trend.py), [trader/paper_strategy.py](../../apps/trader/src/trader/paper_strategy.py), [trader/warmup.py](../../apps/trader/src/trader/warmup.py)
+
+- [x] Design it (spec): `/architect six vote trend`
+- [ ] Build it: `/develop six vote trend`
+  - [x] Hash baseline and thin thread: rule, node with the BTC vote, 1 hour seed, trader wiring, values log, laptop smoke (AC-1 to AC-3, AC-7, AC-8, AC-8a, AC-10, AC-11)
+  - [x] Order paths: stop modify spike, maker then market entry, tick trail with its switch, time exit, restart (AC-4 to AC-6, AC-9)
+  - [ ] Close out and switch: hashes, deploy, your promote, `PAPER_STRATEGY=six_vote_trend`, start checks per coin (AC-11, AC-12)
+- [ ] Verify it: `/check verify six vote trend`
+- [ ] Test it: `/test six vote trend`
+- [ ] Review it (fresh model): `/check review six vote trend`
+- [ ] Document it: `/document six vote trend`
 
 ### 17. Hour level strategy candidates · dropped
 The fallback set: trend following and mean reversion on 1h to 4h candles, tested in the candle lab.

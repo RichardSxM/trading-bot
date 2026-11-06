@@ -113,8 +113,8 @@ def test_r2_is_refused_outside_demo(r2, monkeypatch):
         donchian_scalp_r2_config(settings, uuid4(), BTC_PERP)
 
 
-def test_r1_and_r2_take_the_warmup_seed():
-    assert set(SEEDED_STRATEGIES) == {"donchian_scalp_r1", "donchian_scalp_r2"}
+def test_r1_r2_and_six_vote_trend_take_the_warmup_seed():
+    assert set(SEEDED_STRATEGIES) == {"donchian_scalp_r1", "donchian_scalp_r2", "six_vote_trend"}
 
 
 @pytest.mark.parametrize(("phase", "exiting"), [(Phase.EXITING, True), (Phase.PROTECTED, False), (Phase.FLAT, False)])
