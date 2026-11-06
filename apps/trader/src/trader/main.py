@@ -16,6 +16,7 @@ positions and stops are kept, and in demo the recording queue is drained or spil
 """
 
 import asyncio
+import functools
 import logging
 import os
 import signal
@@ -57,9 +58,16 @@ from sqlalchemy.orm import Session, sessionmaker
 from trader import paper_strategy
 from trader.coin_blocks import coin_blocks
 from trader.instrument_check import InstrumentCheck
-from trader.paper_strategy import SEEDED_STRATEGIES, StrategySettings, build_paper_strategy, paper_version
+from trader.paper_strategy import (
+    SEEDED_STRATEGIES,
+    SIX_SEED_BARS,
+    SIX_SEED_MIN_BARS,
+    StrategySettings,
+    build_paper_strategy,
+    paper_version,
+)
 from trader.snapshot_writer import log_writer_crash, write_heartbeats, write_snapshot
-from trader.warmup import warmup_seeds
+from trader.warmup import warmup_seed, warmup_seeds
 from trading_core import env_guard
 from trading_core.boot import boot
 from trading_core.control.consumer import ControlConsumer, Execute, Outcome
@@ -69,6 +77,7 @@ from trading_core.control.pause import pause_key
 from trading_core.control.records import PostgresCommandRecorder
 from trading_core.env_guard import SANDBOX, ExecClientAllowlist, allowed_exec_clients
 from trading_core.naming import node_id
+from trading_core.node import six_vote_trend
 from trading_core.node.context_feed import ContextFeedActor, ContextFeedConfig
 from trading_core.node.control import (
     ControlActor,
@@ -640,8 +649,9 @@ def run_node(
     every env a watchdog stops the node, and this returns 1 with no backoff, when the trader is
     not running ``RECONCILE_NAUTILUS_TIMEOUT_S`` + 30 s after the build (AC-5).
 
-    ``seeds`` is ``donchian_scalp_r1``'s or ``donchian_scalp_r2``'s warmup candles per coin, fetched before the node
-    (spec 0025 AC-7, spec 0026 AC-16).
+    ``seeds`` is ``donchian_scalp_r1``'s, ``donchian_scalp_r2``'s, or ``six_vote_trend``'s warmup candles per coin,
+    fetched before the node (spec 0025 AC-7, spec 0026 AC-16, spec 0029 AC-8). ``six_vote_trend`` also gets BTC's
+    seed as ``btc_seed``; its config builder requires BTC in ``PAPER_INSTRUMENTS``, so BTC's seed is fetched once.
     """
     env = settings.trading_env
     if env == "live" and exchange is None:
@@ -782,6 +792,8 @@ def run_node(
                 record,
                 paper.ledger,
                 () if seeds is None else seeds.get(coin, ()),
+                # Every six_vote_trend coin reads BTC's trend from BTC's seed (spec 0029 AC-8); the others ignore it.
+                () if seeds is None else seeds.get(six_vote_trend.BTC_INSTRUMENT_ID, ()),
             )
             node.trader.add_strategy(strategy)
             views.append(coin_view)
@@ -1042,7 +1054,7 @@ def main() -> None:
 
     # Before the node exists, never on its event loop; a failure is an empty seed and a warning (spec 0025 AC-9).
     seeded = paper is not None and settings.paper_strategy in SEEDED_STRATEGIES
-    seeds = warmup_seeds(settings.instrument_list) if seeded else {}
+    seeds = warmup_seeds(settings.instrument_list, seed_fetch(settings.paper_strategy)) if seeded else {}
 
     code = run_node(
         config,
@@ -1056,6 +1068,13 @@ def main() -> None:
     )
     if code:
         sys.exit(code)
+
+
+def seed_fetch(strategy: str) -> Callable[[str], tuple[BarInput, ...]]:
+    """The seed fetch for ``strategy``: 1 hour candles (300, at least 250) for ``six_vote_trend``, else 5 minute."""
+    if strategy == six_vote_trend.STRATEGY_NAME:
+        return functools.partial(warmup_seed, interval="1h", keep_bars=SIX_SEED_BARS, min_bars=SIX_SEED_MIN_BARS)
+    return warmup_seed
 
 
 if __name__ == "__main__":

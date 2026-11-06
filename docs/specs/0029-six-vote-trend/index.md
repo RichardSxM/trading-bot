@@ -1,7 +1,7 @@
 # 0029. six_vote_trend: a six vote confluence strategy on 1 hour bars, demo forward test
 
 **Date**: 2026-11-06
-**Status**: Proposed
+**Status**: In Progress
 
 ## Summary
 
