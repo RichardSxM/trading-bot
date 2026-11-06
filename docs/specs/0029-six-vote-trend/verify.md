@@ -74,3 +74,31 @@ Built with `GIT_COMMIT=$(git rev-parse HEAD)` (a laptop build without it hits `R
 - No ERROR lines, no `seed_stale`, no `btc_bar_late`.
 
 The stack came down after.
+
+## VPS switch (task 4, AC-12)
+
+PR #129 merged as `c6a9548`. Deployed with `scripts/deploy.sh` (`--no-deps`), done at 2026-11-06 15:35:45 UTC (16:35 Amsterdam), previous release `45d4b3b`.
+
+**Changes to `/etc/kfs/kfs.env`** (backup at `/etc/kfs/kfs.env.bak-20261106-sixvote`):
+
+- `PAPER_STRATEGY=six_vote_trend` (was `donchian_scalp_r2`). `PAPER_INSTRUMENTS` unchanged, the 12 coins with BTC.
+- **AC-12 knowingly broken at your request:** the `RISK_*` lines did not stay unchanged. r2 had hit the daily loss limit that day, and you asked for the loss limits to be off for demo testing. So `RISK_DAILY_LOSS_LIMIT_USD=1000000` (was 50), plus new lines `RISK_TOTAL_LOSS_LIMIT_USD=1000000` (was the compose default 100) and `RISK_LOSS_COOLDOWN_S=0` (was the default 600). Every other `RISK_*` line is unchanged. Put them back from the backup before any real evaluation.
+- r2's halt row (`risk_events` id `01a1b16d-5132-7259-85f3-49498dde82c9`, `daily_loss_limit`, 2026-11-06 15:14:53 UTC) was saved to `/etc/kfs/halt-row-20261106.json` and deleted. The trader still started halted, because the halt also lives in the trader's own state. It flattened, and was resumed at 15:35:47 UTC. `loss_seeded` then showed `daily_tripped` false.
+
+**Versions.** Since `RISK_*` is part of the version config, each change made a new version:
+
+- `01a1b177-a271-7437-b8c0-c57a4265b64f`: promoted by hand, then unused (the cooldown change came after it).
+- `01a1b17a-dabf-7614-811a-90d1319c1bd4`: promoted by hand (`candidate → paper`). This is the version running.
+
+**Runs.**
+
+- r2's last run: `01a1add5-ed87-772b-90a8-b5a25e512b54` (version `01a1adbb`), from 2026-11-05 22:30:40 UTC to 2026-11-06 15:34:57 UTC (16:34 Amsterdam), status aborted. This ends r2's demo week early.
+- six_vote_trend's first run: `01a1b17f-b083-748d-abde-b19ca9e532e3`, started 2026-11-06 15:34:57 UTC (16:34 Amsterdam).
+
+**Start checks.**
+
+- At start: `warmup_seed_fetched` with 300 one hour bars for all 12 coins. No `warmup_seed_failed`, no `seed_stale`.
+- At 16:00 UTC (17:00 Amsterdam, the join bar): `warmup_seed_fed` 12 times, `btc_seed_fed` 11 times (every coin but BTC). No ERROR, no CRITICAL.
+- At 17:00 UTC (18:00 Amsterdam, the second live close): one `six_vote_values` line for each of the 12 coins, each with `score` and all six votes. V2 is −1 on every coin (BTC under its EMA 200), so BTC's vote is ready and gets through. No entry: scores ran from −4 (UNI) to +2 (ZEC). No ERROR, no CRITICAL, no `seed_stale`, no `seed_failed`.
+- The BTC warning `Aggregator for PF_XBTUSD.KRAKEN-1-HOUR-LAST-INTERNAL is currently in use` is expected: the instances share one aggregator. The `context_message_bad` warnings (`unknown_trade_type`) come from the market context feed, not this strategy.
+- The coins showing on the dashboard Overview was not checked here. It is left for `/check verify`.
