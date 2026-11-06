@@ -546,7 +546,7 @@ spec [0029](../specs/0029-six-vote-trend/index.md) · code in [six_vote.py](../.
 - [x] Verify it: `/check verify six vote trend`
 - [x] Test it: `/test six vote trend`
 - [x] Review it (fresh model): `/check review six vote trend`
-- [ ] Document it: `/document six vote trend`
+- [x] Document it: `/document six vote trend`
 
 ### 17. Hour level strategy candidates · dropped
 The fallback set: trend following and mean reversion on 1h to 4h candles, tested in the candle lab.
