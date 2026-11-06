@@ -243,6 +243,29 @@ def test_a_rejected_fallback_raises_the_order_rejected_event_and_goes_flat():
     assert strategy.phase == Phase.FLAT
 
 
+class _LosesFallback(_Scripted):
+    """The venue cancels the fallback market before it fills."""
+
+    def submit_order(self, order, *args, **kwargs):
+        if order.order_type == OrderType.MARKET and not order.is_reduce_only:
+            self._canceled(order.client_order_id, "canceled")
+            return
+        super().submit_order(order, *args, **kwargs)
+
+
+def test_a_lost_fallback_market_warns_and_goes_flat(caplog):
+    # covers: AC-4 (fallback failures: a cancel of the fallback market)
+    with caplog.at_level(logging.INFO):
+        engine, strategy, rows = _go(_LosesFallback, prices=RISE)
+
+    [lost] = [r for r in caplog.records if getattr(r, "fields", {}).get("code") == "entry_fallback_lost"]
+    assert lost.levelno == logging.WARNING
+    assert engine.cache.positions_open(instrument_id=COIN_ID) == []
+    assert _orders(engine, OrderType.STOP_MARKET) == []
+    assert len(_decisions(rows)) == 1
+    assert strategy.phase == Phase.FLAT
+
+
 def test_a_filled_limit_needs_no_fallback(caplog):
     with caplog.at_level(logging.INFO):
         engine, _, _ = _go(prices=FILL)
@@ -325,21 +348,25 @@ class _RefusesModify(_Scripted):
             super().modify_order(order, quantity, price, trigger_price, *args, **kwargs)
             return
         self.calls = getattr(self, "calls", 0) + 1
-        now = self.clock.timestamp_ns()
-        self.on_order_modify_rejected(
-            OrderModifyRejected(
-                self.trader_id,
-                self.id,
-                order.instrument_id,
-                order.client_order_id,
-                order.venue_order_id,
-                order.account_id,
-                "no",
-                UUID4(),
-                now,
-                now,
-            )
+        _reject_modify(self, order)
+
+
+def _reject_modify(strategy, order):
+    now = strategy.clock.timestamp_ns()
+    strategy.on_order_modify_rejected(
+        OrderModifyRejected(
+            strategy.trader_id,
+            strategy.id,
+            order.instrument_id,
+            order.client_order_id,
+            order.venue_order_id,
+            order.account_id,
+            "no",
+            UUID4(),
+            now,
+            now,
         )
+    )
 
 
 def test_five_refusals_in_a_row_disable_the_trail_and_the_stop_stays(caplog):
@@ -352,6 +379,31 @@ def test_five_refusals_in_a_row_disable_the_trail_and_the_stop_stays(caplog):
     [stop] = _orders(engine, OrderType.STOP_MARKET)
     assert stop.trigger_price.as_decimal() == D(str(_decisions(rows)[0].inputs["stop"]))
     assert stop.status == OrderStatus.ACCEPTED
+
+
+class _RefusesEveryOther(_Scripted):
+    """The venue refuses every odd trail modify and takes every even one."""
+
+    def modify_order(self, order, quantity=None, price=None, trigger_price=None, *args, **kwargs):
+        if trigger_price is not None:
+            self.calls = getattr(self, "calls", 0) + 1
+            if self.calls % 2:
+                _reject_modify(self, order)
+                return
+        super().modify_order(order, quantity, price, trigger_price, *args, **kwargs)
+
+
+def test_a_taken_modify_resets_the_refusal_count(caplog):
+    # covers: AC-5 (the trail is disabled only after trail_max_refusals refusals in a row)
+    with caplog.at_level(logging.INFO):
+        engine, strategy, _ = _go(_RefusesEveryOther, prices=FILL, trail_max_refusals=2)
+
+    assert strategy.calls >= 3  # refused, taken, refused: two refusals, never two in a row
+    assert _codes(caplog).count("stop_trail_rejected") >= 2
+    assert "stop_trail_disabled" not in _codes(caplog)
+    assert "stop_trailed" in _codes(caplog)
+    [stop] = _orders(engine, OrderType.STOP_MARKET)
+    assert strategy._stop_px == stop.trigger_price.as_decimal()
 
 
 # The time exit (AC-6) -----------------------------------------------------------------------
@@ -407,3 +459,26 @@ def test_a_resumed_position_trails_only_once_the_atr_is_back_and_only_tighter():
     triggers = [e.trigger_price.as_decimal() for e in moves]
     assert triggers == sorted(set(triggers))
     assert strategy._stop_px == stop.trigger_price.as_decimal()
+
+
+class _LateRestart(_Restart):
+    """Loses its trade state at 6.5 minutes and is handed the open position only at 9.6, past a 3 bar time stop."""
+
+    def on_start(self):
+        SixVoteTrend.on_start(self)
+        self.clock.set_time_alert_ns("test_forget", _min(6.5), self._forget)
+        self.clock.set_time_alert_ns("test_resume", _min(9.6), self._resume)
+
+
+def test_a_position_resumed_past_the_time_stop_exits_at_once_at_market():
+    # covers: AC-9 (past time_stop_bars at resume: a market exit as time_stop with resumed true)
+    engine, strategy, rows = _go(_LateRestart, prices=FILL_FLAT, time_stop_bars=3)
+
+    exits = [d for d in _decisions(rows) if d.intent == Intent.EXIT]
+    [exit_] = exits
+    assert (exit_.reason, exit_.inputs["resumed"]) == ("time_stop", True)
+    assert exit_.decided_ns == _min(9.6)
+    [market] = _orders(engine, OrderType.MARKET, reduce_only=True)
+    assert market.status == OrderStatus.FILLED
+    assert engine.cache.positions_open(instrument_id=COIN_ID) == []
+    assert strategy.phase == Phase.FLAT
