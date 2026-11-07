@@ -78,6 +78,15 @@ def result_slot(fields: Fields) -> TraderSlot | None:
         return None
 
 
+def event_key(slot: TraderSlot, key: str) -> str:
+    """A ``risk_events.event_key`` for the slot: ``key`` itself for ``main``, ``<key>:portfolio`` else.
+
+    Both traders read the same commands, so an event keyed by a command id (``halt:<id>``, ``resume:<id>``) or
+    by a day (``trade_cap:<day>``) would collide on ``(env, event_key)`` without the slot (spec 0030 AC-15).
+    """
+    return key if slot is TraderSlot.MAIN else f"{key}:{slot.value}"
+
+
 # The commands the ``portfolio`` slot executes (AC-14); any other gets ``failed: not_for_slot``.
 PORTFOLIO_COMMANDS: Final = frozenset({"stop", "resume", "pause", "unpause"})
 

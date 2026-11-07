@@ -12,9 +12,10 @@ from uuid import uuid7
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from trading_core.control.slots import TraderSlot
 from trading_core.recording import models, repository
 from trading_core.recording.enums import Env, PositionSide, PositionStatus, RiskEventKind, RunMode, Severity
-from trading_core.recording.queries import loss_seed
+from trading_core.recording.queries import loss_seed, trade_cap_event_key
 from trading_core.recording.rows import PositionSnapshotRow, RiskEventRow
 
 from .conftest import World
@@ -209,3 +210,27 @@ def test_another_trader_s_runs_and_events_are_left_out(session: Session, world: 
     assert not mine.daily_halt_today
     assert theirs.realized_today == Decimal(-9)
     assert theirs.daily_halt_today
+
+
+def test_the_portfolio_s_trade_cap_event_has_its_own_key(session: Session, world: World):
+    """covers: spec 0030 AC-15 (both traders can note the same day's trade cap)"""
+    assert trade_cap_event_key(DAY.date(), TraderSlot.PORTFOLIO) == f"trade_cap:{DAY.date().isoformat()}:portfolio"
+    repository.record_risk_event(
+        session,
+        RiskEventRow(
+            env=Env.DEMO,
+            event_key=trade_cap_event_key(DAY.date(), TraderSlot.PORTFOLIO),
+            kind=RiskEventKind.LIMIT_HIT,
+            severity=Severity.WARNING,
+            message="trade cap reached",
+            details={"trades_today": 100, "max_trades_per_day": 100},
+            run_id=world.run_id,
+            occurred_ns=_ns(DAY + timedelta(hours=20)),
+        ),
+    )
+    trader_id = _trader(session, world)
+
+    assert loss_seed(
+        session, Env.DEMO, RunMode.PAPER, DAY, TOTAL_SINCE, trader_id=trader_id, slot=TraderSlot.PORTFOLIO
+    ).trade_cap_noted_today
+    assert not _seed(session, world).trade_cap_noted_today

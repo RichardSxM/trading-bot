@@ -41,6 +41,8 @@ from trading_core.node.control import (
 )
 from trading_core.node.strategy import KfsStrategy, KfsStrategyConfig, PauseGate
 from trading_core.recording.enums import ControlCmd, ControlOutcome, ControlSource
+from trading_core.recording.rows import RiskEventRow
+from trading_core.recording.spool import WriteItem
 
 NOW = datetime(2026, 10, 3, 9, 30, tzinfo=UTC)
 KEY = "demo:trader:pause"
@@ -656,3 +658,25 @@ def test_a_portfolio_automatic_halt_writes_only_its_own_key():
     asyncio.run(run())
 
     assert list(redis.values) == ["demo:trader:portfolio:halt"]
+
+
+def test_both_traders_record_the_same_stop_under_their_own_event_keys():
+    """covers: spec 0030 AC-15 (a stop read by both traders: main's key unchanged, the portfolio's suffixed)"""
+    msg = stop_command(NOW, 60)
+    keys = {}
+    for slot in (TraderSlot.MAIN, TraderSlot.PORTFOLIO):
+        gate = PauseGate()
+        gate.unpause()
+        kill_switch = KillSwitch(
+            gate, FakeRiskEngine(), FakeRedis(), "demo", lambda: NOW, _Cache(positions=0), 20, poll_s=0.001, slot=slot
+        )
+        written: list[WriteItem] = []
+        kill_switch.attach([], written.append, uuid.uuid4())
+        asyncio.run(kill_switch.stop(msg))
+        asyncio.run(kill_switch.resume(msg))
+        rows = [item.row for item in written]
+        assert all(isinstance(row, RiskEventRow) for row in rows)
+        keys[slot] = [row.event_key for row in rows if isinstance(row, RiskEventRow)]
+
+    assert keys[TraderSlot.MAIN] == [f"halt:{msg.id}", f"resume:{msg.id}"]
+    assert keys[TraderSlot.PORTFOLIO] == [f"halt:{msg.id}:portfolio", f"resume:{msg.id}:portfolio"]

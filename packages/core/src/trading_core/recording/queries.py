@@ -19,7 +19,7 @@ from sqlalchemy import ColumnElement, Date, String, and_, cast, func, literal, o
 from sqlalchemy.orm import InstrumentedAttribute, Session, aliased
 from sqlalchemy.sql.selectable import LateralFromClause
 
-from trading_core.control.slots import TraderSlot
+from trading_core.control.slots import TraderSlot, event_key
 from trading_core.journal.summary import PositionFigures, Snapshot
 from trading_core.recording import models
 from trading_core.recording.enums import (
@@ -594,13 +594,21 @@ class LossSeed:
     trade_cap_noted_today: bool = False
 
 
-def trade_cap_event_key(day: date) -> str:
-    """The ``risk_events.event_key`` of the one ``trade_cap`` event of a UTC day (spec 0010 AC-11)."""
-    return f"trade_cap:{day.isoformat()}"
+def trade_cap_event_key(day: date, slot: TraderSlot = TraderSlot.MAIN) -> str:
+    """The ``risk_events.event_key`` of the slot's one ``trade_cap`` event of a UTC day (spec 0010 AC-11,
+    spec 0030 AC-15): ``trade_cap:<day>`` for ``main``, ``trade_cap:<day>:portfolio`` else."""
+    return event_key(slot, f"trade_cap:{day.isoformat()}")
 
 
 def loss_seed(
-    session: Session, env: Env, mode: RunMode, day_start: datetime, total_since: datetime, *, trader_id: str
+    session: Session,
+    env: Env,
+    mode: RunMode,
+    day_start: datetime,
+    total_since: datetime,
+    *,
+    trader_id: str,
+    slot: TraderSlot = TraderSlot.MAIN,
 ) -> LossSeed:
     """The loss figures of ``env``'s ``mode`` runs of ``trader_id``: realized today and since ``total_since``,
     today's opened positions, the newest losing close, whether a ``daily_loss_limit`` halt was recorded today,
@@ -669,7 +677,7 @@ def loss_seed(
     trade_cap = session.execute(
         select(event.id)
         .join(run, run.id == event.run_id)
-        .where(own, event.env == env, event.event_key == trade_cap_event_key(day_start.date()))
+        .where(own, event.env == env, event.event_key == trade_cap_event_key(day_start.date(), slot))
     ).first()
     payment = models.FundingPayment
     payments = session.execute(

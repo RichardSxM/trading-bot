@@ -633,7 +633,7 @@ def loss_limit_actor(
 
     def read_seed(day_start: datetime, total_since: datetime) -> LossSeed:
         with sessions() as session:
-            return loss_seed(session, env, mode, day_start, total_since, trader_id=trader_id)
+            return loss_seed(session, env, mode, day_start, total_since, trader_id=trader_id, slot=settings.trader_slot)
 
     actor = LossLimitActor(
         limits=loss_limits(settings),
@@ -643,6 +643,7 @@ def loss_limit_actor(
         blocks=blocks,
         record=None if paper is None else paper.writer.put,
         run_id=None if paper is None else paper.run_id,
+        slot=settings.trader_slot,
     )
     kill_switch.watch_losses(actor)
     return actor

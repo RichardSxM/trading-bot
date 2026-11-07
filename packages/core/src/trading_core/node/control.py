@@ -245,6 +245,7 @@ class KillSwitch:
         self._risk_engine = risk_engine
         self._client = client
         self._env = Env(env)
+        self._slot = slot
         self._key = slots.halt_key(slot, env)
         self._pause_key = slots.pause_key(slot, env)
         self._now = now
@@ -567,6 +568,7 @@ class KillSwitch:
             )
 
     def _event(self, key: str, kind: RiskEventKind, severity: Severity, message: str, details: JsonObject) -> None:
+        key = slots.event_key(self._slot, key)  # the other trader records the same command id
         log.log(_LOG_LEVELS[severity], message, extra={"fields": {"code": kind.value, "event_key": key}})
         if self._record is None:
             return  # live: no run to record under yet (spec 0010 AC-7)

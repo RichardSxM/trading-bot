@@ -8,6 +8,7 @@ from trading_core.control.slots import (
     TraderSlot,
     consumer_name,
     control_group,
+    event_key,
     executes,
     group_start,
     halt_key,
@@ -53,3 +54,9 @@ def test_main_executes_every_command_and_portfolio_only_four():
     assert all(executes(TraderSlot.MAIN, cmd.value) for cmd in ControlCmd)
     allowed = {cmd for cmd in ControlCmd if executes(TraderSlot.PORTFOLIO, cmd.value)}
     assert allowed == {ControlCmd.STOP, ControlCmd.RESUME, ControlCmd.PAUSE, ControlCmd.UNPAUSE}
+
+
+def test_event_keys_are_main_s_as_before_and_suffixed_for_portfolio():
+    """covers: spec 0030 AC-15 (the same stop recorded by both traders never collides)"""
+    assert event_key(TraderSlot.MAIN, "halt:abc") == "halt:abc"
+    assert event_key(TraderSlot.PORTFOLIO, "halt:abc") == "halt:abc:portfolio"

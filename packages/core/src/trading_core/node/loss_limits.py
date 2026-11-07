@@ -25,6 +25,7 @@ from nautilus_trader.common.config import ActorConfig
 from nautilus_trader.model.events import PositionClosed, PositionOpened
 
 from trading_core.control.messages import format_utc
+from trading_core.control.slots import TraderSlot
 from trading_core.node.control import KillSwitch, Record
 from trading_core.node.funding import FUNDING_BOOKED_TOPIC, FundingBooked
 from trading_core.recording.enums import Env, RiskEventKind, Severity
@@ -101,10 +102,12 @@ class LossLimitActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
         record: Record | None = None,
         run_id: UUID | None = None,
         seed_retry_s: float = SEED_RETRY_S,
+        slot: TraderSlot = TraderSlot.MAIN,
     ) -> None:
         super().__init__(ActorConfig(component_id="LossLimitActor"))
         self._limits = limits
         self._env = env
+        self._slot = slot
         self._read_seed = read_seed
         self._kill_switch = kill_switch
         self._blocks = blocks
@@ -301,7 +304,7 @@ class LossLimitActor(Actor):  # type: ignore[misc]  # Actor is Cython with no st
         if BlockReason.TRADE_CAP in verdict.blocks and self._trade_cap_noted != day:
             self._trade_cap_noted = day
             self._event(
-                trade_cap_event_key(tally.day),
+                trade_cap_event_key(tally.day, self._slot),
                 RiskEventKind.LIMIT_HIT,
                 Severity.WARNING,
                 f"trade cap of {self._limits.max_trades_per_day} reached; entries blocked until midnight UTC",
