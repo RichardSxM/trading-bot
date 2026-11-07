@@ -1,0 +1,72 @@
+{# The Portfolio page's board (spec 0030 AC-19 to AC-21), from live.portfolio.PortfolioView. States:
+   running (the summary, then one row per coin), not_running (no heartbeat, or one past the red limit,
+   with the time last seen), bad (a heartbeat that does not parse), lost (Redis unreadable). The last
+   portfolio command shows in every state but lost. Signals are words, never colour alone. #}
+{% from "components/states.html" import error_state, empty_state %}
+{% from "components/badge.html" import badge %}
+{%- macro last_command(command) -%}
+{%- if command is not none %}
+  <div class="figures__row"><dt>Last command</dt><dd>{% if command.cmd %}{{ command.cmd }} · {% endif %}{{ badge(command.text, "ok" if command.level == "ok" else "bad" if command.level == "bad" else "warn" if command.level == "warn" else "neutral") }} <span class="figures__note">{{ command.age }}</span></dd></div>
+{%- else %}
+  <div class="figures__row"><dt>Last command</dt><dd><span class="figures__note">none yet</span></dd></div>
+{%- endif %}
+{%- endmacro -%}
+<div class="portfolio portfolio--{{ view.status }}">
+{%- if view.status == "lost" %}
+  {{ error_state("Portfolio unavailable: no data from Redis", "The dashboard can't read Redis; this page updates once it can.") }}
+{%- elif view.status == "bad" %}
+  {{ error_state("Portfolio heartbeat unreadable", "The portfolio trader wrote a heartbeat the dashboard does not understand; check its logs.") }}
+  <dl class="figures">{{ last_command(view.last_command) }}</dl>
+{%- elif view.status == "not_running" %}
+  {{ error_state("Portfolio trader not running", " Nothing here is live until it is back.") }}
+  <p class="figures__unavailable">{% if view.last_seen is not none %}Last seen {{ view.last_seen|ts }} · {{ view.last_seen|local_hm }} Amsterdam.{% else %}Never seen on this env.{% endif %}</p>
+  <dl class="figures">{{ last_command(view.last_command) }}</dl>
+{%- else %}
+  <dl class="figures portfolio__summary">
+    <div class="figures__row"><dt>Trader</dt><dd>{{ badge(view.state_text, "ok" if view.state_level == "ok" else "bad" if view.state_level == "bad" else "warn") }} <span class="figures__note">{{ view.age.text }} old</span></dd></div>
+    <div class="figures__row"><dt>Equity</dt><dd>{% if view.equity is not none %}<span class="num">{{ view.equity|num }}</span> <span class="figures__unit">USD</span>{% else %}<span class="figures__note">not known yet</span>{% endif %}</dd></div>
+    <div class="figures__row"><dt>Gross leverage</dt><dd>{% if view.gross_leverage is not none %}<span class="num">{{ view.gross_leverage|num }}</span><span class="figures__unit">×</span>{% else %}<span class="figures__note">not known yet</span>{% endif %}</dd></div>
+    <div class="figures__row"><dt>Realized since start</dt><dd>{% if view.realized is not none %}{{ view.realized|pnl }} <span class="figures__unit">USD, net of fees and funding</span>{% else %}<span class="figures__note">unavailable</span>{% endif %}</dd></div>
+    <div class="figures__row"><dt>Last rebalance</dt><dd>{% if view.last_rebalance is not none %}{{ view.last_rebalance|ts }} · {{ view.last_rebalance|local_hm }} Amsterdam{% if view.last_reason %} <span class="figures__note">{{ view.last_reason }}</span>{% endif %}{% else %}<span class="figures__note">none yet</span>{% endif %}</dd></div>
+    <div class="figures__row"><dt>Next rebalance</dt><dd>{% if view.next_rebalance is not none %}{{ view.next_rebalance|ts }} · {{ view.next_rebalance|local_hm }} Amsterdam{% else %}<span class="figures__note">after the first plan</span>{% endif %}</dd></div>
+    <div class="figures__row"><dt>Failed coins</dt><dd>{% if view.failed %}<span class="figures__warn">{{ view.failed|join(", ") }}</span>{% else %}none{% endif %}</dd></div>
+    {{ last_command(view.last_command) }}
+  </dl>
+  {%- if not view.rows %}
+  {{ empty_state("No plan or position yet. The first plan lands once the daily history is loaded.", glyph="chart-pie") }}
+  {%- else %}
+  {%- if not view.has_plan %}
+  <p class="figures__unavailable">No plan yet: the rows show positions only.</p>
+  {%- endif %}
+  <div class="table-wrap">
+    <table class="table portfolio__table">
+      <caption class="visually-hidden">Trend portfolio, one row per coin</caption>
+      <thead><tr>
+        <th scope="col">Coin</th><th scope="col">30 day signal</th><th scope="col" class="is-num">Target weight</th>
+        <th scope="col" class="is-num">Target USD</th><th scope="col" class="is-num">Target size</th>
+        <th scope="col">Position</th><th scope="col" class="is-num">Unrealized P&amp;L</th>
+      </tr></thead>
+      <tbody>
+      {%- for row in view.rows %}
+        <tr{% if row.failed %} class="is-failed"{% endif %}>
+          <th scope="row">{{ row.base }}{% if row.failed %} {{ badge("failed", "bad") }}{% endif %}</th>
+          <td class="portfolio__signal portfolio__signal--{{ row.signal|lower|replace(' ', '-') }}">{{ row.signal }}</td>
+          <td class="is-num">{% if row.weight_pct is not none %}{{ row.weight_pct|num }}%{% else %}·{% endif %}</td>
+          <td class="is-num">{% if row.target_usd is not none %}{{ row.target_usd|num }}{% else %}·{% endif %}</td>
+          <td class="is-num">{% if row.target_qty is not none %}{{ row.target_qty|num }} <span class="figures__unit">{{ row.base }}</span>{% else %}·{% endif %}</td>
+          <td>
+          {%- set p = row.position %}
+          {%- if p is none or p.status == "unknown" %}<span class="figures__note">unknown</span>
+          {%- elif p.status == "bad" %}<span class="figures__warn">unreadable</span>
+          {%- elif p.status == "flat" %}Flat
+          {%- else %}<span class="figures__side figures__side--{{ p.side }}">{{ p.side }}</span> <span class="num">{{ p.quantity.copy_abs()|num }}</span>{% endif -%}
+          </td>
+          <td class="is-num">{% if p is not none and p.status == "open" and p.unrealized is not none %}{{ p.unrealized|pnl }}{% else %}·{% endif %}</td>
+        </tr>
+      {%- endfor %}
+      </tbody>
+    </table>
+  </div>
+  {%- endif %}
+{%- endif %}
+</div>

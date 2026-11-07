@@ -733,6 +733,7 @@ def trader_state(
     kill_switch: KillSwitch | None = None,
     losses: Callable[[], Mapping[str, object]] | None = None,
     reconcile: Callable[[], Mapping[str, object]] | None = None,
+    run_id: uuid.UUID | None = None,
 ) -> Mapping[str, object] | None:
     """The ``trader_state`` snapshot data (AC-7) from the gate, the risk engine, and the cache.
 
@@ -741,7 +742,9 @@ def trader_state(
     the pause, so the dashboard reads one shape in every env (spec 0006 AC-16). The halt, and the
     loss figures from ``losses`` (``LossLimitActor.snapshot_fields``), are spec 0010 AC-16's; without
     ``losses`` every loss field is null, as before the seed lands. The check fields from ``reconcile``
-    (``ReconcileActor.snapshot_fields``) are spec 0023 AC-19's; without it they are null.
+    (``ReconcileActor.snapshot_fields``) are spec 0023 AC-19's; without it they are null. ``run_id`` (the
+    paper run) adds a ``run_id`` field, so the Portfolio page can read that run's realized P&L (spec 0030
+    AC-21); without one the field is left out and the shape is as before.
     """
     if not gate.loaded:
         return None
@@ -778,6 +781,7 @@ def trader_state(
         "flattening": kill_switch.flattening if kill_switch is not None else False,
         **(losses() if losses is not None else NO_LOSS_FIELDS),
         **(reconcile() if reconcile is not None else NO_RECONCILE_FIELDS),
+        **({} if run_id is None else {"run_id": str(run_id)}),
     }
 
 

@@ -610,3 +610,13 @@ time[title] { text-decoration: underline dotted var(--edge); text-underline-offs
 .journal-panel__refused { display: flex; gap: var(--space-12); align-items: flex-start; color: var(--warn); }
 .journal-panel__refused p { margin: 0; color: var(--text); }
 .journal-panel__icon .icon { width: 20px; height: 20px; }
+
+/* The Portfolio page (spec 0030 AC-19 to AC-21): the summary as Figures rows, then one table row per coin. */
+.portfolio { display: grid; gap: var(--space-16); }
+.portfolio__table tbody th {
+  position: static; background: none; color: var(--text); font-size: var(--type-label-size); font-weight: 600;
+  border-bottom: 1px solid var(--rule);
+}
+.portfolio__table tbody tr:last-child th { border-bottom: 0; }
+.portfolio__signal { font-weight: 500; }
+.portfolio__signal--not-eligible, .portfolio__signal--no-plan-yet { color: var(--muted); font-weight: 400; }

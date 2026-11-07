@@ -808,6 +808,7 @@ def run_node(
                 control.kill_switch,
                 losses.snapshot_fields,
                 reconcile.snapshot_fields,
+                run_id=None if paper is None else paper.run_id,
             ),
         ),
     ]

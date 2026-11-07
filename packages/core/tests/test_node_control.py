@@ -456,6 +456,19 @@ def test_trader_state_reports_the_pause_and_the_counts():
     }
 
 
+def test_trader_state_names_the_paper_run_only_when_there_is_one():
+    """covers: spec 0030 AC-21 (the Portfolio page reads its run's realized P&L by this ``run_id``)"""
+    gate = PauseGate()
+    gate.unpause()
+    run = uuid.uuid4()
+    named = trader_state(gate, FakeRiskEngine(), _book(), "a" * 40, run_id=run)
+    unnamed = trader_state(gate, FakeRiskEngine(), _book(), "a" * 40)
+    assert named is not None
+    assert unnamed is not None
+    assert named["run_id"] == str(run)
+    assert "run_id" not in unnamed
+
+
 def test_trader_state_reports_the_halt_and_the_loss_fields():
     """covers: spec 0010 AC-16"""
     gate = PauseGate()

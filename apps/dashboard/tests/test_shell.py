@@ -58,7 +58,7 @@ def test_every_nav_page_shows_the_shell_its_empty_state_and_marks_itself_current
     assert re.search(r'<span class="empty-state__icon"><svg class="icon"', page)  # its line icon (verify step 19)
     assert 'id="stop-area"' in page
     links = re.findall(r'<a class="nav__item[^"]*" href="([^"]+)"', page)
-    assert links == ["/", "/trades", "/strategies", "/system"]
+    assert links == ["/", "/trades", "/strategies", "/portfolio", "/system"]
     assert re.search(rf'<a class="nav__item is-current" href="{re.escape(path)}" aria-current="page">', page)
     assert page.count('aria-current="page"') == 1
 
@@ -124,8 +124,14 @@ def test_no_page_has_inline_script_inline_style_hx_on_or_another_origin(logged_i
 
 # --- gaps found against spec 0004 (/test pass)
 
-SHELL_PAGES = ("/", "/trades", "/strategies", "/system", "/styleguide")
-TITLES = {"/": "Overview", "/trades": "Trades", "/strategies": "Strategies", "/system": "System"}
+SHELL_PAGES = ("/", "/trades", "/strategies", "/portfolio", "/system", "/styleguide")
+TITLES = {
+    "/": "Overview",
+    "/trades": "Trades",
+    "/strategies": "Strategies",
+    "/portfolio": "Portfolio",
+    "/system": "System",
+}
 TITLES["/styleguide"] = "Styleguide"
 
 
@@ -207,14 +213,15 @@ def test_every_nav_page_has_the_whole_top_bar(logged_in, path):
 
 
 def test_the_nav_names_each_page(logged_in):
-    """covers: AC-6"""
+    """covers: AC-6; spec 0030 AC-19 (Portfolio sits between Strategies and System)"""
     page = logged_in.get("/").text
     nav = page[page.index('<nav class="nav" aria-label="Pages">') :]
     nav = nav[: nav.index("</nav>")]
-    assert re.findall(r"<span[^>]*>(Overview|Trades|Strategies|System)</span>", nav) == [
+    assert re.findall(r"<span[^>]*>(Overview|Trades|Strategies|Portfolio|System)</span>", nav) == [
         "Overview",
         "Trades",
         "Strategies",
+        "Portfolio",
         "System",
     ]
 
@@ -325,6 +332,7 @@ def test_the_event_stream_carries_the_security_headers(logged_in, monkeypatch):
         "overview-blocked",
         "system-losses",
         "overview-mute",
+        "portfolio-board",
     }
     assert "event: topbar-age\n" in response.text
 

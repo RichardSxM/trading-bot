@@ -136,6 +136,13 @@ def failure_words(reason: str | None) -> str | None:
     return FAILURE_WORDS.get(reason, reason)
 
 
+def outcome_words(result: ControlResult) -> tuple[str, CommandLevel]:
+    """A result's words and level as the top bar shows them: ``confirmed``, ``failed · not flat yet``."""
+    label, level, _, _ = _OUTCOMES[result.outcome]
+    words = failure_words(result.reason) if result.outcome is ControlOutcome.FAILED else None
+    return (label if words is None else f"{label} · {words}"), level
+
+
 def ago(seconds: float) -> str:
     """A short elapsed time: ``12s ago`` under a minute, ``3m ago`` under an hour, else ``2h ago``.
 
