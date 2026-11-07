@@ -588,6 +588,12 @@ def finish_paper_loop(paper: PaperLoop, settings: PaperLoopSettings, positions_o
         )
 
 
+def plan_snapshot_base(slot: TraderSlot) -> str:
+    """The name ``trend_portfolio``'s plan is listed under, before the writer adds the slot's prefix, so the
+    key is ``{env}:snapshot:portfolio_plan`` in either slot (spec 0030 AC-13), never ``portfolio_portfolio_plan``."""
+    return "plan" if slot is TraderSlot.PORTFOLIO else "portfolio_plan"
+
+
 def placeholder_config(settings: TraderSettings, run_id: UUID) -> PlaceholderConfig:
     """The placeholder's config on BTC under ``run_id`` (``trader.paper_strategy.placeholder_config``)."""
     return paper_strategy.placeholder_config(settings, run_id, BTC_PERP)
@@ -837,7 +843,7 @@ def run_node(
             )
             node.trader.add_strategy(portfolio)
             views.extend(portfolio_views)
-            snapshot_readers.append(("portfolio_plan", portfolio.plan_snapshot))
+            snapshot_readers.append((plan_snapshot_base(slot), portfolio.plan_snapshot))
         # trend_portfolio is one instance over every coin, built above; every other strategy is one per coin.
         per_coin_coins = () if settings.paper_strategy == trend_portfolio.STRATEGY_NAME else coins
         per_coin = coin_blocks(paper.blocks, coins)

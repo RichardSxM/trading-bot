@@ -9,8 +9,8 @@ import pytest
 from pydantic import ValidationError
 
 from trader.cache import heartbeat_alive, reset
-from trader.main import TraderSettings
-from trading_core.control.slots import TraderSlot
+from trader.main import TraderSettings, plan_snapshot_base
+from trading_core.control.slots import TraderSlot, snapshot_name
 from trading_core.snapshot.envelope import encode
 
 SECOND = 1_000_000_000
@@ -99,3 +99,10 @@ def test_the_portfolio_reset_deletes_only_its_own_cache_keys():
         "demo:reconcile:cache_untrusted",
         "demo:trader:portfolio:halt",
     }
+
+
+@pytest.mark.parametrize("slot", list(TraderSlot))
+def test_the_plan_snapshot_is_portfolio_plan_in_either_slot(slot):
+    """covers: spec 0030 AC-13 (the dashboard and the alerter read ``portfolio_plan``; a laptop run on 2026-11-07
+    found the portfolio slot writing ``portfolio_portfolio_plan``)"""
+    assert snapshot_name(slot, plan_snapshot_base(slot)) == "portfolio_plan"
