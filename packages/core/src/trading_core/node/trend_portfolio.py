@@ -212,6 +212,7 @@ class TrendPortfolio(KfsStrategy):
         self._started = False
         self._start_deadline_ns = 0
         self._was_blocked = False
+        self._planning = False
         self._reset_round()
 
     def _reset_round(self) -> None:
@@ -429,18 +430,22 @@ class TrendPortfolio(KfsStrategy):
         self.failed = set()
         self.last_rebalance_ns = self.clock.timestamp_ns()
         self.last_reason = reason
-        for coin in self._coins:
-            key = str(coin)
-            if key in skip:
-                continue
-            item = plan.coins[key]
-            if item.eligible and item.close_date != self.plan_day:
-                log.warning(
-                    "coin keeps its position, its close is missing",
-                    extra={"fields": {"code": "close_missing", "instrument": key}},
-                )
-                continue
-            self._step(coin, first=True)
+        self._planning = True  # a reduction answered at once must not send the grows before the others go
+        try:
+            for coin in self._coins:
+                key = str(coin)
+                if key in skip:
+                    continue
+                item = plan.coins[key]
+                if item.eligible and item.close_date != self.plan_day:
+                    log.warning(
+                        "coin keeps its position, its close is missing",
+                        extra={"fields": {"code": "close_missing", "instrument": key}},
+                    )
+                    continue
+                self._step(coin, first=True)
+        finally:
+            self._planning = False
         self._maybe_send_grows()
 
     def _step(self, coin: InstrumentId, *, first: bool) -> None:
@@ -483,11 +488,13 @@ class TrendPortfolio(KfsStrategy):
         decision = self._decision(key, Intent.EXIT if leg == Leg.REDUCE else Intent.ADJUST, delta, inputs, None)
         if leg == Leg.FLIP_CLOSE:
             self._pending_opens.add(key)
-            client_id = self._submit(coin, -current, reduce_only=True, tags=[f"{DECISION_TAG}{decision}"])
-        else:
-            client_id = self._submit(coin, delta, reduce_only=True, tags=[f"{DECISION_TAG}{decision}"])
-        self._orders[client_id] = (key, leg)
-        self._awaiting_reductions.add(client_id)
+        self._submit(
+            coin,
+            -current if leg == Leg.FLIP_CLOSE else delta,
+            reduce_only=True,
+            tags=[f"{DECISION_TAG}{decision}"],
+            track=(key, leg),
+        )
 
     def _maybe_send_grows(self) -> None:
         if self._grows_sent or self._awaiting_reductions:
@@ -590,9 +597,14 @@ class TrendPortfolio(KfsStrategy):
             inputs = {**inputs, "clip": {"wanted": abs(delta), "sent": quantity, "by": list(verdict.clips)}}
         signed = quantity if delta > 0 else -quantity
         decision = self._decision(key, Intent.ENTER, signed, inputs, None)
-        client_id = self._submit(coin, signed, reduce_only=False, tags=[f"{DECISION_TAG}{decision}"])
-        self._orders[client_id] = (key, Leg.GROW)
-        self._inflight_grow[client_id] = quantity * mid
+        self._submit(
+            coin,
+            signed,
+            reduce_only=False,
+            tags=[f"{DECISION_TAG}{decision}"],
+            track=(key, Leg.GROW),
+            inflight=quantity * mid,
+        )
 
     def _grow_refused(self, key: str, reason: str, inputs: JsonObject, delta: Decimal, *, retry: bool) -> None:
         # Recorded once per rebalance (the first refusal); a liquidation distance refusal is never retried.
@@ -657,7 +669,7 @@ class TrendPortfolio(KfsStrategy):
     def _reduction_done(self, client_order_id: ClientOrderId) -> None:
         if client_order_id in self._awaiting_reductions:
             self._awaiting_reductions.discard(client_order_id)
-            if not self._awaiting_reductions:
+            if not self._awaiting_reductions and not self._planning:
                 self._send_all_grows()
 
     def _order_failed(self, key: str, why: str, *, retry: bool) -> None:
@@ -750,7 +762,18 @@ class TrendPortfolio(KfsStrategy):
         self._record(WriteItem(WriteCall.RECORD_DECISION, row))
         return decision
 
-    def _submit(self, coin: InstrumentId, signed_qty: Decimal, *, reduce_only: bool, tags: list[str]) -> ClientOrderId:
+    def _submit(
+        self,
+        coin: InstrumentId,
+        signed_qty: Decimal,
+        *,
+        reduce_only: bool,
+        tags: list[str],
+        track: tuple[str, Leg] | None = None,
+        inflight: Decimal | None = None,
+    ) -> ClientOrderId:
+        # The order is tracked before it is sent: a denial (the Nautilus risk engine's) arrives inside
+        # ``submit_order`` itself, and must find the order to be retried (AC-5, AC-6).
         instrument = self._instrument(coin)
         order = self.order_factory.market(
             coin,
@@ -761,6 +784,12 @@ class TrendPortfolio(KfsStrategy):
             tags=tags,
         )
         client_id: ClientOrderId = order.client_order_id
+        if track is not None:
+            self._orders[client_id] = track
+            if track[1] != Leg.GROW:
+                self._awaiting_reductions.add(client_id)
+        if inflight is not None:
+            self._inflight_grow[client_id] = inflight
         self.submit_order(order)
         return client_id
 
