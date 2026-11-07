@@ -20,3 +20,17 @@ Every `trading_core.node` module with a `STRATEGY_NAME` (21 modules) had its `co
 - Finding, fixed in the same task: the reconcile actor sets `order_unresolved` while any entry order waits for its answer (spec 0023 AC-14), so a grow sent then would have been held until a resume. A grow blocked only by `order_unresolved` now waits for the retry instead (`rebalance_deferred`).
 
 The stack was taken down after the check.
+
+### Task 3: laptop smoke with both traders, 2026-11-07 08:05 to 11:22 UTC
+
+`trader` as **main** (`six_vote_trend`, ETH and BTC, `TRADER-DEMO`) and `trader-portfolio` as **portfolio** (`trend_portfolio`, ETH, SOL, BTC, `PORTFOLIO-DEMO`), on migration `0015_command_slot`. All 21 strategy hashes unchanged; six vote needed no new promotion, the portfolio did (its hash changed with the slot wiring).
+
+- Names: each trader has its own run; the portfolio writes `portfolio_` snapshots, reads `demo:trader:portfolio:pause|halt`, and reads control in group `trader-portfolio` started at `$` (AC-12 to AC-14).
+- Start: the portfolio sent 3 approved short rebalance orders, all filled.
+- `pause --slot all`: two `executed` results, one per slot, both REDUCING. `unpause --slot all` lifted both; the portfolio's `resume` rebalance gave 3 `rebalance_skip_small` (AC-14).
+- `stop --slot all`: both halted with `manual_stop` and 0 positions. `flatten --slot all`: main executed, the portfolio answered `failed: not_for_slot` (AC-14). `resume --slot all` executed for both.
+- P&L and Trades scoped to `TRADER-DEMO` leave out the portfolio's 3 round trips and 6 fills; the journal carries a `trader` column (AC-15, AC-16).
+- Redis ACL: no change needed (the trader has `~*`, the dashboard and alerter read `*:snapshot:*`).
+- Finding, fixed in c64abea: both traders wrote the same `halt:<id>` and `resume:<id>` risk event keys, so the second write hit `record_conflict` and held the portfolio's entries. The portfolio's keys (halt, resume, trade_cap) now end in `:portfolio`; main's are unchanged. Redone after the fix: `stop --slot all` and `resume --slot all` both executed, four distinct keys in `risk_events`, no `record_conflict`, and the portfolio back to ACTIVE with `entries_blocked` empty and 3 positions open again.
+
+The stack was taken down after the check.
