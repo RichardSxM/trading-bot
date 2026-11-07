@@ -34,3 +34,18 @@ The stack was taken down after the check.
 - Finding, fixed in c64abea: both traders wrote the same `halt:<id>` and `resume:<id>` risk event keys, so the second write hit `record_conflict` and held the portfolio's entries. The portfolio's keys (halt, resume, trade_cap) now end in `:portfolio`; main's are unchanged. Redone after the fix: `stop --slot all` and `resume --slot all` both executed, four distinct keys in `risk_events`, no `record_conflict`, and the portfolio back to ACTIVE with `entries_blocked` empty and 3 positions open again.
 
 The stack was taken down after the check.
+
+### Task 6: the Portfolio page, laptop check with both traders, 2026-11-07 20:29 to 20:46 UTC
+
+Same two trader setup as task 3 (`trader` main on six vote, ETH and BTC; `trader-portfolio` on ETH, SOL, BTC), built at 5aed95d. The portfolio's code hash changed in task 4, so its version `01a1b78d-d4a1-75cc-aefd-fe433fdfda12` was promoted by hand on the laptop database (promotion `01a1b7b3-d5ac-7081-b468-b8de744233f2`). Six vote's hash is unchanged. All 21 strategy hashes are unchanged after this task.
+
+The board was rendered by the real app's poller inside the dashboard container (real Redis and Postgres, the same partial the page and `/events` serve), since the laptop login password is yours.
+
+- Before a plan: "No plan yet" rows from the positions alone, the summary with equity 1000 USD and realized 0 (the Postgres query by `run_id` answered).
+- With the plan: 3 rows in the trader's coin order (ETH, SOL, BTC), each "Short" in words, with target weight (−26.14 %, −27.06 %, −35.41 %), target USD, and target size; next rebalance 2026-11-09 00:05:00Z · 01:05 Amsterdam (AC-20, AC-21).
+- `pause --slot portfolio` then `unpause --slot portfolio`: a `resume` rebalance sold 3 positions. The board then showed short 0.117 ETH, 3.03 SOL, 0.0046 BTC (matching the targets), unrealized P&L per coin, equity 999.76, gross leverage 0.88×, last rebalance 20:44:29Z · 21:44 Amsterdam (`resume`), and last command "unpause · confirmed" (AC-20, AC-21).
+- No portfolio heartbeat shows "Portfolio trader not running" (unit tests: never seen, and a stale one with the time last seen), and Redis down shows "Portfolio unavailable" (AC-19).
+- `trader_state` now carries `run_id` when there is a paper run; the page reads the run's realized P&L by it.
+- Finding, fixed in 5aed95d: the portfolio slot wrote its plan as `demo:snapshot:portfolio_portfolio_plan` (the writer added the slot prefix to a name that already had it). The page and the alerter's `portfolio_coins_failed` read `portfolio_plan`, so that alert could never have fired. The plan now lands on `portfolio_plan` in either slot, pinned by a test.
+
+The stack was taken down after the check.
