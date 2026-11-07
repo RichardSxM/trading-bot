@@ -147,10 +147,10 @@ def create_app(
         sessions = sessionmaker(engine)
 
         def postgres_pnl() -> PnlFigures:
-            return pnl_figures(sessions, env, datetime.fromtimestamp(clock(), UTC))
+            return pnl_figures(sessions, env, datetime.fromtimestamp(clock(), UTC), settings.main_trader_id)
 
         def postgres_trades(page: int, fills_page: int) -> TradesView:
-            return trades_view(sessions, env, page, fills_page)
+            return trades_view(sessions, env, page, fills_page, settings.main_trader_id)
 
         def postgres_strategies() -> StrategiesView:
             return strategies_view(sessions, datetime.fromtimestamp(clock(), UTC))

@@ -10,6 +10,7 @@ from pydantic import SecretStr
 
 from trader.main import TraderSettings, build_config
 from trading_core.boot import Boot
+from trading_core.control.slots import TraderSlot
 from trading_core.naming import NodeIdMismatch
 from trading_core.reconcile.views import ExchangeUnavailable
 from trading_core.recording.errors import PromotionRequiredError
@@ -218,7 +219,7 @@ class KillSwitch:
         self.exchange_flat = exchange_flat
 
 
-def _fake_control_parts(node, settings, secrets, recheck=None, drill=None):
+def _fake_control_parts(node, settings, secrets, recheck=None, drill=None, slot=None):
     from trader.main import ControlParts
 
     node.kill_switch = KillSwitch()
@@ -1131,3 +1132,38 @@ def test_a_trader_that_never_runs_is_stopped_by_the_watchdog(fake_main, monkeypa
     assert code == 1
     assert "stop" in _FakeNode.instances[0].calls
     assert slept == [0.0]
+
+
+def test_a_portfolio_slot_writes_prefixed_snapshots_and_never_publishes_the_exchange_snapshot(fake_main, monkeypatch):
+    """covers: spec 0030 AC-13 (portfolio_heartbeat and portfolio_trader_state; the reconcile gets no publish)"""
+    redis = _FakeRedis()
+    monkeypatch.setattr(fake_main, "snapshot_client", lambda settings, password: redis)
+    publishes = []
+    real_reconcile = fake_main.ReconcileActor
+
+    def reconcile(**kwargs):
+        publishes.append(kwargs["publish"])
+        return real_reconcile(**kwargs)
+
+    monkeypatch.setattr(fake_main, "ReconcileActor", reconcile)
+
+    class RunningNode(_FakeNode):
+        def run(self):
+            self.calls.append("run")
+            self.get_event_loop().run_until_complete(asyncio.sleep(0.05))
+
+    monkeypatch.setattr(fake_main, "TradingNode", RunningNode)
+    settings = TraderSettings(
+        trading_env="demo",
+        redis_host="redis",
+        redis_port=6379,
+        trader_slot=TraderSlot.PORTFOLIO,
+        paper_strategy="trend_portfolio",
+    )
+
+    fake_main.run_node(build_config(settings, SECRETS), settings, 5.0, SECRETS, fail_backoff_s=0)
+
+    keys = {w[0] for w in redis.writes}
+    assert {"demo:snapshot:portfolio_heartbeat", "demo:snapshot:portfolio_trader_state"} <= keys
+    assert not keys & {"demo:snapshot:heartbeat", "demo:snapshot:trader_state", "demo:snapshot:exchange"}
+    assert publishes == [None]

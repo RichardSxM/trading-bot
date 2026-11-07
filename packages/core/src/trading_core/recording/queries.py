@@ -19,6 +19,7 @@ from sqlalchemy import ColumnElement, Date, String, and_, cast, func, literal, o
 from sqlalchemy.orm import InstrumentedAttribute, Session, aliased
 from sqlalchemy.sql.selectable import LateralFromClause
 
+from trading_core.control.slots import TraderSlot
 from trading_core.journal.summary import PositionFigures, Snapshot
 from trading_core.recording import models
 from trading_core.recording.enums import (
@@ -81,6 +82,8 @@ class JournalRow:
     strategy_version: str
     fx_rate: Decimal | None
     fx_rate_date: date | None
+    # The run's ``strategy_runs.trader_id`` (spec 0030 AC-16).
+    trader: str
 
 
 def newest_fx_date(session: Session) -> date | None:
@@ -123,11 +126,12 @@ class _Rate:
 
 @dataclass(frozen=True)
 class _Context:
-    """What every row of one fill or payment shares: its run's mode, strategy, and version."""
+    """What every row of one fill or payment shares: its run's mode, strategy, version, and trader."""
 
     mode: RunMode
     strategy: str
     strategy_version: str
+    trader: str
 
 
 class _Fx(NamedTuple):
@@ -166,6 +170,7 @@ def _fill_rows(
         liquidity=Liquidity(fill.liquidity),
         strategy=context.strategy,
         strategy_version=context.strategy_version,
+        trader=context.trader,
         eur_amount=fx.eur_amount,
         fx_missing=fx.fx_missing,
         fx_rate=fx.fx_rate,
@@ -207,6 +212,7 @@ def _funding_row(funding: models.FundingPayment, rate: _Rate, context: _Context)
         mode=context.mode,
         strategy=context.strategy,
         strategy_version=context.strategy_version,
+        trader=context.trader,
         eur_amount=fx.eur_amount,
         fx_missing=fx.fx_missing,
         fx_rate=fx.fx_rate,
@@ -236,7 +242,7 @@ def journal_rows(
     wanted = _wanted(modes)
     fill, funding, instrument = models.Fill, models.FundingPayment, models.Instrument
     run, version, strategy = models.StrategyRun, models.StrategyVersion, models.Strategy
-    context = (run.mode, strategy.name, version.version_hash)
+    context = (run.mode, strategy.name, version.version_hash, run.trader_id)
 
     fill_rate = _eur_rate(fill.filled_at)
     fills = session.execute(
@@ -266,14 +272,14 @@ def journal_rows(
 
     rows = [
         r
-        for f, currency, multiplier, _, mode, name, version_hash, rate, rate_date in fills
+        for f, currency, multiplier, _, mode, name, version_hash, trader, rate, rate_date in fills
         for r in _fill_rows(
-            f, currency, multiplier, _Rate(rate, rate_date), _Context(RunMode(mode), name, version_hash)
+            f, currency, multiplier, _Rate(rate, rate_date), _Context(RunMode(mode), name, version_hash, trader)
         )
     ]
     rows += [
-        _funding_row(payment, _Rate(rate, rate_date), _Context(RunMode(mode), name, version_hash))
-        for payment, mode, name, version_hash, rate, rate_date in payments
+        _funding_row(payment, _Rate(rate, rate_date), _Context(RunMode(mode), name, version_hash, trader))
+        for payment, mode, name, version_hash, trader, rate, rate_date in payments
     ]
     return sorted(rows, key=lambda r: (r.at, r.source_id, _KIND_ORDER[r.kind]))
 
@@ -420,8 +426,11 @@ def _exit_reason(abandoned: bool, order_type: str | None, intent: str | None, or
     )
 
 
-def round_trips_page(session: Session, env: Env, page: int, size: int = PAGE_SIZE) -> Sequence[RoundTrip]:
-    """Page ``page`` (from 1) of ``env``'s closed paper positions, newest ``closed_at`` first, then ``id``.
+def round_trips_page(
+    session: Session, env: Env, page: int, size: int = PAGE_SIZE, *, trader_id: str | None = None
+) -> Sequence[RoundTrip]:
+    """Page ``page`` (from 1) of ``env``'s closed paper positions, newest ``closed_at`` first, then ``id``;
+    with ``trader_id``, of that trader's runs only (spec 0030 AC-16).
 
     The side comes from the position's earliest fill (``filled_ns``, then ``id``): ``buy`` is long,
     ``sell`` is short. The exit reason is ``abandoned`` when a ``risk_events`` row keyed
@@ -467,6 +476,7 @@ def round_trips_page(session: Session, env: Env, page: int, size: int = PAGE_SIZ
             run.env == env,
             run.mode == RunMode.PAPER,
             position.status == PositionStatus.CLOSED,
+            true() if trader_id is None else run.trader_id == trader_id,
         )
         .order_by(position.closed_at.desc(), position.id.desc())
         .limit(size)
@@ -491,8 +501,11 @@ def round_trips_page(session: Session, env: Env, page: int, size: int = PAGE_SIZ
     ]
 
 
-def fills_page(session: Session, env: Env, page: int, size: int = PAGE_SIZE) -> Sequence[FillLine]:
-    """Page ``page`` (from 1) of ``env``'s paper fills, newest ``filled_at`` first, then ``id``.
+def fills_page(
+    session: Session, env: Env, page: int, size: int = PAGE_SIZE, *, trader_id: str | None = None
+) -> Sequence[FillLine]:
+    """Page ``page`` (from 1) of ``env``'s paper fills, newest ``filled_at`` first, then ``id``; with
+    ``trader_id``, of that trader's runs only (spec 0030 AC-16).
 
     A page past the end is empty. Raises ``ValueError`` for a page or size below 1.
     """
@@ -501,7 +514,12 @@ def fills_page(session: Session, env: Env, page: int, size: int = PAGE_SIZE) -> 
     fills = session.scalars(
         select(fill)
         .join(run, run.id == fill.run_id)
-        .where(fill.env == env, run.env == env, run.mode == RunMode.PAPER)
+        .where(
+            fill.env == env,
+            run.env == env,
+            run.mode == RunMode.PAPER,
+            true() if trader_id is None else run.trader_id == trader_id,
+        )
         .order_by(fill.filled_at.desc(), fill.id.desc())
         .limit(size)
         .offset(offset)
@@ -539,10 +557,12 @@ def recorded_stop_trigger(session: Session, env: Env, parent_client_order_id: st
     ).first()
 
 
-def control_command_outcome(session: Session, command_id: UUID) -> ControlOutcome | None:
-    """The recorded outcome of the control command ``command_id``, or None when it was never
-    recorded (spec 0005 AC-6). ``received`` means it was never finished."""
-    command = session.get(models.ControlCommand, command_id)
+def control_command_outcome(
+    session: Session, command_id: UUID, slot: TraderSlot = TraderSlot.MAIN
+) -> ControlOutcome | None:
+    """The recorded outcome of the control command ``command_id`` for the ``slot`` trader, or None when that
+    trader never recorded it (spec 0005 AC-6, spec 0030 AC-14). ``received`` means it was never finished."""
+    command = session.get(models.ControlCommand, (command_id, slot.value))
     return None if command is None else ControlOutcome(command.outcome)
 
 
@@ -579,21 +599,27 @@ def trade_cap_event_key(day: date) -> str:
     return f"trade_cap:{day.isoformat()}"
 
 
-def loss_seed(session: Session, env: Env, mode: RunMode, day_start: datetime, total_since: datetime) -> LossSeed:
-    """The loss figures of ``env``'s ``mode`` runs: realized today and since ``total_since``, today's
-    opened positions, the newest losing close, whether a ``daily_loss_limit`` halt was recorded today,
+def loss_seed(
+    session: Session, env: Env, mode: RunMode, day_start: datetime, total_since: datetime, *, trader_id: str
+) -> LossSeed:
+    """The loss figures of ``env``'s ``mode`` runs of ``trader_id``: realized today and since ``total_since``,
+    today's opened positions, the newest losing close, whether a ``daily_loss_limit`` halt was recorded today,
     and whether today's ``trade_cap`` event is stored.
 
+    Only the trader's own runs count (``strategy_runs.trader_id``, spec 0030 AC-16), and the two events are
+    read through their run, so a second trader's losses and halts never reach this one's limits.
     ``day_start`` (UTC midnight) and ``total_since`` are aware UTC datetimes.
     """
     position, run = models.Position, models.StrategyRun
     window = min(day_start, total_since)
+    own = run.trader_id == trader_id
     rows = session.execute(
         select(position.position_ref, position.opened_ns, position.opened_at, position.closed_at, position.realized_pnl)
         .join(run, run.id == position.run_id)
         .where(
             run.mode == mode,
             run.env == env,
+            own,
             position.env == env,
             (
                 (position.status == PositionStatus.CLOSED) & (position.closed_at >= window)
@@ -621,6 +647,7 @@ def loss_seed(session: Session, env: Env, mode: RunMode, day_start: datetime, to
         .where(
             run.mode == mode,
             run.env == env,
+            own,
             position.env == env,
             position.status == PositionStatus.CLOSED,
             position.realized_pnl < 0,
@@ -629,7 +656,9 @@ def loss_seed(session: Session, env: Env, mode: RunMode, day_start: datetime, to
     event = models.RiskEvent
     daily_halt = session.execute(
         select(event.id)
+        .join(run, run.id == event.run_id)
         .where(
+            own,
             event.env == env,
             event.kind == RiskEventKind.HALT,
             func.jsonb_extract_path_text(event.details, "reason") == "daily_loss_limit",
@@ -638,13 +667,15 @@ def loss_seed(session: Session, env: Env, mode: RunMode, day_start: datetime, to
         .limit(1)
     ).first()
     trade_cap = session.execute(
-        select(event.id).where(event.env == env, event.event_key == trade_cap_event_key(day_start.date()))
+        select(event.id)
+        .join(run, run.id == event.run_id)
+        .where(own, event.env == env, event.event_key == trade_cap_event_key(day_start.date()))
     ).first()
     payment = models.FundingPayment
     payments = session.execute(
         select(payment.instrument_id, payment.paid_ns, payment.position_id, payment.paid_at, payment.amount)
         .join(run, run.id == payment.run_id)
-        .where(run.mode == mode, run.env == env, payment.env == env, payment.paid_at >= window)
+        .where(run.mode == mode, run.env == env, own, payment.env == env, payment.paid_at >= window)
     ).all()
     funding_today = funding_total = Decimal(0)
     funding_keys: set[tuple[str, int, UUID]] = set()

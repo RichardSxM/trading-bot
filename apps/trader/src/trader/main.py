@@ -73,11 +73,11 @@ from trader.snapshot_writer import log_writer_crash, write_heartbeats, write_sna
 from trader.warmup import daily_seed, warmup_seed, warmup_seeds
 from trading_core import env_guard
 from trading_core.boot import boot
+from trading_core.control import slots
 from trading_core.control.consumer import ControlConsumer, Execute, Outcome
-from trading_core.control.halt import halt_key
 from trading_core.control.messages import ControlMessage
-from trading_core.control.pause import pause_key
 from trading_core.control.records import PostgresCommandRecorder
+from trading_core.control.slots import TraderSlot, snapshot_name
 from trading_core.env_guard import SANDBOX, ExecClientAllowlist, allowed_exec_clients
 from trading_core.naming import node_id
 from trading_core.node import six_vote_trend, trend_portfolio
@@ -175,6 +175,8 @@ class TraderSettings(StrategySettings, LossLimitSettings, ReconcileSettings):
     kraken_key_rotated_on: date | None = None
     # How long a live start waits for an authenticated Kraken account (spec 0003 AC-8).
     kraken_key_check_timeout_s: float = Field(default=60.0, gt=0)
+    # Which trader this process is (spec 0030 AC-12): its pause, halt, snapshot, and command names.
+    trader_slot: TraderSlot = TraderSlot.MAIN
 
     @field_validator("kraken_key_rotated_on", mode="before")
     @classmethod
@@ -190,6 +192,15 @@ class TraderSettings(StrategySettings, LossLimitSettings, ReconcileSettings):
             raise ValueError("KRAKEN_KEY_ROTATED_ON is required in live")
         if self.kraken_key_rotated_on > datetime.now(UTC).date():
             raise ValueError("KRAKEN_KEY_ROTATED_ON is in the future")
+        return self
+
+    @model_validator(mode="after")
+    def _portfolio_slot_is_demo_trend_portfolio(self) -> Self:
+        # Live would need a second Kraken account for a second trader (spec 0030 Consequences).
+        if self.trader_slot is TraderSlot.PORTFOLIO and self.trading_env != "demo":
+            raise ValueError("TRADER_SLOT=portfolio is allowed only with TRADING_ENV=demo")
+        if self.trader_slot is TraderSlot.PORTFOLIO and self.paper_strategy != trend_portfolio.STRATEGY_NAME:
+            raise ValueError(f"TRADER_SLOT=portfolio needs PAPER_STRATEGY={trend_portfolio.STRATEGY_NAME}")
         return self
 
     @model_validator(mode="after")
@@ -396,10 +407,12 @@ def control_parts(
     secrets: Mapping[str, SecretStr],
     recheck: Callable[[], Awaitable[Outcome]] | None = None,
     drill: Execute | None = None,
+    slot: TraderSlot = TraderSlot.MAIN,
 ) -> ControlParts:
     """Build the gate, the kill switch, the control actor with its own Redis and Postgres logins, and the readers.
 
-    ``recheck`` answers the ``recheck`` command (spec 0023 AC-20), ``drill`` the ``drill_step`` command (AC-22)."""
+    ``recheck`` answers the ``recheck`` command (spec 0023 AC-20), ``drill`` the ``drill_step`` command (AC-22).
+    Every key, the consumer group, and the recorded rows are the ``slot``'s (spec 0030 AC-12, AC-14)."""
     env = settings.trading_env
     password = secrets[REDIS_PASSWORD].get_secret_value()
     client = Redis(
@@ -425,13 +438,21 @@ def control_parts(
     def now() -> datetime:
         return datetime.now(UTC)
 
-    controller = PauseController(gate, risk_engine, client, env, now)
+    controller = PauseController(gate, risk_engine, client, env, now, slot)
     untrusted = UntrustedCache(client, env)
     kill_switch = KillSwitch(
-        gate, risk_engine, client, env, now, node.cache, settings.kill_switch_flat_timeout_s, untrusted=untrusted
+        gate,
+        risk_engine,
+        client,
+        env,
+        now,
+        node.cache,
+        settings.kill_switch_flat_timeout_s,
+        untrusted=untrusted,
+        slot=slot,
     )
     execute = control_execute(controller, kill_switch, recheck, drill)
-    consumer = ControlConsumer(client, env, execute, PostgresCommandRecorder(engine, Env(env)), now)
+    consumer = ControlConsumer(client, env, execute, PostgresCommandRecorder(engine, Env(env), slot), now, slot=slot)
 
     def read_key(key: str) -> Callable[[], str | bytes | None]:
         def read() -> str | bytes | None:
@@ -448,8 +469,8 @@ def control_parts(
         actor=ControlActor(
             controller,
             kill_switch,
-            read_key(pause_key(env)),
-            read_key(halt_key(env)),
+            read_key(slots.pause_key(slot, env)),
+            read_key(slots.halt_key(slot, env)),
             consumer.run,
             load_untrusted=load_untrusted,
         ),
@@ -589,8 +610,11 @@ def loss_limit_actor(
     kill_switch: KillSwitch,
     paper: PaperLoop | None,
     live_blocks: EntryBlocks | None = None,
+    *,
+    trader_id: str,
 ) -> LossLimitActor:
-    """The loss limits (spec 0010 AC-13): seeded from the paper runs in demo, the live runs in live.
+    """The loss limits (spec 0010 AC-13): seeded from the paper runs in demo, the live runs in live, of this
+    ``trader_id`` only, so a second trader's losses never trip this one's limits (spec 0030 AC-16).
 
     Demo shares the paper loop's sessions, blocks, and recorder. Live has no run yet, so its events
     are only logged (spec 0010 Follow-up); its blocks are ``live_blocks``, the ones the drill reads.
@@ -609,7 +633,7 @@ def loss_limit_actor(
 
     def read_seed(day_start: datetime, total_since: datetime) -> LossSeed:
         with sessions() as session:
-            return loss_seed(session, env, mode, day_start, total_since)
+            return loss_seed(session, env, mode, day_start, total_since, trader_id=trader_id)
 
     actor = LossLimitActor(
         limits=loss_limits(settings),
@@ -684,6 +708,7 @@ def run_node(
     # One set of entry blocks: the paper loop's in demo; in live the check, the loss limits, and the drill share it.
     blocks = EntryBlocks() if paper is None else paper.blocks
     snapshots = snapshot_client(settings, secrets[REDIS_PASSWORD])
+    slot = settings.trader_slot
     exchange_key = snapshot_key(env, "exchange")
     exchange_ttl_s = EXCHANGE_TTL_INTERVALS * settings.reconcile_interval_s
 
@@ -714,7 +739,9 @@ def run_node(
         interval_s=float(settings.reconcile_interval_s),
         retry_s=float(settings.reconcile_retry_s),
         stale_quote_s=float(settings.risk_stale_quote_s),
-        publish=publish_exchange,
+        # The shared exchange snapshot is main's: the portfolio checks its own sandbox but never publishes it
+        # (spec 0030 AC-13).
+        publish=publish_exchange if slot is TraderSlot.MAIN else None,
     )
     # The drill strategy needs the control parts' gate, so its step handler is bound once it exists.
     drills: list[ReconcileDrill] = []
@@ -723,7 +750,7 @@ def run_node(
         return await drills[0].run_step(msg)
 
     control = control_parts(
-        node, settings, secrets, reconcile.recheck_outcome, drill_step if settings.drill_mode else None
+        node, settings, secrets, reconcile.recheck_outcome, drill_step if settings.drill_mode else None, slot
     )
     executor: ReconcileExecutor | None = None
     if exchange is not None:
@@ -762,7 +789,7 @@ def run_node(
         )
     )
     # After the control actor (the halt is known) and the demo's abandoned close (start_paper_loop).
-    losses = loss_limit_actor(settings, secrets, control.kill_switch, paper, blocks)
+    losses = loss_limit_actor(settings, secrets, control.kill_switch, paper, blocks, trader_id=config.trader_id.value)
     node.trader.add_actor(losses)
     # Before any strategy, so `reconciling` blocks entries until the start check is clean (spec 0023 AC-1).
     node.trader.add_actor(reconcile)
@@ -938,7 +965,10 @@ def run_node(
     guards.append(watchdog)
     # Kept in locals so the tasks live as long as the node runs; a crash is logged, trading goes on.
     writers = [
-        loop.create_task(write_heartbeats(snapshots, snapshot_key(settings.trading_env, name), read_state))
+        # The slot names each snapshot: bare for main, portfolio_<name> for portfolio (spec 0030 AC-13).
+        loop.create_task(
+            write_heartbeats(snapshots, snapshot_key(settings.trading_env, snapshot_name(slot, name)), read_state)
+        )
         for name, read_state in snapshot_readers
     ]
     for task in writers:

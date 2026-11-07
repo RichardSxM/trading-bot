@@ -1,10 +1,13 @@
 """The trader's reader of the ``{env}:control`` stream (spec 0005 AC-6). No NautilusTrader import.
 
-``ControlConsumer.run`` reads the stream in consumer group ``trader`` (its own pending entries
-first), and for each entry: decodes it (a bad one gets ``failed``), answers a repeated ``id``
+``ControlConsumer.run`` reads the stream in its slot's consumer group (``trader`` for ``main``,
+``trader-portfolio`` for ``portfolio``, spec 0030 AC-14; its own pending entries first), and for
+each entry: decodes it (a bad one gets ``failed``), answers a repeated ``id``
 with ``duplicate``, an expired one with ``expired``, otherwise appends ``received``, runs the
 command through ``execute``, and appends the final outcome to ``{env}:control:results``. It
 records each command in Postgres through a ``CommandRecorder`` and acknowledges the entry last.
+A ``portfolio`` slot answers every command but ``stop``, ``resume``, ``pause``, and ``unpause`` with
+``failed: not_for_slot``, and adds ``slot=portfolio`` to every result it appends.
 
 A Postgres error is logged and never blocks a command or its result. A Redis error is logged at
 most once a minute and the read retries every second; the trading state stays as it was.
@@ -33,13 +36,21 @@ from trading_core.control.messages import (
     result_to_fields,
     results_stream,
 )
+from trading_core.control.slots import (
+    TraderSlot,
+    consumer_name,
+    control_group,
+    executes,
+    group_start,
+    result_slot_field,
+)
 from trading_core.recording.enums import ControlOutcome
 from trading_core.settings import TradingEnv
 
 log = logging.getLogger(__name__)
 
-GROUP: Final = "trader"
-CONSUMER: Final = "trader"
+GROUP: Final = control_group(TraderSlot.MAIN)
+CONSUMER: Final = consumer_name(TraderSlot.MAIN)
 # Above the 1 s blocking read, so a slow reply is not cut short (the client's socket_timeout).
 BLOCK_MS: Final = 1000
 READ_COUNT: Final = 10
@@ -106,7 +117,7 @@ class CommandRecorder(Protocol):
 
 
 class ControlConsumer:
-    """Reads ``{env}:control`` as group ``trader`` and answers on ``{env}:control:results``."""
+    """Reads ``{env}:control`` in the slot's group and answers on ``{env}:control:results``."""
 
     def __init__(
         self,
@@ -117,8 +128,13 @@ class ControlConsumer:
         now: Callable[[], datetime],
         monotonic: Callable[[], float] = time.monotonic,
         retry_s: float = RETRY_S,
+        slot: TraderSlot = TraderSlot.MAIN,
     ) -> None:
         self._client = client
+        self._slot = slot
+        self._group = control_group(slot)
+        self._consumer = consumer_name(slot)
+        self._result_fields = result_slot_field(slot)
         self._stream = control_stream(env)
         self._results = results_stream(env)
         self._execute = execute
@@ -147,7 +163,7 @@ class ControlConsumer:
         start = "0" if self._pending else ">"
         streams: dict[KeyT, StreamIdT] = {self._stream: start}
         reply = await self._client.xreadgroup(
-            GROUP, CONSUMER, streams, count=READ_COUNT, block=None if self._pending else BLOCK_MS
+            self._group, self._consumer, streams, count=READ_COUNT, block=None if self._pending else BLOCK_MS
         )
         entries = stream_entries(reply)
         if self._pending and not entries:
@@ -158,7 +174,7 @@ class ControlConsumer:
 
     async def _create_group(self) -> None:
         try:
-            await self._client.xgroup_create(self._stream, GROUP, id="0", mkstream=True)
+            await self._client.xgroup_create(self._stream, self._group, id=group_start(self._slot), mkstream=True)
         except ResponseError as exc:
             if "BUSYGROUP" not in str(exc):
                 raise
@@ -180,7 +196,7 @@ class ControlConsumer:
             # Never seen, or recorded as received by a process that stopped before finishing it
             # (a restart between the two writes): run it, so a stop is never lost as a duplicate.
             await self._new(msg)
-        await self._client.xack(self._stream, GROUP, entry_id)
+        await self._client.xack(self._stream, self._group, entry_id)
 
     async def _new(self, msg: ControlMessage) -> None:
         received_at = self._now()
@@ -189,6 +205,13 @@ class ControlConsumer:
             await self._finish(ControlResult(msg.id, ControlOutcome.EXPIRED, received_at))
             return
         await self._append(ControlResult(msg.id, ControlOutcome.RECEIVED, received_at))
+        if not executes(self._slot, msg.cmd.value):
+            log.info(
+                "control command not for this slot",
+                extra={"fields": {"code": "control_not_for_slot", "cmd": msg.cmd.value, "slot": self._slot.value}},
+            )
+            await self._finish(ControlResult(msg.id, ControlOutcome.FAILED, self._now(), "not_for_slot"))
+            return
         try:
             outcome = await self._execute(msg)
         except RedisError, OSError, TimeoutError:
@@ -215,7 +238,7 @@ class ControlConsumer:
         command_id = _uuid_or_none(field(fields, "id"))
         if command_id is not None:
             await self._append(ControlResult(command_id, ControlOutcome.FAILED, self._now(), "invalid"))
-        await self._client.xack(self._stream, GROUP, entry_id)
+        await self._client.xack(self._stream, self._group, entry_id)
 
     async def _recorded_final(self, command_id: uuid.UUID) -> bool:
         try:
@@ -232,7 +255,10 @@ class ControlConsumer:
             _record_failed(exc, command_id)
 
     async def _append(self, result: ControlResult) -> None:
-        fields: dict[FieldT, EncodableT] = {name: value for name, value in result_to_fields(result).items()}
+        # The slot field is added here, so the result format in messages.py stays as it is (AC-14).
+        fields: dict[FieldT, EncodableT] = {
+            name: value for name, value in {**result_to_fields(result), **self._result_fields}.items()
+        }
         await self._client.xadd(self._results, fields, maxlen=RESULTS_MAXLEN, approximate=True)
 
     def _remember(self, result: ControlResult) -> None:

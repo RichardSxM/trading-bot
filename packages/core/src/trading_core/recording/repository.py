@@ -22,6 +22,7 @@ from sqlalchemy import ColumnElement, Engine, Table, and_, func, select, text, u
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
+from trading_core.control.slots import TraderSlot
 from trading_core.db import Base
 from trading_core.recording import models
 from trading_core.recording.enums import (
@@ -778,14 +779,16 @@ def report_conflict(session: Session, error: RecordConflictError) -> None:
     session.commit()
 
 
-def record_control_command(session: Session, row: ControlCommandRow) -> None:
-    """Record a control command as the trader received it, keyed by the message id.
+def record_control_command(session: Session, row: ControlCommandRow, slot: TraderSlot = TraderSlot.MAIN) -> None:
+    """Record a control command as the ``slot`` trader received it, keyed by the message id and the slot.
 
     Receiving the same command again is a no-op, whatever its handling state; a different
-    ``cmd``, ``env``, or time for the same id raises ``RecordConflictError``.
+    ``cmd``, ``env``, or time for the same id and slot raises ``RecordConflictError``. Another slot's
+    row for the same id is its own (spec 0030 AC-14).
     """
     check_env(row.env)
-    _insert_or_compare(session, models.ControlCommand, column_values(row), ["id"], ignore=_CONTROL_HANDLING)
+    values = {**column_values(row), "slot": slot.value}
+    _insert_or_compare(session, models.ControlCommand, values, ["id", "slot"], ignore=_CONTROL_HANDLING)
 
 
 def set_control_outcome(
@@ -794,8 +797,10 @@ def set_control_outcome(
     outcome: ControlOutcome,
     outcome_ns: int,
     details: JsonObject | None = None,
+    slot: TraderSlot = TraderSlot.MAIN,
 ) -> None:
-    """Move a ``received`` command to its final outcome, merging ``details`` into the stored ones.
+    """Move the ``slot`` trader's ``received`` command to its final outcome, merging ``details`` into the stored
+    ones.
 
     Setting the same final outcome again is a no-op; any other change raises
     ``InvalidTransitionError``.
@@ -803,7 +808,7 @@ def set_control_outcome(
     if outcome == ControlOutcome.RECEIVED:
         raise InvalidTransitionError("received is not a final outcome")
     # Locked and reloaded, so a concurrent outcome cannot be lost in the details merge.
-    command = session.get(models.ControlCommand, command_id, with_for_update=True, populate_existing=True)
+    command = session.get(models.ControlCommand, (command_id, slot.value), with_for_update=True, populate_existing=True)
     if command is None:
         raise MissingParentError(f"control command {command_id} not found")
     check_env(command.env)
@@ -813,7 +818,7 @@ def set_control_outcome(
         raise InvalidTransitionError(f"control command {command_id} is already {command.outcome}, not {outcome}")
     session.execute(
         update(models.ControlCommand)
-        .where(models.ControlCommand.id == command_id)
+        .where(models.ControlCommand.id == command_id, models.ControlCommand.slot == slot.value)
         .values(
             outcome=outcome,
             outcome_at=ns_to_utc(outcome_ns),

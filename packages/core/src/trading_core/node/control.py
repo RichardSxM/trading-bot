@@ -7,6 +7,10 @@ deletes ``{env}:trader:pause``. ``KillSwitch`` executes ``stop``: it halts in me
 ``{env}:trader:halt`` while it cancels entries and closes positions through every strategy's
 ``flatten``, and answers once the trader is flat (or after its timeout).
 
+Each takes its keys from the trader's slot (spec 0030 AC-12, AC-15): ``main`` keeps the keys above,
+``portfolio`` has ``{env}:trader:portfolio:pause`` and ``{env}:trader:portfolio:halt``, so one
+trader's pause or loss limit halt never reaches the other.
+
 The risk engine's trading state has one owner, ``apply_trading_state``: ``REDUCING`` while the
 trader is paused or halted, else ``ACTIVE``. So no pause path can lift a halt's ``REDUCING``.
 
@@ -30,11 +34,12 @@ from nautilus_trader.model.enums import OrderType, TradingState
 from nautilus_trader.model.orders.base import Order
 from redis.exceptions import RedisError
 
-from trading_core.control import halt
+from trading_core.control import halt, slots
 from trading_core.control.consumer import Execute, Outcome
-from trading_core.control.halt import HaltFormatError, HaltReason, HaltSource, HaltState, halt_key
+from trading_core.control.halt import HaltFormatError, HaltReason, HaltSource, HaltState
 from trading_core.control.messages import ControlMessage, format_utc
-from trading_core.control.pause import PauseFormatError, PauseState, decode, encode, pause_key, target_trading_state
+from trading_core.control.pause import PauseFormatError, PauseState, decode, encode, target_trading_state
+from trading_core.control.slots import TraderSlot
 from trading_core.node.strategy import KfsStrategy, PauseGate, entry_orders
 from trading_core.recording.enums import ControlCmd, ControlOutcome, ControlSource, Env, RiskEventKind, Severity
 from trading_core.recording.rows import JsonObject, RiskEventRow
@@ -93,11 +98,12 @@ class PauseController:
         client: PauseRedis,
         env: TradingEnv,
         now: Callable[[], datetime],
+        slot: TraderSlot = TraderSlot.MAIN,
     ) -> None:
         self._gate = gate
         self._risk_engine = risk_engine
         self._client = client
-        self._key = pause_key(env)
+        self._key = slots.pause_key(slot, env)
         self._now = now
 
     def apply(self, state: PauseState | None) -> None:
@@ -233,13 +239,14 @@ class KillSwitch:
         flat_timeout_s: float,
         poll_s: float = FLAT_POLL_S,
         untrusted: Untrusted | None = None,
+        slot: TraderSlot = TraderSlot.MAIN,
     ) -> None:
         self._gate = gate
         self._risk_engine = risk_engine
         self._client = client
         self._env = Env(env)
-        self._key = halt_key(env)
-        self._pause_key = pause_key(env)
+        self._key = slots.halt_key(slot, env)
+        self._pause_key = slots.pause_key(slot, env)
         self._now = now
         self._cache = cache
         self._flat_timeout = timedelta(seconds=flat_timeout_s)

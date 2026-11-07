@@ -106,7 +106,10 @@ def test_the_loss_seed_counts_funding_by_paid_day_once(session: Session, world: 
     for row in (yesterday, today):
         repository.record_funding(session, row)
 
-    seed = loss_seed(session, Env.DEMO, RunMode.PAPER, DAY, TOTAL_SINCE)
+    run = session.get(models.StrategyRun, world.run_id)
+    assert run is not None
+    trader_id = run.trader_id
+    seed = loss_seed(session, Env.DEMO, RunMode.PAPER, DAY, TOTAL_SINCE, trader_id=trader_id)
 
     assert (seed.funding_today, seed.funding_total) == (Decimal(-3), Decimal(-5))
     assert seed.funding_keys == frozenset(

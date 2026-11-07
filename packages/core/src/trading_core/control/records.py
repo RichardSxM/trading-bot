@@ -13,6 +13,7 @@ from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 
 from trading_core.control.messages import ControlMessage, ControlResult
+from trading_core.control.slots import TraderSlot
 from trading_core.recording import queries, repository
 from trading_core.recording.enums import ControlOutcome, Env
 from trading_core.recording.rows import ControlCommandRow, JsonValue
@@ -21,11 +22,12 @@ _EPOCH: Final = datetime(1970, 1, 1, tzinfo=UTC)
 
 
 class PostgresCommandRecorder:
-    """A ``CommandRecorder`` over the trader's database login."""
+    """A ``CommandRecorder`` over the trader's database login, for the rows of its own slot (spec 0030 AC-14)."""
 
-    def __init__(self, engine: Engine, env: Env) -> None:
+    def __init__(self, engine: Engine, env: Env, slot: TraderSlot = TraderSlot.MAIN) -> None:
         self._engine = engine
         self._env = env
+        self._slot = slot
 
     async def outcome(self, command_id: uuid.UUID) -> ControlOutcome | None:
         """The outcome ``command_id`` has in ``control_commands``, or None when it is not there."""
@@ -41,7 +43,7 @@ class PostgresCommandRecorder:
 
     def _outcome(self, command_id: uuid.UUID) -> ControlOutcome | None:
         with Session(self._engine) as session:
-            return queries.control_command_outcome(session, command_id)
+            return queries.control_command_outcome(session, command_id, self._slot)
 
     def _received(self, msg: ControlMessage, at: datetime) -> None:
         row = ControlCommandRow(
@@ -53,7 +55,7 @@ class PostgresCommandRecorder:
             received_at=at,
         )
         with Session(self._engine) as session:
-            repository.record_control_command(session, row)
+            repository.record_control_command(session, row, self._slot)
             session.commit()
 
     def _finished(self, result: ControlResult) -> None:
@@ -62,7 +64,9 @@ class PostgresCommandRecorder:
             found["reason"] = result.reason
         details = found or None
         with Session(self._engine) as session:
-            repository.set_control_outcome(session, result.id, result.outcome, _ns(result.outcome_at), details)
+            repository.set_control_outcome(
+                session, result.id, result.outcome, _ns(result.outcome_at), details, self._slot
+            )
             session.commit()
 
 

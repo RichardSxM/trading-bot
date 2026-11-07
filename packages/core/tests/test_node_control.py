@@ -29,6 +29,7 @@ from trading_core.control import halt
 from trading_core.control.halt import HaltReason, HaltSource, HaltState
 from trading_core.control.messages import pause_command, stop_command, unpause_command
 from trading_core.control.pause import PauseState, decode, encode
+from trading_core.control.slots import TraderSlot
 from trading_core.node.control import (
     ControlActor,
     KillSwitch,
@@ -611,3 +612,47 @@ def test_on_stop_pauses_in_memory_keeps_the_state_and_cancels_only_entry_orders(
     assert gate.paused
     assert gate.state == state
     assert gate.cancelled == len([o for o in orders if not o.is_reduce_only])
+
+
+# Trader slots (spec 0030) ------------------------------------------------------------------
+
+
+def test_a_portfolio_pause_and_stop_write_only_the_portfolio_s_keys_and_resume_deletes_them():
+    """covers: spec 0030 AC-12, AC-15 (each trader its own pause and halt key; main's untouched)"""
+    gate, risk, redis = PauseGate(), FakeRiskEngine(), FakeRedis()
+    gate.unpause()
+    controller = PauseController(gate, risk, redis, "demo", lambda: NOW, TraderSlot.PORTFOLIO)
+    cache = _Cache(positions=0)
+    kill_switch = KillSwitch(gate, risk, redis, "demo", lambda: NOW, cache, 20, poll_s=0.001, slot=TraderSlot.PORTFOLIO)
+    redis.values[KEY] = "main's pause"
+    redis.values[HALT_KEY] = "main's halt"
+
+    asyncio.run(controller.execute(pause_command(NOW, 60, ControlSource.DASHBOARD)))
+    asyncio.run(kill_switch.stop(stop_command(NOW, 60)))
+
+    assert set(redis.values) == {KEY, HALT_KEY, "demo:trader:portfolio:pause", "demo:trader:portfolio:halt"}
+    assert halt.decode(redis.values["demo:trader:portfolio:halt"]).reason is HaltReason.MANUAL_STOP
+
+    outcome = asyncio.run(kill_switch.resume(unpause_command(NOW, 60, ControlSource.DASHBOARD)))
+
+    assert outcome.outcome is ControlOutcome.EXECUTED
+    assert redis.values == {KEY: "main's pause", HALT_KEY: "main's halt"}
+
+
+def test_a_portfolio_automatic_halt_writes_only_its_own_key():
+    """covers: spec 0030 AC-15 (a loss limit halt affects only the trader that tripped it)"""
+    gate, risk, redis = PauseGate(), FakeRiskEngine(), FakeRedis()
+    gate.unpause()
+    kill_switch = KillSwitch(
+        gate, risk, redis, "demo", lambda: NOW, _Cache(positions=0), 20, poll_s=0.001, slot=TraderSlot.PORTFOLIO
+    )
+
+    async def run():
+        kill_switch.bind_loop(asyncio.get_running_loop())
+        kill_switch.halt_automatic(HaltReason.DAILY_LOSS_LIMIT)
+        for _ in range(50):
+            await asyncio.sleep(0.005)
+
+    asyncio.run(run())
+
+    assert list(redis.values) == ["demo:trader:portfolio:halt"]

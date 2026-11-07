@@ -42,8 +42,14 @@ def _closed(session: Session, world: World, opened: datetime, closed: datetime, 
     return (row.position_ref, row.opened_ns)
 
 
-def _seed(session: Session, env: Env = Env.DEMO, mode: RunMode = RunMode.PAPER):
-    return loss_seed(session, env, mode, DAY, TOTAL_SINCE)
+def _trader(session: Session, world: World) -> str:
+    return session.execute(
+        select(models.StrategyRun.trader_id).where(models.StrategyRun.id == world.run_id)
+    ).scalar_one()
+
+
+def _seed(session: Session, world: World, env: Env = Env.DEMO, mode: RunMode = RunMode.PAPER):
+    return loss_seed(session, env, mode, DAY, TOTAL_SINCE, trader_id=_trader(session, world))
 
 
 def test_realized_today_and_total_and_the_keys(session: Session, world: World):
@@ -58,7 +64,7 @@ def test_realized_today_and_total_and_the_keys(session: Session, world: World):
     open_row = world.position(opened_ns=_ns(DAY + timedelta(hours=4)))
     repository.upsert_position(session, open_row)
 
-    seed = _seed(session)
+    seed = _seed(session, world)
 
     assert seed.realized_today == Decimal("0.5")
     assert seed.realized_total == Decimal("-6.5")
@@ -87,10 +93,10 @@ def test_a_daily_halt_event_today_is_seen_and_other_reasons_are_not(session: Ses
 
     halt("manual_stop", DAY + timedelta(hours=1))
     halt("daily_loss_limit", DAY - timedelta(minutes=1))  # yesterday
-    assert not _seed(session).daily_halt_today
+    assert not _seed(session, world).daily_halt_today
 
     halt("daily_loss_limit", DAY + timedelta(hours=2))
-    assert _seed(session).daily_halt_today
+    assert _seed(session, world).daily_halt_today
 
 
 def test_today_s_trade_cap_event_is_seen_and_yesterday_s_is_not(session: Session, world: World):
@@ -112,11 +118,11 @@ def test_today_s_trade_cap_event_is_seen_and_yesterday_s_is_not(session: Session
         )
 
     trade_cap(DAY - timedelta(days=1))
-    assert not _seed(session).trade_cap_noted_today
+    assert not _seed(session, world).trade_cap_noted_today
 
     trade_cap(DAY)
-    assert _seed(session).trade_cap_noted_today
-    assert not _seed(session, env=Env.LIVE).trade_cap_noted_today
+    assert _seed(session, world).trade_cap_noted_today
+    assert not _seed(session, world, env=Env.LIVE).trade_cap_noted_today
 
 
 def test_a_position_closed_as_abandoned_at_a_restart_counts_with_its_marked_loss(session: Session, world: World):
@@ -153,7 +159,7 @@ def test_a_position_closed_as_abandoned_at_a_restart_counts_with_its_marked_loss
     )
 
     closed = repository.close_abandoned(session, Env.DEMO, trader_id, restarted, _ns(opened + timedelta(hours=1)))
-    seed = _seed(session)
+    seed = _seed(session, world)
 
     assert closed == [position.id]
     assert seed.realized_today == Decimal("-3.25")
@@ -164,6 +170,42 @@ def test_a_position_closed_as_abandoned_at_a_restart_counts_with_its_marked_loss
 def test_other_modes_and_envs_are_left_out(session: Session, world: World):
     _closed(session, world, DAY + timedelta(hours=1), DAY + timedelta(hours=2), "-4")
 
-    assert _seed(session, mode=RunMode.BACKTEST).realized_today == Decimal(0)
-    assert _seed(session, env=Env.LIVE).realized_today == Decimal(0)
-    assert _seed(session).realized_today == Decimal(-4)
+    assert _seed(session, world, mode=RunMode.BACKTEST).realized_today == Decimal(0)
+    assert _seed(session, world, env=Env.LIVE).realized_today == Decimal(0)
+    assert _seed(session, world).realized_today == Decimal(-4)
+
+
+def test_another_trader_s_runs_and_events_are_left_out(session: Session, world: World):
+    """covers: spec 0030 AC-16 (the loss seed counts only its own trader's runs, halts, and trade cap)"""
+    other = repository.start_run(
+        session,
+        env=Env.DEMO,
+        mode=RunMode.PAPER,
+        version_id=world.version_id,
+        trader_id=f"PORTFOLIO-{uuid7().hex[-8:]}",
+        run_config={},
+        started_ns=1_800_000_000_000_000_001,
+    )
+    other_world = World(version_id=world.version_id, run_id=other)
+    _closed(session, other_world, DAY + timedelta(hours=1), DAY + timedelta(hours=2), "-9")
+    repository.record_risk_event(
+        session,
+        RiskEventRow(
+            env=Env.DEMO,
+            event_key=f"halt:{uuid7()}",
+            kind=RiskEventKind.HALT,
+            severity=Severity.CRITICAL,
+            message="halted",
+            details={"reason": "daily_loss_limit", "source": "trader"},
+            run_id=other,
+            occurred_ns=_ns(DAY + timedelta(hours=2)),
+        ),
+    )
+
+    mine = _seed(session, world)
+    theirs = _seed(session, other_world)
+
+    assert mine.realized_today == Decimal(0)
+    assert not mine.daily_halt_today
+    assert theirs.realized_today == Decimal(-9)
+    assert theirs.daily_halt_today
