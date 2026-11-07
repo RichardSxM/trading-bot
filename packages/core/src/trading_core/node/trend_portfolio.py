@@ -528,6 +528,15 @@ class TrendPortfolio(KfsStrategy):
             log.info("rebalance delta too small", extra={"fields": {"code": "rebalance_skip_small", "instrument": key}})
             return
         held = self._held_reason()
+        if held == BlockReason.ORDER_UNRESOLVED:
+            # Only an order still waiting for its answer (often this rebalance's own, spec 0023 AC-14): try the
+            # grow again after the retry wait instead of holding it until a resume that never comes.
+            log.info(
+                "rebalance grow waits for an unanswered order",
+                extra={"fields": {"code": "rebalance_deferred", "instrument": key}},
+            )
+            self._order_failed(key, BlockReason.ORDER_UNRESOLVED, retry=True)
+            return
         if held is not None:
             log.info(
                 "rebalance grow held",
@@ -692,8 +701,10 @@ class TrendPortfolio(KfsStrategy):
             return "halted"
         if self._gate.paused:
             return "paused"
+        # ``order_unresolved`` counts only when no other block holds the grow (see ``_send_grow``).
         active = sorted(str(reason) for reason in self._blocks.active())
-        return active[0] if active else None
+        others = [reason for reason in active if reason != BlockReason.ORDER_UNRESOLVED]
+        return others[0] if others else (active[0] if active else None)
 
     def _inputs(self, key: str, mid: Decimal, current: Decimal, target_qty: Decimal, delta: Decimal) -> JsonObject:
         assert self.plan is not None
