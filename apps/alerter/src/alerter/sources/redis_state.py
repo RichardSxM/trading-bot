@@ -65,3 +65,34 @@ async def trader_blocks(redis: SnapshotReader, key: str) -> TraderBlocks | None:
         else {}
     )
     return TraderBlocks(snapshot.ts_ns, reasons, since_ns)
+
+
+@dataclass(frozen=True)
+class PlanFailures:
+    """The ``failed`` part of ``portfolio_plan`` (spec 0030 AC-17): the rebalance it belongs to and its coins."""
+
+    last_rebalance_at: int
+    failed: tuple[str, ...]
+
+
+async def plan_failures(redis: SnapshotReader, key: str) -> PlanFailures | None:
+    """``last_rebalance_at`` and ``failed`` of ``portfolio_plan``; None when missing, malformed, or never rebalanced.
+
+    Bad entries in ``failed`` are skipped. A Redis error propagates.
+    """
+    raw = await redis.get(key)
+    if raw is None:
+        return None
+    try:
+        snapshot = decode(raw)
+    except SnapshotFormatError as exc:
+        log.warning(
+            "bad portfolio_plan snapshot", extra={"fields": {"code": "portfolio_plan_malformed", "error": str(exc)}}
+        )
+        return None
+    last = snapshot.data.get("last_rebalance_at")
+    failed = snapshot.data.get("failed")
+    if not isinstance(last, int) or isinstance(last, bool):
+        return None
+    coins = tuple(c for c in failed if isinstance(c, str)) if isinstance(failed, list) else ()
+    return PlanFailures(last, coins)

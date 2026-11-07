@@ -99,7 +99,7 @@ class _Planned(TrendPortfolio):
     """
 
     first: ClassVar[dict[str, int]] = {}
-    later: tuple = ()
+    later: ClassVar[tuple[tuple[float, object], ...]] = ()
     stale: frozenset[str] = frozenset()
     t0_ns = _ns(START)
 

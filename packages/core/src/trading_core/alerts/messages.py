@@ -61,6 +61,17 @@ def trader_down(fields: Mapping[str, object]) -> tuple[str, str]:
     return "Trader down", "No trader heartbeat in Redis."
 
 
+def portfolio_coins_failed(fields: Mapping[str, object]) -> tuple[str, str]:
+    """Title text and body for ``portfolio_coins_failed`` (spec 0030 AC-17): the coins one rebalance gave up on."""
+    coins = str(fields.get("coins") or "?")
+    count = fields.get("count")
+    noun = "coin" if count == 1 else "coins"
+    return (
+        f"Portfolio rebalance: {count if isinstance(count, int) else '?'} {noun} failed",
+        f"{coins} did not reach their target after every retry; they wait for the next rebalance.",
+    )
+
+
 def words(code: str) -> str:
     """A code in plain words: ``stop_not_accepted`` becomes "Stop not accepted"."""
     return code.replace("_", " ").capitalize()
@@ -85,6 +96,8 @@ def log_line(
         return "Dashboard login failures", f"{fields.get('count', '?')} failed logins within 10 min, all clients."
     if rule_id == "fill":
         return fill(fields)
+    if rule_id == "portfolio_coins_failed":
+        return portfolio_coins_failed(fields)
     event_key = str(fields.get("event_key") or "")
     if rule_id in _RISK_RULES:
         head = words(event_key.split(":", 1)[0] if event_key else (code or rule_id))
@@ -170,8 +183,16 @@ def check(
     """Title text and body for an episode opened by a condition check.
 
     ``entry_block_s`` is the configured block length (``ALERTS_ENTRY_BLOCK_S``) the
-    ``entry_block`` title names.
+    ``entry_block`` title names. A check on a second trader carries its ``slot`` field, and the
+    title names it ("Trader down (portfolio trader)", spec 0030 AC-17); ``main`` has none, so its
+    text is as before.
     """
+    head, body = _check(rule_id, subject, fields, entry_block_s)
+    slot = fields.get("slot")
+    return (f"{head} ({slot} trader)" if slot else head), body
+
+
+def _check(rule_id: str, subject: str | None, fields: Mapping[str, object], entry_block_s: int) -> tuple[str, str]:
     if rule_id == "trader_down":
         return trader_down(fields)
     if rule_id == "service_down":
@@ -188,7 +209,7 @@ def check(
             f"(the floor is {fields.get('floor_gb', '?')} GB)."
         )
     if rule_id == "entry_block":
-        reason = str(subject or fields.get("reason") or "")
+        reason = str(fields.get("reason") or subject or "")
         plain = PLAIN_WORDS.get(BlockReason(reason)) if reason in BlockReason else None
         return f"Entries blocked for over {span(entry_block_s)}", f"{plain or words(reason)} ({reason})."
     if rule_id == "fx_rates_stale":
