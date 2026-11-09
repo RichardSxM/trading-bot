@@ -170,6 +170,18 @@ def test_a_zero_range_bar_votes_zero_on_volume():
     assert f.rule.values()["v_volume"] == 0
 
 
+@pytest.mark.parametrize(
+    ("low_gap", "vote"),
+    [(D(15), 1), (D("14.8"), 0), (D(5), -1), (D("5.2"), 0)],
+)
+def test_the_volume_vote_takes_the_top_and_bottom_quarters_inclusive(low_gap, vote):
+    # covers: AC-1 (V6: (close - low) / range >= 0.75 votes +1, <= 0.25 votes -1)
+    f = _ready_climb()
+    c = f.close + 1
+    f.bar(c, c - low_gap + 20, c - low_gap, D(10))  # a 20 wide bar, far above 1.5 x ATR
+    assert f.rule.values()["v_volume"] == vote
+
+
 def test_the_breakout_reads_the_previous_twenty_bars_only():
     f = _ready_climb()
     c = f.close + 1
