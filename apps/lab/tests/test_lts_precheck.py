@@ -2,10 +2,13 @@
 variant and matching), AC-19 (byte identical reports, the file name)."""
 
 import json
+import random
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+from nautilus_trader.model.book import OrderBook
 from nautilus_trader.model.data import (
     BookOrder,
     CustomData,
@@ -15,7 +18,7 @@ from nautilus_trader.model.data import (
     TradeTick,
 )
 from nautilus_trader.model.enums import AggressorSide as NautilusSide
-from nautilus_trader.model.enums import BookAction, OrderSide
+from nautilus_trader.model.enums import BookAction, BookType, OrderSide
 from nautilus_trader.model.identifiers import InstrumentId, TradeId
 from nautilus_trader.model.objects import Price, Quantity
 
@@ -23,6 +26,7 @@ from lab.lts_precheck import (
     ALL_TRADES,
     LIQUIDATIONS_REMOVED,
     DayScan,
+    _BandDepth,
     build_report,
     report_path,
     run_precheck,
@@ -31,7 +35,7 @@ from lab.lts_precheck import (
 from lab.lts_runfile import load_lts_run
 from trading_core.marketdata.context import AggressorSide, LiquidationKind
 from trading_core.node.context_types import LiquidationTick, context_data_type
-from trading_core.strategy.lts_sweep import LtsParams
+from trading_core.strategy.lts_sweep import CandidateView, LtsParams, LtsSide
 
 from .conftest import lab_settings
 
@@ -133,6 +137,7 @@ def _scan(events, forced=False):
         params=PARAMS,
         instrument_id=IID.value,
         contract_size=Decimal(1),
+        size_precision=4,
         band_bps=5,
         with_forced_variant=forced,
     )
@@ -147,6 +152,74 @@ def test_depth_comes_from_the_book_the_runner_built():
     assert row.replenishment_ratio == Decimal("0.4")
     assert row.recovery_ns is None
     assert row.signal.level == 100_000
+
+
+def _walked(book, view):
+    """Every level of the book walked by hand: what the band's total must always equal."""
+    band = view.level * 5 / 10_000
+    low, high = view.level - band, view.level + band
+    levels = book.bids() if view.side is LtsSide.LONG else book.asks()
+    return sum(
+        (
+            order.size.as_decimal()
+            for level in levels
+            if low <= level.price.as_decimal() <= high
+            for order in level.orders()
+        ),
+        Decimal(0),
+    )
+
+
+@pytest.mark.parametrize("side", [LtsSide.LONG, LtsSide.SHORT])
+def test_band_depth_always_equals_a_walk_of_the_whole_book(side):
+    book_side = OrderSide.BUY if side is LtsSide.LONG else OrderSide.SELL
+    rng = random.Random(31)
+    book = OrderBook(IID, BookType.L2_MBP)
+    for price in range(99_900, 100_101):
+        book.apply_deltas(_batch(1, (BookAction.ADD, book_side, price, rng.randint(1, 9))))
+    view = CandidateView(side, Decimal(100_000), 0)
+    band = _BandDepth(book, view, 5, 4)
+    assert band.total == _walked(book, view)
+
+    live = set(range(99_900, 100_101))
+    for ts in range(2, 3000):
+        price = rng.randint(99_900, 100_100)
+        if price in live and rng.random() < 0.4:
+            row = (BookAction.DELETE, book_side, price, 0)
+            live.discard(price)
+        else:
+            row = (BookAction.UPDATE if price in live else BookAction.ADD, book_side, price, rng.randint(1, 9))
+            live.add(price)
+        deltas = _batch(ts, row)
+        book.apply_deltas(deltas)
+        band.apply(book, deltas)
+        assert band.total == _walked(book, view)
+
+
+def test_band_depth_ignores_the_other_side_and_levels_outside_the_band():
+    book = OrderBook(IID, BookType.L2_MBP)
+    book.apply_deltas(_batch(1, (BookAction.ADD, OrderSide.BUY, 100_000, 5)))
+    band = _BandDepth(book, CandidateView(LtsSide.LONG, Decimal(100_000), 0), 5, 4)
+
+    other_side = _batch(2, (BookAction.ADD, OrderSide.SELL, 100_001, 7))
+    outside = _batch(3, (BookAction.ADD, OrderSide.BUY, 99_000, 7))
+    for deltas in (other_side, outside):
+        book.apply_deltas(deltas)
+        assert band.apply(book, deltas) is False
+    assert band.total == 5
+
+
+def test_band_depth_reads_everything_again_after_a_clear():
+    book = OrderBook(IID, BookType.L2_MBP)
+    book.apply_deltas(_batch(1, (BookAction.ADD, OrderSide.BUY, 100_000, 5)))
+    view = CandidateView(LtsSide.LONG, Decimal(100_000), 0)
+    band = _BandDepth(book, view, 5, 4)
+
+    deltas = _batch(2, (BookAction.CLEAR, OrderSide.NO_ORDER_SIDE, 0, 0), (BookAction.ADD, OrderSide.BUY, 100_001, 3))
+    book.apply_deltas(deltas)
+
+    assert band.apply(book, deltas) is True
+    assert band.total == 3
 
 
 def test_markouts_use_the_signal_mid_and_a_late_horizon_has_none():

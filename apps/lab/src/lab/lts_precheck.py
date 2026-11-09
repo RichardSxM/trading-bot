@@ -23,7 +23,7 @@ from typing import Final
 from nautilus_trader.core.data import Data
 from nautilus_trader.model.book import OrderBook
 from nautilus_trader.model.data import CustomData, OrderBookDeltas, QuoteTick, TradeTick
-from nautilus_trader.model.enums import BookType
+from nautilus_trader.model.enums import BookAction, BookType, OrderSide
 from nautilus_trader.model.identifiers import InstrumentId
 
 from lab.catalog import SourceTree
@@ -61,20 +61,54 @@ _FORCED_KINDS: Final = {
 }
 
 
-def _book_depth(book: OrderBook, view: CandidateView, band_bps: int, contract_size: Decimal) -> Decimal:
-    """Displayed base size on the relevant side within the band around the frozen level (AC-12).
+class _BandDepth:
+    """Displayed base size near one candidate's frozen level, always read from the runner's book (AC-12).
 
-    Sizes come from each level's orders, because ``BookLevel.size()`` is a float.
+    Fetching every level costs milliseconds and a candidate can see thousands of updates, so the whole
+    book is read once and afterward only the levels an update names. Sizes come from each level's
+    orders, because ``BookLevel.size()`` is a float.
     """
-    band = view.level * band_bps / _BPS
-    low, high = view.level - band, view.level + band
-    levels = book.bids() if view.side is LtsSide.LONG else book.asks()
-    depth = Decimal(0)
-    for level in levels:
-        price = level.price.as_decimal()
-        if low <= price <= high:
-            depth += sum((order.size.as_decimal() for order in level.orders()), Decimal(0))
-    return depth * contract_size
+
+    def __init__(self, book: OrderBook, view: CandidateView, band_bps: int, size_precision: int) -> None:
+        band = view.level * band_bps / _BPS
+        self._low, self._high = view.level - band, view.level + band
+        self._long = view.side is LtsSide.LONG
+        self._side = OrderSide.BUY if self._long else OrderSide.SELL
+        # ``get_quantity_at_level`` takes the side of an order trading against the level.
+        self._against = OrderSide.SELL if self._long else OrderSide.BUY
+        self._precision = size_precision
+        self._sizes: dict[int, Decimal] = {}
+        self._read_all(book)
+
+    @property
+    def total(self) -> Decimal:
+        """The base size inside the band now, in contracts."""
+        return sum(self._sizes.values(), Decimal(0))
+
+    def apply(self, book: OrderBook, deltas: OrderBookDeltas) -> bool:
+        """Read the levels these updates changed, from a book they are already in; True if any is in the band."""
+        changed = False
+        for delta in deltas.deltas:
+            if delta.action == BookAction.CLEAR:
+                self._read_all(book)
+                return True
+            order = delta.order
+            if order.side != self._side or not self._low <= order.price.as_decimal() <= self._high:
+                continue
+            size = book.get_quantity_at_level(order.price, self._against, self._precision)
+            self._sizes[order.price.raw] = size.as_decimal()
+            changed = True
+        return changed
+
+    def _read_all(self, book: OrderBook) -> None:
+        self._sizes = {}
+        # Best price first on both sides, so the first level past the far edge ends the walk.
+        for level in book.bids() if self._long else book.asks():
+            price = level.price.as_decimal()
+            if price < self._low if self._long else price > self._high:
+                break
+            if self._low <= price <= self._high:
+                self._sizes[level.price.raw] = sum((order.size.as_decimal() for order in level.orders()), Decimal(0))
 
 
 @dataclass(frozen=True)
@@ -112,20 +146,24 @@ class SegmentScan:
 class _Variant:
     """One detector with its markouts and the depth of its open candidate."""
 
-    def __init__(self, params: LtsParams, band_bps: int, contract_size: Decimal, *, remove_forced: bool) -> None:
+    def __init__(
+        self, params: LtsParams, band_bps: int, contract_size: Decimal, size_precision: int, *, remove_forced: bool
+    ) -> None:
         self.detector = SweepDetector(params)
         self.remove_forced = remove_forced
         self._tracker = MarkoutTracker(HORIZONS_S)
         self._band_bps = band_bps
         self._contract_size = contract_size
+        self._size_precision = size_precision
         self._view: CandidateView | None = None
+        self._band: _BandDepth | None = None
         self._track: DepthTrack | None = None
         self._pending: list[tuple[LtsSignal, DepthTrack]] = []
 
-    def on_book(self, book: OrderBook, ts_ns: int) -> None:
-        """The book changed: read the open candidate's depth."""
-        if self._track is not None and self._view is not None:
-            self._track.update(_book_depth(book, self._view, self._band_bps, self._contract_size), ts_ns)
+    def on_book(self, book: OrderBook, deltas: OrderBookDeltas) -> None:
+        """The book changed: read the open candidate's depth. Updates outside its band change nothing."""
+        if self._track is not None and self._band is not None and self._band.apply(book, deltas):
+            self._track.update(self._band.total * self._contract_size, deltas.ts_init)
 
     def on_mid(self, ts_ns: int, mid: Decimal, book: OrderBook) -> None:
         """The mid changed: update markouts and the detector, and keep any signal."""
@@ -147,10 +185,11 @@ class _Variant:
     def _sync(self, book: OrderBook, ts_ns: int) -> None:
         view = self.detector.candidate
         if view is None:
-            self._view, self._track = None, None
+            self._view, self._band, self._track = None, None, None
         elif view is not self._view:
             self._view = view
-            self._track = DepthTrack(_book_depth(book, view, self._band_bps, self._contract_size), ts_ns)
+            self._band = _BandDepth(book, view, self._band_bps, self._size_precision)
+            self._track = DepthTrack(self._band.total * self._contract_size, ts_ns)
 
     def finish(self, last_book_ns: int) -> VariantScan:
         """Close the segment and pair each signal with its markouts."""
@@ -177,14 +216,15 @@ def scan_events(
     params: LtsParams,
     instrument_id: str,
     contract_size: Decimal,
+    size_precision: int,
     band_bps: int,
     with_forced_variant: bool,
 ) -> SegmentScan:
     """Run one segment's events through every variant, in stream order."""
     book = OrderBook(InstrumentId.from_str(instrument_id), BookType.L2_MBP)
-    variants = {ALL_TRADES: _Variant(params, band_bps, contract_size, remove_forced=False)}
+    variants = {ALL_TRADES: _Variant(params, band_bps, contract_size, size_precision, remove_forced=False)}
     if with_forced_variant:
-        variants[LIQUIDATIONS_REMOVED] = _Variant(params, band_bps, contract_size, remove_forced=True)
+        variants[LIQUIDATIONS_REMOVED] = _Variant(params, band_bps, contract_size, size_precision, remove_forced=True)
     deduper = TradeDeduper()
     last_top: tuple[int, int] | None = None
     first_mid: Decimal | None = None
@@ -197,7 +237,7 @@ def scan_events(
             book.apply_deltas(event)
             last_book_ns = event.ts_init
             for variant in variants.values():
-                variant.on_book(book, event.ts_init)
+                variant.on_book(book, event)
         elif isinstance(event, QuoteTick):
             top = (event.bid_price.raw, event.ask_price.raw)
             if top == last_top:
@@ -260,6 +300,7 @@ def scan_segment(
     *,
     params: LtsParams,
     contract_size: Decimal,
+    size_precision: int,
     band_bps: int,
     with_forced_variant: bool,
     cut_ns: int | None = None,
@@ -278,6 +319,7 @@ def scan_segment(
         params=params,
         instrument_id=tree.instrument_id,
         contract_size=contract_size,
+        size_precision=size_precision,
         band_bps=band_bps,
         with_forced_variant=with_forced_variant,
     )
@@ -297,7 +339,13 @@ class DayScan:
 
 
 def scan_day(
-    root: Path, day: date, params: LtsParams, contract_size: Decimal, band_bps: int, instrument: str
+    root: Path,
+    day: date,
+    params: LtsParams,
+    contract_size: Decimal,
+    size_precision: int,
+    band_bps: int,
+    instrument: str,
 ) -> DayScan:
     """Every clean segment of one day, with a 60 minute warm up taken off each."""
     tree = SourceTree(root, instrument)
@@ -313,6 +361,7 @@ def scan_day(
                 segment,
                 params=params,
                 contract_size=contract_size,
+                size_precision=size_precision,
                 band_bps=band_bps,
                 with_forced_variant=with_forced,
             )
@@ -331,10 +380,16 @@ def scan_day(
 
 
 def _worker(
-    root: Path, day: date, params: LtsParams, contract_size: Decimal, band_bps: int, instrument: str
+    root: Path,
+    day: date,
+    params: LtsParams,
+    contract_size: Decimal,
+    size_precision: int,
+    band_bps: int,
+    instrument: str,
 ) -> DayScan:
     configure_logging(process=PROCESS, env="demo")
-    return scan_day(root, day, params, contract_size, band_bps, instrument)
+    return scan_day(root, day, params, contract_size, size_precision, band_bps, instrument)
 
 
 def _text(value: Decimal | None) -> str | None:
@@ -519,6 +574,7 @@ def run_precheck(
                 days,
                 [params] * count,
                 [contract_size] * count,
+                [instrument.size_precision] * count,
                 [run.depth_band_bps] * count,
                 [run.instrument_id] * count,
             )
