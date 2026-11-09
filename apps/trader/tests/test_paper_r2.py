@@ -116,6 +116,7 @@ def test_r2_is_refused_outside_demo(r2, monkeypatch):
 def test_r1_r2_six_vote_trend_trend_portfolio_and_connors_rsi_tp_take_the_warmup_seed():
     assert set(SEEDED_STRATEGIES) == {
         "connors_rsi_tp",
+        "donchian_scalp_tp",
         "donchian_scalp_r1",
         "donchian_scalp_r2",
         "six_vote_trend",

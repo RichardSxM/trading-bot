@@ -23,6 +23,7 @@ from trading_core.node.connors_rsi_tp import ConnorsRsiTp
 from trading_core.node.donchian_4h import Donchian4h
 from trading_core.node.donchian_scalp import DonchianScalp
 from trading_core.node.donchian_scalp_r1 import DonchianScalpR1
+from trading_core.node.donchian_scalp_tp import DonchianScalpTp
 from trading_core.node.funding import FundingLedger
 from trading_core.node.kraken import BTC_PERP
 from trading_core.node.placeholder import PlaceholderTimed
@@ -237,6 +238,49 @@ def test_connors_rsi_tp_is_refused_outside_demo(demo, monkeypatch):
 
 def test_connors_rsi_tp_may_trade_many_coins(demo, monkeypatch):
     monkeypatch.setenv("PAPER_STRATEGY", "connors_rsi_tp")
+    monkeypatch.setenv("PAPER_INSTRUMENTS", f"{BTC_PERP},PF_ETHUSD.KRAKEN")
+
+    assert TraderSettings().instrument_list == sorted([BTC_PERP, "PF_ETHUSD.KRAKEN"])
+
+
+def test_trend_portfolio_waits_15_minutes_before_a_coin_trades_again(demo, monkeypatch):
+    monkeypatch.setenv("PAPER_STRATEGY", "trend_portfolio")
+
+    config = paper_version(TraderSettings()).config
+
+    assert (config["coin_take_profit_usd"], config["coin_stop_loss_usd"]) == ("3", "2")
+    assert config["coin_reenter_wait_s"] == 900
+
+
+def test_trend_portfolio_runs_at_5x_on_the_demo(demo, monkeypatch):
+    monkeypatch.setenv("PAPER_STRATEGY", "trend_portfolio")
+
+    config = paper_version(TraderSettings()).config
+
+    assert (config["vol_target"], config["gross_cap"]) == ("0.155", "5")
+
+
+def test_donchian_scalp_tp_records_its_settings_and_takes_the_seed(demo, monkeypatch):
+    monkeypatch.setenv("PAPER_STRATEGY", "donchian_scalp_tp")
+    settings = TraderSettings()
+    seed = [BarInput(300_000_000_000, Decimal(1), Decimal(2), Decimal(1), Decimal(1), Decimal(1))]
+
+    version = paper_version(settings)
+    strategy, view = _build(settings, seed)
+
+    assert (version.name, version.kind.value) == ("donchian_scalp_tp", "scalping")
+    assert version.config["bar_spec"] == "5-MINUTE-LAST"
+    assert (version.config["entry_bars"], version.config["time_stop_bars"]) == (20, 60)
+    assert (version.config["take_profit_usd"], version.config["stop_loss_usd"]) == ("3", "2")
+    assert version.config["risk_per_trade"] == "0.5"
+    assert version.frozen == versioning.freeze(DonchianScalpTp.__module__, version.config)
+    assert isinstance(strategy, DonchianScalpTp)
+    assert isinstance(view, BarRuleView)
+    assert strategy._seed_pending
+
+
+def test_donchian_scalp_tp_may_trade_many_coins(demo, monkeypatch):
+    monkeypatch.setenv("PAPER_STRATEGY", "donchian_scalp_tp")
     monkeypatch.setenv("PAPER_INSTRUMENTS", f"{BTC_PERP},PF_ETHUSD.KRAKEN")
 
     assert TraderSettings().instrument_list == sorted([BTC_PERP, "PF_ETHUSD.KRAKEN"])

@@ -33,6 +33,7 @@ from trading_core.node import (
     donchian_scalp,
     donchian_scalp_r1,
     donchian_scalp_r2,
+    donchian_scalp_tp,
     placeholder,
     six_vote_trend,
     trend_portfolio,
@@ -44,6 +45,7 @@ from trading_core.node.donchian_4h import Donchian4h, Donchian4hConfig
 from trading_core.node.donchian_scalp import DonchianScalp, DonchianScalpConfig
 from trading_core.node.donchian_scalp_r1 import DonchianScalpR1, DonchianScalpR1Config
 from trading_core.node.donchian_scalp_r2 import DonchianScalpR2, DonchianScalpR2Config
+from trading_core.node.donchian_scalp_tp import DonchianScalpTp, DonchianScalpTpConfig
 from trading_core.node.funding import FundingLedger
 from trading_core.node.kraken import BTC_PERP
 from trading_core.node.paper_snapshots import PaperStrategyView
@@ -69,6 +71,7 @@ type PaperStrategyName = Literal[
     "six_vote_trend",
     "trend_portfolio",
     "connors_rsi_tp",
+    "donchian_scalp_tp",
 ]
 
 # The donchian_4h_pair study's chosen grid point (spec 0022 Results: grid-2), also used by donchian_scalp.
@@ -120,11 +123,15 @@ CONNORS_STOP_LOSS_USD: Final = Decimal(2)
 CONNORS_RISK_PER_TRADE: Final = Decimal("0.5")
 CONNORS_SEED_BARS: Final = 300
 CONNORS_SEED_MIN_BARS: Final = 250
+# donchian_scalp_tp: the donchian_scalp point, the owner's dollar exits, and the order cap as the trade size.
+DONCHIAN_TP_TAKE_PROFIT_USD: Final = Decimal(3)
+DONCHIAN_TP_STOP_LOSS_USD: Final = Decimal(2)
+DONCHIAN_TP_RISK_PER_TRADE: Final = Decimal("0.5")
 TP_LOOKBACK_DAYS: Final = 30
 TP_VOL_DAYS: Final = 30
-# The owner's 10x demo choice (2026-11-09), not the tested 0.02 and 2: the study was wiped out at 10x.
-TP_VOL_TARGET: Final = Decimal("0.31")
-TP_GROSS_CAP: Final = Decimal(10)
+# The owner's 5x demo choice (2026-11-09, down from 10x to cut fees), not the tested 0.02 and 2.
+TP_VOL_TARGET: Final = Decimal("0.155")
+TP_GROSS_CAP: Final = Decimal(5)
 TP_MIN_HISTORY_DAYS: Final = 120
 TP_REBALANCE_WEEKDAY: Final = 0
 TP_RUN_AT_UTC: Final = "00:05"
@@ -137,7 +144,7 @@ TP_SEED_MIN_DAYS: Final = 121
 # The owner's demo choice: each coin closes at these, then trades again after the wait.
 TP_COIN_TAKE_PROFIT_USD: Final = Decimal(3)
 TP_COIN_STOP_LOSS_USD: Final = Decimal(2)
-TP_COIN_REENTER_WAIT_S: Final = 60
+TP_COIN_REENTER_WAIT_S: Final = 900
 # The strategies that trade more than one coin (spec 0025 AC-15, spec 0026 AC-16, spec 0029 AC-10).
 _MULTI_COIN: Final = (
     donchian_scalp_r1.STRATEGY_NAME,
@@ -145,6 +152,7 @@ _MULTI_COIN: Final = (
     six_vote_trend.STRATEGY_NAME,
     trend_portfolio.STRATEGY_NAME,
     connors_rsi_tp.STRATEGY_NAME,
+    donchian_scalp_tp.STRATEGY_NAME,
 )
 # The strategies the trader fetches a warmup seed for before the node (spec 0025 AC-7, spec 0026 AC-16, spec 0029).
 SEEDED_STRATEGIES: Final = (
@@ -153,6 +161,7 @@ SEEDED_STRATEGIES: Final = (
     six_vote_trend.STRATEGY_NAME,
     trend_portfolio.STRATEGY_NAME,
     connors_rsi_tp.STRATEGY_NAME,
+    donchian_scalp_tp.STRATEGY_NAME,
 )
 # A PAPER_INSTRUMENTS entry: a Kraken perpetual (spec 0025 AC-15).
 _PAPER_INSTRUMENT: Final = re.compile(r"PF_[A-Z0-9]+\.KRAKEN")
@@ -272,6 +281,16 @@ def paper_version(settings: StrategySettings) -> PaperVersion:
         }
         frozen = versioning.freeze(DonchianScalpR1.__module__, r1_config)
         return PaperVersion(donchian_scalp_r1.STRATEGY_NAME, StrategyKind.SCALPING, r1_config, frozen)
+    if settings.paper_strategy == donchian_scalp_tp.STRATEGY_NAME:
+        donchian_tp_config: JsonObject = {
+            **_donchian_version_config(settings, donchian_scalp_tp.STRATEGY_NAME, donchian_scalp_tp.BAR_SPEC),
+            "take_profit_usd": str(DONCHIAN_TP_TAKE_PROFIT_USD),
+            "stop_loss_usd": str(DONCHIAN_TP_STOP_LOSS_USD),
+            "risk_per_trade": str(DONCHIAN_TP_RISK_PER_TRADE),
+            "instruments": list(settings.instrument_list),
+        }
+        frozen = versioning.freeze(DonchianScalpTp.__module__, donchian_tp_config)
+        return PaperVersion(donchian_scalp_tp.STRATEGY_NAME, StrategyKind.SCALPING, donchian_tp_config, frozen)
     if settings.paper_strategy == donchian_scalp.STRATEGY_NAME:
         config = _donchian_version_config(settings, donchian_scalp.STRATEGY_NAME, donchian_scalp.BAR_SPEC)
         frozen = versioning.freeze(DonchianScalp.__module__, config)
@@ -609,6 +628,40 @@ def connors_rsi_tp_config(settings: StrategySettings, run_id: UUID, instrument_i
     )
 
 
+def donchian_scalp_tp_config(settings: StrategySettings, run_id: UUID, instrument_id: str) -> DonchianScalpTpConfig:
+    """``donchian_scalp_tp`` with the ``RISK_*`` caps, under ``run_id``. Raises ``ValueError`` outside demo.
+
+    ``DONCHIAN_TP_RISK_PER_TRADE`` is far above any stop's cost on purpose, so ``RISK_MAX_ORDER_NOTIONAL_USD``
+    sets every trade's size (the owner's fixed size on the demo) instead of the stop distance.
+    """
+    _demo_only(settings)
+    return DonchianScalpTpConfig(
+        order_id_tag=order_id_tag(instrument_id),
+        env=settings.trading_env,
+        run_id=str(run_id),
+        instrument_id=instrument_id,
+        bar_spec=donchian_scalp_tp.BAR_SPEC,
+        entry_bars=DONCHIAN_ENTRY_BARS,
+        stop_atr=DONCHIAN_STOP_ATR,
+        atr_period=DONCHIAN_ATR_PERIOD,
+        atr_floor_mult=DONCHIAN_ATR_FLOOR_MULT,
+        time_stop_bars=DONCHIAN_TIME_STOP_BARS,
+        take_profit_usd=DONCHIAN_TP_TAKE_PROFIT_USD,
+        stop_loss_usd=DONCHIAN_TP_STOP_LOSS_USD,
+        max_order_notional_usd=settings.risk_max_order_notional_usd,
+        max_leverage=settings.risk_max_leverage,
+        max_total_exposure_usd=settings.risk_max_total_exposure_usd,
+        risk_per_trade=DONCHIAN_TP_RISK_PER_TRADE,
+        maintenance_margin_rate=settings.risk_maintenance_margin_rate,
+        min_liq_distance_pct=settings.risk_min_liq_distance_pct,
+        liq_stop_multiple=settings.risk_liq_stop_multiple,
+        stop_slippage_bps=settings.risk_stop_slippage_bps,
+        taker_fee=settings.sandbox_taker_fee,
+        stale_quote_s=settings.risk_stale_quote_s,
+        use_market_context=True,
+    )
+
+
 def trend_portfolio_config(settings: StrategySettings, run_id: UUID) -> TrendPortfolioConfig:
     """``trend_portfolio`` (spec 0030 AC-3) over every ``PAPER_INSTRUMENTS`` coin, with the ``RISK_*`` settings.
 
@@ -785,6 +838,11 @@ def build_paper_strategy(
     if settings.paper_strategy == connors_rsi_tp.STRATEGY_NAME:
         connors = ConnorsRsiTp(connors_rsi_tp_config(settings, run_id, instrument_id), gate, blocks, record, seed)
         return connors, BarRuleView(connors)
+    if settings.paper_strategy == donchian_scalp_tp.STRATEGY_NAME:
+        scalp_tp = DonchianScalpTp(
+            donchian_scalp_tp_config(settings, run_id, instrument_id), gate, blocks, record, seed
+        )
+        return scalp_tp, BarRuleView(scalp_tp)
     if settings.paper_strategy == six_vote_trend.STRATEGY_NAME:
         six = SixVoteTrend(six_vote_trend_config(settings, run_id, instrument_id), gate, blocks, record, seed, btc_seed)
         return six, MakerBarRuleView(six)
