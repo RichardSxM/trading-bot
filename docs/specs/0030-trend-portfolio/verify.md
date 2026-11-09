@@ -1,4 +1,4 @@
-# Verify: trend portfolio · spec 0030 · updated 2026-11-07
+# Verify: trend portfolio · spec 0030 · updated 2026-11-09
 
 _Build record from `/develop`. The verify steps for `/check verify` are added at the end of the build._
 
@@ -49,3 +49,54 @@ The board was rendered by the real app's poller inside the dashboard container (
 - Finding, fixed in 5aed95d: the portfolio slot wrote its plan as `demo:snapshot:portfolio_portfolio_plan` (the writer added the slot prefix to a name that already had it). The page and the alerter's `portfolio_coins_failed` read `portfolio_plan`, so that alert could never have fired. The plan now lands on `portfolio_plan` in either slot, pinned by a test.
 
 The stack was taken down after the check.
+
+## VPS start (task 7, AC-11, AC-22, AC-23), 2026-11-09
+
+### Hashes (AC-11)
+
+`code_closure` run on main at `5ffff75` and compared with the task 1 baseline: all 21 strategy modules keep their hash, and the only new one is `trading_core.node.trend_portfolio`. `node/sandbox.py`, changed in PR #136, is in no strategy's closure.
+
+### The switch (AC-22)
+
+1. PRs #133 and #134 merged. Deployed `0eb6345` with the profile off, done at 10:29 UTC (11:29 Amsterdam). Six vote's promotion held, and migration 0015 ran.
+2. You promoted portfolio version `01a1bfeb-6bc8-75a9-92a5-a0fe3e814400` by hand (promotion `01a1bfef-7bf4-7104-ab5e-1996e130e188`, `candidate → paper`, 10:51 UTC).
+3. `/etc/kfs/kfs.env` backed up to `/etc/kfs/kfs.env.bak-20261109-portfolio`, then these lines added: `COMPOSE_PROFILES=portfolio`, `ALERTER_TRADER_SLOTS=main,portfolio`, `DASHBOARD_MAIN_TRADER_ID=TRADER-DEMO`.
+4. `trader-portfolio` started, and the alerter and dashboard reloaded. Six vote's `trader` service was not part of that command. Run `01a1bff0-ab9b-73ed-9f88-ce5f1c1e4b37` started at 10:53:03 UTC (11:53 Amsterdam).
+
+### Start checks at the tested settings (AC-23), about 0.65x
+
+These ran on `01a1bff0`, with volatility target 0.02 and cap 2.
+
+- All 12 coins: seeds loaded, no `warmup_seed_failed`, no `seed_stale`.
+- The `start` rebalance approved and filled an order for all 12 coins. The Portfolio page showed 12 rows, with positions within one size step of the targets.
+- `pause` and `unpause` with `--slot all` were both answered by both traders.
+- The Overview shows only `TRADER-DEMO`, so its figures hold no portfolio trade.
+
+**Deviation from AC-23:** the unpause `resume` rebalance sent one order, a 0.1 LINK buy at 10.413 (about 1 USD), so "sends nothing new" is not literally met. Between the two rebalances the target moved across a size step. It is a rounding edge, and it has not been changed.
+
+### The move to about 10x, at your request
+
+The tested settings are not the ones running now. You chose about 10x for this demo after being told the study was wiped out at 10x. **The running book is not the method the study tested, so its result says nothing about that study, in either direction.**
+
+- PR #135 merged as `8e981f0`: `TP_VOL_TARGET` 0.31 and `TP_GROSS_CAP` 10 in `apps/trader/src/trader/paper_strategy.py`. The pure rule defaults stay at 0.02 and 2. AC-1 still names 0.02 and 2, so it needs an `/architect` amendment.
+- `/etc/kfs/kfs.env` backed up to `/etc/kfs/kfs.env.bak-20261109-portfolio10x`, then `PORTFOLIO_RISK_MAX_TOTAL_EXPOSURE_USD=12000`, `PORTFOLIO_RISK_MAX_ORDER_NOTIONAL_USD=2500`, and `PORTFOLIO_RISK_MAX_LEVERAGE=12` added.
+- You promoted version `01a1c016-0bd4-7546-9e73-073c5fbb97e9` by hand (promotion `01a1c01a-add2-706b-8ee8-1dab60216c3f`, 11:38 UTC). Deployed with `--now` at 11:41 UTC (12:41 Amsterdam).
+- **Finding:** run `01a1c01c-badc-7267-b82e-d20c1a455d45` reached only 8.47x. The DOGE order (14044) and TRX order (3018) each stopped at exactly 1000 and stayed `partially_filled`, and `reconcile_mismatch` kind `local_only_order` fired about once a minute for both coins (critical, no halt).
+- **Cause and fix:** the sandbox showed at least 1000 base units on each side of every quote (`DEEP_BOOK_SIZE`), so a larger market order filled 1000 and the rest was dropped with no event. PR #136 merged as `5ffff75` and raises the depth to 1,000,000,000, with a regression test using the real sizes. Spec 0006 line 221 still says 1000 BTC, so it needs an `/architect` amendment.
+
+### Where it stands now
+
+Deployed `5ffff75` with `--now`, done at 12:36 UTC (13:36 Amsterdam). No promote was needed, since both frozen hashes are unchanged.
+
+| Trader | Run | Version row |
+|---|---|---|
+| `PORTFOLIO-DEMO` | `01a1c04e-cf27-74c9-91f8-8d55e60077d7` | `01a1c04d-a02d-7084-a56b-2642cf47711f` |
+| `TRADER-DEMO` | `01a1c04e-d0ab-713b-b9b2-6a7d934fad46` | `01a1c04d-5ef5-7358-b0e5-cb0afa24dfb5` |
+
+- All 12 orders filled in full, including DOGE 13919 and TRX 3018. The Portfolio page showed equity 996.84 USD and gross 10.02×.
+- `portfolio_targets` once for each of the 12 coins, no `warmup_seed_failed`, no `seed_stale`.
+- Reconcile checks every minute through 12:43 UTC with 0 mismatches. The only warnings were 12 `order_unresolved`, one for each order before its answer, and one `positions_abandoned` from the restart.
+- Each deploy abandons the sandbox's positions, so each new run starts flat. The `start` rebalance was skipped by the one hour cooldown on the two later deploys, and the unpause `resume` rebalance built the book instead.
+- The Overview and the pause drill were not repeated after the 10x change.
+
+**Not yet confirmed (AC-23):** a `six_vote_values` line since the portfolio started. Six vote's deploys at 10:29, 11:41, and 12:36 UTC each restarted it before its first values line, which comes one bar after the join bar. Its seed was fed at the 11:00 UTC join bar with no warnings. The next chance is 14:00 UTC (15:00 Amsterdam).
