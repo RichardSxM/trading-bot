@@ -141,10 +141,6 @@ TP_QUOTE_WAIT_S: Final = 60
 TP_START_COOLDOWN_S: Final = 3600
 TP_SEED_DAYS: Final = 150
 TP_SEED_MIN_DAYS: Final = 121
-# The owner's demo choice: each coin closes at these, then trades again after the wait.
-TP_COIN_TAKE_PROFIT_USD: Final = Decimal(3)
-TP_COIN_STOP_LOSS_USD: Final = Decimal(2)
-TP_COIN_REENTER_WAIT_S: Final = 900
 # The strategies that trade more than one coin (spec 0025 AC-15, spec 0026 AC-16, spec 0029 AC-10).
 _MULTI_COIN: Final = (
     donchian_scalp_r1.STRATEGY_NAME,
@@ -322,9 +318,6 @@ def _trend_portfolio_settings() -> JsonObject:
         "start_cooldown_s": TP_START_COOLDOWN_S,
         "seed_days": TP_SEED_DAYS,
         "seed_min_days": TP_SEED_MIN_DAYS,
-        "coin_take_profit_usd": str(TP_COIN_TAKE_PROFIT_USD),
-        "coin_stop_loss_usd": str(TP_COIN_STOP_LOSS_USD),
-        "coin_reenter_wait_s": TP_COIN_REENTER_WAIT_S,
     }
 
 
@@ -686,9 +679,6 @@ def trend_portfolio_config(settings: StrategySettings, run_id: UUID) -> TrendPor
         retry_wait_s=TP_RETRY_WAIT_S,
         quote_wait_s=TP_QUOTE_WAIT_S,
         start_cooldown_s=TP_START_COOLDOWN_S,
-        coin_take_profit_usd=TP_COIN_TAKE_PROFIT_USD,
-        coin_stop_loss_usd=TP_COIN_STOP_LOSS_USD,
-        coin_reenter_wait_s=TP_COIN_REENTER_WAIT_S,
         seed_days=TP_SEED_DAYS,
         seed_min_days=TP_SEED_MIN_DAYS,
         stale_quote_s=settings.risk_stale_quote_s,
