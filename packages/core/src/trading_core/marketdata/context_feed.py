@@ -1,8 +1,9 @@
 """The pure rules of the raw Kraken context feed (spec 0009 AC-3 to AC-6).
 
 Kraken's public futures websocket sends ``ticker`` messages with ``openInterest``, and ``trade``
-and ``trade_snapshot`` messages whose rows of ``type`` ``liquidation``, ``termination``, or
-``block`` are forced or block trades (``fill`` rows are ordinary trades, recorded elsewhere).
+and ``trade_snapshot`` messages whose rows of ``type`` ``liquidation``, ``partialLiquidation``,
+``termination``, or ``block`` are forced or block trades (``fill`` rows are ordinary trades,
+recorded elsewhere).
 Numbers are read as ``Decimal`` straight from the JSON text, never as floats.
 
 The node actor (``trading_core.node.context_feed``) owns the socket and the clock; everything it
@@ -29,7 +30,9 @@ BAD_LOG_EVERY_NS: Final = 60 * SECOND_NS
 BACKOFF_RESET_S: Final = 60
 _MS_NS: Final = 1_000_000
 _SIDES: Final = {"buy": AggressorSide.BUY, "sell": AggressorSide.SELL}
-_KINDS: Final = {kind.value: kind for kind in LiquidationKind}
+# Kraken's name for a liquidation that closes only part of a position; it is still a forced trade.
+_PARTIAL_LIQUIDATION: Final = "partialLiquidation"
+_KINDS: Final = {kind.value: kind for kind in LiquidationKind} | {_PARTIAL_LIQUIDATION: LiquidationKind.LIQUIDATION}
 _FILL: Final = "fill"
 
 
