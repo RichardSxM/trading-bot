@@ -1,6 +1,6 @@
 # 0006. Run one timed placeholder strategy end to end on real prices and the sandbox, recorded and shown live
 
-**Date**: 2026-10-04
+**Date**: 2026-10-04 (amended 2026-11-09: the sandbox's `DEEP_BOOK_SIZE` is now 1,000,000,000 base units, PR #136)
 **Status**: Accepted
 
 ## Summary
@@ -218,7 +218,7 @@ New Redis keys (the trader writes them with `EX 30` through `trading_core.snapsh
 | stop | quantity | `position.quantity` at the entry's complete fill |
 | time exit | due time | the entry's first fill `ts_event` + `PLACEHOLDER_HOLD_MIN` |
 | exit loop | quantity | `position.quantity` at each submit |
-| fill | depth | each quote's prices, with each side's size raised to at least `DEEP_BOOK_SIZE` (1000 BTC) for the sandbox only, so a market order fills in full at the best price. Nautilus' live sandbox otherwise drops the rest of a market order larger than the quoted size, with no event |
+| fill | depth | each quote's prices, with each side's size raised to at least `DEEP_BOOK_SIZE` (1,000,000,000 base units, so it clears an order on the cheapest coin; it was 1000, which cut a 14044 DOGE order short) for the sandbox only, so a market order fills in full at the best price. Nautilus' live sandbox otherwise drops the rest of a market order larger than the quoted size, with no event |
 | fill | fee | the sandbox commission from `SANDBOX_MAKER_FEE` / `SANDBOX_TAKER_FEE` (set on the sandbox config, or on the instrument before start; the AC-1 spike records which works) |
 | decision, orders | `decision_id` | `uuid.uuid7()` made by the strategy, carried in the order tag `decision:<uuid>` |
 | stop | `parent_client_order_id` | the order tag `parent:<coid>` |

@@ -72,17 +72,17 @@ These ran on `01a1bff0`, with volatility target 0.02 and cap 2.
 - `pause` and `unpause` with `--slot all` were both answered by both traders.
 - The Overview shows only `TRADER-DEMO`, so its figures hold no portfolio trade.
 
-**Deviation from AC-23:** the unpause `resume` rebalance sent one order, a 0.1 LINK buy at 10.413 (about 1 USD), so "sends nothing new" is not literally met. Between the two rebalances the target moved across a size step. It is a rounding edge, and it has not been changed.
+**Deviation from AC-23:** the unpause `resume` rebalance sent one order, a 0.1 LINK buy at 10.413 (about 1 USD), so "sends nothing new" is not literally met. Between the two rebalances the target moved across a size step. It is a rounding edge. The code has not been changed; AC-23 was amended on 2026-11-09 to allow it, so this is settled.
 
 ### The move to about 10x, at your request
 
 The tested settings are not the ones running now. You chose about 10x for this demo after being told the study was wiped out at 10x. **The running book is not the method the study tested, so its result says nothing about that study, in either direction.**
 
-- PR #135 merged as `8e981f0`: `TP_VOL_TARGET` 0.31 and `TP_GROSS_CAP` 10 in `apps/trader/src/trader/paper_strategy.py`. The pure rule defaults stay at 0.02 and 2. AC-1 still names 0.02 and 2, so it needs an `/architect` amendment.
+- PR #135 merged as `8e981f0`: `TP_VOL_TARGET` 0.31 and `TP_GROSS_CAP` 10 in `apps/trader/src/trader/paper_strategy.py`. The pure rule defaults stay at 0.02 and 2. AC-1 and AC-3 were amended on 2026-11-09 to record this.
 - `/etc/kfs/kfs.env` backed up to `/etc/kfs/kfs.env.bak-20261109-portfolio10x`, then `PORTFOLIO_RISK_MAX_TOTAL_EXPOSURE_USD=12000`, `PORTFOLIO_RISK_MAX_ORDER_NOTIONAL_USD=2500`, and `PORTFOLIO_RISK_MAX_LEVERAGE=12` added.
 - You promoted version `01a1c016-0bd4-7546-9e73-073c5fbb97e9` by hand (promotion `01a1c01a-add2-706b-8ee8-1dab60216c3f`, 11:38 UTC). Deployed with `--now` at 11:41 UTC (12:41 Amsterdam).
 - **Finding:** run `01a1c01c-badc-7267-b82e-d20c1a455d45` reached only 8.47x. The DOGE order (14044) and TRX order (3018) each stopped at exactly 1000 and stayed `partially_filled`, and `reconcile_mismatch` kind `local_only_order` fired about once a minute for both coins (critical, no halt).
-- **Cause and fix:** the sandbox showed at least 1000 base units on each side of every quote (`DEEP_BOOK_SIZE`), so a larger market order filled 1000 and the rest was dropped with no event. PR #136 merged as `5ffff75` and raises the depth to 1,000,000,000, with a regression test using the real sizes. Spec 0006 line 221 still says 1000 BTC, so it needs an `/architect` amendment.
+- **Cause and fix:** the sandbox showed at least 1000 base units on each side of every quote (`DEEP_BOOK_SIZE`), so a larger market order filled 1000 and the rest was dropped with no event. PR #136 merged as `5ffff75` and raises the depth to 1,000,000,000, with a regression test using the real sizes. Spec 0006's depth line was amended on 2026-11-09 to match.
 
 ### Where it stands now
 
