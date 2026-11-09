@@ -35,6 +35,8 @@ _ENV_PREFIXES = (
     "GIT_COMMIT",
     "SECRETS_DIR",
     "LAB_",
+    "LTS_",
+    "LIVE_TRADING_ENABLED",
 )
 
 

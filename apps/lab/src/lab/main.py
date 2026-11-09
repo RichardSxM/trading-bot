@@ -20,6 +20,8 @@ points, or a spent holdout; 2 a replay study day with no manifest, every one lis
 writes nothing (64 an unknown study). ``audit`` measures the Tardis development days' spreads, moves,
 and order flow into report files (spec 0017 AC-1: 64 a range reaching the holdout, 2 a missing day);
 ``screen <study>`` judges a scalping candidate's candle screen (AC-9: 3 a fail, 64 not a complete screen).
+``lts-precheck <run file>`` is the liquidity trap one trial pre check (spec 0031: 0 a pass or a fail, 2 a day
+with no manifest, 64 a bad run file, 78 a true ``LIVE_TRADING_ENABLED`` or no ``GIT_COMMIT``).
 Only ``replay``, ``backtest``, ``study``, ``holdout``, ``gate``, and ``screen`` connect to Postgres, so the
 other commands run with ``--no-deps``.
 """
@@ -35,6 +37,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Final, NoReturn
 
+from pydantic import ValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -44,6 +47,8 @@ from lab.candle_fetch import DEFAULT_INSTRUMENT_ID, fetch_candles
 from lab.candle_parity import candle_parity
 from lab.funding_import import import_funding
 from lab.instruments import UnknownInstrumentError, pinned_instrument
+from lab.lts_precheck import run_precheck
+from lab.lts_runfile import load_lts_run
 from lab.paper_csv import read_paper_csv
 from lab.parity import parity
 from lab.replay import PostgresStore, replay
@@ -62,6 +67,7 @@ from trading_core.lab.parity import ParityInputError
 from trading_core.lab.tardis_days import import_days
 from trading_core.lab.variants import VariantError, VariantSpec, expand_candle_variants, expand_variants
 from trading_core.logs import configure_logging
+from trading_core.lts_settings import LtsSettings
 from trading_core.recording.gate_queries import UnknownStudyError, study_evidence
 from trading_core.secrets import POSTGRES_PASSWORD
 from trading_core.thresholds_file import packaged_thresholds
@@ -152,6 +158,10 @@ def parser() -> argparse.ArgumentParser:
     audit.add_argument("--to", type=_day, help="last UTC day (default the day before the holdout)")
     screen = commands.add_parser("screen", help="judge a scalping candidate's candle screen study (spec 0017)")
     screen.add_argument("study", help="the candle study's name")
+    lts = commands.add_parser("lts-precheck", help="the one trial liquidity trap pre check (spec 0031)")
+    lts.add_argument("runfile", type=Path)
+    lts.add_argument("--source", choices=("tardis", "own"), default="tardis", help="the catalog tree to read")
+    lts.add_argument("--days", type=_day, nargs="+", help="own only: UTC days, replacing the run file's")
     drop = commands.add_parser("prune", help="delete a source tree of the lab catalog")
     drop.add_argument("--source", choices=("tardis", "own"), help="the tree to delete (both without it)")
     return root
@@ -167,12 +177,12 @@ def _refuse_live() -> None:
         sys.exit(EXIT_CONFIG)
 
 
-def _unknown_commit(settings: LabSettings) -> bool:
+def _unknown_commit(settings: LabSettings, command: str = "replay") -> bool:
     """A replay records its strategy version by commit, so without one every code revision shares a version."""
     if settings.git_commit.strip().lower() not in ("", "unknown"):
         return False
     print(
-        "lab replay: the image has no commit; build it with `GIT_COMMIT=$(git rev-parse HEAD) "
+        f"lab {command}: the image has no commit; build it with `GIT_COMMIT=$(git rev-parse HEAD) "
         "docker compose --profile lab build lab`",
         file=sys.stderr,
     )
@@ -465,6 +475,45 @@ def _screen(args: argparse.Namespace) -> int:
         engine.dispose()
 
 
+def _lts_live_refused() -> bool:
+    """Spec 0031 AC-2: a true ``LIVE_TRADING_ENABLED``, or one that cannot be read, refuses the command."""
+    try:
+        enabled = LtsSettings().live_trading_enabled
+    except ValidationError:
+        enabled = True
+    if enabled:
+        log.critical(
+            "LIVE_TRADING_ENABLED must stay false for the liquidity trap scalper, refusing to start",
+            extra={"fields": {"code": "lts_live_refused"}},
+        )
+    return enabled
+
+
+def _lts_precheck(args: argparse.Namespace) -> int:
+    """``lab lts-precheck <run file>`` (spec 0031): files only, no database."""
+    configure_logging(process=PROCESS, env=os.environ.get("TRADING_ENV", ""))
+    if _lts_live_refused():
+        return EXIT_CONFIG
+    problems: list[str] = []
+    loaded = None
+    try:
+        loaded = load_lts_run(args.runfile, packaged_thresholds().holdout_start)
+    except RunFileError as exc:
+        problems += exc.problems
+    if args.days is not None and args.source != "own":
+        problems.append("--days: only with --source own; the Tardis days are frozen in the run file")
+    if problems or loaded is None:
+        for problem in problems:
+            print(f"lab lts-precheck: {problem}", file=sys.stderr)
+        log.error("lab_bad_input", extra={"fields": {"problems": problems}})
+        return EXIT_USAGE
+    started = boot("worker", settings_cls=LabSettings)
+    if _unknown_commit(started.settings, "lts-precheck"):
+        return EXIT_CONFIG
+    days = sorted(set(args.days)) if args.days is not None else loaded.run.days
+    return run_precheck(started.settings, loaded, args.source, days, datetime.now(UTC))
+
+
 def _prune(args: argparse.Namespace) -> int:
     started = boot("worker", settings_cls=LabSettings)
     try:
@@ -505,6 +554,8 @@ def main(argv: list[str] | None = None) -> NoReturn:
         sys.exit(_screen(args))
     if args.command == "audit":
         sys.exit(_audit(args))
+    if args.command == "lts-precheck":
+        sys.exit(_lts_precheck(args))
     if args.command == "prune":
         sys.exit(_prune(args))
     sys.exit(EXIT_USAGE)  # unreachable: the subparser is required

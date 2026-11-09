@@ -1,0 +1,22 @@
+# Spec 0031 AC-16: the frozen inputs of the one trial liquidity trap pre check.
+# Committed before the first run and never changed afterward.
+instrument_id = "PF_XBTUSD.KRAKEN"
+lookback_s = 60
+sweep_buffer_ticks = 1
+reclaim_buffer_ticks = 1
+invalidation_buffer_ticks = 5
+reclaim_timeout_ms = 3000
+efficiency_pct_min = 90
+horizon_s = 15
+depth_band_bps = 5
+maker_fee = "0.0002"
+taker_fee = "0.0005"
+hurdle_k = "1.5"
+min_signals_per_day = 25
+min_positive_days = 8
+days = [
+    2022-06-01, 2022-10-01,
+    2023-02-01, 2023-06-01, 2023-10-01,
+    2024-02-01, 2024-06-01, 2024-10-01,
+    2025-02-01, 2025-06-01, 2025-08-01, 2025-10-01,
+]

@@ -28,6 +28,8 @@ def _write(tmp_path: Path, text: str) -> Path:
 
 def test_the_committed_run_files_are_valid():
     for path in sorted(RUNS.glob("*.toml")):
+        if path.name == "lts_precheck.toml":  # spec 0031's own format, see test_lts_runfile.py
+            continue
         name = tomllib.loads(path.read_text())["strategy"]["name"]
         load = load_candle_run if REGISTRY[name].kind == StrategyKind.HOUR_LEVEL else load_run
         loaded = load(path, Overrides())
