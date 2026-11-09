@@ -27,8 +27,8 @@ log = logging.getLogger("trader")
 # constant, not a setting. ``{symbol}`` is the instrument id's symbol, such as ``PF_XBTUSD``.
 # ``{interval}`` is one of ``INTERVALS_S``.
 CHARTS_URL: Final = "https://futures.kraken.com/api/charts/v1/trade/{symbol}/{interval}"
-type Interval = Literal["5m", "1h", "1d"]
-INTERVALS_S: Final[dict[Interval, int]] = {"5m": 300, "1h": 3600, "1d": 86_400}
+type Interval = Literal["5m", "15m", "1h", "1d"]
+INTERVALS_S: Final[dict[Interval, int]] = {"5m": 300, "15m": 900, "1h": 3600, "1d": 86_400}
 # r2's: 3 x the EMA period, so the EMA has settled; the minimum is the EMA period. Outside every version hash.
 SEED_BARS: Final = 600
 SEED_MIN_BARS: Final = 200

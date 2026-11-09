@@ -59,6 +59,8 @@ from trader import paper_strategy
 from trader.coin_blocks import coin_blocks
 from trader.instrument_check import InstrumentCheck
 from trader.paper_strategy import (
+    CONNORS_SEED_BARS,
+    CONNORS_SEED_MIN_BARS,
     SEEDED_STRATEGIES,
     SIX_SEED_BARS,
     SIX_SEED_MIN_BARS,
@@ -80,7 +82,7 @@ from trading_core.control.records import PostgresCommandRecorder
 from trading_core.control.slots import TraderSlot, snapshot_name
 from trading_core.env_guard import SANDBOX, ExecClientAllowlist, allowed_exec_clients
 from trading_core.naming import node_id
-from trading_core.node import six_vote_trend, trend_portfolio
+from trading_core.node import connors_rsi_tp, six_vote_trend, trend_portfolio
 from trading_core.node.context_feed import ContextFeedActor, ContextFeedConfig
 from trading_core.node.control import (
     ControlActor,
@@ -1149,6 +1151,10 @@ def seed_fetch(strategy: str) -> Callable[[str], tuple[BarInput, ...]]:
     (150, at least 121) for ``trend_portfolio``, else 5 minute."""
     if strategy == trend_portfolio.STRATEGY_NAME:
         return functools.partial(warmup_seed, interval="1d", keep_bars=TP_SEED_DAYS, min_bars=TP_SEED_MIN_DAYS)
+    if strategy == connors_rsi_tp.STRATEGY_NAME:
+        return functools.partial(
+            warmup_seed, interval="15m", keep_bars=CONNORS_SEED_BARS, min_bars=CONNORS_SEED_MIN_BARS
+        )
     if strategy == six_vote_trend.STRATEGY_NAME:
         return functools.partial(warmup_seed, interval="1h", keep_bars=SIX_SEED_BARS, min_bars=SIX_SEED_MIN_BARS)
     return warmup_seed

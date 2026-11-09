@@ -14,6 +14,11 @@ only, then opens the new side sized again at the mid when the close fills. While
 opening and growing orders are held (reductions still go). A rejected, denied, or stale quote order is
 retried for that coin up to ``retry_max`` times ``retry_wait_s`` apart, then the coin lands in ``failed``
 until the next rebalance. Positions carry no protective stop (``uses_stop`` False, spec 0023 AC-9).
+
+The dollar exits (off unless both are set, the owner's demo choice): each coin's quote is checked at most once
+a second, and a position that would make ``coin_take_profit_usd`` or lose ``coin_stop_loss_usd`` (before fees)
+closes reduce only at market. ``coin_reenter_wait_s`` after it closes, the coin goes back to its current plan
+target through the normal grow path, reason ``reenter``, instead of waiting for the next weekly rebalance.
 """
 
 import functools
@@ -27,7 +32,7 @@ from enum import StrEnum
 from typing import ClassVar, Final
 from uuid import UUID
 
-from nautilus_trader.model.data import Bar, BarType
+from nautilus_trader.model.data import Bar, BarType, QuoteTick
 from nautilus_trader.model.enums import OrderSide as NautilusOrderSide
 from nautilus_trader.model.enums import TimeInForce
 from nautilus_trader.model.events import (
@@ -59,7 +64,9 @@ from trading_core.risk.rebalance import (
     RebalanceRequest,
     check_rebalance,
 )
+from trading_core.strategy.bar_rule import Side
 from trading_core.strategy.blocks import BlockReason, EntryBlocks
+from trading_core.strategy.take_profit import dollar_exit
 from trading_core.strategy.trend_portfolio import (
     DailyClose,
     PortfolioError,
@@ -82,6 +89,7 @@ USD: Final = Currency.from_str("USD")
 WEEKLY: Final = "weekly"
 START: Final = "start"
 RESUME: Final = "resume"
+REENTER: Final = "reenter"
 HELD_PREFIX: Final = "held:"
 
 _RUN: Final = "tp_daily_run"
@@ -89,8 +97,10 @@ _START: Final = "tp_start_wait"
 _GATE: Final = "tp_gate_watch"
 _GROWS: Final = "tp_grows_fallback"
 _RETRY_PREFIX: Final = "tp_retry:"
+_REENTER_PREFIX: Final = "tp_reenter:"
 _HHMM: Final = re.compile(r"([01]\d|2[0-3]):([0-5]\d)")
 _POLL_NS: Final = NS_PER_S
+_EXIT_CHECK_NS: Final = NS_PER_S
 
 type Record = Callable[[WriteItem], None]
 
@@ -127,10 +137,20 @@ class TrendPortfolioConfig(GuardedConfig, frozen=True, kw_only=True):
     seed_days: int = 150
     seed_min_days: int = 121
     stale_quote_s: Decimal = Decimal(10)
+    coin_take_profit_usd: Decimal | None = None
+    coin_stop_loss_usd: Decimal | None = None
+    coin_reenter_wait_s: int = 60
 
     def __post_init__(self) -> None:
-        """Refuse a bad rule parameter, weekday, run time, retry, cooldown, or coin list."""
+        """Refuse a bad rule parameter, weekday, run time, retry, cooldown, dollar exit, or coin list."""
         self.params()  # the rule's own checks
+        if (self.coin_take_profit_usd is None) != (self.coin_stop_loss_usd is None):
+            raise ValueError("coin_take_profit_usd and coin_stop_loss_usd must be set together")
+        for value in (self.coin_take_profit_usd, self.coin_stop_loss_usd):
+            if value is not None and value <= 0:
+                raise ValueError(f"a coin dollar exit must be above 0, got {value}")
+        if self.coin_reenter_wait_s < 1:
+            raise ValueError(f"coin_reenter_wait_s must be at least 1, got {self.coin_reenter_wait_s}")
         if not 0 <= self.rebalance_weekday <= 6:
             raise ValueError(f"rebalance_weekday must be 0 to 6, got {self.rebalance_weekday}")
         if not _HHMM.fullmatch(self.run_at_utc):
@@ -213,6 +233,8 @@ class TrendPortfolio(KfsStrategy):
         self._start_deadline_ns = 0
         self._was_blocked = False
         self._planning = False
+        self._exit_checked: dict[str, int] = {}
+        self._exit_wait_until: dict[str, int] = {}
         self._reset_round()
 
     def _reset_round(self) -> None:
@@ -229,6 +251,8 @@ class TrendPortfolio(KfsStrategy):
         self._closing: set[str] = set()
         self._written: set[str] = set()
         self._pending_inputs: dict[str, JsonObject] = {}
+        self._coin_exits: dict[ClientOrderId, str] = {}
+        self._exiting: set[str] = set()
 
     # Lifecycle ------------------------------------------------------------------------------
 
@@ -313,6 +337,74 @@ class TrendPortfolio(KfsStrategy):
     def closes_until(self, day: date) -> dict[str, list[DailyClose]]:
         """Every coin's stored closes up to and including ``day``, oldest first."""
         return {coin: [DailyClose(d, days[d]) for d in sorted(days) if d <= day] for coin, days in self._closes.items()}
+
+    # Dollar exits ---------------------------------------------------------------------------
+
+    def on_quote_tick(self, tick: QuoteTick) -> None:
+        """At most once a second per coin, close a position that reached either dollar exit."""
+        win, loss = self._cfg.coin_take_profit_usd, self._cfg.coin_stop_loss_usd
+        if win is None or loss is None or not self._started:
+            return
+        key = str(tick.instrument_id)
+        now = tick.ts_event
+        if now - self._exit_checked.get(key, 0) < _EXIT_CHECK_NS:
+            return
+        self._exit_checked[key] = now
+        if key in self._exiting or key in self._closing or now < self._exit_wait_until.get(key, 0):
+            return
+        try:
+            self._check_coin_exit(tick, key, win, loss)
+        except Exception:
+            log.exception("coin dollar exit failed", extra={"fields": {"code": "coin_exit_failed", "instrument": key}})
+
+    def _check_coin_exit(self, tick: QuoteTick, key: str, win: Decimal, loss: Decimal) -> None:
+        coin = tick.instrument_id
+        positions = self.cache.positions_open(instrument_id=coin, strategy_id=self.id)
+        if not positions:
+            return
+        position = positions[0]
+        signed = position.signed_decimal_qty()
+        side = Side.LONG if signed > 0 else Side.SHORT
+        entry_px = Decimal(str(position.avg_px_open))
+        bid, ask = tick.bid_price.as_decimal(), tick.ask_price.as_decimal()
+        reason = dollar_exit(side, entry_px, abs(signed), bid, ask, win, loss)
+        if reason is None or self.cache.orders_open(instrument_id=coin, strategy_id=self.id):
+            return  # an order still working on this coin goes first; the next check looks again
+        decision = uuid.uuid7()
+        inputs: JsonObject = {
+            "bid": bid,
+            "ask": ask,
+            "entry_px": entry_px,
+            "current_qty": signed,
+            "take_profit_usd": win,
+            "stop_loss_usd": loss,
+        }
+        self._record_decision(decision, key, Intent.EXIT, -signed, reason, inputs, None)
+        self._exiting.add(key)
+        self._submit(coin, -signed, reduce_only=True, tags=[f"{DECISION_TAG}{decision}"], coin_exit=key)
+
+    def _on_reenter(self, key: str, event: object) -> None:
+        coin = InstrumentId.from_str(key)
+        try:
+            if self.plan is None or self._qty(coin) != 0:
+                return
+            if not self._grows_sent or self._awaiting_reductions:  # a rebalance is working: look again after it
+                self._arm_reenter(key)
+                return
+            self._written.discard(key)
+            self._decisions.pop(key, None)
+            self._attempts.pop(key, None)
+            reason, self._reason = self._reason, REENTER
+            try:
+                self._send_grow(key)
+            finally:
+                self._reason = reason
+        except Exception:
+            log.exception("coin re-entry failed", extra={"fields": {"code": "coin_reenter_failed", "instrument": key}})
+
+    def _arm_reenter(self, key: str) -> None:
+        at = self.clock.timestamp_ns() + self._cfg.coin_reenter_wait_s * NS_PER_S
+        self._alert(f"{_REENTER_PREFIX}{key}", at, functools.partial(self._on_reenter, key))
 
     # Schedule -------------------------------------------------------------------------------
 
@@ -648,10 +740,23 @@ class TrendPortfolio(KfsStrategy):
         self._order_refused(event.client_order_id, "expired")
 
     def on_position_closed(self, event: PositionClosed) -> None:
-        """A closed coin is no longer being flattened."""
-        self._closing.discard(str(event.instrument_id))
+        """A closed coin is no longer being flattened; one closed by a dollar exit trades again after the wait."""
+        key = str(event.instrument_id)
+        self._closing.discard(key)
+        if key in self._exiting:
+            self._exiting.discard(key)
+            self._arm_reenter(key)
 
     def _order_refused(self, client_order_id: ClientOrderId, why: str) -> None:
+        exiting = self._coin_exits.pop(client_order_id, None)
+        if exiting is not None:
+            self._exiting.discard(exiting)
+            self._exit_wait_until[exiting] = self.clock.timestamp_ns() + self._cfg.retry_wait_s * NS_PER_S
+            log.warning(
+                "coin dollar exit refused",
+                extra={"fields": {"code": "coin_exit_refused", "instrument": exiting, "why": why}},
+            )
+            return
         tracked = self._orders.pop(client_order_id, None)
         self._inflight_grow.pop(client_order_id, None)
         if tracked is None:
@@ -697,7 +802,7 @@ class TrendPortfolio(KfsStrategy):
 
     def _drop_round(self) -> None:
         for name in list(self.clock.timer_names):
-            if name.startswith(_RETRY_PREFIX) or name == _GROWS:
+            if name.startswith((_RETRY_PREFIX, _REENTER_PREFIX)) or name == _GROWS:
                 self.clock.cancel_timer(name)
         closing = self._closing
         self._reset_round()
@@ -705,7 +810,7 @@ class TrendPortfolio(KfsStrategy):
 
     def _cancel_all_timers(self) -> None:
         for name in list(self.clock.timer_names):
-            if name.startswith(_RETRY_PREFIX) or name in (_RUN, _START, _GATE, _GROWS):
+            if name.startswith((_RETRY_PREFIX, _REENTER_PREFIX)) or name in (_RUN, _START, _GATE, _GROWS):
                 self.clock.cancel_timer(name)
 
     def _held_reason(self) -> str | None:
@@ -746,6 +851,19 @@ class TrendPortfolio(KfsStrategy):
         if key in self._written:
             return decision  # one row per coin per rebalance; retries reuse it
         self._written.add(key)
+        self._record_decision(decision, key, intent, delta, self._reason, inputs, refused)
+        return decision
+
+    def _record_decision(
+        self,
+        decision: UUID,
+        key: str,
+        intent: Intent,
+        delta: Decimal,
+        reason: str,
+        inputs: JsonObject,
+        refused: str | None,
+    ) -> None:
         row = DecisionRow(
             id=decision,
             env=self._env,
@@ -753,14 +871,13 @@ class TrendPortfolio(KfsStrategy):
             instrument_id=key,
             intent=intent,
             side=OrderSide.BUY if delta > 0 else OrderSide.SELL,
-            reason=self._reason,
+            reason=reason,
             inputs=inputs,
             risk_verdict=RiskVerdict.APPROVED if refused is None else RiskVerdict.REJECTED,
             risk_reason=refused,
             decided_ns=self.clock.timestamp_ns(),
         )
         self._record(WriteItem(WriteCall.RECORD_DECISION, row))
-        return decision
 
     def _submit(
         self,
@@ -771,6 +888,7 @@ class TrendPortfolio(KfsStrategy):
         tags: list[str],
         track: tuple[str, Leg] | None = None,
         inflight: Decimal | None = None,
+        coin_exit: str | None = None,
     ) -> ClientOrderId:
         # The order is tracked before it is sent: a denial (the Nautilus risk engine's) arrives inside
         # ``submit_order`` itself, and must find the order to be retried (AC-5, AC-6).
@@ -790,6 +908,8 @@ class TrendPortfolio(KfsStrategy):
                 self._awaiting_reductions.add(client_id)
         if inflight is not None:
             self._inflight_grow[client_id] = inflight
+        if coin_exit is not None:
+            self._coin_exits[client_id] = coin_exit
         self.submit_order(order)
         return client_id
 

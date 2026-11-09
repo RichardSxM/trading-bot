@@ -12,12 +12,14 @@ from trader.main import TraderSettings
 from trader.paper_strategy import (
     BarRuleView,
     build_paper_strategy,
+    connors_rsi_tp_config,
     donchian_config,
     donchian_scalp_config,
     donchian_scalp_r1_config,
     paper_version,
 )
 from trading_core import versioning
+from trading_core.node.connors_rsi_tp import ConnorsRsiTp
 from trading_core.node.donchian_4h import Donchian4h
 from trading_core.node.donchian_scalp import DonchianScalp
 from trading_core.node.donchian_scalp_r1 import DonchianScalpR1
@@ -190,3 +192,51 @@ def test_only_r1_takes_a_seed(demo, monkeypatch):
 
     assert isinstance(strategy, DonchianScalp)
     assert not hasattr(strategy, "_seed")
+
+
+def test_connors_rsi_tp_records_its_settings_and_takes_the_seed(demo, monkeypatch):
+    monkeypatch.setenv("PAPER_STRATEGY", "connors_rsi_tp")
+    settings = TraderSettings()
+    seed = [BarInput(900_000_000_000, Decimal(1), Decimal(2), Decimal(1), Decimal(1), Decimal(1))]
+
+    version = paper_version(settings)
+    strategy, view = _build(settings, seed)
+
+    assert (version.name, version.kind.value) == ("connors_rsi_tp", "hour_level")
+    assert version.config["bar_spec"] == "15-MINUTE-LAST"
+    assert version.config["time_stop_bars"] == 12
+    assert (version.config["take_profit_usd"], version.config["stop_loss_usd"]) == ("3", "2")
+    assert (version.config["rsi_period"], version.config["rsi_lower"]) == (2, 5)
+    assert version.config["risk_per_trade"] == "0.5"
+    assert version.frozen == versioning.freeze(ConnorsRsiTp.__module__, version.config)
+    assert isinstance(strategy, ConnorsRsiTp)
+    assert isinstance(view, BarRuleView)
+    assert str(strategy.bar_type) == f"{BTC_PERP}-15-MINUTE-LAST-INTERNAL"
+    assert strategy._seed == tuple(seed)
+
+
+def test_connors_rsi_tp_lets_the_order_cap_set_each_trade_s_size(demo, monkeypatch):
+    monkeypatch.setenv("PAPER_STRATEGY", "connors_rsi_tp")
+    settings = TraderSettings()
+
+    config = connors_rsi_tp_config(settings, uuid4(), BTC_PERP)
+
+    assert config.risk_per_trade == Decimal("0.5")
+    assert config.max_order_notional_usd == settings.risk_max_order_notional_usd
+    assert (config.take_profit_usd, config.stop_loss_usd) == (Decimal(3), Decimal(2))
+    assert config.use_market_context is True
+
+
+def test_connors_rsi_tp_is_refused_outside_demo(demo, monkeypatch):
+    monkeypatch.setenv("PAPER_STRATEGY", "connors_rsi_tp")
+    settings = TraderSettings().model_copy(update={"trading_env": "live"})
+
+    with pytest.raises(ValueError, match="live taker fee"):
+        connors_rsi_tp_config(settings, uuid4(), BTC_PERP)
+
+
+def test_connors_rsi_tp_may_trade_many_coins(demo, monkeypatch):
+    monkeypatch.setenv("PAPER_STRATEGY", "connors_rsi_tp")
+    monkeypatch.setenv("PAPER_INSTRUMENTS", f"{BTC_PERP},PF_ETHUSD.KRAKEN")
+
+    assert TraderSettings().instrument_list == sorted([BTC_PERP, "PF_ETHUSD.KRAKEN"])

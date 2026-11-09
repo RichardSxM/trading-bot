@@ -173,3 +173,16 @@ def test_each_coin_is_fetched_in_turn_and_a_failed_coin_alone_starts_without_a_s
     assert len(seeds[BTC]) == SEED_BARS
     [warning] = _failures(caplog)
     assert (warning.fields["instrument"], warning.fields["reason"]) == (PEPE, "not_json")
+
+
+def test_connors_rsi_tp_seeds_from_15_minute_candles():
+    import functools
+
+    from trader.main import seed_fetch
+    from trader.warmup import INTERVALS_S
+
+    fetch = seed_fetch("connors_rsi_tp")
+
+    assert isinstance(fetch, functools.partial)
+    assert fetch.keywords == {"interval": "15m", "keep_bars": 300, "min_bars": 250}
+    assert INTERVALS_S["15m"] == 900
