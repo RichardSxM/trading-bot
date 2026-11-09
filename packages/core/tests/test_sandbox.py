@@ -299,6 +299,35 @@ def test_a_market_order_larger_than_the_top_of_book_fills_in_full(make_exchange)
     assert {fill.last_px.as_decimal() for fill in fills} == {Decimal(86090)}  # a buy, all at the best ask
 
 
+@pytest.mark.parametrize(
+    ("quoted_size", "order_size"),
+    [
+        ("0.0002", "14044"),  # 2026-11-09 DOGE: 1000 of 14044 filled, the rest left a ghost open order
+        ("0.0002", "3018"),  # 2026-11-09 TRX: 1000 of 3018
+        ("5000", "4532"),  # 2026-11-09 ADA: Kraken's own bid was deep enough, so it filled in full
+    ],
+)
+def test_a_market_order_of_thousands_of_coins_fills_in_full(make_exchange, quoted_size, order_size):
+    from nautilus_trader.common.component import TestClock
+    from nautilus_trader.common.factories import OrderFactory
+    from nautilus_trader.model.enums import OrderSide
+    from nautilus_trader.model.events import OrderFilled
+    from nautilus_trader.model.identifiers import InstrumentId
+    from nautilus_trader.model.objects import Quantity
+    from nautilus_trader.test_kit.stubs.identifiers import TestIdStubs
+
+    client, cache, events = make_exchange()
+    client.on_data(_thin_quote(bid_size=quoted_size))
+    factory = OrderFactory(TestIdStubs.trader_id(), TestIdStubs.strategy_id(), TestClock())
+    sell = factory.market(InstrumentId.from_str("PF_XBTUSD.KRAKEN"), OrderSide.SELL, Quantity(Decimal(order_size), 4))
+    cache.add_order(sell)
+
+    client.submit_order(_submit(sell))
+
+    fills = [event for event in events if isinstance(event, OrderFilled)]
+    assert sum(fill.last_qty.as_decimal() for fill in fills) == Decimal(order_size)
+
+
 def test_deep_quote_raises_thin_sizes_and_keeps_prices_and_times():
     from nautilus_trader.model.objects import Quantity
 
@@ -314,7 +343,8 @@ def test_deep_quote_raises_thin_sizes_and_keeps_prices_and_times():
         thin.ts_event,
         thin.ts_init,
     )
-    assert deep_quote(_thin_quote(bid_size="5000")).bid_size == Quantity.from_str("5000.0000")  # deeper is kept
+    deeper = "2000000000"
+    assert deep_quote(_thin_quote(bid_size=deeper)).bid_size == Quantity.from_str(f"{deeper}.0000")  # deeper is kept
 
 
 # The entry hold drill (spec 0010 SANDBOX_DELAY_ENTRY_FILLS_S, the "Entry hold drill (unit)" scenario).

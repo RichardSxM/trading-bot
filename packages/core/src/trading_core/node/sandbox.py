@@ -18,8 +18,8 @@ The simulated exchange sees every quote with a deep top of book (``deep_quote``)
 larger than the quoted size fills the quoted size, and Nautilus fills the rest one tick worse only
 if the cached order already reads open. In a live node the execution engine queues events, so the
 order still reads ``SUBMITTED`` and the rest is dropped without any event (seen on 2026-10-05: 0.0002
-of a 0.0011 entry filled, the rest left a ghost open order). The orders here are far smaller than
-Kraken's real top of book, so filling them in full at the best price is the faithful simulation.
+of a 0.0011 entry filled, the rest left a ghost open order). Demo orders are filled in full at the
+best price, even when one is larger than Kraken's real top of book at that moment.
 """
 
 import asyncio
@@ -49,8 +49,9 @@ DRILL_REJECT_REASON = "SANDBOX_REJECT_STOP_ORDERS drill"
 KILL_SWITCH_DRILL_REASON = "SANDBOX_REJECT_KILL_SWITCH_ORDERS drill"
 DELAY_RELEASE_FAILED_REASON = "SANDBOX_DELAY_ENTRY_FILLS_S drill release failed"
 KILL_SWITCH_TAG = "origin:kill_switch"
-# The least size, in base units, the simulated exchange sees on each side of every quote.
-DEEP_BOOK_SIZE = 1000
+# The least size, in base units, the simulated exchange sees on each side of every quote. Base units
+# differ per coin, so it must clear any order on the cheapest coin: 1000 cut a 14044 DOGE order short.
+DEEP_BOOK_SIZE = 1_000_000_000
 
 log = logging.getLogger(__name__)
 
