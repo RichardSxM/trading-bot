@@ -232,8 +232,11 @@ def test_each_row_names_its_strategy_version_liquidity_and_rate(session: Session
 
     fill, fee, funding = _journal(session)
 
+    run = session.get(models.StrategyRun, world.run_id)
+    assert run is not None
     for row in (fill, fee, funding):
         assert (row.mode, row.strategy, row.strategy_version) == (RunMode.PAPER, "tracer", version.version_hash)
+        assert row.trader == run.trader_id  # spec 0030 AC-16
         assert (row.fx_rate, row.fx_rate_date) == (Decimal("1.2345"), date(2031, 1, 5))  # latest on or before the 6th
         assert row.eur_amount == row.amount / Decimal("1.2345")
     assert (fill.liquidity, fee.liquidity, funding.liquidity) == (Liquidity.TAKER, Liquidity.TAKER, None)

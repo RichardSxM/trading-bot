@@ -1,0 +1,9 @@
+{% extends "shell.html" %}
+{% block page %}
+<div class="board">
+  <section class="region region--wide" aria-labelledby="portfolio-h">
+    <header class="region__head"><h2 class="region__title" id="portfolio-h">Trend portfolio</h2><span class="region__meta">30 day trend on every coin · rebalanced weekly · its own demo account</span></header>
+    <div class="portfolio-board" sse-swap="portfolio-board">{{ live["portfolio-board"] }}</div>
+  </section>
+</div>
+{% endblock %}

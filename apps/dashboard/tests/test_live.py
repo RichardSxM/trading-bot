@@ -861,3 +861,12 @@ def test_the_unacknowledged_alert_carries_the_expiry_and_tints_the_command_amber
     assert partials[COMMAND_EVENT] == "warn:stop sent · awaiting trader"
     command = command_state(COMMAND_FIELDS, None, T0 + timedelta(seconds=11), 900)
     assert _alert(FRESH, command, now=T0 + timedelta(seconds=11)).until == COMMAND.expires_at
+
+
+def test_find_result_skips_the_portfolio_s_result():
+    """covers: spec 0030 AC-14 (the top bar's command state follows main; no slot field is main's)"""
+    entries: list[Entry] = [
+        (b"3-0", {b"id": str(COMMAND.id).encode(), b"outcome": b"failed", b"slot": b"portfolio"}),
+        (b"2-0", {b"id": str(COMMAND.id).encode(), b"outcome": b"executed"}),
+    ]
+    assert find_result(entries, str(COMMAND.id)) == entries[1][1]

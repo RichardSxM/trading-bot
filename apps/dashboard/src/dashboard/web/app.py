@@ -6,6 +6,7 @@ import logging
 import time
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Final
 from uuid import UUID
@@ -26,11 +27,13 @@ from dashboard.auth.totp import TotpGuard
 from dashboard.data.alerts import AlertLine, recent_alerts
 from dashboard.data.journal import JournalExport, open_journal, read_summary
 from dashboard.data.pnl import PnlFigures, pnl_figures
+from dashboard.data.portfolio import run_realized
 from dashboard.data.reconciliations import reconciliations_view
 from dashboard.data.strategies import StrategiesView, promotions_view, strategies_view, study_view
 from dashboard.data.trades import TradesView, trades_view
 from dashboard.live.alerts import MuteView
 from dashboard.live.poller import ACTIVITY_SIZE, Poller, supervise
+from dashboard.live.portfolio import PortfolioRaw, PortfolioView
 from dashboard.live.position import PositionView
 from dashboard.live.state import (
     ActivityRow,
@@ -51,6 +54,7 @@ from dashboard.web.middleware import ShellMiddleware
 from dashboard.web.session import CsrfRefused, LoginRequired, handle_login_required
 from trading_core.control.alerts import alerts_results_stream
 from trading_core.control.messages import control_stream, results_stream
+from trading_core.control.slots import TraderSlot, snapshot_name
 from trading_core.journal.bounds import JournalRange
 from trading_core.journal.summary import JournalSummary
 from trading_core.recording.gate_queries import PromotionLine, StudyDetail
@@ -118,12 +122,13 @@ def create_app(
     read_reconciliations: Callable[[int], Sequence[ReconciliationLine]] | None = None,
     open_export: Callable[[JournalRange], JournalExport] | None = None,
     read_journal_summary: Callable[[JournalRange], JournalSummary] | None = None,
+    read_portfolio_pnl: Callable[[UUID], Decimal] | None = None,
 ) -> FastAPI:
     """Build the dashboard app. Tests pass fake settings, secrets, a fake Redis, fake clocks, and Postgres readers.
 
     ``read_pnl``, ``read_trades``, ``read_strategies``, ``read_alerts``, ``read_reconciliations``,
-    ``open_export``, and ``read_journal_summary`` are blocking (they query Postgres as ``dashboard_app``); the
-    poller and the page routes run them in a thread.
+    ``open_export``, ``read_journal_summary``, and ``read_portfolio_pnl`` are blocking (they query Postgres as
+    ``dashboard_app``); the poller and the page routes run them in a thread.
     """
     client: LiveRedis = redis if redis is not None else redis_client(settings, secrets[REDIS_PASSWORD])
     engine = None
@@ -138,6 +143,7 @@ def create_app(
         or read_reconciliations is None
         or open_export is None
         or read_journal_summary is None
+        or read_portfolio_pnl is None
     ):
         # Three connections: a Trades page load never waits behind the poller's P&L read, nor behind a
         # journal export, which holds one for as long as its download streams.
@@ -147,10 +153,10 @@ def create_app(
         sessions = sessionmaker(engine)
 
         def postgres_pnl() -> PnlFigures:
-            return pnl_figures(sessions, env, datetime.fromtimestamp(clock(), UTC))
+            return pnl_figures(sessions, env, datetime.fromtimestamp(clock(), UTC), settings.main_trader_id)
 
         def postgres_trades(page: int, fills_page: int) -> TradesView:
-            return trades_view(sessions, env, page, fills_page)
+            return trades_view(sessions, env, page, fills_page, settings.main_trader_id)
 
         def postgres_strategies() -> StrategiesView:
             return strategies_view(sessions, datetime.fromtimestamp(clock(), UTC))
@@ -180,12 +186,17 @@ def create_app(
         def postgres_summary(journal_range: JournalRange) -> JournalSummary:
             return read_summary(sessions, env, journal_range)
 
+        def postgres_portfolio_pnl(run: UUID) -> Decimal:
+            return run_realized(sessions, env, run)
+
         read_reconciliations = read_reconciliations or postgres_reconciliations
+        read_portfolio_pnl = read_portfolio_pnl or postgres_portfolio_pnl
         open_export = open_export or postgres_export
         read_journal_summary = read_journal_summary or postgres_summary
     pnl_reader, trades_reader, alerts_reader = read_pnl, read_trades, read_alerts
     strategies_reader, study_reader, promotions_reader = read_strategies, read_study, read_promotions
     reconciliations_reader, export_opener, summary_reader = read_reconciliations, open_export, read_journal_summary
+    portfolio_pnl_reader = read_portfolio_pnl
     templates = Jinja2Templates(directory=PACKAGE_DIR / "templates")
     templates.env.filters.update(num=num, pnl=pnl, ts=ts, local_hm=local_hm)
     age_template = templates.get_template("partials/topbar_age.html")
@@ -199,11 +210,17 @@ def create_app(
     mute_template = templates.get_template("partials/overview_mute.html")
     losses_template = templates.get_template("partials/system_losses.html")
     check_template = templates.get_template("partials/topbar_check.html")
+    portfolio_template = templates.get_template("partials/portfolio_board.html")
     position_key = snapshot_key(settings.trading_env, "positions")
     account_key = snapshot_key(settings.trading_env, "account")
     heartbeat_key = snapshot_key(settings.trading_env, "heartbeat")
     trader_state_key = snapshot_key(settings.trading_env, "trader_state")
     exchange_key = snapshot_key(settings.trading_env, "exchange")
+    # The portfolio trader's snapshots (spec 0030 AC-13): portfolio_<name>.
+    portfolio_keys = [
+        snapshot_key(settings.trading_env, snapshot_name(TraderSlot.PORTFOLIO, name))
+        for name in ("heartbeat", "trader_state", "plan", "positions", "account")
+    ]
     password_hash = secrets[DASHBOARD_PASSWORD_HASH].get_secret_value()
 
     commands = control_stream(settings.trading_env)
@@ -244,6 +261,21 @@ def create_app(
 
     def render_check(view: ReconcileView) -> str:
         return check_template.render(view=view)
+
+    def render_portfolio(view: PortfolioView) -> str:
+        return portfolio_template.render(view=view)
+
+    async def read_portfolio() -> PortfolioRaw:
+        heartbeat, state, plan, positions, account = [await client.get(key) for key in portfolio_keys]
+        return PortfolioRaw(
+            heartbeat,
+            state,
+            plan,
+            positions,
+            account,
+            await client.xrevrange(results, count=RESULTS_SEARCHED),
+            await client.xrevrange(commands, count=ACTIVITY_SIZE),
+        )
 
     context = AppContext(
         settings=settings,
@@ -287,6 +319,9 @@ def create_app(
             render_check=render_check,
             read_exchange=lambda: client.get(exchange_key),
             check_interval_s=settings.reconcile_interval_s,
+            read_portfolio=read_portfolio,
+            read_portfolio_pnl=lambda run: asyncio.to_thread(portfolio_pnl_reader, run),
+            render_portfolio=render_portfolio,
         ),
         redis=client,
         clock=clock,

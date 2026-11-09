@@ -181,7 +181,7 @@ services:
     command: ["python", "-m", "trader.main"]
     # Kraken keys are added by compose.live.yaml only; no other service ever gets them.
     # An explicit TRADER_ID goes in a compose override: an empty value would be refused.
-    environment:
+    environment: &trader-env
       <<: [*base-env, *redis-env, *app-db-env]
       PROCESS_NAME: trader
       POSTGRES_USER: trader_app
@@ -255,6 +255,48 @@ services:
         condition: service_completed_successfully
     healthcheck: *node-healthcheck
     # The kernel must never pick the process holding positions first.
+    oom_score_adj: -900
+    stop_grace_period: 30s
+    mem_limit: 1g
+
+  # The second demo trader (spec 0030 AC-18): trend_portfolio beside six vote, with its own sandbox,
+  # TRADER_ID, slot keys, spool, and risk caps. Off unless COMPOSE_PROFILES holds `portfolio`; it runs
+  # the trader image (no build of its own) and refuses to start outside demo.
+  trader-portfolio:
+    <<: *app
+    profiles: ["portfolio"]
+    image: ${KFS_IMAGE_PREFIX:-kfs/}trader:${KFS_TAG:-${IMAGE_TARGET:-runtime}}
+    command: ["python", "-m", "trader.main"]
+    environment:
+      <<: *trader-env
+      PROCESS_NAME: trader-portfolio
+      TRADER_SLOT: portfolio
+      TRADER_ID: PORTFOLIO-DEMO
+      PAPER_STRATEGY: trend_portfolio
+      # Sized for a 2x book on the 1000 USD sandbox; its own, not six vote's.
+      RISK_MAX_TOTAL_EXPOSURE_USD: ${PORTFOLIO_RISK_MAX_TOTAL_EXPOSURE_USD:-5000}
+      RISK_MAX_ORDER_NOTIONAL_USD: ${PORTFOLIO_RISK_MAX_ORDER_NOTIONAL_USD:-1000}
+      RISK_MAX_LEVERAGE: ${PORTFOLIO_RISK_MAX_LEVERAGE:-2.5}
+      RISK_MAX_TRADES_PER_DAY: ${PORTFOLIO_RISK_MAX_TRADES_PER_DAY:-100}
+    secrets:
+      - source: postgres_trader_password
+        target: postgres_password
+      - source: redis_trader_password
+        target: redis_password
+    volumes:
+      - catalog:/data/catalog:ro
+      - trader-portfolio-spool:/data/spool
+    depends_on:
+      clock:
+        condition: service_healthy
+        required: false
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck: *node-healthcheck
     oom_score_adj: -900
     stop_grace_period: 30s
     mem_limit: 1g
@@ -369,6 +411,8 @@ services:
       DASHBOARD_SESSION_MAX_D: ${DASHBOARD_SESSION_MAX_D:-7}
       CONTROL_COMMAND_TTL_S: ${CONTROL_COMMAND_TTL_S:-300}
       DASHBOARD_COMMAND_HIDE_S: ${DASHBOARD_COMMAND_HIDE_S:-900}
+      # The `trader` service's TRADER_ID (spec 0030 AC-16); empty is its default, TRADER-<ENV>.
+      DASHBOARD_MAIN_TRADER_ID: ${DASHBOARD_MAIN_TRADER_ID:-}
       DASHBOARD_ACK_WARN_S: ${DASHBOARD_ACK_WARN_S:-10}
       # spec 0023 AC-18: the Kraken view on the position card is unknown after 3 check intervals.
       RECONCILE_INTERVAL_S: ${RECONCILE_INTERVAL_S:-60}
@@ -432,6 +476,8 @@ services:
       ALERTS_DISK_FREE_GB: ${ALERTS_DISK_FREE_GB:-5}
       ALERTS_DAILY_AT: ${ALERTS_DAILY_AT:-08:00}
       ALERTS_DAILY_TZ: ${ALERTS_DAILY_TZ:-Europe/Amsterdam}
+      # The traders watched for trader_down and entry_block (spec 0030 AC-17); main,portfolio once it runs.
+      ALERTER_TRADER_SLOTS: ${ALERTER_TRADER_SLOTS:-main}
       ALERTS_DOCKER_URL: http://docker-proxy:2375
       FX_ECB_URL: ${FX_ECB_URL:-https://data-api.ecb.europa.eu/service/data/EXR/D.USD.EUR.SP00.A}
       FX_HISTORY_FROM: ${FX_HISTORY_FROM:-2026-01-01}
@@ -715,5 +761,6 @@ volumes:
   redisdata:
   catalog:
   trader-spool:
+  trader-portfolio-spool:
   backup-staging:
   backup-state:

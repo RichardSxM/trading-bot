@@ -112,3 +112,18 @@ def test_the_guard_refusal_logs_its_own_code_and_message():
     assert issubclass(CredentialsInvalid, EnvGuardRefused)
     assert CredentialsInvalid.code == "dashboard_credentials_invalid"
     assert CredentialsInvalid.log_message == "dashboard credentials invalid, refusing to start"
+
+
+def test_the_main_trader_id_defaults_to_the_trader_s_own(monkeypatch):
+    """covers: spec 0030 AC-16 (DASHBOARD_MAIN_TRADER_ID; unset or empty is TRADER-<ENV>)"""
+    assert DashboardSettings(trading_env="demo").main_trader_id == "TRADER-DEMO"
+    monkeypatch.setenv("DASHBOARD_MAIN_TRADER_ID", "")
+    assert DashboardSettings(trading_env="demo").main_trader_id == "TRADER-DEMO"
+    monkeypatch.setenv("DASHBOARD_MAIN_TRADER_ID", "SIX-DEMO")
+    assert DashboardSettings(trading_env="demo").main_trader_id == "SIX-DEMO"
+
+
+def test_a_main_trader_id_for_another_env_is_refused(monkeypatch):
+    monkeypatch.setenv("DASHBOARD_MAIN_TRADER_ID", "TRADER-LIVE")
+    with pytest.raises(ValidationError):
+        DashboardSettings(trading_env="demo")

@@ -15,7 +15,15 @@ from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import ResponseError
 
 from trading_core.control.consumer import ControlConsumer, Outcome
-from trading_core.control.messages import ControlMessage, pause_command, result_from_fields, stop_command, to_fields
+from trading_core.control.messages import (
+    ControlMessage,
+    command,
+    pause_command,
+    result_from_fields,
+    stop_command,
+    to_fields,
+)
+from trading_core.control.slots import TraderSlot
 from trading_core.recording.enums import ControlCmd, ControlOutcome, ControlSource
 
 NOW = datetime(2026, 10, 3, 9, 30, tzinfo=UTC)
@@ -371,3 +379,79 @@ def test_an_outcome_carries_its_details_to_the_result():
     _drain(_consumer(redis, recorder, outcome=Outcome(ControlOutcome.EXECUTED, None, details)))
 
     assert [r.details for r in redis.results] == [None, details]
+
+
+class SlotRedis(FakeRedis):
+    """Keeps the group name, its start id, the consumer name, and each result's raw fields."""
+
+    def __init__(self):
+        super().__init__()
+        self.created = []
+        self.readers = set()
+        self.raw = []
+
+    async def xgroup_create(self, name, groupname, id, mkstream):
+        await super().xgroup_create(name, groupname, id, mkstream)
+        self.created.append((groupname, id))
+
+    async def xreadgroup(self, groupname, consumername, streams, count, block):
+        self.readers.add((groupname, consumername))
+        return await super().xreadgroup(groupname, consumername, streams, count, block)
+
+    async def xadd(self, name, fields, id="*", maxlen=None, approximate=True):
+        await super().xadd(name, fields, id, maxlen, approximate)
+        self.raw.append(dict(fields))
+
+
+def test_main_reads_as_trader_from_0_with_no_slot_field():
+    """covers: spec 0030 AC-12, AC-14 (main is byte for byte as before)"""
+    redis = SlotRedis()
+    redis.add(to_fields(pause_command(NOW, 60, ControlSource.DASHBOARD)))
+
+    _drain(_consumer(redis, FakeRecorder()))
+
+    assert redis.created == [("trader", "0")]
+    assert redis.readers == {("trader", "trader")}
+    assert all("slot" not in fields for fields in redis.raw)
+
+
+def test_portfolio_reads_in_its_own_group_from_new_entries_and_tags_its_results():
+    """covers: spec 0030 AC-14 (group trader-portfolio created at $, slot=portfolio on every result)"""
+    redis = SlotRedis()
+    msg = pause_command(NOW, 60, ControlSource.DASHBOARD)
+    redis.add(to_fields(msg))
+
+    _drain(_consumer(redis, FakeRecorder(), slot=TraderSlot.PORTFOLIO))
+
+    assert redis.created == [("trader-portfolio", "$")]
+    assert redis.readers == {("trader-portfolio", "trader-portfolio-1")}
+    assert [fields["slot"] for fields in redis.raw] == ["portfolio", "portfolio"]
+    assert _outcomes(redis, msg.id) == ["received", "executed"]
+
+
+@pytest.mark.parametrize("cmd", [ControlCmd.FLATTEN, ControlCmd.RECHECK, ControlCmd.DRILL_STEP])
+def test_portfolio_refuses_other_commands_as_not_for_slot(cmd):
+    """covers: spec 0030 AC-14 (the portfolio executes only stop, resume, pause, unpause)"""
+    redis, recorder = SlotRedis(), FakeRecorder()
+    executed: list[ControlMessage] = []
+    msg = command(cmd, NOW, 60, ControlSource.CLI)
+    redis.add(to_fields(msg))
+
+    _drain(_consumer(redis, recorder, executed, slot=TraderSlot.PORTFOLIO))
+
+    assert executed == []
+    assert _outcomes(redis, msg.id) == ["received", "failed"]
+    assert redis.results[-1].reason == "not_for_slot"
+    assert recorder.rows[msg.id] == ["received", "failed"]
+
+
+@pytest.mark.parametrize("cmd", [ControlCmd.STOP, ControlCmd.RESUME, ControlCmd.PAUSE, ControlCmd.UNPAUSE])
+def test_portfolio_executes_its_four_commands(cmd):
+    redis = SlotRedis()
+    executed: list[ControlMessage] = []
+    msg = command(cmd, NOW, 60, ControlSource.DASHBOARD)
+    redis.add(to_fields(msg))
+
+    _drain(_consumer(redis, FakeRecorder(), executed, slot=TraderSlot.PORTFOLIO))
+
+    assert [m.cmd for m in executed] == [cmd]

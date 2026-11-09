@@ -215,6 +215,18 @@ BACKUP_FAILED: Final = _code_rule(
 )
 # ``min_open_s`` is the default; the engine takes ``ALERTS_ENTRY_BLOCK_S`` from its config.
 ENTRY_BLOCK: Final = Rule("entry_block", Tier.WARNING, RuleKind.CONDITION, source="redis", min_open_s=3600)
+# Read from the ``portfolio_plan`` snapshot, not from a log line (spec 0030 AC-17): one push per rebalance
+# that left coins in ``failed``, keyed by the plan's ``last_rebalance_at``. The node's own per coin
+# ``rebalance_coin_failed`` log lines (``log:<service>`` sources) never match.
+PORTFOLIO_COINS_FAILED: Final = Rule(
+    "portfolio_coins_failed",
+    Tier.WARNING,
+    RuleKind.EVENT,
+    source="redis",
+    matches=lambda obs: obs.source == "redis" and obs.code == "rebalance_coin_failed",
+    key=_subject("portfolio_coins_failed", "last_rebalance_at"),
+    codes=frozenset({"rebalance_coin_failed"}),
+)
 CONTEXT_FEED_DOWN: Final = _code_rule(
     "context_feed_down",
     Tier.WARNING,
@@ -302,6 +314,7 @@ RULES: Final[tuple[Rule, ...]] = (
     CONTAINER_UNHEALTHY,
     BACKUP_FAILED,
     ENTRY_BLOCK,
+    PORTFOLIO_COINS_FAILED,
     CONTEXT_FEED_DOWN,
     CONTEXT_HOUR_MISSING,
     BOOK_GAP_LONG,

@@ -17,6 +17,10 @@ With an alerts reader (spec 0013 AC-16) the Activity feed also lists the last 24
 episodes, read from Postgres at most every ``alerts_refresh_s``; a Postgres error keeps the
 commands and says the alerts are unavailable. With a mute renderer it reads the newest alert
 command results every tick for the mute badge.
+
+With a portfolio reader (spec 0030 AC-19) it also reads the portfolio trader's snapshots every tick and
+renders the Portfolio page's board, its realized P&L read from Postgres at most every ``pnl_refresh_s``
+(and at once when the run changes); a Postgres error shows that figure as unavailable.
 """
 
 import asyncio
@@ -25,13 +29,17 @@ import logging
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Final, Protocol
+from uuid import UUID
 
 from redis.exceptions import RedisError
 
 from dashboard.data.alerts import AlertLine
 from dashboard.data.pnl import PnlFigures
 from dashboard.live.alerts import MUTE_OFF, MuteView, merge_activity, mute_view
+from dashboard.live.portfolio import LOST as PORTFOLIO_LOST
+from dashboard.live.portfolio import PortfolioRaw, PortfolioView, portfolio_view, run_id
 from dashboard.live.position import LOST, PositionView, position_view
 from dashboard.live.sides import Holding, SidesView, sides_view
 from dashboard.live.state import (
@@ -75,6 +83,7 @@ BLOCKED_REASONS_EVENT: Final = "overview-blocked"
 LOSSES_EVENT: Final = "system-losses"
 CHECK_EVENT: Final = "topbar-check"
 MUTE_EVENT: Final = "overview-mute"
+PORTFOLIO_EVENT: Final = "portfolio-board"
 ALERTS_REFRESH_S: Final = 10.0
 PNL_REFRESH_S: Final = 5.0
 PNL_TIMEOUT_S: Final = 2.0
@@ -127,7 +136,17 @@ class Poller:
         render_check: Callable[[ReconcileView], str] | None = None,
         read_exchange: Callable[[], Awaitable[str | bytes | None]] | None = None,
         check_interval_s: float = 60.0,
+        read_portfolio: Callable[[], Awaitable[PortfolioRaw]] | None = None,
+        read_portfolio_pnl: Callable[[UUID], Awaitable[Decimal]] | None = None,
+        render_portfolio: Callable[[PortfolioView], str] | None = None,
     ) -> None:
+        self._read_portfolio = read_portfolio
+        self._read_portfolio_pnl = read_portfolio_pnl
+        self._render_portfolio = render_portfolio
+        # The run whose realized P&L was read last, its figure (None: unknown), and when it was read.
+        self._portfolio_run: UUID | None = None
+        self._portfolio_pnl: Decimal | None = None
+        self._portfolio_pnl_read_at: float | None = None
         self._read_exchange = read_exchange
         self._check_interval_s = check_interval_s
         self._render_check = render_check
@@ -203,6 +222,7 @@ class Poller:
             raw, state, (command, rows) = await asyncio.wait_for(self._read_all(), timeout=self._read_timeout_s)
             snapshots = await asyncio.wait_for(self._read_snapshots(), timeout=self._read_timeout_s)
             alert_results = await asyncio.wait_for(self._read_mute(), timeout=self._read_timeout_s)
+            portfolio = await asyncio.wait_for(self._read_portfolio_raw(), timeout=self._read_timeout_s)
         except REDIS_ERRORS as exc:
             log.warning(
                 "redis read failed", extra={"fields": {"code": "redis_read_failed", "error": type(exc).__name__}}
@@ -238,6 +258,11 @@ class Poller:
             if self._read_exchange is not None:
                 view = self._with_sides(view, raw_exchange, state)
             partials[POSITION_EVENT] = self._render_position(view)
+        if self._render_portfolio is not None and portfolio is not None:
+            realized = await self._refresh_portfolio_pnl(run_id(portfolio.trader_state))
+            partials[PORTFOLIO_EVENT] = self._render_portfolio(
+                portfolio_view(portfolio, realized, self._clock_ns(), self._amber_s, self._red_s)
+            )
         return partials
 
     def no_data(self) -> dict[str, str]:
@@ -259,6 +284,8 @@ class Poller:
             partials[MUTE_EVENT] = self._render_mute(MUTE_OFF)
         if self._render_position is not None:
             partials[POSITION_EVENT] = self._render_position(dataclasses.replace(LOST, pnl=self._pnl))
+        if self._render_portfolio is not None and self._read_portfolio is not None:
+            partials[PORTFOLIO_EVENT] = self._render_portfolio(PORTFOLIO_LOST)
         return partials
 
     def _now(self) -> datetime:
@@ -291,6 +318,36 @@ class Poller:
             return None, None, None
         exchange = None if self._read_exchange is None else await self._read_exchange()
         return await self._read_position(), await self._read_account(), exchange
+
+    async def _read_portfolio_raw(self) -> PortfolioRaw | None:
+        if self._render_portfolio is None or self._read_portfolio is None:
+            return None
+        return await self._read_portfolio()
+
+    async def _refresh_portfolio_pnl(self, run: UUID | None) -> Decimal | None:
+        """The run's realized P&L, read again when the run changed or the last read is older than
+        ``pnl_refresh_s``; None without a run or after a failed read (logged at most once a minute)."""
+        if self._read_portfolio_pnl is None or run is None:
+            self._portfolio_run, self._portfolio_pnl = run, None
+            return None
+        now = self._monotonic()
+        fresh = self._portfolio_pnl_read_at is not None and now - self._portfolio_pnl_read_at < self._pnl_refresh_s
+        if run == self._portfolio_run and fresh:
+            return self._portfolio_pnl
+        self._portfolio_run, self._portfolio_pnl_read_at = run, now
+        try:
+            self._portfolio_pnl = await asyncio.wait_for(self._read_portfolio_pnl(run), timeout=self._pnl_timeout_s)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._portfolio_pnl = None
+            if self._last_pnl_warning is None or now - self._last_pnl_warning >= PNL_WARN_EVERY_S:
+                self._last_pnl_warning = now
+                log.warning(
+                    "portfolio P&L read failed",
+                    extra={"fields": {"code": "portfolio_pnl_read_failed", "error": type(exc).__name__}},
+                )
+        return self._portfolio_pnl
 
     async def _read_mute(self) -> Sequence[Entry] | None:
         if self._render_mute is None or self._read_alert_results is None:

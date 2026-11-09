@@ -7,6 +7,10 @@ deletes ``{env}:trader:pause``. ``KillSwitch`` executes ``stop``: it halts in me
 ``{env}:trader:halt`` while it cancels entries and closes positions through every strategy's
 ``flatten``, and answers once the trader is flat (or after its timeout).
 
+Each takes its keys from the trader's slot (spec 0030 AC-12, AC-15): ``main`` keeps the keys above,
+``portfolio`` has ``{env}:trader:portfolio:pause`` and ``{env}:trader:portfolio:halt``, so one
+trader's pause or loss limit halt never reaches the other.
+
 The risk engine's trading state has one owner, ``apply_trading_state``: ``REDUCING`` while the
 trader is paused or halted, else ``ACTIVE``. So no pause path can lift a halt's ``REDUCING``.
 
@@ -30,11 +34,12 @@ from nautilus_trader.model.enums import OrderType, TradingState
 from nautilus_trader.model.orders.base import Order
 from redis.exceptions import RedisError
 
-from trading_core.control import halt
+from trading_core.control import halt, slots
 from trading_core.control.consumer import Execute, Outcome
-from trading_core.control.halt import HaltFormatError, HaltReason, HaltSource, HaltState, halt_key
+from trading_core.control.halt import HaltFormatError, HaltReason, HaltSource, HaltState
 from trading_core.control.messages import ControlMessage, format_utc
-from trading_core.control.pause import PauseFormatError, PauseState, decode, encode, pause_key, target_trading_state
+from trading_core.control.pause import PauseFormatError, PauseState, decode, encode, target_trading_state
+from trading_core.control.slots import TraderSlot
 from trading_core.node.strategy import KfsStrategy, PauseGate, entry_orders
 from trading_core.recording.enums import ControlCmd, ControlOutcome, ControlSource, Env, RiskEventKind, Severity
 from trading_core.recording.rows import JsonObject, RiskEventRow
@@ -93,11 +98,12 @@ class PauseController:
         client: PauseRedis,
         env: TradingEnv,
         now: Callable[[], datetime],
+        slot: TraderSlot = TraderSlot.MAIN,
     ) -> None:
         self._gate = gate
         self._risk_engine = risk_engine
         self._client = client
-        self._key = pause_key(env)
+        self._key = slots.pause_key(slot, env)
         self._now = now
 
     def apply(self, state: PauseState | None) -> None:
@@ -233,13 +239,15 @@ class KillSwitch:
         flat_timeout_s: float,
         poll_s: float = FLAT_POLL_S,
         untrusted: Untrusted | None = None,
+        slot: TraderSlot = TraderSlot.MAIN,
     ) -> None:
         self._gate = gate
         self._risk_engine = risk_engine
         self._client = client
         self._env = Env(env)
-        self._key = halt_key(env)
-        self._pause_key = pause_key(env)
+        self._slot = slot
+        self._key = slots.halt_key(slot, env)
+        self._pause_key = slots.pause_key(slot, env)
         self._now = now
         self._cache = cache
         self._flat_timeout = timedelta(seconds=flat_timeout_s)
@@ -560,6 +568,7 @@ class KillSwitch:
             )
 
     def _event(self, key: str, kind: RiskEventKind, severity: Severity, message: str, details: JsonObject) -> None:
+        key = slots.event_key(self._slot, key)  # the other trader records the same command id
         log.log(_LOG_LEVELS[severity], message, extra={"fields": {"code": kind.value, "event_key": key}})
         if self._record is None:
             return  # live: no run to record under yet (spec 0010 AC-7)
@@ -724,6 +733,7 @@ def trader_state(
     kill_switch: KillSwitch | None = None,
     losses: Callable[[], Mapping[str, object]] | None = None,
     reconcile: Callable[[], Mapping[str, object]] | None = None,
+    run_id: uuid.UUID | None = None,
 ) -> Mapping[str, object] | None:
     """The ``trader_state`` snapshot data (AC-7) from the gate, the risk engine, and the cache.
 
@@ -732,7 +742,9 @@ def trader_state(
     the pause, so the dashboard reads one shape in every env (spec 0006 AC-16). The halt, and the
     loss figures from ``losses`` (``LossLimitActor.snapshot_fields``), are spec 0010 AC-16's; without
     ``losses`` every loss field is null, as before the seed lands. The check fields from ``reconcile``
-    (``ReconcileActor.snapshot_fields``) are spec 0023 AC-19's; without it they are null.
+    (``ReconcileActor.snapshot_fields``) are spec 0023 AC-19's; without it they are null. ``run_id`` (the
+    paper run) adds a ``run_id`` field, so the Portfolio page can read that run's realized P&L (spec 0030
+    AC-21); without one the field is left out and the shape is as before.
     """
     if not gate.loaded:
         return None
@@ -769,6 +781,7 @@ def trader_state(
         "flattening": kill_switch.flattening if kill_switch is not None else False,
         **(losses() if losses is not None else NO_LOSS_FIELDS),
         **(reconcile() if reconcile is not None else NO_RECONCILE_FIELDS),
+        **({} if run_id is None else {"run_id": str(run_id)}),
     }
 
 

@@ -88,7 +88,8 @@ def ts(value: object) -> Markup:
 def local_hm(value: object) -> Markup:
     """An aware ``datetime`` as Amsterdam ``HH:MM`` in a ``<time>``, with the UTC time in its ``title``.
 
-    Only the mute badge shows local time, as spec 0013 AC-16 asks; everything else uses ``ts``.
+    Only the mute badge (spec 0013 AC-16) and the Portfolio page's times (spec 0030 AC-21) show local time
+    in the text; everything else uses ``ts``.
     """
     if not isinstance(value, datetime):
         raise TypeError(f"expected a datetime, got {type(value).__name__}")

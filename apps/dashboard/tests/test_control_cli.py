@@ -11,9 +11,17 @@ import pytest
 from redis.exceptions import ConnectionError as RedisConnectionError
 
 from dashboard import control_cli
-from dashboard.control_cli import parse_duration, read_snapshot, send_and_wait, snapshot_result, wait_flat
+from dashboard.control_cli import (
+    live_slots,
+    parse_duration,
+    read_snapshot,
+    send_and_wait,
+    snapshot_result,
+    wait_flat,
+)
 from tests.conftest import FakeRedis
 from trading_core.control.messages import ControlResult, command, from_fields, result_to_fields
+from trading_core.control.slots import TraderSlot
 from trading_core.recording.enums import ControlCmd, ControlOutcome, ControlSource
 from trading_core.snapshot.envelope import encode
 
@@ -415,3 +423,112 @@ def test_an_unknown_drill_step_is_refused_by_the_parser(capsys):
         control_cli.main(["drill-step", "buy_lots"])
 
     assert exc.value.code == 2
+
+
+# spec 0030 AC-14: results per trader slot ------------------------------------------------
+
+
+class SlotAnsweringRedis(FakeRedis):
+    """Two traders: answers each command once per slot in ``slots`` (a ``slot`` field on portfolio's)."""
+
+    def __init__(self, slots, outcomes=None):
+        super().__init__()
+        self.slots = slots
+        self.outcomes = outcomes or {}
+
+    async def xadd(self, name, fields, id="*", maxlen=None, approximate=True):
+        entry_id = await super().xadd(name, fields, id, maxlen, approximate)
+        if name == "demo:control":
+            msg = from_fields({k: str(v) for k, v in fields.items()})
+            for slot in self.slots:
+                outcome = self.outcomes.get(slot, ControlOutcome.EXECUTED)
+                reason = "not_for_slot" if outcome is ControlOutcome.FAILED else None
+                result = result_to_fields(ControlResult(msg.id, outcome, msg.issued_at, reason))
+                self.append("demo:control:results", result | ({} if slot == "main" else {"slot": slot}))
+        return entry_id
+
+
+def test_the_default_slot_ignores_the_portfolio_s_result():
+    redis = SlotAnsweringRedis(["portfolio"])
+
+    result = asyncio.run(send_and_wait(redis, _pause(), "demo", 30, monotonic=_monotonic(10), poll_s=0))
+
+    assert (result.code, result.line["status"]) == (1, "no_result")
+
+
+def test_the_portfolio_slot_reads_only_its_own_result():
+    redis = SlotAnsweringRedis(["main", "portfolio"], {"main": ControlOutcome.FAILED})
+
+    result = asyncio.run(send_and_wait(redis, _pause(), "demo", 30, poll_s=0, slots=(TraderSlot.PORTFOLIO,)))
+
+    assert (result.code, result.line["status"]) == (0, "executed")
+    assert "slots" not in result.line
+
+
+def test_two_slots_wait_for_both_and_exit_0_only_when_both_executed():
+    redis = SlotAnsweringRedis(["main", "portfolio"])
+    both = (TraderSlot.MAIN, TraderSlot.PORTFOLIO)
+
+    result = asyncio.run(send_and_wait(redis, _pause(), "demo", 30, poll_s=0, slots=both))
+
+    assert result.code == 0
+    assert result.line["status"] == "executed"
+    assert result.line["slots"] == {"main": {"status": "executed"}, "portfolio": {"status": "executed"}}
+
+
+def test_two_slots_report_the_one_that_failed():
+    redis = SlotAnsweringRedis(["main", "portfolio"], {"portfolio": ControlOutcome.FAILED})
+    both = (TraderSlot.MAIN, TraderSlot.PORTFOLIO)
+
+    result = asyncio.run(send_and_wait(redis, _pause(), "demo", 30, poll_s=0, slots=both))
+
+    assert result.code == 1
+    assert (result.line["status"], result.line["reason"]) == ("failed", "not_for_slot")
+    assert result.line["slots"] == {
+        "main": {"status": "executed"},
+        "portfolio": {"status": "failed", "reason": "not_for_slot"},
+    }
+
+
+def test_two_slots_time_out_when_one_never_answers():
+    redis = SlotAnsweringRedis(["main"])
+    both = (TraderSlot.MAIN, TraderSlot.PORTFOLIO)
+
+    result = asyncio.run(send_and_wait(redis, _pause(), "demo", 30, monotonic=_monotonic(10), poll_s=0, slots=both))
+
+    assert (result.code, result.line["status"]) == (1, "no_result")
+    assert result.line["slots"] == {"main": {"status": "executed"}, "portfolio": {"status": "no_result"}}
+
+
+def test_all_waits_only_for_slots_with_a_fresh_heartbeat(clock):
+    redis = FakeRedis()
+    redis.values["demo:snapshot:heartbeat"] = encode(clock.ns(), {})
+    assert asyncio.run(live_slots(redis, "demo", clock.ns)) == (TraderSlot.MAIN,)
+
+    redis.values["demo:snapshot:portfolio_heartbeat"] = encode(clock.ns(), {})
+    assert asyncio.run(live_slots(redis, "demo", clock.ns)) == (TraderSlot.MAIN, TraderSlot.PORTFOLIO)
+
+    redis.values.clear()
+    assert asyncio.run(live_slots(redis, "demo", clock.ns)) == (TraderSlot.MAIN,)
+
+
+def test_main_takes_a_slot_flag_and_waits_for_both_with_all(tmp_path, monkeypatch, capsys):
+    _secrets_dir(tmp_path, monkeypatch)
+    redis = SlotAnsweringRedis(["main", "portfolio"])
+    now_ns = datetime.now(UTC).timestamp() * SECOND
+    redis.values["demo:snapshot:heartbeat"] = encode(int(now_ns), {})
+    redis.values["demo:snapshot:portfolio_heartbeat"] = encode(int(now_ns), {})
+    monkeypatch.setattr(control_cli, "redis_client", lambda settings, password: redis)
+
+    assert control_cli.main(["pause", "--slot", "all", "--wait-result", "5"]) == 0
+    line = json.loads(capsys.readouterr().out)
+    assert set(line["slots"]) == {"main", "portfolio"}
+
+
+def test_state_reads_the_portfolio_s_snapshot_with_its_slot(tmp_path, monkeypatch, capsys):
+    _secrets_dir(tmp_path, monkeypatch)
+    fake = FakeRedis()
+    monkeypatch.setattr(control_cli, "redis_client", lambda settings, password: fake)
+
+    assert control_cli.main(["state", "--slot", "portfolio"]) == 1
+    assert json.loads(capsys.readouterr().out)["key"] == "demo:snapshot:portfolio_trader_state"

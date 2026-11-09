@@ -32,6 +32,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from trading_core.alerts.model import Delivery, Tier
+from trading_core.control.slots import TraderSlot
 from trading_core.db import Base
 from trading_core.recording.enums import (
     CLOSED_ORDER_STATUSES,
@@ -718,16 +719,19 @@ class RiskEvent(Base):
 
 
 class ControlCommand(Base):
-    """A dashboard command the trader read from the ``control`` stream, keyed by the message id."""
+    """A dashboard command a trader read from the ``control`` stream, keyed by the message id and the
+    trader slot that read it (spec 0030 AC-14): every running trader records the same command once."""
 
     __tablename__ = "control_commands"
     __table_args__ = (
         _env_check(),
         _one_of("cmd", ControlCmd),
         _one_of("outcome", ControlOutcome),
+        _one_of("slot", TraderSlot),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    slot: Mapped[str] = mapped_column(primary_key=True, server_default=TraderSlot.MAIN.value)
     env: Mapped[str]
     cmd: Mapped[str]
     issued_at: Mapped[datetime]

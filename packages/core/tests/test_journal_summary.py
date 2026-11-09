@@ -55,6 +55,7 @@ class Row:
     run_id: UUID = RUN
     position_id: UUID | None = POSITION
     source_id: UUID = SOURCE
+    trader: str = "TRADER-DEMO"
 
 
 ROWS = [
