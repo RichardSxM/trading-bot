@@ -99,4 +99,4 @@ Deployed `5ffff75` with `--now`, done at 12:36 UTC (13:36 Amsterdam). No promote
 - Each deploy abandons the sandbox's positions, so each new run starts flat. The `start` rebalance was skipped by the one hour cooldown on the two later deploys, and the unpause `resume` rebalance built the book instead.
 - The Overview and the pause drill were not repeated after the 10x change.
 
-**Not yet confirmed (AC-23):** a `six_vote_values` line since the portfolio started. Six vote's deploys at 10:29, 11:41, and 12:36 UTC each restarted it before its first values line, which comes one bar after the join bar. Its seed was fed at the 11:00 UTC join bar with no warnings. The next chance is 14:00 UTC (15:00 Amsterdam).
+**Confirmed (AC-23), 14:00 UTC (15:00 Amsterdam):** `six_vote_values` logged 12 lines, one per coin, on run `01a1c04e-d0ab`. The portfolio's start did not touch six vote's `trader` service. The deploys at 10:29, 11:41, and 12:36 UTC each restarted six vote before its first values line, which comes one bar after the join bar, so 14:00 UTC was the first line it could log after them.
