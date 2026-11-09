@@ -1,7 +1,7 @@
 # 0031. Liquidity trap scalper: a one trial pre check first, then a proven feed layer only if it passes
 
 **Date**: 2026-11-09
-**Status**: Proposed
+**Status**: In Progress
 
 ## Summary
 

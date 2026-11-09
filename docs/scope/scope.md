@@ -579,7 +579,7 @@ spec [0031](../specs/0031-liquidity-trap-scalper/index.md)
 
 - [x] Design it (spec): `/architect liquidity trap scalper`
 - [ ] Build it: `/develop liquidity trap scalper`
-  - [ ] Signal: live lock, trade normalization, flow, efficiency, sweep detector, no look ahead proof (AC-1 to AC-3, AC-10 to AC-14)
+  - [x] Signal: live lock, trade normalization, flow, efficiency, sweep detector, no look ahead proof (AC-1 to AC-3, AC-10 to AC-14)
   - [ ] Pre check: frozen run file, verdict, `lab lts-precheck`, the 12 day run and the own data cross check (AC-15 to AC-19)
   - [ ] Close out: results recorded, stop on a fail (AC-1, AC-20)
   - [ ] Only after a pass: instrument metadata, health gate, feed actor, laptop smoke (AC-4 to AC-9)
