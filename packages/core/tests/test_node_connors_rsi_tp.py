@@ -1,4 +1,4 @@
-"""covers: ``connors_rsi_tp``: the live take profit, the size the order cap sets, and the warmup seed.
+"""covers: ``connors_rsi_tp``: the live dollar exits, the size the order cap sets, and the warmup seed.
 
 Runs the node with a scripted rule in a BacktestEngine on the synthetic data of ``test_node_bar_rule``.
 Needs the ``node`` extra.
@@ -97,13 +97,21 @@ def _bar(minutes_after_start, close=85000):
     return BarInput(_ns(START + timedelta(minutes=minutes_after_start)), px, px + 10, px - 10, px, D(1))
 
 
-@pytest.mark.parametrize(("side", "sign"), [(Side.LONG, 1), (Side.SHORT, -1)])
-def test_the_take_profit_closes_at_market_on_the_first_quote_past_the_target(side, sign):
-    engine, strategy, rows = _run(Script(entries={5: (side, 500)}), prices=_jump(sign))
+@pytest.mark.parametrize(
+    ("side", "sign", "reason"),
+    [
+        (Side.LONG, 1, "take_profit"),
+        (Side.SHORT, -1, "take_profit"),
+        (Side.LONG, -1, "stop_loss"),
+        (Side.SHORT, 1, "stop_loss"),
+    ],
+)
+def test_a_dollar_exit_closes_at_market_on_the_first_quote_past_it(side, sign, reason):
+    engine, strategy, rows = _run(Script(entries={5: (side, 2000)}), prices=_jump(sign))
 
     enter, exit_ = _decisions(rows)
-    assert (enter.intent, exit_.intent, exit_.reason) == (Intent.ENTER, Intent.EXIT, "take_profit")
-    assert exit_.inputs["take_profit_pct"] == "0.5"
+    assert (enter.intent, exit_.intent, exit_.reason) == (Intent.ENTER, Intent.EXIT, reason)
+    assert (exit_.inputs["take_profit_usd"], exit_.inputs["stop_loss_usd"]) == ("3", "2")
     assert exit_.decided_ns == _ns(START + timedelta(minutes=8))
     assert strategy.phase == Phase.FLAT
     assert engine.cache.positions_open() == []
@@ -112,8 +120,8 @@ def test_the_take_profit_closes_at_market_on_the_first_quote_past_the_target(sid
     assert stops[0].is_canceled
 
 
-def test_a_move_short_of_the_target_leaves_the_position_open_and_its_stop_resting():
-    engine, strategy, rows = _run(Script(entries={5: (Side.LONG, 500)}))  # about 0.1% up in 15 minutes
+def test_a_move_inside_both_exits_leaves_the_position_open_and_its_stop_resting():
+    engine, strategy, rows = _run(Script(entries={5: (Side.LONG, 500)}), prices=_wobble)
 
     assert [d.intent for d in _decisions(rows)] == [Intent.ENTER]
     assert strategy.phase == Phase.PROTECTED
@@ -159,7 +167,8 @@ def test_a_seed_too_old_for_the_first_live_bar_is_dropped():
     assert rule.n == no_seed.n - 1
 
 
-@pytest.mark.parametrize("value", ["0", "-0.5"])
-def test_the_config_refuses_a_take_profit_that_is_not_above_zero(value):
-    with pytest.raises(ValueError, match="take_profit_pct"):
-        _config(take_profit_pct=D(value))
+@pytest.mark.parametrize("field", ["take_profit_usd", "stop_loss_usd"])
+@pytest.mark.parametrize("value", ["0", "-2"])
+def test_the_config_refuses_a_dollar_exit_that_is_not_above_zero(field, value):
+    with pytest.raises(ValueError, match=field):
+        _config(**{field: D(value)})

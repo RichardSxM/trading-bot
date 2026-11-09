@@ -1,19 +1,24 @@
-"""A percent take profit, judged on the live quote: pure, so the node stays thin."""
+"""A dollar take profit and stop for one position, judged on the live quote: pure, so the nodes stay thin."""
 
 from decimal import Decimal
 from typing import Final
 
 from trading_core.strategy.bar_rule import Side
 
-_HUNDRED: Final = Decimal(100)
+TAKE_PROFIT: Final = "take_profit"
+STOP_LOSS: Final = "stop_loss"
 
 
-def take_profit_reached(side: Side, entry_px: Decimal, pct: Decimal, bid: Decimal, ask: Decimal) -> bool:
-    """True when the price a close would get is at least ``pct`` percent better than ``entry_px``.
+def dollar_exit(
+    side: Side, entry_px: Decimal, quantity: Decimal, bid: Decimal, ask: Decimal, win_usd: Decimal, loss_usd: Decimal
+) -> str | None:
+    """``TAKE_PROFIT`` at ``win_usd`` or more of open profit, ``STOP_LOSS`` at ``loss_usd`` or more of open loss.
 
-    A long closes on the bid and a short on the ask, so the spread cannot fake a win.
+    A long closes on the bid and a short on the ask, so the spread cannot fake a win. Fees are not counted.
     """
-    move = entry_px * pct / _HUNDRED
-    if side == Side.LONG:
-        return bid >= entry_px + move
-    return ask <= entry_px - move
+    pnl = (bid - entry_px) * quantity if side == Side.LONG else (entry_px - ask) * quantity
+    if pnl >= win_usd:
+        return TAKE_PROFIT
+    if pnl <= -loss_usd:
+        return STOP_LOSS
+    return None

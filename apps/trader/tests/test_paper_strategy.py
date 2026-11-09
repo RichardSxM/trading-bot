@@ -204,7 +204,8 @@ def test_connors_rsi_tp_records_its_settings_and_takes_the_seed(demo, monkeypatc
 
     assert (version.name, version.kind.value) == ("connors_rsi_tp", "hour_level")
     assert version.config["bar_spec"] == "15-MINUTE-LAST"
-    assert (version.config["time_stop_bars"], version.config["take_profit_pct"]) == (12, "0.5")
+    assert version.config["time_stop_bars"] == 12
+    assert (version.config["take_profit_usd"], version.config["stop_loss_usd"]) == ("3", "2")
     assert (version.config["rsi_period"], version.config["rsi_lower"]) == (2, 5)
     assert version.config["risk_per_trade"] == "0.5"
     assert version.frozen == versioning.freeze(ConnorsRsiTp.__module__, version.config)
@@ -222,7 +223,7 @@ def test_connors_rsi_tp_lets_the_order_cap_set_each_trade_s_size(demo, monkeypat
 
     assert config.risk_per_trade == Decimal("0.5")
     assert config.max_order_notional_usd == settings.risk_max_order_notional_usd
-    assert config.take_profit_pct == Decimal("0.5")
+    assert (config.take_profit_usd, config.stop_loss_usd) == (Decimal(3), Decimal(2))
     assert config.use_market_context is True
 
 

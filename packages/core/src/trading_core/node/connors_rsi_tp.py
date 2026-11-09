@@ -1,10 +1,10 @@
-"""``ConnorsRsiTp``: ``connors_rsi`` on 15 minute bars with a live take profit and a warmup seed (demo only).
+"""``ConnorsRsiTp``: ``connors_rsi`` on 15 minute bars with live dollar exits and a warmup seed (demo only).
 
 It adds two things in front of ``ConnorsRsi``, whose rule, stop, and time stop are unchanged.
 
-The take profit: while the position is protected, every quote is checked, and a close that would get
-``take_profit_pct`` percent or better exits at market as ``take_profit``. The rule's own exit and the time
-stop stay on, so a trade can also end earlier than the target.
+The dollar exits: while the position is protected, every quote is checked, and a close that would make
+``take_profit_usd`` or lose ``stop_loss_usd`` (before fees) exits at market as ``take_profit`` or ``stop_loss``.
+The rule's own exit, the time stop, and the resting ATR stop stay on; the ATR stop is the backstop if quotes stop.
 
 The warmup seed: candles fetched before the node runs are held until the first live bar, which is partial
 and so is ignored. If that bar closes more than two intervals after the seed's last close the seed is
@@ -27,13 +27,12 @@ from trading_core.recording.rows import JsonObject
 from trading_core.recording.spool import WriteItem
 from trading_core.strategy.bar_rule import BarInput
 from trading_core.strategy.blocks import EntryBlocks
-from trading_core.strategy.take_profit import take_profit_reached
+from trading_core.strategy.take_profit import dollar_exit
 
 log = logging.getLogger(__name__)
 
 STRATEGY_NAME: Final = "connors_rsi_tp"
 BAR_SPEC: Final = "15-MINUTE-LAST"
-TAKE_PROFIT: Final = "take_profit"
 SEED_FAILED: Final = "warmup_seed_failed"
 SEED_STALE: Final = "seed_stale"
 # More than this many intervals between the seed's last close and the first live bar's means a hole.
@@ -41,19 +40,22 @@ SEED_JOIN_INTERVALS: Final = 2
 
 
 class ConnorsRsiTpConfig(ConnorsRsiConfig, frozen=True, kw_only=True):
-    """``connors_rsi``'s settings plus the take profit, a percent of the entry price."""
+    """``connors_rsi``'s settings plus the two dollar exits, per position and before fees."""
 
-    take_profit_pct: Decimal = Decimal("0.5")
+    take_profit_usd: Decimal = Decimal(3)
+    stop_loss_usd: Decimal = Decimal(2)
 
     def __post_init__(self) -> None:
-        """The base's checks, then the take profit's."""
+        """The base's checks, then the dollar exits'."""
         super().__post_init__()
-        if self.take_profit_pct <= 0:
-            raise ValueError(f"take_profit_pct must be above 0, got {self.take_profit_pct}")
+        if self.take_profit_usd <= 0:
+            raise ValueError(f"take_profit_usd must be above 0, got {self.take_profit_usd}")
+        if self.stop_loss_usd <= 0:
+            raise ValueError(f"stop_loss_usd must be above 0, got {self.stop_loss_usd}")
 
 
 class ConnorsRsiTp(ConnorsRsi):
-    """``ConnorsRsi`` with the take profit and the warmup seed (see the module docstring)."""
+    """``ConnorsRsi`` with the dollar exits and the warmup seed (see the module docstring)."""
 
     def __init__(
         self,
@@ -69,33 +71,37 @@ class ConnorsRsiTp(ConnorsRsi):
         self._seed_pending = bool(self._seed)
         self._seed_last_ns: int | None = self._seed[-1].ts_ns if self._seed else None
 
-    # Take profit ----------------------------------------------------------------------------
+    # Dollar exits ---------------------------------------------------------------------------
 
     def on_quote_tick(self, tick: QuoteTick) -> None:
-        """Exit at market once a protected position's close would reach the take profit."""
+        """Exit at market once a protected position's close would reach either dollar exit."""
         if self.phase != Phase.PROTECTED or self._entry_px is None or self._side is None:
             return
         if tick.instrument_id != self._instrument_id:
             return
         try:
             bid, ask = tick.bid_price.as_decimal(), tick.ask_price.as_decimal()
-            if not take_profit_reached(self._side, self._entry_px, self._tp.take_profit_pct, bid, ask):
-                return
             position = self._position()
             if position is None:
+                return
+            cfg = self._tp
+            quantity = position.quantity.as_decimal()
+            reason = dollar_exit(self._side, self._entry_px, quantity, bid, ask, cfg.take_profit_usd, cfg.stop_loss_usd)
+            if reason is None:
                 return
             inputs: JsonObject = {
                 "bid": bid,
                 "ask": ask,
                 "entry_px": self._entry_px,
-                "take_profit_pct": self._tp.take_profit_pct,
+                "take_profit_usd": cfg.take_profit_usd,
+                "stop_loss_usd": cfg.stop_loss_usd,
                 "bars_held": self.bars_held,
                 "stop": self._stop_px,
             }
-            self._decide_exit(position, TAKE_PROFIT, inputs)
+            self._decide_exit(position, reason, inputs)
         except Exception:
             # Fail closed: no exit from this quote; the position keeps its stop and the next quote checks again.
-            log.exception("take profit check failed", extra={"fields": {"code": "take_profit_failed"}})
+            log.exception("dollar exit check failed", extra={"fields": {"code": "dollar_exit_failed"}})
 
     # Warmup seed ----------------------------------------------------------------------------
 
