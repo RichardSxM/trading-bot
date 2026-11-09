@@ -17,6 +17,7 @@ from trader.paper_strategy import (
     donchian_scalp_config,
     donchian_scalp_r1_config,
     paper_version,
+    trend_portfolio_config,
 )
 from trading_core import versioning
 from trading_core.node.connors_rsi_tp import ConnorsRsiTp
@@ -243,13 +244,15 @@ def test_connors_rsi_tp_may_trade_many_coins(demo, monkeypatch):
     assert TraderSettings().instrument_list == sorted([BTC_PERP, "PF_ETHUSD.KRAKEN"])
 
 
-def test_trend_portfolio_waits_15_minutes_before_a_coin_trades_again(demo, monkeypatch):
+def test_trend_portfolio_holds_each_coin_without_dollar_exits(demo, monkeypatch):
     monkeypatch.setenv("PAPER_STRATEGY", "trend_portfolio")
+    settings = TraderSettings()
 
-    config = paper_version(TraderSettings()).config
+    version_config = paper_version(settings).config
+    config = trend_portfolio_config(settings, uuid4())
 
-    assert (config["coin_take_profit_usd"], config["coin_stop_loss_usd"]) == ("3", "2")
-    assert config["coin_reenter_wait_s"] == 900
+    assert not {"coin_take_profit_usd", "coin_stop_loss_usd", "coin_reenter_wait_s"} & set(version_config)
+    assert (config.coin_take_profit_usd, config.coin_stop_loss_usd) == (None, None)
 
 
 def test_trend_portfolio_runs_at_5x_on_the_demo(demo, monkeypatch):
