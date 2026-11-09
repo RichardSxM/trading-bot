@@ -28,6 +28,7 @@ from pydantic import model_validator
 from trading_core import versioning
 from trading_core.node import (
     bar_rule_maker,
+    connors_rsi_tp,
     donchian_4h,
     donchian_scalp,
     donchian_scalp_r1,
@@ -38,6 +39,7 @@ from trading_core.node import (
 )
 from trading_core.node.bar_rule import BarRuleStrategy, Phase
 from trading_core.node.bar_rule_maker import MakerBarRuleStrategy
+from trading_core.node.connors_rsi_tp import ConnorsRsiTp, ConnorsRsiTpConfig
 from trading_core.node.donchian_4h import Donchian4h, Donchian4hConfig
 from trading_core.node.donchian_scalp import DonchianScalp, DonchianScalpConfig
 from trading_core.node.donchian_scalp_r1 import DonchianScalpR1, DonchianScalpR1Config
@@ -66,6 +68,7 @@ type PaperStrategyName = Literal[
     "donchian_scalp_r2",
     "six_vote_trend",
     "trend_portfolio",
+    "connors_rsi_tp",
 ]
 
 # The donchian_4h_pair study's chosen grid point (spec 0022 Results: grid-2), also used by donchian_scalp.
@@ -102,6 +105,20 @@ SIX_BTC_WAIT_S: Final = 3
 SIX_SEED_BARS: Final = 300
 SIX_SEED_MIN_BARS: Final = 250
 # trend_portfolio's settings (spec 0030 AC-3), all recorded in its version.
+# connors_rsi_tp's settings: spec 0019.1's 15 minute values, the grid's first point, and the 0.5% target.
+CONNORS_TIME_STOP_BARS: Final = 12
+CONNORS_ATR_PERIOD: Final = 14
+CONNORS_ATR_FLOOR_MULT: Final = Decimal(1)
+CONNORS_RSI_PERIOD: Final = 2
+CONNORS_RSI_LOWER: Final = 5
+CONNORS_TREND_SMA: Final = 200
+CONNORS_EXIT_SMA: Final = 5
+CONNORS_STOP_ATR_MULT: Final = Decimal(3)
+CONNORS_TAKE_PROFIT_PCT: Final = Decimal("0.5")
+# Far above any stop's cost, so the order cap sets every trade's size (see connors_rsi_tp_config).
+CONNORS_RISK_PER_TRADE: Final = Decimal("0.5")
+CONNORS_SEED_BARS: Final = 300
+CONNORS_SEED_MIN_BARS: Final = 250
 TP_LOOKBACK_DAYS: Final = 30
 TP_VOL_DAYS: Final = 30
 # The owner's 10x demo choice (2026-11-09), not the tested 0.02 and 2: the study was wiped out at 10x.
@@ -122,6 +139,7 @@ _MULTI_COIN: Final = (
     donchian_scalp_r2.STRATEGY_NAME,
     six_vote_trend.STRATEGY_NAME,
     trend_portfolio.STRATEGY_NAME,
+    connors_rsi_tp.STRATEGY_NAME,
 )
 # The strategies the trader fetches a warmup seed for before the node (spec 0025 AC-7, spec 0026 AC-16, spec 0029).
 SEEDED_STRATEGIES: Final = (
@@ -129,6 +147,7 @@ SEEDED_STRATEGIES: Final = (
     donchian_scalp_r2.STRATEGY_NAME,
     six_vote_trend.STRATEGY_NAME,
     trend_portfolio.STRATEGY_NAME,
+    connors_rsi_tp.STRATEGY_NAME,
 )
 # A PAPER_INSTRUMENTS entry: a Kraken perpetual (spec 0025 AC-15).
 _PAPER_INSTRUMENT: Final = re.compile(r"PF_[A-Z0-9]+\.KRAKEN")
@@ -181,6 +200,25 @@ def paper_version(settings: StrategySettings) -> PaperVersion:
         }
         frozen = versioning.freeze(TrendPortfolio.__module__, tp_config)
         return PaperVersion(trend_portfolio.STRATEGY_NAME, StrategyKind.TREND, tp_config, frozen)
+    if settings.paper_strategy == connors_rsi_tp.STRATEGY_NAME:
+        connors_config: JsonObject = {
+            "paper_strategy": connors_rsi_tp.STRATEGY_NAME,
+            "bar_spec": connors_rsi_tp.BAR_SPEC,
+            "time_stop_bars": CONNORS_TIME_STOP_BARS,
+            "atr_period": CONNORS_ATR_PERIOD,
+            "atr_floor_mult": str(CONNORS_ATR_FLOOR_MULT),
+            "rsi_period": CONNORS_RSI_PERIOD,
+            "rsi_lower": CONNORS_RSI_LOWER,
+            "trend_sma": CONNORS_TREND_SMA,
+            "exit_sma": CONNORS_EXIT_SMA,
+            "stop_atr_mult": str(CONNORS_STOP_ATR_MULT),
+            "take_profit_pct": str(CONNORS_TAKE_PROFIT_PCT),
+            **{key: value for key, value in settings.strategy_config().items() if key.startswith("risk_")},
+            "risk_per_trade": str(CONNORS_RISK_PER_TRADE),
+            "instruments": list(settings.instrument_list),
+        }
+        frozen = versioning.freeze(ConnorsRsiTp.__module__, connors_config)
+        return PaperVersion(connors_rsi_tp.STRATEGY_NAME, StrategyKind.HOUR_LEVEL, connors_config, frozen)
     if settings.paper_strategy == six_vote_trend.STRATEGY_NAME:
         six_config: JsonObject = {
             "paper_strategy": six_vote_trend.STRATEGY_NAME,
@@ -525,6 +563,42 @@ def six_vote_trend_config(settings: StrategySettings, run_id: UUID, instrument_i
     )
 
 
+def connors_rsi_tp_config(settings: StrategySettings, run_id: UUID, instrument_id: str) -> ConnorsRsiTpConfig:
+    """``connors_rsi_tp`` with the ``RISK_*`` caps, under ``run_id``. Raises ``ValueError`` outside demo.
+
+    ``CONNORS_RISK_PER_TRADE`` is set far above any stop's cost on purpose, so ``RISK_MAX_ORDER_NOTIONAL_USD``
+    sets every trade's size (the owner's fixed 3x a trade on the demo) instead of the stop distance.
+    """
+    _demo_only(settings)
+    return ConnorsRsiTpConfig(
+        order_id_tag=order_id_tag(instrument_id),
+        env=settings.trading_env,
+        run_id=str(run_id),
+        instrument_id=instrument_id,
+        bar_spec=connors_rsi_tp.BAR_SPEC,
+        time_stop_bars=CONNORS_TIME_STOP_BARS,
+        atr_period=CONNORS_ATR_PERIOD,
+        atr_floor_mult=CONNORS_ATR_FLOOR_MULT,
+        rsi_period=CONNORS_RSI_PERIOD,
+        rsi_lower=CONNORS_RSI_LOWER,
+        trend_sma=CONNORS_TREND_SMA,
+        exit_sma=CONNORS_EXIT_SMA,
+        stop_atr_mult=CONNORS_STOP_ATR_MULT,
+        take_profit_pct=CONNORS_TAKE_PROFIT_PCT,
+        max_order_notional_usd=settings.risk_max_order_notional_usd,
+        max_leverage=settings.risk_max_leverage,
+        max_total_exposure_usd=settings.risk_max_total_exposure_usd,
+        risk_per_trade=CONNORS_RISK_PER_TRADE,
+        maintenance_margin_rate=settings.risk_maintenance_margin_rate,
+        min_liq_distance_pct=settings.risk_min_liq_distance_pct,
+        liq_stop_multiple=settings.risk_liq_stop_multiple,
+        stop_slippage_bps=settings.risk_stop_slippage_bps,
+        taker_fee=settings.sandbox_taker_fee,
+        stale_quote_s=settings.risk_stale_quote_s,
+        use_market_context=True,
+    )
+
+
 def trend_portfolio_config(settings: StrategySettings, run_id: UUID) -> TrendPortfolioConfig:
     """``trend_portfolio`` (spec 0030 AC-3) over every ``PAPER_INSTRUMENTS`` coin, with the ``RISK_*`` settings.
 
@@ -695,6 +769,9 @@ def build_paper_strategy(
 
     Only r1, r2, and ``six_vote_trend`` take the ``seed``; only ``six_vote_trend`` takes ``btc_seed`` (spec 0029 AC-8).
     """
+    if settings.paper_strategy == connors_rsi_tp.STRATEGY_NAME:
+        connors = ConnorsRsiTp(connors_rsi_tp_config(settings, run_id, instrument_id), gate, blocks, record, seed)
+        return connors, BarRuleView(connors)
     if settings.paper_strategy == six_vote_trend.STRATEGY_NAME:
         six = SixVoteTrend(six_vote_trend_config(settings, run_id, instrument_id), gate, blocks, record, seed, btc_seed)
         return six, MakerBarRuleView(six)
