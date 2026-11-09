@@ -64,7 +64,7 @@ def test_downgrade_without_trend_rows_restores_the_two_value_check(at_0013):
 
 
 def test_downgrade_refuses_while_a_trend_row_exists(at_0013):
-    migrate(at_0013)
+    migrate(at_0013, "0014_trend_kind")
     _insert(at_0013, "tsmom", "trend")
 
     with pytest.raises(RuntimeError, match="1 strategies row"):

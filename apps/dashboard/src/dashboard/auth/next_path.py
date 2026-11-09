@@ -28,7 +28,7 @@ def referer_path(referer: str | None) -> str:
 
 
 # Every page inside the shell; ``web/page_routes.PAGES`` must list the same paths.
-PAGE_PATHS: Final = frozenset({"/", "/trades", "/strategies", "/system", "/styleguide"})
+PAGE_PATHS: Final = frozenset({"/", "/trades", "/strategies", "/portfolio", "/system", "/styleguide"})
 
 
 def referer_page(referer: str | None) -> str:

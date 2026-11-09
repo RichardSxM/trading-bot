@@ -62,22 +62,25 @@ from trader.paper_strategy import (
     SEEDED_STRATEGIES,
     SIX_SEED_BARS,
     SIX_SEED_MIN_BARS,
+    TP_SEED_DAYS,
+    TP_SEED_MIN_DAYS,
     StrategySettings,
     build_paper_strategy,
+    build_trend_portfolio,
     paper_version,
 )
 from trader.snapshot_writer import log_writer_crash, write_heartbeats, write_snapshot
-from trader.warmup import warmup_seed, warmup_seeds
+from trader.warmup import daily_seed, warmup_seed, warmup_seeds
 from trading_core import env_guard
 from trading_core.boot import boot
+from trading_core.control import slots
 from trading_core.control.consumer import ControlConsumer, Execute, Outcome
-from trading_core.control.halt import halt_key
 from trading_core.control.messages import ControlMessage
-from trading_core.control.pause import pause_key
 from trading_core.control.records import PostgresCommandRecorder
+from trading_core.control.slots import TraderSlot, snapshot_name
 from trading_core.env_guard import SANDBOX, ExecClientAllowlist, allowed_exec_clients
 from trading_core.naming import node_id
-from trading_core.node import six_vote_trend
+from trading_core.node import six_vote_trend, trend_portfolio
 from trading_core.node.context_feed import ContextFeedActor, ContextFeedConfig
 from trading_core.node.control import (
     ControlActor,
@@ -120,7 +123,13 @@ from trading_core.reconcile.views import ExchangePort, ExchangeUnavailable
 from trading_core.recording import repository
 from trading_core.recording.enums import Env, RunMode, RunStatus
 from trading_core.recording.errors import PromotionRequiredError
-from trading_core.recording.queries import LossSeed, loss_seed, recorded_stop_trigger, run_funding_total
+from trading_core.recording.queries import (
+    LossSeed,
+    last_decision_ns,
+    loss_seed,
+    recorded_stop_trigger,
+    run_funding_total,
+)
 from trading_core.recording.rows import JsonObject
 from trading_core.recording.writer import RecordingWriter, deadletter_path, replay_spool, spool_path
 from trading_core.redis_check import redis_reachable
@@ -135,6 +144,7 @@ from trading_core.settings import LossLimitSettings, PaperLoopSettings, Reconcil
 from trading_core.snapshot.envelope import snapshot_key
 from trading_core.strategy.bar_rule import BarInput
 from trading_core.strategy.blocks import EntryBlocks
+from trading_core.strategy.trend_portfolio import DailyClose
 
 log = logging.getLogger("trader")
 
@@ -165,6 +175,8 @@ class TraderSettings(StrategySettings, LossLimitSettings, ReconcileSettings):
     kraken_key_rotated_on: date | None = None
     # How long a live start waits for an authenticated Kraken account (spec 0003 AC-8).
     kraken_key_check_timeout_s: float = Field(default=60.0, gt=0)
+    # Which trader this process is (spec 0030 AC-12): its pause, halt, snapshot, and command names.
+    trader_slot: TraderSlot = TraderSlot.MAIN
 
     @field_validator("kraken_key_rotated_on", mode="before")
     @classmethod
@@ -180,6 +192,15 @@ class TraderSettings(StrategySettings, LossLimitSettings, ReconcileSettings):
             raise ValueError("KRAKEN_KEY_ROTATED_ON is required in live")
         if self.kraken_key_rotated_on > datetime.now(UTC).date():
             raise ValueError("KRAKEN_KEY_ROTATED_ON is in the future")
+        return self
+
+    @model_validator(mode="after")
+    def _portfolio_slot_is_demo_trend_portfolio(self) -> Self:
+        # Live would need a second Kraken account for a second trader (spec 0030 Consequences).
+        if self.trader_slot is TraderSlot.PORTFOLIO and self.trading_env != "demo":
+            raise ValueError("TRADER_SLOT=portfolio is allowed only with TRADING_ENV=demo")
+        if self.trader_slot is TraderSlot.PORTFOLIO and self.paper_strategy != trend_portfolio.STRATEGY_NAME:
+            raise ValueError(f"TRADER_SLOT=portfolio needs PAPER_STRATEGY={trend_portfolio.STRATEGY_NAME}")
         return self
 
     @model_validator(mode="after")
@@ -386,10 +407,12 @@ def control_parts(
     secrets: Mapping[str, SecretStr],
     recheck: Callable[[], Awaitable[Outcome]] | None = None,
     drill: Execute | None = None,
+    slot: TraderSlot = TraderSlot.MAIN,
 ) -> ControlParts:
     """Build the gate, the kill switch, the control actor with its own Redis and Postgres logins, and the readers.
 
-    ``recheck`` answers the ``recheck`` command (spec 0023 AC-20), ``drill`` the ``drill_step`` command (AC-22)."""
+    ``recheck`` answers the ``recheck`` command (spec 0023 AC-20), ``drill`` the ``drill_step`` command (AC-22).
+    Every key, the consumer group, and the recorded rows are the ``slot``'s (spec 0030 AC-12, AC-14)."""
     env = settings.trading_env
     password = secrets[REDIS_PASSWORD].get_secret_value()
     client = Redis(
@@ -415,13 +438,21 @@ def control_parts(
     def now() -> datetime:
         return datetime.now(UTC)
 
-    controller = PauseController(gate, risk_engine, client, env, now)
+    controller = PauseController(gate, risk_engine, client, env, now, slot)
     untrusted = UntrustedCache(client, env)
     kill_switch = KillSwitch(
-        gate, risk_engine, client, env, now, node.cache, settings.kill_switch_flat_timeout_s, untrusted=untrusted
+        gate,
+        risk_engine,
+        client,
+        env,
+        now,
+        node.cache,
+        settings.kill_switch_flat_timeout_s,
+        untrusted=untrusted,
+        slot=slot,
     )
     execute = control_execute(controller, kill_switch, recheck, drill)
-    consumer = ControlConsumer(client, env, execute, PostgresCommandRecorder(engine, Env(env)), now)
+    consumer = ControlConsumer(client, env, execute, PostgresCommandRecorder(engine, Env(env), slot), now, slot=slot)
 
     def read_key(key: str) -> Callable[[], str | bytes | None]:
         def read() -> str | bytes | None:
@@ -438,8 +469,8 @@ def control_parts(
         actor=ControlActor(
             controller,
             kill_switch,
-            read_key(pause_key(env)),
-            read_key(halt_key(env)),
+            read_key(slots.pause_key(slot, env)),
+            read_key(slots.halt_key(slot, env)),
             consumer.run,
             load_untrusted=load_untrusted,
         ),
@@ -461,6 +492,8 @@ class PaperLoop:
     writer: RecordingWriter
     sessions: Callable[[], Session]
     ledger: FundingLedger
+    # trend_portfolio's last ``start`` rebalance of this trader, its crash loop guard (spec 0030 AC-4).
+    last_start_ns: int | None = None
 
 
 def run_config(settings: PaperLoopSettings) -> JsonObject:
@@ -494,6 +527,10 @@ def start_paper_loop(settings: TraderSettings, secrets: Mapping[str, SecretStr],
         version_id = repository.ensure_strategy_version(
             session, version.name, version.kind, None, version.config, version.frozen
         )
+    last_start_ns = None
+    if settings.paper_strategy == trend_portfolio.STRATEGY_NAME:
+        with sessions.begin() as session:
+            last_start_ns = last_decision_ns(session, env, trader_id, trend_portfolio.START)
     with sessions.begin() as session:
         run_id = repository.start_run(
             session,
@@ -523,7 +560,9 @@ def start_paper_loop(settings: TraderSettings, secrets: Mapping[str, SecretStr],
         "paper run started",
         extra={"fields": {"code": "paper_run_started", "run_id": str(run_id), "spool_replayed": replayed}},
     )
-    return PaperLoop(run_id=run_id, blocks=blocks, writer=writer, sessions=sessions, ledger=ledger)
+    return PaperLoop(
+        run_id=run_id, blocks=blocks, writer=writer, sessions=sessions, ledger=ledger, last_start_ns=last_start_ns
+    )
 
 
 def finish_paper_loop(paper: PaperLoop, settings: PaperLoopSettings, positions_open: int) -> None:
@@ -549,6 +588,12 @@ def finish_paper_loop(paper: PaperLoop, settings: PaperLoopSettings, positions_o
         )
 
 
+def plan_snapshot_base(slot: TraderSlot) -> str:
+    """The name ``trend_portfolio``'s plan is listed under, before the writer adds the slot's prefix, so the
+    key is ``{env}:snapshot:portfolio_plan`` in either slot (spec 0030 AC-13), never ``portfolio_portfolio_plan``."""
+    return "plan" if slot is TraderSlot.PORTFOLIO else "portfolio_plan"
+
+
 def placeholder_config(settings: TraderSettings, run_id: UUID) -> PlaceholderConfig:
     """The placeholder's config on BTC under ``run_id`` (``trader.paper_strategy.placeholder_config``)."""
     return paper_strategy.placeholder_config(settings, run_id, BTC_PERP)
@@ -571,8 +616,11 @@ def loss_limit_actor(
     kill_switch: KillSwitch,
     paper: PaperLoop | None,
     live_blocks: EntryBlocks | None = None,
+    *,
+    trader_id: str,
 ) -> LossLimitActor:
-    """The loss limits (spec 0010 AC-13): seeded from the paper runs in demo, the live runs in live.
+    """The loss limits (spec 0010 AC-13): seeded from the paper runs in demo, the live runs in live, of this
+    ``trader_id`` only, so a second trader's losses never trip this one's limits (spec 0030 AC-16).
 
     Demo shares the paper loop's sessions, blocks, and recorder. Live has no run yet, so its events
     are only logged (spec 0010 Follow-up); its blocks are ``live_blocks``, the ones the drill reads.
@@ -591,7 +639,7 @@ def loss_limit_actor(
 
     def read_seed(day_start: datetime, total_since: datetime) -> LossSeed:
         with sessions() as session:
-            return loss_seed(session, env, mode, day_start, total_since)
+            return loss_seed(session, env, mode, day_start, total_since, trader_id=trader_id, slot=settings.trader_slot)
 
     actor = LossLimitActor(
         limits=loss_limits(settings),
@@ -601,6 +649,7 @@ def loss_limit_actor(
         blocks=blocks,
         record=None if paper is None else paper.writer.put,
         run_id=None if paper is None else paper.run_id,
+        slot=settings.trader_slot,
     )
     kill_switch.watch_losses(actor)
     return actor
@@ -626,6 +675,7 @@ def run_node(
     exchange: LiveExchange | None = None,
     loop: asyncio.AbstractEventLoop | None = None,
     seeds: Mapping[str, Sequence[BarInput]] | None = None,
+    daily_seeds: Mapping[str, Sequence[DailyClose]] | None = None,
 ) -> int:
     """Build and run the node until it stops; return the process exit code.
 
@@ -652,6 +702,8 @@ def run_node(
     ``seeds`` is ``donchian_scalp_r1``'s, ``donchian_scalp_r2``'s, or ``six_vote_trend``'s warmup candles per coin,
     fetched before the node (spec 0025 AC-7, spec 0026 AC-16, spec 0029 AC-8). ``six_vote_trend`` also gets BTC's
     seed as ``btc_seed``; its config builder requires BTC in ``PAPER_INSTRUMENTS``, so BTC's seed is fetched once.
+    ``trend_portfolio`` is one instance over every coin, seeded from ``daily_seeds``, and also writes the
+    ``portfolio_plan`` snapshot (spec 0030 AC-8, AC-10, AC-13).
     """
     env = settings.trading_env
     if env == "live" and exchange is None:
@@ -663,6 +715,7 @@ def run_node(
     # One set of entry blocks: the paper loop's in demo; in live the check, the loss limits, and the drill share it.
     blocks = EntryBlocks() if paper is None else paper.blocks
     snapshots = snapshot_client(settings, secrets[REDIS_PASSWORD])
+    slot = settings.trader_slot
     exchange_key = snapshot_key(env, "exchange")
     exchange_ttl_s = EXCHANGE_TTL_INTERVALS * settings.reconcile_interval_s
 
@@ -693,7 +746,9 @@ def run_node(
         interval_s=float(settings.reconcile_interval_s),
         retry_s=float(settings.reconcile_retry_s),
         stale_quote_s=float(settings.risk_stale_quote_s),
-        publish=publish_exchange,
+        # The shared exchange snapshot is main's: the portfolio checks its own sandbox but never publishes it
+        # (spec 0030 AC-13).
+        publish=publish_exchange if slot is TraderSlot.MAIN else None,
     )
     # The drill strategy needs the control parts' gate, so its step handler is bound once it exists.
     drills: list[ReconcileDrill] = []
@@ -702,7 +757,7 @@ def run_node(
         return await drills[0].run_step(msg)
 
     control = control_parts(
-        node, settings, secrets, reconcile.recheck_outcome, drill_step if settings.drill_mode else None
+        node, settings, secrets, reconcile.recheck_outcome, drill_step if settings.drill_mode else None, slot
     )
     executor: ReconcileExecutor | None = None
     if exchange is not None:
@@ -741,7 +796,7 @@ def run_node(
         )
     )
     # After the control actor (the halt is known) and the demo's abandoned close (start_paper_loop).
-    losses = loss_limit_actor(settings, secrets, control.kill_switch, paper, blocks)
+    losses = loss_limit_actor(settings, secrets, control.kill_switch, paper, blocks, trader_id=config.trader_id.value)
     node.trader.add_actor(losses)
     # Before any strategy, so `reconciling` blocks entries until the start check is clean (spec 0023 AC-1).
     node.trader.add_actor(reconcile)
@@ -759,6 +814,7 @@ def run_node(
                 control.kill_switch,
                 losses.snapshot_fields,
                 reconcile.snapshot_fields,
+                run_id=None if paper is None else paper.run_id,
             ),
         ),
     ]
@@ -780,9 +836,18 @@ def run_node(
                 ledger=paper.ledger,
             )
         )
-        per_coin = coin_blocks(paper.blocks, coins)
         views: list[PaperStrategyView] = []
-        for coin in coins:
+        if settings.paper_strategy == trend_portfolio.STRATEGY_NAME:
+            portfolio, portfolio_views = build_trend_portfolio(
+                settings, paper.run_id, control.gate, paper.blocks, record, daily_seeds or {}, paper.last_start_ns
+            )
+            node.trader.add_strategy(portfolio)
+            views.extend(portfolio_views)
+            snapshot_readers.append((plan_snapshot_base(slot), portfolio.plan_snapshot))
+        # trend_portfolio is one instance over every coin, built above; every other strategy is one per coin.
+        per_coin_coins = () if settings.paper_strategy == trend_portfolio.STRATEGY_NAME else coins
+        per_coin = coin_blocks(paper.blocks, coins)
+        for coin in per_coin_coins:
             strategy, coin_view = build_paper_strategy(
                 settings,
                 paper.run_id,
@@ -908,7 +973,10 @@ def run_node(
     guards.append(watchdog)
     # Kept in locals so the tasks live as long as the node runs; a crash is logged, trading goes on.
     writers = [
-        loop.create_task(write_heartbeats(snapshots, snapshot_key(settings.trading_env, name), read_state))
+        # The slot names each snapshot: bare for main, portfolio_<name> for portfolio (spec 0030 AC-13).
+        loop.create_task(
+            write_heartbeats(snapshots, snapshot_key(settings.trading_env, snapshot_name(slot, name)), read_state)
+        )
         for name, read_state in snapshot_readers
     ]
     for task in writers:
@@ -1055,6 +1123,11 @@ def main() -> None:
     # Before the node exists, never on its event loop; a failure is an empty seed and a warning (spec 0025 AC-9).
     seeded = paper is not None and settings.paper_strategy in SEEDED_STRATEGIES
     seeds = warmup_seeds(settings.instrument_list, seed_fetch(settings.paper_strategy)) if seeded else {}
+    daily_seeds: dict[str, tuple[DailyClose, ...]] = {}
+    if settings.paper_strategy == trend_portfolio.STRATEGY_NAME:
+        today = datetime.now(UTC).date()
+        daily_seeds = {coin: daily_seed(coin, bars, today) for coin, bars in seeds.items()}
+        seeds = {}
 
     code = run_node(
         config,
@@ -1065,13 +1138,17 @@ def main() -> None:
         exchange=exchange,
         loop=loop,
         seeds=seeds,
+        daily_seeds=daily_seeds,
     )
     if code:
         sys.exit(code)
 
 
 def seed_fetch(strategy: str) -> Callable[[str], tuple[BarInput, ...]]:
-    """The seed fetch for ``strategy``: 1 hour candles (300, at least 250) for ``six_vote_trend``, else 5 minute."""
+    """The seed fetch for ``strategy``: 1 hour candles (300, at least 250) for ``six_vote_trend``, daily candles
+    (150, at least 121) for ``trend_portfolio``, else 5 minute."""
+    if strategy == trend_portfolio.STRATEGY_NAME:
+        return functools.partial(warmup_seed, interval="1d", keep_bars=TP_SEED_DAYS, min_bars=TP_SEED_MIN_DAYS)
     if strategy == six_vote_trend.STRATEGY_NAME:
         return functools.partial(warmup_seed, interval="1h", keep_bars=SIX_SEED_BARS, min_bars=SIX_SEED_MIN_BARS)
     return warmup_seed

@@ -117,6 +117,7 @@ async def serve(started: Boot[AlerterSettings]) -> None:
             store=store,
             redis=redis,
             trader_down_s=settings.alerts_trader_down_s,
+            slots=settings.trader_slots(),
             watchdog=ping,
             docker=docker_watch(settings, http, redis),
             host=host,

@@ -247,6 +247,7 @@ class Row:
     run_id: UUID = RUN
     position_id: UUID | None = RUN
     source_id: UUID = RUN
+    trader: str = "TRADER-DEMO"
 
 
 def _summary(net="12.5", counted=2, crossing=0, unlinked=False):

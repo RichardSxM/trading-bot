@@ -12,7 +12,7 @@ from uuid import UUID, uuid7
 import pytest
 from sqlalchemy.orm import Session
 
-from trading_core.recording import repository
+from trading_core.recording import models, repository
 from trading_core.recording.enums import (
     Env,
     FundingSource,
@@ -259,3 +259,34 @@ def test_a_page_below_one_is_refused(session: Session, page: int):
         round_trips_page(session, Env.DEMO, page)
     with pytest.raises(ValueError, match="at least 1"):
         fills_page(session, Env.DEMO, page)
+
+
+def test_a_trader_id_keeps_another_trader_s_round_trips_and_fills_out(session: Session, world: World):
+    """covers: spec 0030 AC-16 (the dashboard's Trades lists read only the main trader's runs)"""
+    at = BASE + timedelta(days=40)
+    mine = _round_trip(session, world, at)
+    other_run = repository.start_run(
+        session,
+        env=Env.DEMO,
+        mode=RunMode.PAPER,
+        version_id=world.version_id,
+        trader_id=f"PORTFOLIO-{uuid7().hex[-8:]}",
+        run_config={},
+        started_ns=1_800_000_000_000_000_001,
+    )
+    theirs = _round_trip(session, World(version_id=world.version_id, run_id=other_run), at + timedelta(hours=1))
+    run = session.get(models.StrategyRun, world.run_id)
+    assert run is not None
+    trader_id = run.trader_id
+
+    trips = [r.position_id for r in round_trips_page(session, Env.DEMO, 1, trader_id=trader_id)]
+    fills = fills_page(session, Env.DEMO, 1, trader_id=trader_id)
+    everyone = [r.position_id for r in round_trips_page(session, Env.DEMO, 1)]
+
+    assert mine in trips
+    assert theirs not in trips
+    assert theirs in everyone
+    assert {f.fill_id for f in fills} <= {f.fill_id for f in fills_page(session, Env.DEMO, 1)}
+    other_fills = session.query(models.Fill).filter(models.Fill.run_id == other_run).all()
+    assert other_fills
+    assert not {f.id for f in other_fills} & {f.fill_id for f in fills}

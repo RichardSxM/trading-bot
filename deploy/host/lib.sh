@@ -49,6 +49,20 @@ kfs_secret_names() {
     grep -ho 'SECRETS_DIR[^}]*}/[A-Za-z0-9_]*' "${files[@]}" | sed 's#.*/##' | sort -u
 }
 
+# 0 when the env file's COMPOSE_PROFILES (last line wins) lists the `portfolio` profile, so the second
+# demo trader runs (spec 0030 AC-18). Never sourced.
+kfs_portfolio_on() {
+    local value
+    value=$(sed -n 's/^[[:space:]]*COMPOSE_PROFILES[[:space:]]*=[[:space:]]*["'\'']\{0,1\}\([a-z0-9_,-]*\).*/\1/p' "$KFS_ENV_FILE" 2>/dev/null | tail -n 1)
+    [[ ",$value," == *",portfolio,"* ]]
+}
+
+# The trader slots this deploy drives, one per line: `main`, plus `portfolio` when its profile is on.
+kfs_slots() {
+    echo main
+    if kfs_portfolio_on; then echo portfolio; fi
+}
+
 kfs_is_sha() {
     [[ $1 =~ ^[0-9a-f]{40}$ ]]
 }
@@ -151,12 +165,21 @@ KFS_PAUSE_RESULT_S=30
 # Unpause only a pause we sent (AC-11), and only while it is still ours: a Pause pressed on the
 # dashboard during the drain takes the pause over (`pause_source` becomes `dashboard`), and that
 # one stays. Best effort: a failure is logged, and the trader stays paused, which is safe and
-# shows on the dashboard.
+# shows on the dashboard. With the portfolio profile on, each slot is judged on its own
+# trader_state (spec 0030 AC-18); `main` gets no --slot, exactly as before.
 kfs_unpause_if_ours() {
     [ "$KFS_PAUSED_BY_US" = true ] || return 0
-    local state source
-    if ! state=$(kfs_control state); then
-        kfs_log ERROR "trader_state unreadable, the trader stays paused; press Resume on the dashboard"
+    local slot
+    while read -r slot; do
+        kfs_unpause_slot_if_ours "$slot"
+    done < <(kfs_slots)
+}
+
+kfs_unpause_slot_if_ours() {
+    local slot=$1 state source args=()
+    [ "$slot" = main ] || args=(--slot "$slot")
+    if ! state=$(kfs_control state ${args[@]+"${args[@]}"}); then
+        kfs_log ERROR "trader_state unreadable, the trader stays paused; press Resume on the dashboard" slot "$slot"
         return 0
     fi
     # Not paused (yet) still gets the unpause: a pause that was not confirmed may still be queued,
@@ -164,13 +187,13 @@ kfs_unpause_if_ours() {
     # no-op.
     source=$(jq -r '.data.pause_source // ""' <<<"$state")
     if [ "$(jq -r '.data.paused // false' <<<"$state")" = true ] && [ "$source" != deploy ]; then
-        kfs_log INFO "pause taken over, leaving it in place" source "$source"
+        kfs_log INFO "pause taken over, leaving it in place" source "$source" slot "$slot"
         return 0
     fi
-    if kfs_control unpause --source deploy --wait-result "$KFS_PAUSE_RESULT_S" >/dev/null; then
-        kfs_log INFO "trader unpaused"
+    if kfs_control unpause ${args[@]+"${args[@]}"} --source deploy --wait-result "$KFS_PAUSE_RESULT_S" >/dev/null; then
+        kfs_log INFO "trader unpaused" slot "$slot"
     else
-        kfs_log ERROR "unpause failed, the trader stays paused; press Resume on the dashboard"
+        kfs_log ERROR "unpause failed, the trader stays paused; press Resume on the dashboard" slot "$slot"
     fi
 }
 
@@ -181,7 +204,10 @@ kfs_unpause_if_ours() {
 # nothing). Sets KFS_PAUSED_BY_US and KFS_WAITED_S.
 # shellcheck disable=SC2034 # KFS_DRAIN_REASON is read by the scripts that source this file
 kfs_pause_and_wait() {
-    local now=$1 wait=$2 state paused rc start
+    local now=$1 wait=$2 state paused rc start slot_args=()
+    # With the portfolio profile on, the pause goes to every trader and waits for both answers
+    # (spec 0030 AC-18); the wait for flat stays on main (the portfolio is never flat by design).
+    if kfs_portfolio_on; then slot_args=(--slot all); fi
     KFS_PAUSED_BY_US=false
     KFS_WAITED_S=0
     KFS_DRAIN_REASON=""
@@ -197,7 +223,7 @@ kfs_pause_and_wait() {
     fi
     if [ "$paused" = true ]; then
         kfs_log INFO "trader already paused, leaving that pause in place"
-    elif kfs_control pause --source deploy --wait-result "$KFS_PAUSE_RESULT_S" >/dev/null; then
+    elif kfs_control pause ${slot_args[@]+"${slot_args[@]}"} --source deploy --wait-result "$KFS_PAUSE_RESULT_S" >/dev/null; then
         KFS_PAUSED_BY_US=true
         kfs_log INFO "trader paused" source deploy
     elif [ "$now" = true ]; then

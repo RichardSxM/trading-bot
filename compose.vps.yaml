@@ -73,6 +73,15 @@ services:
         bind:
           create_host_path: true
 
+  trader-portfolio:
+    volumes:
+      - type: bind
+        source: /srv/kfs/catalog
+        target: /data/catalog
+        read_only: true
+        bind:
+          create_host_path: true
+
   dashboard:
     volumes:
       - type: bind

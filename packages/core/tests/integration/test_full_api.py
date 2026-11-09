@@ -11,6 +11,7 @@ from sqlalchemy import func, insert, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from trading_core.control.slots import TraderSlot
 from trading_core.recording import models, queries, repository
 from trading_core.recording.enums import (
     ControlCmd,
@@ -41,6 +42,7 @@ from trading_core.recording.errors import (
     RecordConflictError,
     UnknownCommitError,
 )
+from trading_core.recording.queries import control_command_outcome
 from trading_core.recording.rows import (
     AccountSnapshotRow,
     ControlCommandRow,
@@ -242,7 +244,7 @@ def test_control_commands_replay_and_move_to_one_final_outcome(session: Session,
     repository.set_control_outcome(session, command.id, ControlOutcome.EXECUTED, world.tick())
     repository.record_control_command(session, replace(command, received_at=datetime(2026, 10, 2, tzinfo=UTC)))
 
-    stored = session.get(models.ControlCommand, command.id)
+    stored = session.get(models.ControlCommand, (command.id, "main"))
     assert stored is not None
     assert (stored.outcome, stored.details) == ("executed", {"flattened": 0})
     assert _count(session, models.ControlCommand, id=command.id) == 1
@@ -250,6 +252,24 @@ def test_control_commands_replay_and_move_to_one_final_outcome(session: Session,
         repository.set_control_outcome(session, command.id, ControlOutcome.FAILED, world.tick())
     with pytest.raises(RecordConflictError):
         repository.record_control_command(session, replace(command, cmd=ControlCmd.FLATTEN))
+
+
+def test_each_slot_records_the_same_command_once_with_its_own_outcome(session: Session, world: World):
+    """covers: spec 0030 AC-14 (the key is (id, slot); duplicate reads only its own slot's row)"""
+    command = _command(world)
+    repository.record_control_command(session, command)
+    repository.record_control_command(session, command, TraderSlot.PORTFOLIO)
+    repository.record_control_command(session, command, TraderSlot.PORTFOLIO)
+
+    assert control_command_outcome(session, command.id, TraderSlot.PORTFOLIO) is ControlOutcome.RECEIVED
+    repository.set_control_outcome(session, command.id, ControlOutcome.FAILED, world.tick(), None, TraderSlot.PORTFOLIO)
+
+    assert control_command_outcome(session, command.id) is ControlOutcome.RECEIVED
+    assert control_command_outcome(session, command.id, TraderSlot.PORTFOLIO) is ControlOutcome.FAILED
+    assert _count(session, models.ControlCommand, id=command.id) == 2
+    main = session.get(models.ControlCommand, (command.id, "main"))
+    assert main is not None
+    assert main.slot == "main"
 
 
 def test_a_control_outcome_must_be_final_and_name_a_known_command(session: Session, world: World):
@@ -261,7 +281,7 @@ def test_a_control_outcome_must_be_final_and_name_a_known_command(session: Sessi
     with pytest.raises(MissingParentError):
         repository.set_control_outcome(session, uuid7(), ControlOutcome.EXECUTED, world.tick())
 
-    stored = session.get(models.ControlCommand, command.id)
+    stored = session.get(models.ControlCommand, (command.id, "main"))
     assert stored is not None
     assert stored.outcome == "received"
 

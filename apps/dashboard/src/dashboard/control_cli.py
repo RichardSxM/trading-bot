@@ -28,6 +28,11 @@ stderr. Exit codes:
   the check's ``outcome`` and ``reconciliation_id`` printed under ``details``.
 - ``drill-step <step>`` (spec 0023 AC-22, ``source = cli``): one live drill step, answered only in
   ``LIVE_MODE=drill``; the same codes. ``rest_order_and_die`` never answers, so it exits 2.
+
+Every command takes ``--slot main|portfolio|all`` (spec 0030 AC-14), default ``main``: it waits only for
+that trader's result (an entry with no ``slot`` field is ``main``'s). With ``all`` it waits for a final
+result from every slot whose heartbeat is fresh, prints each under ``slots``, and exits 0 only when
+every one is ``executed``. ``heartbeat`` and ``state`` take ``--slot main|portfolio``.
 """
 
 import argparse
@@ -59,6 +64,7 @@ from trading_core.control.messages import (
     results_stream,
     to_fields,
 )
+from trading_core.control.slots import TraderSlot, result_slot, snapshot_name
 from trading_core.reconcile.drill import DrillStep
 from trading_core.recording.enums import ControlCmd, ControlOutcome, ControlSource
 from trading_core.secrets import REDIS_PASSWORD, SecretUnavailable, read_secret
@@ -77,6 +83,8 @@ RESULTS_SCAN: Final = 200
 FINAL_OUTCOMES: Final = frozenset(
     {ControlOutcome.EXECUTED, ControlOutcome.FAILED, ControlOutcome.EXPIRED, ControlOutcome.DUPLICATE}
 )
+
+ALL_SLOTS: Final = "all"
 
 EXIT_TIMEOUT: Final = 2
 EXIT_PAUSE_LIFTED: Final = 3
@@ -146,11 +154,13 @@ async def send_and_wait(
     wait_s: float,
     monotonic: Callable[[], float] = time.monotonic,
     poll_s: float = POLL_S,
+    slots: Sequence[TraderSlot] = (TraderSlot.MAIN,),
 ) -> Result:
-    """Append ``msg`` to the control stream and wait up to ``wait_s`` for its final result.
+    """Append ``msg`` to the control stream and wait up to ``wait_s`` for a final result from each of ``slots``.
 
-    Exit 0 only on ``executed``; ``failed``, ``expired``, ``duplicate``, no answer in time, or an
-    unreachable Redis give 1.
+    Exit 0 only when every slot answers ``executed``; ``failed``, ``expired``, ``duplicate``, no answer in time,
+    or an unreachable Redis give 1. One slot prints its result as before; more than one prints each under
+    ``slots``, with the top ``status`` ``executed`` only when all are, else the first slot's that is not.
     """
     base: dict[str, object] = {"id": str(msg.id), "cmd": msg.cmd.value, "source": msg.source.value}
     fields: dict[FieldT, EncodableT] = {name: value for name, value in to_fields(msg).items()}
@@ -159,34 +169,61 @@ async def send_and_wait(
     except (RedisError, OSError) as exc:
         return Result(1, base | {"status": "not_sent", "error": type(exc).__name__})
     deadline = monotonic() + wait_s
+    found: dict[TraderSlot, ControlResult] = {}
     while True:
-        error: str | None
-        try:
-            outcome = await _final_outcome(client, results_stream(env), msg)
-        except (RedisError, OSError) as exc:
-            outcome = None
-            error = type(exc).__name__
-        else:
-            error = None
-        if outcome is not None:
-            line = (
-                base
-                | {"status": outcome.outcome.value}
-                | ({"reason": outcome.reason} if outcome.reason else {})
-                | ({"details": dict(outcome.details)} if outcome.details else {})
-            )
-            return Result(0 if outcome.outcome is ControlOutcome.EXECUTED else 1, line)
+        error: str | None = None
+        for slot in slots:
+            if slot in found:
+                continue
+            try:
+                outcome = await _final_outcome(client, results_stream(env), msg, slot)
+            except (RedisError, OSError) as exc:
+                error = type(exc).__name__
+                break
+            if outcome is not None:
+                found[slot] = outcome
+        if len(found) == len(slots):
+            return _answered(base, slots, found)
         if monotonic() >= deadline:
-            return Result(1, base | {"status": "no_result"} | ({"error": error} if error else {}))
+            line = base | {"status": "no_result"} | ({"error": error} if error else {})
+            if len(slots) > 1:
+                line["slots"] = {slot.value: _outcome_line(found.get(slot)) for slot in slots}
+            return Result(1, line)
         await asyncio.sleep(poll_s)
 
 
-async def _final_outcome(client: ControlClient, stream: str, msg: ControlMessage) -> ControlResult | None:
+def _outcome_line(outcome: ControlResult | None) -> dict[str, object]:
+    if outcome is None:
+        return {"status": "no_result"}
+    return (
+        {"status": outcome.outcome.value}
+        | ({"reason": outcome.reason} if outcome.reason else {})
+        | ({"details": dict(outcome.details)} if outcome.details else {})
+    )
+
+
+def _answered(
+    base: dict[str, object], slots: Sequence[TraderSlot], found: Mapping[TraderSlot, ControlResult]
+) -> Result:
+    ok = all(found[slot].outcome is ControlOutcome.EXECUTED for slot in slots)
+    if len(slots) == 1:
+        return Result(0 if ok else 1, base | _outcome_line(found[slots[0]]))
+    per_slot = {slot.value: _outcome_line(found[slot]) for slot in slots}
+    first_bad = next((found[slot] for slot in slots if found[slot].outcome is not ControlOutcome.EXECUTED), None)
+    top = _outcome_line(first_bad) if first_bad is not None else {"status": ControlOutcome.EXECUTED.value}
+    return Result(0 if ok else 1, base | top | {"slots": per_slot})
+
+
+async def _final_outcome(
+    client: ControlClient, stream: str, msg: ControlMessage, slot: TraderSlot = TraderSlot.MAIN
+) -> ControlResult | None:
     entries = await client.xrevrange(stream, count=RESULTS_SCAN)
     if not isinstance(entries, list):
         return None
     for entry in entries:
         if not isinstance(entry, list | tuple) or len(entry) != 2 or not isinstance(entry[1], Mapping):
+            continue
+        if result_slot(entry[1]) is not slot:
             continue
         try:
             result = result_from_fields(entry[1])
@@ -195,6 +232,27 @@ async def _final_outcome(client: ControlClient, stream: str, msg: ControlMessage
         if result.id == msg.id and result.outcome in FINAL_OUTCOMES:
             return result
     return None
+
+
+async def live_slots(
+    client: SnapshotReader, env: TradingEnv, clock_ns: Callable[[], int] = time.time_ns
+) -> tuple[TraderSlot, ...]:
+    """The slots whose heartbeat snapshot is fresh, in ``TraderSlot`` order; ``main`` alone when none is, so a
+    command still waits for the trader that always exists."""
+    fresh = []
+    for slot in TraderSlot:
+        read = await read_snapshot(client, snapshot_key(env, snapshot_name(slot, "heartbeat")), clock_ns)
+        if read.code == 0:
+            fresh.append(slot)
+    return tuple(fresh) or (TraderSlot.MAIN,)
+
+
+async def send_to_slots(
+    client: ControlClient, msg: ControlMessage, env: TradingEnv, wait_s: float, slot: str
+) -> Result:
+    """``send_and_wait`` for one slot by name, or for every live slot with ``all``."""
+    slots = await live_slots(client, env) if slot == ALL_SLOTS else (TraderSlot(slot),)
+    return await send_and_wait(client, msg, env, wait_s, slots=slots)
 
 
 def _flat(data: Mapping[str, object]) -> bool:
@@ -269,9 +327,11 @@ CLI_CMDS: Final = KILL_SWITCH_CMDS | {"recheck": ControlCmd.RECHECK}
 EXIT_NO_ANSWER: Final = 2
 
 
-async def send_kill_switch(client: ControlClient, msg: ControlMessage, env: TradingEnv, wait_s: float) -> Result:
-    """``send_and_wait`` for ``stop``, ``flatten``, ``resume``: no answer (not sent, none in time) exits 2."""
-    result = await send_and_wait(client, msg, env, wait_s)
+async def send_kill_switch(
+    client: ControlClient, msg: ControlMessage, env: TradingEnv, wait_s: float, slot: str = TraderSlot.MAIN.value
+) -> Result:
+    """``send_to_slots`` for ``stop``, ``flatten``, ``resume``: no answer (not sent, none in time) exits 2."""
+    result = await send_to_slots(client, msg, env, wait_s, slot)
     if result.line.get("status") in ("not_sent", "no_result"):
         return Result(EXIT_NO_ANSWER, result.line)
     return result
@@ -280,18 +340,25 @@ async def send_kill_switch(client: ControlClient, msg: ControlMessage, env: Trad
 def _run(args: argparse.Namespace, settings: DashboardSettings) -> Result:
     env = settings.trading_env
     if args.command in ("heartbeat", "state"):
-        key = snapshot_key(env, "heartbeat" if args.command == "heartbeat" else "trader_state")
+        base = "heartbeat" if args.command == "heartbeat" else "trader_state"
+        key = snapshot_key(env, snapshot_name(TraderSlot(args.slot), base))
         return asyncio.run(_with_client(settings, lambda client: read_snapshot(client, key)))
     if args.command in ("pause", "unpause"):
         cmd = ControlCmd.PAUSE if args.command == "pause" else ControlCmd.UNPAUSE
         msg = command(cmd, datetime.now(UTC), args.ttl, ControlSource(args.source))
-        return asyncio.run(_with_client(settings, lambda client: send_and_wait(client, msg, env, args.wait_result)))
+        return asyncio.run(
+            _with_client(settings, lambda client: send_to_slots(client, msg, env, args.wait_result, args.slot))
+        )
     if args.command in CLI_CMDS:
         msg = command(CLI_CMDS[args.command], datetime.now(UTC), args.ttl, ControlSource.CLI)
-        return asyncio.run(_with_client(settings, lambda client: send_kill_switch(client, msg, env, args.wait_result)))
+        return asyncio.run(
+            _with_client(settings, lambda client: send_kill_switch(client, msg, env, args.wait_result, args.slot))
+        )
     if args.command == "drill-step":
         msg = drill_step_command(datetime.now(UTC), args.ttl, args.step)
-        return asyncio.run(_with_client(settings, lambda client: send_kill_switch(client, msg, env, args.wait_result)))
+        return asyncio.run(
+            _with_client(settings, lambda client: send_kill_switch(client, msg, env, args.wait_result, args.slot))
+        )
     key = snapshot_key(env, "trader_state")
     return asyncio.run(_with_client(settings, lambda client: wait_flat(client, key, args.timeout)))
 
@@ -305,21 +372,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Parse ``argv``, run the subcommand, print its JSON line, and return its exit code."""
     parser = argparse.ArgumentParser(prog="python -m dashboard.control_cli")
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("heartbeat", help="print the trader heartbeat; exit 1 if missing or older than 5 s")
-    sub.add_parser("state", help="print trader_state; exit 1 if missing or older than 5 s")
+    one_slot = [slot.value for slot in TraderSlot]
+    for name, text in (
+        ("heartbeat", "print the trader heartbeat; exit 1 if missing or older than 5 s"),
+        ("state", "print trader_state; exit 1 if missing or older than 5 s"),
+    ):
+        sub.add_parser(name, help=text).add_argument("--slot", choices=one_slot, default=TraderSlot.MAIN.value)
+    any_slot = [*one_slot, ALL_SLOTS]
     for name in ("pause", "unpause"):
         cmd = sub.add_parser(name, help=f"send {name} and wait for the trader's answer; exit 0 on executed")
+        cmd.add_argument("--slot", choices=any_slot, default=TraderSlot.MAIN.value)
         cmd.add_argument("--source", choices=[s.value for s in ControlSource], default=ControlSource.DEPLOY.value)
         cmd.add_argument("--wait-result", type=float, default=30.0, metavar="SECONDS")
         cmd.add_argument("--ttl", type=int, default=COMMAND_TTL_S, metavar="SECONDS")
     for name in CLI_CMDS:
         cmd = sub.add_parser(name, help=f"send {name} as cli and wait for the trader's answer; exit 0 on executed")
+        cmd.add_argument("--slot", choices=any_slot, default=TraderSlot.MAIN.value)
         # A recheck may wait out two Kraken timeouts before it answers.
         cmd.add_argument("--wait-result", type=float, default=60.0 if name == "recheck" else 30.0, metavar="SECONDS")
         cmd.add_argument("--ttl", type=int, default=COMMAND_TTL_S, metavar="SECONDS")
     # The live drill's steps (spec 0023 AC-22): only from cli, so the dashboard has no button for it.
     drill = sub.add_parser("drill-step", help="send a drill_step as cli (LIVE_MODE=drill only); exit 0 on executed")
     drill.add_argument("step", choices=[s.value for s in DrillStep])
+    drill.add_argument("--slot", choices=any_slot, default=TraderSlot.MAIN.value)
     drill.add_argument("--wait-result", type=float, default=30.0, metavar="SECONDS")
     drill.add_argument("--ttl", type=int, default=COMMAND_TTL_S, metavar="SECONDS")
     flat = sub.add_parser("wait-flat", help="wait until the paused trader holds no position and no entry order")

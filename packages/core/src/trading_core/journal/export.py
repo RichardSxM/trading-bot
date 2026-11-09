@@ -38,6 +38,8 @@ JOURNAL_COLUMNS: Final = (
     "run_id",
     "position_id",
     "source_id",
+    # The run's trader (``strategy_runs.trader_id``), so two demo traders' rows tell apart (spec 0030 AC-16).
+    "trader",
 )
 _USD: Final = "USD"
 _HALF: Final = Fraction(1, 2)
@@ -82,6 +84,8 @@ class JournalEntry(Protocol):
     def position_id(self) -> UUID | None: ...
     @property
     def source_id(self) -> UUID: ...
+    @property
+    def trader(self) -> str: ...
 
 
 class TextSink(Protocol):
@@ -163,6 +167,7 @@ def journal_line(env: str, row: JournalEntry) -> list[str]:
         str(row.run_id),
         _text(row.position_id),
         str(row.source_id),
+        row.trader,
     ]
 
 

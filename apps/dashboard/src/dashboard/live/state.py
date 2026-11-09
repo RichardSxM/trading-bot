@@ -20,6 +20,7 @@ from trading_core.control.messages import (
     from_fields,
     result_from_fields,
 )
+from trading_core.control.slots import TraderSlot, result_slot
 from trading_core.recording.enums import ControlOutcome
 from trading_core.snapshot.envelope import SnapshotFormatError, decode
 from trading_core.strategy.blocks import PLAIN_WORDS, BlockReason
@@ -135,6 +136,13 @@ def failure_words(reason: str | None) -> str | None:
     return FAILURE_WORDS.get(reason, reason)
 
 
+def outcome_words(result: ControlResult) -> tuple[str, CommandLevel]:
+    """A result's words and level as the top bar shows them: ``confirmed``, ``failed · not flat yet``."""
+    label, level, _, _ = _OUTCOMES[result.outcome]
+    words = failure_words(result.reason) if result.outcome is ControlOutcome.FAILED else None
+    return (label if words is None else f"{label} · {words}"), level
+
+
 def ago(seconds: float) -> str:
     """A short elapsed time: ``12s ago`` under a minute, ``3m ago`` under an hour, else ``2h ago``.
 
@@ -148,10 +156,11 @@ def ago(seconds: float) -> str:
     return f"{whole // 3600}h ago"
 
 
-def find_result(entries: Sequence[Entry] | None, command_id: str) -> Fields | None:
-    """The newest entry for ``command_id`` in a newest first ``XREVRANGE`` reply, else None."""
+def find_result(entries: Sequence[Entry] | None, command_id: str, slot: TraderSlot = TraderSlot.MAIN) -> Fields | None:
+    """The newest entry for ``command_id`` from the ``slot`` trader in a newest first ``XREVRANGE`` reply, else
+    None. An entry with no ``slot`` field is ``main``'s (spec 0030 AC-14), so the top bar follows ``main``."""
     for _, fields in entries or ():
-        if fields is not None and field(fields, "id") == command_id:
+        if fields is not None and field(fields, "id") == command_id and result_slot(fields) is slot:
             return fields
     return None
 

@@ -8,7 +8,7 @@ their own tasks, so a push retrying for two minutes never stalls a check.
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -26,15 +26,16 @@ from alerter.sources.disk import free_bytes
 from alerter.sources.docker_api import DockerApiError
 from alerter.sources.docker_watch import DockerWatch
 from alerter.sources.host_files import HostFiles
-from alerter.sources.redis_state import SnapshotReader, heartbeat_ts, trader_blocks
+from alerter.sources.redis_state import SnapshotReader, heartbeat_ts, plan_failures, trader_blocks
 from alerter.store import StoreWriter
 from alerter.watchdog import Watchdog
 from trading_core.alerts.checks import disk_check, entry_block_checks, heartbeat_check, reachable
 from trading_core.alerts.engine import LIVE, AlertEngine
-from trading_core.alerts.model import Decision, Delivery, Hold, HoldKind, Observation, Push, Tier
+from trading_core.alerts.model import CheckResult, Decision, Delivery, Hold, HoldKind, Observation, Push, Tier
 from trading_core.alerts.rules import FILL, POSTGRES_UNREACHABLE, REDIS_UNREACHABLE, text_field
 from trading_core.control.alerts import AlertCommand, AlertResult
 from trading_core.control.consumer import ControlRedis
+from trading_core.control.slots import TraderSlot, snapshot_name
 from trading_core.recording.enums import AlertCmd, ControlOutcome
 from trading_core.settings import TradingEnv
 from trading_core.snapshot.envelope import snapshot_key
@@ -88,6 +89,7 @@ class Alerter:
         store: StoreWriter,
         redis: SnapshotReader,
         trader_down_s: int,
+        slots: Sequence[TraderSlot] = (TraderSlot.MAIN,),
         watchdog: Watchdog | None = None,
         docker: DockerWatch | None = None,
         host: HostFiles | None = None,
@@ -111,6 +113,18 @@ class Alerter:
         self._redis = redis
         self._heartbeat_key = snapshot_key(env, "heartbeat")
         self._state_key = snapshot_key(env, "trader_state")
+        # Each watched trader's heartbeat and trader_state keys (spec 0030 AC-17); main's are the keys above.
+        self._slots = tuple(dict.fromkeys(slots))
+        self._slot_keys = tuple(
+            (
+                slot,
+                snapshot_key(env, snapshot_name(slot, "heartbeat")),
+                snapshot_key(env, snapshot_name(slot, "trader_state")),
+            )
+            for slot in self._slots
+        )
+        self._plan_key = snapshot_key(env, snapshot_name(TraderSlot.PORTFOLIO, "plan"))
+        self._failed_seen: int | None = None
         self._trader_down_s = trader_down_s
         self._load_wait_s = load_wait_s
         self._fx = fx
@@ -142,9 +156,9 @@ class Alerter:
     # One step of each loop (the tests drive these) --------------------------------------------
 
     async def check_heartbeat(self) -> None:
-        """Read the heartbeat and feed ``trader_down``; nothing while Redis is unreachable (AC-1)."""
+        """Read each watched trader's heartbeat and feed ``trader_down``; nothing while Redis is unreachable (AC-1)."""
         try:
-            ts_ns = await heartbeat_ts(self._redis, self._heartbeat_key)
+            stamps = [(slot, await heartbeat_ts(self._redis, key)) for slot, key, _ in self._slot_keys]
         except RedisError as exc:
             log.warning("redis read failed", extra={"fields": {"code": "alerter_redis_failed", "error": str(exc)}})
             self.apply(self._engine.check(reachable(REDIS_UNREACHABLE.id, False, self._clock())))
@@ -152,30 +166,61 @@ class Alerter:
         now = self._clock()
         self._redis_ok_at = now
         self.apply(self._engine.check(reachable(REDIS_UNREACHABLE.id, True, now)))
-        # A missing key is "older than the threshold" only once the alerter has watched that long
-        # itself, so a cold start (the trader not up yet) raises nothing; a trader already dead
-        # is still caught within the threshold of the alerter's start.
-        if ts_ns is None and (now - self._started_at).total_seconds() < self._trader_down_s:
-            return
-        self.apply(self._engine.check(heartbeat_check(ts_ns, now, self._trader_down_s)))
+        for slot, ts_ns in stamps:
+            # A missing key is "older than the threshold" only once the alerter has watched that long
+            # itself, so a cold start (the trader not up yet) raises nothing; a trader already dead
+            # is still caught within the threshold of the alerter's start.
+            if ts_ns is None and (now - self._started_at).total_seconds() < self._trader_down_s:
+                continue
+            self.apply(self._engine.check(for_slot(slot, heartbeat_check(ts_ns, now, self._trader_down_s))))
 
     async def check_entry_blocks(self) -> None:
-        """``entry_block`` from ``trader_state`` (AC-6).
+        """``entry_block`` from each watched trader's ``trader_state`` (AC-6).
 
-        Skipped while the snapshot is missing or older than the trader down threshold: a trader
+        A trader whose snapshot is missing or older than the trader down threshold is skipped: one
         that is down or restarting has not cleared its reasons, and ``trader_down`` covers it. A
         Redis error is the heartbeat loop's to report.
         """
+        for slot, _, state_key in self._slot_keys:
+            try:
+                blocks = await trader_blocks(self._redis, state_key)
+            except RedisError:
+                return
+            now = self._clock()
+            now_ns = int(now.timestamp()) * 1_000_000_000 + now.microsecond * 1_000
+            if blocks is None or (now_ns - blocks.ts_ns) // 1_000_000_000 > self._trader_down_s:
+                continue
+            for result in entry_block_checks(blocks.blocked, blocks.since_ns, now):
+                self.apply(self._engine.check(for_slot(slot, result)))
+
+    async def check_portfolio_failed(self) -> None:
+        """One ``portfolio_coins_failed`` per rebalance that left coins in ``portfolio_plan.failed`` (spec 0030 AC-17).
+
+        Only while ``portfolio`` is watched. Each ``last_rebalance_at`` is fed once; after a restart the
+        stored open episode absorbs the repeat. A Redis error is the heartbeat loop's to report.
+        """
+        if TraderSlot.PORTFOLIO not in self._slots:
+            return
         try:
-            blocks = await trader_blocks(self._redis, self._state_key)
+            plan = await plan_failures(self._redis, self._plan_key)
         except RedisError:
             return
-        now = self._clock()
-        now_ns = int(now.timestamp()) * 1_000_000_000 + now.microsecond * 1_000
-        if blocks is None or (now_ns - blocks.ts_ns) // 1_000_000_000 > self._trader_down_s:
+        if plan is None or not plan.failed or plan.last_rebalance_at == self._failed_seen:
             return
-        for result in entry_block_checks(blocks.blocked, blocks.since_ns, now):
-            self.apply(self._engine.check(result))
+        self._failed_seen = plan.last_rebalance_at
+        obs = Observation(
+            source="redis",
+            service="trader-portfolio",
+            at=self._clock(),
+            code="rebalance_coin_failed",
+            level="WARNING",
+            fields={
+                "coins": ", ".join(plan.failed),
+                "count": len(plan.failed),
+                "last_rebalance_at": plan.last_rebalance_at,
+            },
+        )
+        self.apply(self._engine.observe(obs))
 
     async def read_host(self) -> None:
         """Feed every new ``host.jsonl`` and ``deploys.jsonl`` line to the engine (AC-4, AC-11)."""
@@ -445,6 +490,7 @@ class Alerter:
             *fx,
             ("heartbeat", self.check_heartbeat, CHECK_S),
             ("entry_blocks", self.check_entry_blocks, BLOCKS_S),
+            ("portfolio_failed", self.check_portfolio_failed, BLOCKS_S),
             ("logs", self.read_logs, LOGS_S),
             ("host", self.read_host, HOST_S),
             ("containers", self.check_containers, CONTAINERS_S),
@@ -456,6 +502,16 @@ class Alerter:
             ("daily", self.daily.step, DAILY_S),
             ("liveness", _sync(self.touch_liveness), LIVENESS_S),
         ]
+
+
+def for_slot(slot: TraderSlot, result: CheckResult) -> CheckResult:
+    """``result`` as the check of ``slot``'s trader: unchanged for ``main``; else its subject gains the slot
+    (``portfolio``, or ``portfolio:<reason>``) and its fields a ``slot``, so the episodes stay apart and
+    the alert text names the trader (spec 0030 AC-17)."""
+    if slot is TraderSlot.MAIN:
+        return result
+    subject = slot.value if result.subject is None else f"{slot.value}:{result.subject}"
+    return replace(result, subject=subject, fields={**result.fields, "slot": slot.value})
 
 
 def _sync(step: Callable[[], None]) -> Callable[[], Awaitable[None]]:

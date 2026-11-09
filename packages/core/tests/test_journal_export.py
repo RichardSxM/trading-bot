@@ -48,6 +48,7 @@ class Row:
     run_id: UUID = RUN
     position_id: UUID | None = POSITION
     source_id: UUID = SOURCE
+    trader: str = "TRADER-DEMO"
 
 
 @pytest.mark.parametrize(
@@ -108,6 +109,7 @@ def test_a_fill_line_has_every_column_in_order():
         "run_id": "01a18cf3-361b-75f1-95d4-7f70591d723a",
         "position_id": "01a18cf3-35ea-70fd-aef0-09c1354b915d",
         "source_id": "01a18cf3-3600-7000-8000-00000000abcd",
+        "trader": "TRADER-DEMO",
     }
 
 

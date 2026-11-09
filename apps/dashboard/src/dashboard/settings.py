@@ -7,9 +7,10 @@ from typing import ClassVar, Final, Self
 
 from argon2 import Type, extract_parameters
 from argon2.exceptions import InvalidHashError
-from pydantic import Field, SecretStr, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 
 from trading_core.env_guard import EnvGuardRefused
+from trading_core.naming import node_id
 from trading_core.secrets import (
     DASHBOARD_PASSWORD_HASH,
     DASHBOARD_SESSION_KEY,
@@ -44,6 +45,20 @@ class DashboardSettings(ReconcileSettings):
     dashboard_command_hide_s: int = Field(default=900, gt=0)
     # A stop a running trader has not answered for this long raises the amber alert (AC-21).
     dashboard_ack_warn_s: float = Field(default=10, gt=0)
+    # The `trader` service's TRADER_ID (spec 0030 AC-16): P&L, Overview, and Trades read only its runs, so the
+    # portfolio trader's fills never mix into six vote's figures. Unset is the trader's own default id.
+    dashboard_main_trader_id: str | None = None
+
+    @property
+    def main_trader_id(self) -> str:
+        """The main trader's node id: ``DASHBOARD_MAIN_TRADER_ID``, else ``TRADER-<ENV>`` as the trader picks it."""
+        return node_id("TRADER", self.trading_env, self.dashboard_main_trader_id)
+
+    @field_validator("dashboard_main_trader_id", mode="before")
+    @classmethod
+    def _empty_trader_id_is_unset(cls, value: object) -> object:
+        # compose.yaml passes ${DASHBOARD_MAIN_TRADER_ID:-}, so unset arrives as "".
+        return None if isinstance(value, str) and not value.strip() else value
 
     @model_validator(mode="after")
     def _check(self) -> Self:
@@ -51,6 +66,7 @@ class DashboardSettings(ReconcileSettings):
             raise ValueError("DASHBOARD_STALE_RED_S must exceed DASHBOARD_STALE_AMBER_S")
         if self.trading_env == "live" and not self.dashboard_cookie_secure:
             raise ValueError("DASHBOARD_COOKIE_SECURE=false is allowed only in demo")
+        self.main_trader_id  # noqa: B018  # raises NodeIdMismatch (a ValueError) for a wrong env tag
         return self
 
 

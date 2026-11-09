@@ -1,6 +1,7 @@
 """The two Trades lists (spec 0006 AC-19), read from Postgres as ``dashboard_app``.
 
-Paper runs in this env only; the queries themselves live in ``trading_core.recording.queries``.
+Paper runs in this env of the main trader only (spec 0030 AC-16); the queries themselves live in
+``trading_core.recording.queries``.
 """
 
 from collections.abc import Callable, Sequence
@@ -20,10 +21,10 @@ class TradesView:
     fills: Sequence[FillLine]
 
 
-def trades_view(sessions: Callable[[], Session], env: str, page: int, fills_page_no: int) -> TradesView:
-    """Page ``page`` of the round trips and page ``fills_page_no`` of the fills (both from 1)."""
+def trades_view(sessions: Callable[[], Session], env: str, page: int, fills_page_no: int, trader_id: str) -> TradesView:
+    """Page ``page`` of ``trader_id``'s round trips and page ``fills_page_no`` of its fills (both from 1)."""
     with sessions() as session:
         return TradesView(
-            round_trips=round_trips_page(session, Env(env), page),
-            fills=fills_page(session, Env(env), fills_page_no),
+            round_trips=round_trips_page(session, Env(env), page, trader_id=trader_id),
+            fills=fills_page(session, Env(env), fills_page_no, trader_id=trader_id),
         )

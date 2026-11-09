@@ -14,9 +14,11 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Sequence
+from datetime import date, timedelta
 from typing import Final, Literal
 
 from trading_core.strategy.bar_rule import BarInput
+from trading_core.strategy.trend_portfolio import DailyClose, close_day
 from trading_core.strategy.warmup import SeedRefusedError, parse_candles, seed_bars
 
 log = logging.getLogger("trader")
@@ -25,8 +27,8 @@ log = logging.getLogger("trader")
 # constant, not a setting. ``{symbol}`` is the instrument id's symbol, such as ``PF_XBTUSD``.
 # ``{interval}`` is one of ``INTERVALS_S``.
 CHARTS_URL: Final = "https://futures.kraken.com/api/charts/v1/trade/{symbol}/{interval}"
-type Interval = Literal["5m", "1h"]
-INTERVALS_S: Final[dict[Interval, int]] = {"5m": 300, "1h": 3600}
+type Interval = Literal["5m", "1h", "1d"]
+INTERVALS_S: Final[dict[Interval, int]] = {"5m": 300, "1h": 3600, "1d": 86_400}
 # r2's: 3 x the EMA period, so the EMA has settled; the minimum is the EMA period. Outside every version hash.
 SEED_BARS: Final = 600
 SEED_MIN_BARS: Final = 200
@@ -149,3 +151,28 @@ def _failed(instrument_id: str, reason: str, detail: str) -> None:
             "fields": {"code": "warmup_seed_failed", "instrument": instrument_id, "reason": reason, "detail": detail}
         },
     )
+
+
+def daily_seed(instrument_id: str, bars: Sequence[BarInput], today: date) -> tuple[DailyClose, ...]:
+    """``trend_portfolio``'s seed (spec 0030 AC-8): each closed daily candle as its UTC day's close.
+
+    A candle's day is its close time minus one day, as the node files live bars. A seed whose last close is
+    not from yesterday (``today`` minus one day, UTC) is dropped with one ``seed_stale`` warning, so the coin
+    stays not eligible until live bars fill it. An empty seed (the fetch already warned) stays empty.
+    """
+    if not bars:
+        return ()
+    closes = tuple(DailyClose(close_day(bar.ts_ns), bar.close) for bar in bars)
+    if closes[-1].day != today - timedelta(days=1):
+        log.warning(
+            "daily seed is not up to yesterday, dropped",
+            extra={
+                "fields": {
+                    "code": "seed_stale",
+                    "instrument": instrument_id,
+                    "last_close_day": closes[-1].day.isoformat(),
+                }
+            },
+        )
+        return ()
+    return closes

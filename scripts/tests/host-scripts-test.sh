@@ -172,6 +172,24 @@ STATE_AFTER_RC=0
 : >"$calls"; KFS_PAUSED_BY_US=false; kfs_unpause_if_ours >/dev/null
 check "unpause only a pause we sent" "" "$(cat "$calls")"
 
+# --- lib.sh: the portfolio profile (spec 0030 AC-18) -----------------------------------------
+printf 'COMPOSE_PROFILES=other\n' >"$work/kfs.env"
+check "portfolio profile off: main alone" "main" "$(kfs_slots | paste -sd, -)"
+printf 'COMPOSE_PROFILES=portfolio\nCOMPOSE_PROFILES="lab,portfolio"\n' >"$work/kfs.env"
+check "portfolio profile on (quoted list, last line wins): both slots" "main,portfolio" "$(kfs_slots | paste -sd, -)"
+STATE_RC=0 PAUSED=false PAUSE_RC=0 FLAT_RC=0 SOURCE= TAKEOVER=0
+drain false >/dev/null
+check "profile on: the pause goes to both, the wait for flat stays on main" \
+    "state|pause --slot all --source deploy --wait-result 30|wait-flat --timeout 15m" "$(paste -sd'|' "$calls")"
+: >"$calls"; KFS_PAUSED_BY_US=true; PAUSED=true SOURCE=deploy; kfs_unpause_if_ours >/dev/null
+check "profile on: each slot is unpaused on its own state" \
+    "state|unpause --source deploy --wait-result 30|state --slot portfolio|unpause --slot portfolio --source deploy --wait-result 30" \
+    "$(paste -sd'|' "$calls")"
+printf 'TRADING_ENV=demo\n' >"$work/kfs.env"
+: >"$calls"; KFS_PAUSED_BY_US=true; PAUSED=true SOURCE=deploy; kfs_unpause_if_ours >/dev/null
+check "profile off: unpause is exactly as before" "state|unpause --source deploy --wait-result 30" "$(paste -sd'|' "$calls")"
+KFS_PAUSED_BY_US=false
+
 # --- kfs-autoheal: restart unhealthy containers, give up after 3 an hour (AC-15) --------------
 cat >"$work/bin/docker" <<STUB
 #!/bin/sh
@@ -276,6 +294,9 @@ case "\$*" in
         exit "\$(cat "$work/migrate_rc")" ;;
     *"run --rm --no-deps -T trader python -m trader.version"*)
         printf '{\n  "frozen_hash": "f1",\n  "git_commit": "%s"\n}\n' "$sha" ;;
+    *"run --rm --no-deps -T trader-portfolio python -m trader.version"*)
+        echo portfolio-version >>"$work/calls"
+        printf '{\n  "frozen_hash": "p1",\n  "git_commit": "%s"\n}\n' "$sha" ;;
     *"run --rm --no-deps -T gate check-version"*)
         echo check >>"$work/calls"
         cat >"$work/gate_stdin"
@@ -321,6 +342,17 @@ check "kfs-deploy: past the check, not refused" "no" \
     "$(jq -r .outcome "$work/plog/deploys.jsonl" | grep -qx preflight_refused && echo refused || echo no)"
 check "kfs-deploy: the new migrate runs before the check reads the schema" "migrate,check" \
     "$(paste -sd, "$work/calls")"
+check "kfs-deploy: profile off checks only the trader" "0" "$(grep -c portfolio-version "$work/calls")"
+printf 'TRADING_ENV=demo\nCOMPOSE_PROFILES=portfolio\n' >"$work/denv"
+: >"$work/plog/deploys.jsonl"
+: >"$work/calls"
+pdeploy; rc=$?
+check "kfs-deploy: profile on checks trader-portfolio's version too (spec 0030 AC-18)" "migrate,check,portfolio-version,check" \
+    "$(paste -sd, "$work/calls")"
+check "kfs-deploy: and the gate reads the portfolio's version" "p1" "$(jq -r .frozen_hash "$work/gate_stdin")"
+check "kfs-deploy: both passes are logged by service" "trader,trader-portfolio" \
+    "$(grep 'promotion check passed' "$work/plog/host.jsonl" | tail -n 2 | jq -r .service | paste -sd, -)"
+printf 'TRADING_ENV=demo\n' >"$work/denv"
 echo 1 >"$work/migrate_rc"
 : >"$work/plog/deploys.jsonl"
 : >"$work/calls"

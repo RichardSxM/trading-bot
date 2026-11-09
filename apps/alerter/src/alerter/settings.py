@@ -7,6 +7,7 @@ from urllib.parse import urlsplit
 from pydantic import Field, field_validator
 
 from trading_core.alerts.engine import EngineConfig
+from trading_core.control.slots import TraderSlot
 from trading_core.secrets import (
     HC_ALERTER_URL,
     POSTGRES_PASSWORD,
@@ -32,6 +33,24 @@ class AlerterSettings(AlertSettings):
     fx_ecb_url: str = "https://data-api.ecb.europa.eu/service/data/EXR/D.USD.EUR.SP00.A"
     fx_history_from: date = date(2026, 1, 1)
     fx_stale_days: int = Field(default=6, ge=1, le=14)
+    # The traders whose heartbeat and entry blocks are watched (spec 0030 AC-17), as a comma list of slots;
+    # the VPS sets ``main,portfolio`` once the portfolio trader runs.
+    alerter_trader_slots: str = "main"
+
+    @field_validator("alerter_trader_slots")
+    @classmethod
+    def _slots(cls, value: str) -> str:
+        names = [n.strip() for n in value.split(",") if n.strip()]
+        if not names:
+            raise ValueError("ALERTER_TRADER_SLOTS must name at least one slot")
+        bad = [n for n in names if n not in TraderSlot]
+        if bad:
+            raise ValueError(f"ALERTER_TRADER_SLOTS has unknown slots: {', '.join(bad)}")
+        return ",".join(dict.fromkeys(names))
+
+    def trader_slots(self) -> tuple[TraderSlot, ...]:
+        """``ALERTER_TRADER_SLOTS`` as slots, in the order given, without repeats."""
+        return tuple(TraderSlot(n) for n in self.alerter_trader_slots.split(","))
 
     @field_validator("fx_ecb_url")
     @classmethod

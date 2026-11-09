@@ -1,7 +1,7 @@
 """The shell pages, the styleguide, and the live value stream (spec 0004 AC-7, AC-9, AC-12, AC-16).
 
-Overview, Trades, Strategies, and System sit in the nav; the styleguide is reachable by URL only, and
-the Reconciliation page (spec 0023 AC-19) from System and the top bar's Kraken check badge.
+Overview, Trades, Strategies, Portfolio (spec 0030 AC-19), and System sit in the nav; the styleguide is
+reachable by URL only, and the Reconciliation page (spec 0023 AC-19) from System and the top bar's Kraken check badge.
 """
 
 import asyncio
@@ -37,6 +37,7 @@ PAGES: Final[dict[str, tuple[str, str]]] = {
     "/": ("pages/overview.html", "Overview"),
     "/trades": ("pages/trades.html", "Trades"),
     "/strategies": ("pages/strategies.html", "Strategies"),
+    "/portfolio": ("pages/portfolio.html", "Portfolio"),
     "/system": ("pages/system.html", "System"),
     "/styleguide": ("pages/styleguide.html", "Styleguide"),
 }
@@ -45,6 +46,7 @@ NAV: Final = (
     ("/", "Overview", "activity"),
     ("/trades", "Trades", "arrow-left-right"),
     ("/strategies", "Strategies", "flask-conical"),
+    ("/portfolio", "Portfolio", "chart-pie"),
     ("/system", "System", "server-cog"),
 )
 TRADES: Final = "pages/trades.html"
@@ -245,6 +247,13 @@ async def reconciliations(request: Request, session: SessionDep, page: Annotated
     return await render_page(
         request, context, session, "pages/reconciliations.html", "Reconciliation", path="/system", data=data
     )
+
+
+@router.get("/portfolio")
+async def portfolio(request: Request, session: SessionDep) -> Response:
+    """The trend portfolio trader's plan, positions, and account (spec 0030 AC-19 to AC-21), live over SSE."""
+    context = app_context(request)
+    return await render_page(request, context, session, *PAGES["/portfolio"])
 
 
 @router.get("/system")

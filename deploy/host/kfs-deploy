@@ -138,11 +138,19 @@ migrate_new() {
 # The new trader's strategy version must hold its candidate → paper pass, or the paper guard
 # would stop the trader after the switch (spec 0015 AC-26). Runs the new images with --no-deps:
 # Postgres is up from the running release, already migrated by migrate_new. There is no flag to
-# skip it; promote the version (the command below), then deploy again.
+# skip it; promote the version (the command below), then deploy again. With the portfolio
+# profile on, trader-portfolio's version is checked too (spec 0030 AC-18).
 promotion_check() {
-    local version checked rc=0 version_id verdict
-    version=$(compose_new run --rm --no-deps -T trader python -m trader.version) ||
-        refuse "promotion check: trader.version failed in the new image (exit $?)"
+    promotion_check_for trader
+    if kfs_portfolio_on; then
+        promotion_check_for trader-portfolio
+    fi
+}
+
+promotion_check_for() {
+    local service=$1 version checked rc=0 version_id verdict
+    version=$(compose_new run --rm --no-deps -T "$service" python -m trader.version) ||
+        refuse "promotion check: $service trader.version failed in the new image (exit $?)"
     checked=$(printf '%s\n' "$version" | compose_new run --rm --no-deps -T gate check-version) || rc=$?
     # The gate's JSON log lines share stdout; the result is the object without a `msg`.
     checked=$(jq -cR 'fromjson? | select(type == "object" and has("stage_needed") and (has("msg") | not))' \
@@ -150,7 +158,7 @@ promotion_check() {
     version_id=$(jq -r '.version_id // "unknown"' <<<"${checked:-null}")
     verdict=$(jq -r '.verdict // "unknown"' <<<"${checked:-null}")
     case $rc in
-        0) kfs_log INFO "promotion check passed" sha "$SHA" version_id "$version_id" ;;
+        0) kfs_log INFO "promotion check passed" sha "$SHA" version_id "$version_id" service "$service" ;;
         3)
             # The new release's gate: the running one can't read a revision this release adds.
             printf 'promote it, then deploy again:\n  sudo env KFS_RELEASE=%s kfs-compose run --rm --no-deps gate promote --manual --step candidate-paper --version %s --note '"'"'...'"'"'\n' \
@@ -192,17 +200,29 @@ switch_release() {
 }
 
 # 0 when the trader's snapshot (`trader_state`, or `heartbeat` with --heartbeat for a release
-# from before spec 0005) is fresh and carries commit $1.
+# from before spec 0005) is fresh and carries commit $1. $3 is the slot (main by default).
 trader_matches() {
-    local expect=$1 snapshot=${2:-state} line commit
-    line=$(kfs_control "$snapshot" 2>/dev/null) || {
-        echo "trader $snapshot: ${line:-unreadable}"
+    local expect=$1 snapshot=${2:-state} slot=${3:-main} line commit args=()
+    [ "$slot" = main ] || args=(--slot "$slot")
+    line=$(kfs_control "$snapshot" ${args[@]+"${args[@]}"} 2>/dev/null) || {
+        echo "trader $slot $snapshot: ${line:-unreadable}"
         return 1
     }
     commit=$(jq -r '.data.git_commit // ""' <<<"$line")
     if [ "$commit" != "$expect" ]; then
-        echo "trader $snapshot git_commit ${commit:-none}"
+        echo "trader $slot $snapshot git_commit ${commit:-none}"
         return 1
+    fi
+}
+
+# Every slot's trader runs commit $1: main on its $2 snapshot, and with the portfolio profile on,
+# the portfolio on its heartbeat (spec 0030 AC-18; one image, one release, so a portfolio failure
+# rolls back the whole release).
+traders_match() {
+    local expect=$1 snapshot=${2:-state}
+    trader_matches "$expect" "$snapshot" || return 1
+    if kfs_portfolio_on; then
+        trader_matches "$expect" heartbeat portfolio || return 1
     fi
 }
 
@@ -210,7 +230,7 @@ trader_matches() {
 health_gate() {
     local expect=$1 snapshot=${2:-state} deadline=$((SECONDS + HEALTH_TIMEOUT_S)) why=""
     while [ "$SECONDS" -lt "$deadline" ]; do
-        if why=$(kfs_services_healthy) && why=$(trader_matches "$expect" "$snapshot"); then
+        if why=$(kfs_services_healthy) && why=$(traders_match "$expect" "$snapshot"); then
             kfs_log INFO "health gate passed" sha "$expect" after_s "$((SECONDS - START_S))"
             return 0
         fi

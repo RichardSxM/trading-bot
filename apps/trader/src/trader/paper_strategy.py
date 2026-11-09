@@ -14,13 +14,14 @@ the first entry (3.5 days on 4 hours, under 2 hours on 5 minutes), and r1 about 
 """
 
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Final, Literal, Self
 from uuid import UUID
 
 from nautilus_trader.model.enums import OrderType
+from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.orders import Order
 from pydantic import model_validator
 
@@ -33,6 +34,7 @@ from trading_core.node import (
     donchian_scalp_r2,
     placeholder,
     six_vote_trend,
+    trend_portfolio,
 )
 from trading_core.node.bar_rule import BarRuleStrategy, Phase
 from trading_core.node.bar_rule_maker import MakerBarRuleStrategy
@@ -46,16 +48,24 @@ from trading_core.node.paper_snapshots import PaperStrategyView
 from trading_core.node.placeholder import PlaceholderConfig, PlaceholderTimed
 from trading_core.node.six_vote_trend import SixVoteTrend, SixVoteTrendConfig
 from trading_core.node.strategy import KfsStrategy, PauseGate
+from trading_core.node.trend_portfolio import TrendPortfolio, TrendPortfolioConfig
 from trading_core.recording.enums import StrategyKind
 from trading_core.recording.rows import JsonObject
 from trading_core.recording.spool import WriteItem
 from trading_core.settings import ContextSettings, PaperLoopSettings
 from trading_core.strategy.bar_rule import BarInput
 from trading_core.strategy.blocks import EntryBlocks
+from trading_core.strategy.trend_portfolio import DailyClose
 from trading_core.versioning import FrozenHashes
 
 type PaperStrategyName = Literal[
-    "placeholder_timed", "donchian_4h", "donchian_scalp", "donchian_scalp_r1", "donchian_scalp_r2", "six_vote_trend"
+    "placeholder_timed",
+    "donchian_4h",
+    "donchian_scalp",
+    "donchian_scalp_r1",
+    "donchian_scalp_r2",
+    "six_vote_trend",
+    "trend_portfolio",
 ]
 
 # The donchian_4h_pair study's chosen grid point (spec 0022 Results: grid-2), also used by donchian_scalp.
@@ -91,13 +101,33 @@ SIX_BTC_WAIT_S: Final = 3
 # Its 1 hour seed (AC-8): keep and minimum bars, outside every version hash.
 SIX_SEED_BARS: Final = 300
 SIX_SEED_MIN_BARS: Final = 250
+# trend_portfolio's settings (spec 0030 AC-3), all recorded in its version.
+TP_LOOKBACK_DAYS: Final = 30
+TP_VOL_DAYS: Final = 30
+TP_VOL_TARGET: Final = Decimal("0.02")
+TP_GROSS_CAP: Final = Decimal(2)
+TP_MIN_HISTORY_DAYS: Final = 120
+TP_REBALANCE_WEEKDAY: Final = 0
+TP_RUN_AT_UTC: Final = "00:05"
+TP_RETRY_MAX: Final = 3
+TP_RETRY_WAIT_S: Final = 60
+TP_QUOTE_WAIT_S: Final = 60
+TP_START_COOLDOWN_S: Final = 3600
+TP_SEED_DAYS: Final = 150
+TP_SEED_MIN_DAYS: Final = 121
 # The strategies that trade more than one coin (spec 0025 AC-15, spec 0026 AC-16, spec 0029 AC-10).
-_MULTI_COIN: Final = (donchian_scalp_r1.STRATEGY_NAME, donchian_scalp_r2.STRATEGY_NAME, six_vote_trend.STRATEGY_NAME)
+_MULTI_COIN: Final = (
+    donchian_scalp_r1.STRATEGY_NAME,
+    donchian_scalp_r2.STRATEGY_NAME,
+    six_vote_trend.STRATEGY_NAME,
+    trend_portfolio.STRATEGY_NAME,
+)
 # The strategies the trader fetches a warmup seed for before the node (spec 0025 AC-7, spec 0026 AC-16, spec 0029).
 SEEDED_STRATEGIES: Final = (
     donchian_scalp_r1.STRATEGY_NAME,
     donchian_scalp_r2.STRATEGY_NAME,
     six_vote_trend.STRATEGY_NAME,
+    trend_portfolio.STRATEGY_NAME,
 )
 # A PAPER_INSTRUMENTS entry: a Kraken perpetual (spec 0025 AC-15).
 _PAPER_INSTRUMENT: Final = re.compile(r"PF_[A-Z0-9]+\.KRAKEN")
@@ -140,6 +170,16 @@ class PaperVersion:
 
 def paper_version(settings: StrategySettings) -> PaperVersion:
     """The version for ``PAPER_STRATEGY``; ``placeholder_timed``'s config is unchanged by this setting."""
+    if settings.paper_strategy == trend_portfolio.STRATEGY_NAME:
+        tp_config: JsonObject = {
+            "paper_strategy": trend_portfolio.STRATEGY_NAME,
+            "bar_spec": trend_portfolio.BAR_SPEC,
+            **_trend_portfolio_settings(),
+            **{key: value for key, value in settings.strategy_config().items() if key.startswith("risk_")},
+            "instruments": list(settings.instrument_list),
+        }
+        frozen = versioning.freeze(TrendPortfolio.__module__, tp_config)
+        return PaperVersion(trend_portfolio.STRATEGY_NAME, StrategyKind.TREND, tp_config, frozen)
     if settings.paper_strategy == six_vote_trend.STRATEGY_NAME:
         six_config: JsonObject = {
             "paper_strategy": six_vote_trend.STRATEGY_NAME,
@@ -198,6 +238,27 @@ def paper_version(settings: StrategySettings) -> PaperVersion:
     placeholder_config_json: JsonObject = dict(settings.strategy_config())
     frozen = versioning.freeze(PlaceholderTimed.__module__, placeholder_config_json)
     return PaperVersion(placeholder.STRATEGY_NAME, StrategyKind.SCALPING, placeholder_config_json, frozen)
+
+
+def _trend_portfolio_settings() -> JsonObject:
+    # Every AC-3 setting, as the version records it (spec 0030 AC-10).
+    return {
+        "order_id_tag": trend_portfolio.ORDER_ID_TAG,
+        "instrument_id": BTC_PERP,
+        "lookback_days": TP_LOOKBACK_DAYS,
+        "vol_days": TP_VOL_DAYS,
+        "vol_target": str(TP_VOL_TARGET),
+        "gross_cap": str(TP_GROSS_CAP),
+        "min_history_days": TP_MIN_HISTORY_DAYS,
+        "rebalance_weekday": TP_REBALANCE_WEEKDAY,
+        "run_at_utc": TP_RUN_AT_UTC,
+        "retry_max": TP_RETRY_MAX,
+        "retry_wait_s": TP_RETRY_WAIT_S,
+        "quote_wait_s": TP_QUOTE_WAIT_S,
+        "start_cooldown_s": TP_START_COOLDOWN_S,
+        "seed_days": TP_SEED_DAYS,
+        "seed_min_days": TP_SEED_MIN_DAYS,
+    }
 
 
 def _donchian_version_config(settings: StrategySettings, name: str, bar_spec: str) -> JsonObject:
@@ -461,6 +522,94 @@ def six_vote_trend_config(settings: StrategySettings, run_id: UUID, instrument_i
         context_max_age_funding_s=settings.context_max_age_funding_s,
         context_liquidation_window_s=settings.context_liquidation_window_s,
     )
+
+
+def trend_portfolio_config(settings: StrategySettings, run_id: UUID) -> TrendPortfolioConfig:
+    """``trend_portfolio`` (spec 0030 AC-3) over every ``PAPER_INSTRUMENTS`` coin, with the ``RISK_*`` settings.
+
+    One instance trades every coin under ``order_id_tag`` ``TP``; ``instrument_id`` is BTC, the base's context
+    instrument only. Raises ``ValueError`` outside demo, and when ``PAPER_INSTRUMENTS`` does not hold BTC.
+    """
+    _demo_only(settings)
+    return TrendPortfolioConfig(
+        order_id_tag=trend_portfolio.ORDER_ID_TAG,
+        env=settings.trading_env,
+        run_id=str(run_id),
+        instrument_id=BTC_PERP,
+        instruments=tuple(settings.instrument_list),
+        lookback_days=TP_LOOKBACK_DAYS,
+        vol_days=TP_VOL_DAYS,
+        vol_target=TP_VOL_TARGET,
+        gross_cap=TP_GROSS_CAP,
+        min_history_days=TP_MIN_HISTORY_DAYS,
+        rebalance_weekday=TP_REBALANCE_WEEKDAY,
+        run_at_utc=TP_RUN_AT_UTC,
+        retry_max=TP_RETRY_MAX,
+        retry_wait_s=TP_RETRY_WAIT_S,
+        quote_wait_s=TP_QUOTE_WAIT_S,
+        start_cooldown_s=TP_START_COOLDOWN_S,
+        seed_days=TP_SEED_DAYS,
+        seed_min_days=TP_SEED_MIN_DAYS,
+        stale_quote_s=settings.risk_stale_quote_s,
+        max_order_notional_usd=settings.risk_max_order_notional_usd,
+        max_leverage=settings.risk_max_leverage,
+        max_total_exposure_usd=settings.risk_max_total_exposure_usd,
+        risk_per_trade=settings.risk_per_trade,
+        maintenance_margin_rate=settings.risk_maintenance_margin_rate,
+        min_liq_distance_pct=settings.risk_min_liq_distance_pct,
+        liq_stop_multiple=settings.risk_liq_stop_multiple,
+        stop_slippage_bps=settings.risk_stop_slippage_bps,
+        taker_fee=settings.sandbox_taker_fee,
+        use_market_context=False,
+    )
+
+
+class TrendPortfolioView:
+    """``PaperStrategyView`` for one coin of a ``TrendPortfolio`` (spec 0030 AC-10): no stop, no exit time.
+
+    ``exiting`` is always False (rebalances are single market orders); ``position_opened_ns`` is the coin's
+    open position's, ``exit_due_ns`` and ``stop_order`` are None.
+    """
+
+    def __init__(self, strategy: TrendPortfolio, instrument_id: str) -> None:
+        self._strategy = strategy
+        self._instrument_id = InstrumentId.from_str(instrument_id)
+
+    @property
+    def exiting(self) -> bool:
+        """Always False."""
+        return False
+
+    @property
+    def position_opened_ns(self) -> int | None:
+        """When this coin's open position opened, None while flat."""
+        positions = self._strategy.cache.positions_open(
+            instrument_id=self._instrument_id, strategy_id=self._strategy.id
+        )
+        return positions[0].ts_opened if positions else None
+
+    @property
+    def exit_due_ns(self) -> int | None:
+        """Always None: there is no fixed exit time."""
+        return None
+
+    def stop_order(self) -> Order | None:
+        """Always None: the portfolio places no stop."""
+        return None
+
+
+def build_trend_portfolio(
+    settings: StrategySettings,
+    run_id: UUID,
+    gate: PauseGate,
+    blocks: EntryBlocks,
+    record: Callable[[WriteItem], None],
+    seeds: Mapping[str, Sequence[DailyClose]],
+    last_start_ns: int | None,
+) -> tuple[TrendPortfolio, list[TrendPortfolioView]]:
+    """The single ``trend_portfolio`` instance and one view per coin, in ``PAPER_INSTRUMENTS`` order (AC-10)."""
+    strategy = TrendPortfolio(trend_portfolio_config(settings, run_id), gate, blocks, record, seeds, last_start_ns)
+    return strategy, [TrendPortfolioView(strategy, coin) for coin in settings.instrument_list]
 
 
 class BarRuleView:
