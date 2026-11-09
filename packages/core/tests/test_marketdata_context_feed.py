@@ -101,6 +101,7 @@ def test_a_partial_liquidation_is_recorded_as_a_liquidation():
 
         assert parsed.bad == ()
         [record] = parsed.records
+        assert isinstance(record, ForcedTrade)
         assert (record.product_id, record.kind, record.size, record.price) == (
             "PF_XRPUSD",
             LiquidationKind.LIQUIDATION,
