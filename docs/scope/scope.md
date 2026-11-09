@@ -38,6 +38,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 28 | Daily trend candidate (tsmom) | Slice 7 | done |
 | 29 | Market context candidates | Slice 7 | done |
 | 30 | Six vote trend (demo forward test) | Slice 7 | in-progress |
+| 32 | Liquidity trap scalper | Slice 7 | in-progress |
 | 17 | Hour level strategy candidates | Slice 7 | dropped |
 | 18 | Trade journal export | Slice 8 | done |
 | 19 | Go live with small capital | Slice 9 | in-progress |
@@ -547,6 +548,27 @@ spec [0029](../specs/0029-six-vote-trend/index.md) · code in [six_vote.py](../.
 - [x] Test it: `/test six vote trend`
 - [x] Review it (fresh model): `/check review six vote trend`
 - [x] Document it: `/document six vote trend`
+
+### 32. Liquidity trap scalper · in-progress
+A research and paper only test of one idea on the BTC and ETH perps: heavy aggressive trading sweeps a recent high or low, price barely moves for that much flow, price reclaims the level, and a post only order fades the failed break. Event driven from the order book and trades, holding 5 to 30 seconds. Number 31 is taken by the trend portfolio on its open PR.
+
+**Done when:** a pre check on recorded data with a pass bar fixed in advance gives its answer. If it fails, the result is recorded and the work stops there. If it passes, the feed layer proves a clean book and clean flow or blocks signals, and a new spec designs execution and replay. Live stays off either way.
+spec [0031](../specs/0031-liquidity-trap-scalper/index.md)
+
+**Decided in the audit (2026-11-09), for later specs to carry:**
+- Forward testing is sandbox only, since Kraken's futures demo is gone. Proving stops on a real venue stays open for feature 19's live drill.
+- The only road to live stays feature 19.
+
+- [x] Design it (spec): `/architect liquidity trap scalper`
+- [ ] Build it: `/develop liquidity trap scalper`
+  - [ ] Signal: live lock, trade normalization, flow, efficiency, sweep detector, no look ahead proof (AC-1 to AC-3, AC-10 to AC-14)
+  - [ ] Pre check: frozen run file, verdict, `lab lts-precheck`, the 12 day run and the own data cross check (AC-15 to AC-19)
+  - [ ] Close out: results recorded, stop on a fail (AC-1, AC-20)
+  - [ ] Only after a pass: instrument metadata, health gate, feed actor, laptop smoke (AC-4 to AC-9)
+- [ ] Verify it: `/check verify liquidity trap scalper`
+- [ ] Test it: `/test liquidity trap scalper`
+- [ ] Review it (fresh model): `/check review liquidity trap scalper`
+- [ ] Document it: `/document liquidity trap scalper`
 
 ### 17. Hour level strategy candidates · dropped
 The fallback set: trend following and mean reversion on 1h to 4h candles, tested in the candle lab.
