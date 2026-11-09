@@ -64,3 +64,29 @@ Two facts were checked in the same step, reading only columns the signal does no
 `LtsSettings`, trade normalization with the `TradeTick` converter, `FlowWindows`, `EfficiencyRanks`, depth tracking, and `SweepDetector` are built and tested. The mirror test and the cut stream test are in `packages/core/tests/test_lts_sweep.py`.
 
 One reading to check: the spec says the detector leaves `warming` once `EfficiencyRanks` is warm, and warmth is per side. The code treats that as both sides warm before any sweep can start, because a sweep needs the opposite side's history later and the two sides warm at nearly the same time.
+
+### Task 5: a speed fix before the first run, 2026-11-09
+
+A practice run on our own data took more than 5.5 hours on one day, because every book update walked the whole book for candidate depth. Commit `b781b69` re reads only the levels an update names, still from the runner's own `OrderBook`. A full practice day then took 622 s. On real data the fast read matched a full walk in all 34,800 comparisons, and unit tests cover the same. No Tardis day was read for this.
+
+### Task 6: the run, the recorded hour, the cross check (AC-14, AC-17, AC-18), 2026-11-09
+
+The verdict and the cross check are in the spec's Results section.
+
+No look ahead, on one recorded hour of our own data, 2026-10-09 11:00 UTC, with `scripts/spikes/lts_no_look_ahead.py`. It runs the whole segment, cuts the stream at three times in that hour, and compares the signals only, because depth after a signal and markouts look forward by design.
+
+| Cut (UTC) | Signals, all trades | Signals, liquidations removed | Same as the full run |
+|---|---|---|---|
+| 11:05:30 | 1 | 1 | yes |
+| 11:40:00 | 7 | 7 | yes |
+| 11:59:59 | 12 | 12 | yes |
+
+The VPS copy was 3.78 GB at low priority and at most 4 MB per second, and took 944 s. The VPS held one more liquidation hour file than the manifest counts on 2026-11-05 (5 files, 4 hours) and on 2026-11-08 (2 files, 1 hour). Nobody has looked into why. The cross check is descriptive, so it does not touch the verdict.
+
+The reading noted under tasks 2 to 4 (both sides warm before a sweep can start) may explain the four days with no candidate. It cannot change this verdict.
+
+### Task 7: hash comparison (AC-1), 2026-11-09
+
+`scripts/spikes/hash_check.py` on the image at `b781b69`, compared with the 43 lines above: all 43 are identical, and the one new line is `trading_core.node.lts_feed`. On a `fail` the phase 2 tasks 8 to 11 are not built.
+
+Tests at `b781b69`: lab suite 379 passed. Core suite 2517 passed and 1 failed, `test_a_full_queue_overflows_counts_as_a_failed_write_and_spills_after_drain_in_order` in `test_recording_writer.py`. That file passed 5 of 5 reruns (9 tests each), and this branch changes no recording file, so the failure is a timing flake unrelated to this feature.

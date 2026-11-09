@@ -174,4 +174,43 @@ Phase 2 (only after a `pass`):
 
 ## Results
 
-To be filled in by build plan tasks 6 and 7.
+**Verdict: `fail`. This was 1 trial.** The feature stops here, with no revision and no second setting set. Phase 2 (AC-4 to AC-9) is not built.
+
+The run covered the 12 frozen Tardis days once, on 2026-11-09 from 18:31 to 19:40 UTC, at commit `b781b69` with run file hash `17eaaac5442c`. Its label is `approximate: Tardis has no liquidation flag`. Eligible time was 11.21 days, and all 342 signals had a 15 s markout. The report is `lab-reports/lts-precheck/tardis_17eaaac5442c_b781b6947eb3.json`, on the laptop only.
+
+| Check (AC-17) | Value | Needed | Result |
+|---|---|---|---|
+| Pooled mean 15 s markout | −0.14 bps | at least 10.5 bps | fail |
+| Signals per 24 eligible hours | 30.5 | at least 25 | pass |
+| Days with a positive mean | 3 of 12 | at least 8 | fail |
+| Pooled mean without the best day | −0.30 bps | at least 7 bps | fail |
+
+Cost was 7 bps. The 5 s and 30 s means, reported only, are −0.32 and −0.36 bps.
+
+| Day | Signals | Mean 15 s (bps) |
+|---|---|---|
+| 2022-06-01 | 0 | none |
+| 2022-10-01 | 0 | none |
+| 2023-02-01 | 6 | +2.81 |
+| 2023-06-01 | 0 | none |
+| 2023-10-01 | 3 | +7.39 |
+| 2024-02-01 | 50 | +0.81 |
+| 2024-06-01 | 0 | none |
+| 2024-10-01 | 103 | −0.32 |
+| 2025-02-01 | 7 | −0.89 |
+| 2025-06-01 | 18 | −0.24 |
+| 2025-08-01 | 136 | −0.57 |
+| 2025-10-01 | 19 | −0.35 |
+
+Two days hold 239 of the 342 signals, so the signal count passes on a few busy days. On the four days with no signals, no candidate started at all. The detector may have stayed cold on that thin trading, which this report cannot confirm. It would not change the result, because the pooled mean is about 10.6 bps short of the bar.
+
+**Cross check on our own data (AC-18, descriptive only).** The days are 2026-11-05, 2026-11-06, and 2026-11-08, the 3 newest full UTC days with a manifest and at least one liquidation row (2026-11-07 has none). They were copied read only from the VPS.
+
+| Variant | Signals | Mean 15 s (bps) |
+|---|---|---|
+| All trades | 231 | +0.23 |
+| Liquidations removed | 231 | +0.23 |
+
+Of 92 liquidations in the clean hours, 92 matched a trade by id, so the label is `matched`. Removing them changed no signal.
+
+**No look ahead (AC-14)** held on the recorded hour, and **the hash comparison (AC-1)** found every existing node module unchanged, with `trading_core.node.lts_feed` as the only addition. Both are in `verify.md`.

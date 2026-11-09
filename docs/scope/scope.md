@@ -578,11 +578,11 @@ spec [0031](../specs/0031-liquidity-trap-scalper/index.md)
 - The only road to live stays feature 19.
 
 - [x] Design it (spec): `/architect liquidity trap scalper`
-- [ ] Build it: `/develop liquidity trap scalper`
+- [x] Build it: `/develop liquidity trap scalper` (2026-11-09: pre check `fail`, stopped after phase 1)
   - [x] Signal: live lock, trade normalization, flow, efficiency, sweep detector, no look ahead proof (AC-1 to AC-3, AC-10 to AC-14)
-  - [ ] Pre check: frozen run file, verdict, `lab lts-precheck`, the 12 day run and the own data cross check (AC-15 to AC-19)
-  - [ ] Close out: results recorded, stop on a fail (AC-1, AC-20)
-  - [ ] Only after a pass: instrument metadata, health gate, feed actor, laptop smoke (AC-4 to AC-9)
+  - [x] Pre check: frozen run file, verdict, `lab lts-precheck`, the 12 day run and the own data cross check (AC-15 to AC-19) (2026-11-09: `fail`, 1 trial, pooled 15 s markout −0.14 bps against 10.5, 3 of 12 days positive)
+  - [x] Close out: results recorded, stop on a fail (AC-1, AC-20) (2026-11-09: the feature stops here, no revision or second setting set)
+  - [ ] Only after a pass: instrument metadata, health gate, feed actor, laptop smoke (AC-4 to AC-9) (not built: the pre check failed)
 - [ ] Verify it: `/check verify liquidity trap scalper`
 - [ ] Test it: `/test liquidity trap scalper`
 - [ ] Review it (fresh model): `/check review liquidity trap scalper`
