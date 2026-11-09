@@ -104,8 +104,9 @@ SIX_SEED_MIN_BARS: Final = 250
 # trend_portfolio's settings (spec 0030 AC-3), all recorded in its version.
 TP_LOOKBACK_DAYS: Final = 30
 TP_VOL_DAYS: Final = 30
-TP_VOL_TARGET: Final = Decimal("0.02")
-TP_GROSS_CAP: Final = Decimal(2)
+# The owner's 10x demo choice (2026-11-09), not the tested 0.02 and 2: the study was wiped out at 10x.
+TP_VOL_TARGET: Final = Decimal("0.31")
+TP_GROSS_CAP: Final = Decimal(10)
 TP_MIN_HISTORY_DAYS: Final = 120
 TP_REBALANCE_WEEKDAY: Final = 0
 TP_RUN_AT_UTC: Final = "00:05"
