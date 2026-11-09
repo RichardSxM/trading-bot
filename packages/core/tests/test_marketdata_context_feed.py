@@ -92,6 +92,23 @@ def test_a_forced_trade_row_gives_its_fields(kind, side):
     )
 
 
+def test_a_partial_liquidation_is_recorded_as_a_liquidation():
+    # The row shape Kraken's public feed sent on 2026-11-09; the feed had no such type in the docs.
+    row = _documented_trade(type="partialLiquidation", qty=2.0, price=1.0934, product_id="PF_XRPUSD")
+
+    for message in (row, {"feed": "trade_snapshot", "product_id": "PF_XRPUSD", "trades": [row]}):
+        parsed = parse_message(json.dumps(message))
+
+        assert parsed.bad == ()
+        [record] = parsed.records
+        assert (record.product_id, record.kind, record.size, record.price) == (
+            "PF_XRPUSD",
+            LiquidationKind.LIQUIDATION,
+            Decimal("2.0"),
+            Decimal("1.0934"),
+        )
+
+
 def test_a_snapshot_skips_its_bad_rows_alone():
     rows = [_documented_trade(), _documented_trade(type="swap"), _documented_trade(type="fill"), "x"]
     message = json.dumps({"feed": "trade_snapshot", "product_id": "PF_XBTUSD", "trades": rows})
