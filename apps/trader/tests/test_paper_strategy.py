@@ -274,9 +274,16 @@ def test_donchian_scalp_tp_records_its_settings_and_takes_the_seed(demo, monkeyp
     assert (version.name, version.kind.value) == ("donchian_scalp_tp", "scalping")
     assert version.config["bar_spec"] == "5-MINUTE-LAST"
     assert (version.config["entry_bars"], version.config["time_stop_bars"]) == (20, 60)
-    assert (version.config["take_profit_usd"], version.config["stop_loss_usd"]) == ("3", "2")
+    assert (version.config["trail_arm_usd"], version.config["trail_usd"]) == ("1.5", "0.5")
+    assert version.config["stop_loss_usd"] == "3"
+    assert "take_profit_usd" not in version.config
     assert version.config["risk_per_trade"] == "0.5"
     assert version.frozen == versioning.freeze(DonchianScalpTp.__module__, version.config)
+    assert (strategy._tp.trail_arm_usd, strategy._tp.trail_usd, strategy._tp.stop_loss_usd) == (
+        Decimal("1.5"),
+        Decimal("0.5"),
+        Decimal(3),
+    )
     assert isinstance(strategy, DonchianScalpTp)
     assert isinstance(view, BarRuleView)
     assert strategy._seed_pending
