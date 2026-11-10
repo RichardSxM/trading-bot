@@ -255,6 +255,17 @@ def test_trend_portfolio_holds_each_coin_without_dollar_exits(demo, monkeypatch)
     assert (config.coin_take_profit_usd, config.coin_stop_loss_usd) == (None, None)
 
 
+def test_trend_portfolio_closes_the_book_for_the_day_at_3_percent_either_way(demo, monkeypatch):
+    monkeypatch.setenv("PAPER_STRATEGY", "trend_portfolio")
+    settings = TraderSettings()
+
+    version_config = paper_version(settings).config
+    config = trend_portfolio_config(settings, uuid4())
+
+    assert (version_config["book_take_profit_pct"], version_config["book_stop_loss_pct"]) == ("0.03", "0.03")
+    assert (config.book_take_profit_pct, config.book_stop_loss_pct) == (Decimal("0.03"), Decimal("0.03"))
+
+
 def test_trend_portfolio_runs_at_5x_on_the_demo(demo, monkeypatch):
     monkeypatch.setenv("PAPER_STRATEGY", "trend_portfolio")
 

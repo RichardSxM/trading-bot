@@ -64,6 +64,8 @@ To run it again: `python fetch.py PF_XBTUSD PF_ETHUSD PF_SOLUSD PF_XRPUSD PF_DOG
 "Gross" is the move from the entry open to the exit before slippage and fees, "net" is after both, and "t"
 is the mean net divided by its standard error.
 
+Section 6, at the end, is a separate replay of the trend portfolio with a daily take profit.
+
 # Tables
 
 ## 1. Market entry families, development range, six coins pooled
@@ -265,3 +267,77 @@ Development range; a held out row follows any setup whose development net is abo
 | Bollinger squeeze breakout; stop 3 ATR, take profit 1 ATR | 19856 | 40.9 | 20 | -1.3 | -11.8 | 67% | -37.4 |
 | Bollinger squeeze breakout; stop 3 ATR, take profit 2 ATR | 15349 | 31.6 | 40 | -1.5 | -12.7 | 55% | -26.0 |
 | Bollinger squeeze breakout; stop 3 ATR, take profit 3 ATR | 13287 | 27.4 | 57 | -1.2 | -12.9 | 46% | -20.4 |
+
+## 6. Trend portfolio with a daily take profit (added 2026-11-10)
+
+The owner asked for the trend portfolio with profit taken daily. `portfolio.py` replays the portfolio's rule on
+hourly candles of 12 coins (BTC, ETH, SOL, XRP, LINK, UNI, ZEC, TRX, DOGE, QNT, HYPE, ADA; ADA is a guess at
+the twelfth) from 2024-01-01 to 2026-11-08, with 7 bps of cost on every order and no funding. It is one
+period, about 20 settings were looked at, and nothing was held out, so read it as a direction and not as proof.
+
+What it shows:
+
+- Closing each coin that is in profit every day loses in every sizing. A trend portfolio earns from the few
+  coins that keep running, and this cuts exactly those.
+- A take profit on the whole book, with nothing else, changes nothing (Sharpe 0.21 against 0.27).
+- A daily stop on the whole book is what helps: the book closes for the day once it has lost 3 % of its open
+  size, and goes back in at the next daily run. With or without the take profit beside it, the Sharpe goes
+  from 0.27 to about 0.9 to 1.0 and the worst drop from 44 % to about 20 % at the tested sizing. Most of
+  that comes from a few short squeezes (QNT went from 65 to 285 in a week in 2026-09 while the book was short).
+- The 3 % setting is a peak, not a plateau: 2 %, 4 %, and 5 % are much weaker. Expect less than the table.
+- Sizing matters more than any exit. At the demo's 5x the book moves about 10 % a day; with no daily exit the
+  replay loses 55 % a year and drops 96 % at its worst, and with the 3 % exits it pays about 58 % of equity
+  a year in fees. The same rule at the tested sizing has none of these problems.
+
+This replay disagrees with spec 0030's fresh year figure (+28 %, Sharpe 1.08 for 2025-10 to 2026-11): here
+that year loses, mostly in 2026-08 and 2026-09. The coin list or the data may differ; it is worth a check
+against that session's own scripts before either number is relied on.
+
+Built from this: `book_take_profit_pct` and `book_stop_loss_pct` on `trend_portfolio`, both 3 % of the book's
+planned size on demo. Exits are a share of the open book, so the same setting means the same price move at
+any leverage. Checked on hourly closes here; the node checks every second.
+
+### The tested sizing (2 % volatility target, 2x cap)
+
+| variant | return a year | Sharpe | worst drop | fees a year | exits a year | Sharpe to 2025-05 | after |
+|---|---|---|---|---|---|---|---|
+| weekly rebalance only (today) | +4% | 0.27 | 44% | 2% | 0 | 0.91 | -0.33 |
+| rebalance every day | +10% | 0.51 | 28% | 4% | 0 | 0.80 | 0.19 |
+| daily: close each coin in profit, reopen at once | -7% | -0.11 | 47% | 8% | 687 | 0.55 | -0.71 |
+| daily: close each coin in profit, flat until Monday | -17% | -0.81 | 50% | 4% | 404 | 0.19 | -1.50 |
+| book take profit 3 % only | +2% | 0.21 | 45% | 6% | 46 | 0.88 | -0.38 |
+| book stop 3 % only | +20% | 0.90 | 19% | 5% | 32 | 0.72 | 1.08 |
+| book take profit and stop 2 % | +10% | 0.59 | 20% | 13% | 135 | 0.16 | 1.00 |
+| book take profit and stop 3 % | +22% | 1.01 | 20% | 9% | 74 | 0.80 | 1.24 |
+| book take profit and stop 4 % | +13% | 0.62 | 27% | 6% | 43 | 0.93 | 0.31 |
+| book take profit and stop 5 % | +11% | 0.56 | 33% | 4% | 26 | 0.89 | 0.21 |
+
+### The demo's volatility target at a 2.5x cap
+
+| variant | return a year | Sharpe | worst drop | fees a year | exits a year | Sharpe to 2025-05 | after |
+|---|---|---|---|---|---|---|---|
+| weekly rebalance only (today) | +20% | 0.71 | 66% | 10% | 0 | 0.90 | 0.43 |
+| rebalance every day | -11% | 0.46 | 91% | 17% | 0 | 0.74 | 0.10 |
+| daily: close each coin in profit, reopen at once | -20% | 0.39 | 83% | 32% | 688 | 0.67 | -0.00 |
+| daily: close each coin in profit, flat until Monday | -32% | -0.12 | 76% | 13% | 406 | 0.33 | -0.64 |
+| book take profit 3 % only | +13% | 0.69 | 64% | 39% | 47 | 0.89 | 0.42 |
+| book stop 3 % only | +54% | 0.92 | 56% | 31% | 32 | 0.81 | 1.08 |
+| book take profit and stop 2 % | +13% | 0.55 | 64% | 48% | 135 | 0.08 | 1.08 |
+| book take profit and stop 3 % | +58% | 0.96 | 59% | 57% | 74 | 0.71 | 1.29 |
+| book take profit and stop 4 % | +26% | 0.73 | 64% | 42% | 43 | 1.00 | 0.42 |
+| book take profit and stop 5 % | +23% | 0.72 | 72% | 30% | 26 | 0.98 | 0.39 |
+
+### The demo sizing (15.5 % volatility target, 5x cap)
+
+| variant | return a year | Sharpe | worst drop | fees a year | exits a year | Sharpe to 2025-05 | after |
+|---|---|---|---|---|---|---|---|
+| weekly rebalance only (today) | -55% | 0.52 | 96% | 11% | 0 | 0.86 | 0.12 |
+| rebalance every day | -64% | 0.40 | 99% | 17% | 0 | 0.68 | 0.10 |
+| daily: close each coin in profit, reopen at once | -83% | 0.20 | 100% | 20% | 691 | 0.56 | -0.24 |
+| daily: close each coin in profit, flat until Monday | -82% | -0.44 | 99% | 13% | 406 | 0.22 | -1.04 |
+| book take profit 3 % only | -61% | 0.56 | 97% | 33% | 47 | 0.86 | 0.20 |
+| book stop 3 % only | +5% | 0.81 | 83% | 31% | 32 | 0.73 | 0.90 |
+| book take profit and stop 2 % | -21% | 0.52 | 86% | 43% | 135 | 0.03 | 1.01 |
+| book take profit and stop 3 % | +18% | 0.93 | 87% | 58% | 74 | 0.69 | 1.21 |
+| book take profit and stop 4 % | -44% | 0.56 | 95% | 39% | 43 | 0.92 | 0.19 |
+| book take profit and stop 5 % | -54% | 0.50 | 97% | 22% | 26 | 0.84 | 0.12 |

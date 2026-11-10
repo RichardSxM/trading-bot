@@ -141,6 +141,10 @@ TP_QUOTE_WAIT_S: Final = 60
 TP_START_COOLDOWN_S: Final = 3600
 TP_SEED_DAYS: Final = 150
 TP_SEED_MIN_DAYS: Final = 121
+# The owner's daily take profit (2026-11-10), with the daily stop the replay paired it with: the whole book
+# closes for the day once the day's P&L is this share of the book's planned size, either way.
+TP_BOOK_TAKE_PROFIT_PCT: Final = Decimal("0.03")
+TP_BOOK_STOP_LOSS_PCT: Final = Decimal("0.03")
 # The strategies that trade more than one coin (spec 0025 AC-15, spec 0026 AC-16, spec 0029 AC-10).
 _MULTI_COIN: Final = (
     donchian_scalp_r1.STRATEGY_NAME,
@@ -318,6 +322,8 @@ def _trend_portfolio_settings() -> JsonObject:
         "start_cooldown_s": TP_START_COOLDOWN_S,
         "seed_days": TP_SEED_DAYS,
         "seed_min_days": TP_SEED_MIN_DAYS,
+        "book_take_profit_pct": str(TP_BOOK_TAKE_PROFIT_PCT),
+        "book_stop_loss_pct": str(TP_BOOK_STOP_LOSS_PCT),
     }
 
 
@@ -681,6 +687,8 @@ def trend_portfolio_config(settings: StrategySettings, run_id: UUID) -> TrendPor
         start_cooldown_s=TP_START_COOLDOWN_S,
         seed_days=TP_SEED_DAYS,
         seed_min_days=TP_SEED_MIN_DAYS,
+        book_take_profit_pct=TP_BOOK_TAKE_PROFIT_PCT,
+        book_stop_loss_pct=TP_BOOK_STOP_LOSS_PCT,
         stale_quote_s=settings.risk_stale_quote_s,
         max_order_notional_usd=settings.risk_max_order_notional_usd,
         max_leverage=settings.risk_max_leverage,
@@ -737,9 +745,12 @@ def build_trend_portfolio(
     record: Callable[[WriteItem], None],
     seeds: Mapping[str, Sequence[DailyClose]],
     last_start_ns: int | None,
+    last_book_exit_ns: int | None = None,
 ) -> tuple[TrendPortfolio, list[TrendPortfolioView]]:
     """The single ``trend_portfolio`` instance and one view per coin, in ``PAPER_INSTRUMENTS`` order (AC-10)."""
-    strategy = TrendPortfolio(trend_portfolio_config(settings, run_id), gate, blocks, record, seeds, last_start_ns)
+    strategy = TrendPortfolio(
+        trend_portfolio_config(settings, run_id), gate, blocks, record, seeds, last_start_ns, last_book_exit_ns
+    )
     return strategy, [TrendPortfolioView(strategy, coin) for coin in settings.instrument_list]
 
 

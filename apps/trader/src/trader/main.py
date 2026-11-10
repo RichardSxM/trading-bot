@@ -146,6 +146,7 @@ from trading_core.settings import LossLimitSettings, PaperLoopSettings, Reconcil
 from trading_core.snapshot.envelope import snapshot_key
 from trading_core.strategy.bar_rule import BarInput
 from trading_core.strategy.blocks import EntryBlocks
+from trading_core.strategy.book_exit import BOOK_EXIT_REASONS
 from trading_core.strategy.trend_portfolio import DailyClose
 
 log = logging.getLogger("trader")
@@ -496,6 +497,8 @@ class PaperLoop:
     ledger: FundingLedger
     # trend_portfolio's last ``start`` rebalance of this trader, its crash loop guard (spec 0030 AC-4).
     last_start_ns: int | None = None
+    # trend_portfolio's last daily book exit of this trader: a start on the same day stays flat.
+    last_book_exit_ns: int | None = None
 
 
 def run_config(settings: PaperLoopSettings) -> JsonObject:
@@ -530,9 +533,12 @@ def start_paper_loop(settings: TraderSettings, secrets: Mapping[str, SecretStr],
             session, version.name, version.kind, None, version.config, version.frozen
         )
     last_start_ns = None
+    last_book_exit_ns = None
     if settings.paper_strategy == trend_portfolio.STRATEGY_NAME:
         with sessions.begin() as session:
             last_start_ns = last_decision_ns(session, env, trader_id, trend_portfolio.START)
+            exits = [last_decision_ns(session, env, trader_id, reason) for reason in BOOK_EXIT_REASONS]
+            last_book_exit_ns = max((ns for ns in exits if ns is not None), default=None)
     with sessions.begin() as session:
         run_id = repository.start_run(
             session,
@@ -563,7 +569,13 @@ def start_paper_loop(settings: TraderSettings, secrets: Mapping[str, SecretStr],
         extra={"fields": {"code": "paper_run_started", "run_id": str(run_id), "spool_replayed": replayed}},
     )
     return PaperLoop(
-        run_id=run_id, blocks=blocks, writer=writer, sessions=sessions, ledger=ledger, last_start_ns=last_start_ns
+        run_id=run_id,
+        blocks=blocks,
+        writer=writer,
+        sessions=sessions,
+        ledger=ledger,
+        last_start_ns=last_start_ns,
+        last_book_exit_ns=last_book_exit_ns,
     )
 
 
@@ -841,7 +853,14 @@ def run_node(
         views: list[PaperStrategyView] = []
         if settings.paper_strategy == trend_portfolio.STRATEGY_NAME:
             portfolio, portfolio_views = build_trend_portfolio(
-                settings, paper.run_id, control.gate, paper.blocks, record, daily_seeds or {}, paper.last_start_ns
+                settings,
+                paper.run_id,
+                control.gate,
+                paper.blocks,
+                record,
+                daily_seeds or {},
+                paper.last_start_ns,
+                paper.last_book_exit_ns,
             )
             node.trader.add_strategy(portfolio)
             views.extend(portfolio_views)

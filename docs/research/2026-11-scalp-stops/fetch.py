@@ -1,4 +1,8 @@
-"""Fetch Kraken Futures 1m trade candles into npy files (research only)."""
+"""Fetch Kraken Futures trade candles into npy files (research only).
+
+``python fetch.py SYMBOL...`` stores 1 minute candles from 2025-01-01 under data/.
+``python fetch.py --hourly SYMBOL...`` stores 1 hour candles from 2023-09-01 under data/h1/ (portfolio.py).
+"""
 
 import json
 import sys
@@ -9,7 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
-BASE = "https://futures.kraken.com/api/charts/v1/trade/{}/1m?from={}&to={}"
+BASE = "https://futures.kraken.com/api/charts/v1/trade/{}/{}?from={}&to={}"
 
 
 def get(url):
@@ -25,10 +29,10 @@ def get(url):
     raise RuntimeError(f"gave up on {url}") from last
 
 
-def fetch(symbol, start_s, end_s):
+def fetch(symbol, start_s, end_s, resolution="1m", step_s=60):
     rows, since = [], start_s
     while since < end_s:
-        body = get(BASE.format(symbol, since, end_s))
+        body = get(BASE.format(symbol, resolution, since, end_s))
         page = body.get("candles", [])
         if not page:
             break
@@ -44,9 +48,9 @@ def fetch(symbol, start_s, end_s):
                 )
             )
         last = page[-1]["time"] // 1000
-        if last + 60 <= since or not body.get("more_candles", False):
+        if last + step_s <= since or not body.get("more_candles", False):
             break
-        since = last + 60
+        since = last + step_s
         time.sleep(0.15)
     a = np.array(rows, dtype=np.float64)
     _, idx = np.unique(a[:, 0], return_index=True)
@@ -54,13 +58,16 @@ def fetch(symbol, start_s, end_s):
 
 
 if __name__ == "__main__":
-    start = int(datetime(2025, 1, 1, tzinfo=UTC).timestamp())
+    hourly = "--hourly" in sys.argv
+    start = int(
+        datetime(2023, 9, 1, tzinfo=UTC).timestamp() if hourly else datetime(2025, 1, 1, tzinfo=UTC).timestamp()
+    )
     end = int(datetime(2026, 11, 10, tzinfo=UTC).timestamp())
-    for sym in sys.argv[1:]:
+    out = Path(__file__).parent / "data" / ("h1" if hourly else "")
+    out.mkdir(parents=True, exist_ok=True)
+    for sym in (arg for arg in sys.argv[1:] if arg != "--hourly"):
         t0 = time.time()
-        a = fetch(sym, start, end)
-        out = Path(__file__).parent / "data"
-        out.mkdir(exist_ok=True)
+        a = fetch(sym, start, end, "1h", 3600) if hourly else fetch(sym, start, end)
         np.save(out / f"{sym}.npy", a)
         print(
             sym,

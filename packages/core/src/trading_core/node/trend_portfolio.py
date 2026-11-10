@@ -19,6 +19,15 @@ The dollar exits (off unless both are set, the owner's demo choice): each coin's
 a second, and a position that would make ``coin_take_profit_usd`` or lose ``coin_stop_loss_usd`` (before fees)
 closes reduce only at market. ``coin_reenter_wait_s`` after it closes, the coin goes back to its current plan
 target through the normal grow path, reason ``reenter``, instead of waiting for the next weekly rebalance.
+
+The daily book exits (each off unless set): at most once a second the day's P&L, equity now less the equity
+of the last plan, is held against the plan's size (``trading_core.strategy.book_exit``). At
+``book_take_profit_pct`` of gain or ``book_stop_loss_pct`` of loss every coin closes reduce only at market,
+reason ``book_take_profit`` or ``book_stop_loss``, and the book stays flat: no rebalance and no grow is sent,
+and a refused close is sent again after ``retry_wait_s``. The next daily run that plans ends the flat day and
+sends every coin back to its target (reason ``daily``, or the weekly rebalance on its weekday). A start on
+the same day as a recorded book exit (``last_book_exit_ns``) starts flat. A start with no such record
+measures the day from its own plan.
 """
 
 import functools
@@ -66,6 +75,7 @@ from trading_core.risk.rebalance import (
 )
 from trading_core.strategy.bar_rule import Side
 from trading_core.strategy.blocks import BlockReason, EntryBlocks
+from trading_core.strategy.book_exit import book_exit, book_notional
 from trading_core.strategy.take_profit import dollar_exit
 from trading_core.strategy.trend_portfolio import (
     DailyClose,
@@ -90,6 +100,8 @@ WEEKLY: Final = "weekly"
 START: Final = "start"
 RESUME: Final = "resume"
 REENTER: Final = "reenter"
+DAILY: Final = "daily"
+DAY_FLAT: Final = "day_flat"
 HELD_PREFIX: Final = "held:"
 
 _RUN: Final = "tp_daily_run"
@@ -140,10 +152,15 @@ class TrendPortfolioConfig(GuardedConfig, frozen=True, kw_only=True):
     coin_take_profit_usd: Decimal | None = None
     coin_stop_loss_usd: Decimal | None = None
     coin_reenter_wait_s: int = 60
+    book_take_profit_pct: Decimal | None = None
+    book_stop_loss_pct: Decimal | None = None
 
     def __post_init__(self) -> None:
-        """Refuse a bad rule parameter, weekday, run time, retry, cooldown, dollar exit, or coin list."""
+        """Refuse a bad rule parameter, weekday, run time, retry, cooldown, dollar or book exit, or coin list."""
         self.params()  # the rule's own checks
+        for limit in (self.book_take_profit_pct, self.book_stop_loss_pct):
+            if limit is not None and limit <= 0:
+                raise ValueError(f"a book exit limit must be above 0, got {limit}")
         if (self.coin_take_profit_usd is None) != (self.coin_stop_loss_usd is None):
             raise ValueError("coin_take_profit_usd and coin_stop_loss_usd must be set together")
         for value in (self.coin_take_profit_usd, self.coin_stop_loss_usd):
@@ -182,6 +199,11 @@ class TrendPortfolioConfig(GuardedConfig, frozen=True, kw_only=True):
         return int(hour), int(minute)
 
 
+def day_run_ns(now_ns: int, hour: int, minute: int) -> int:
+    """The newest ``hour:minute`` UTC at or before ``now_ns``: the run that opened the current day."""
+    return next_run_ns(now_ns, hour, minute) - 86_400 * NS_PER_S
+
+
 def next_run_ns(now_ns: int, hour: int, minute: int) -> int:
     """The first ``hour:minute`` UTC strictly after ``now_ns``."""
     now = datetime.fromtimestamp(now_ns / NS_PER_S, tz=UTC)
@@ -189,6 +211,10 @@ def next_run_ns(now_ns: int, hour: int, minute: int) -> int:
     if at <= now:
         at += timedelta(days=1)
     return int(at.timestamp()) * NS_PER_S
+
+
+def _text(value: Decimal | None) -> str | None:
+    return None if value is None else str(value)
 
 
 class TrendPortfolio(KfsStrategy):
@@ -204,6 +230,7 @@ class TrendPortfolio(KfsStrategy):
         record: Record,
         seeds: Mapping[str, Sequence[DailyClose]] | None = None,
         last_start_ns: int | None = None,
+        last_book_exit_ns: int | None = None,
     ) -> None:
         super().__init__(config, gate)
         self._cfg = config
@@ -235,6 +262,14 @@ class TrendPortfolio(KfsStrategy):
         self._planning = False
         self._exit_checked: dict[str, int] = {}
         self._exit_wait_until: dict[str, int] = {}
+        self._last_book_exit_ns = last_book_exit_ns
+        self.day_flat = False
+        self._book_reason = ""
+        self._book_inputs: JsonObject = {}
+        self._book_checked = 0
+        self._book_decisions: dict[str, UUID] = {}
+        self._book_exits: dict[ClientOrderId, str] = {}
+        self._book_wait_until: dict[str, int] = {}
         self._reset_round()
 
     def _reset_round(self) -> None:
@@ -265,6 +300,14 @@ class TrendPortfolio(KfsStrategy):
         for bar_type in self._bar_types:
             self.subscribe_bars(bar_type)
         self._arm_daily()
+        now = self.clock.timestamp_ns()
+        if self._last_book_exit_ns is not None and self._last_book_exit_ns >= day_run_ns(now, *self._cfg.run_at()):
+            self.day_flat = True
+            self._book_reason = DAY_FLAT
+            log.info(
+                "start on a flat day, the book closed earlier today",
+                extra={"fields": {"code": "book_flat_resumed", "last_book_exit_ns": self._last_book_exit_ns}},
+            )
         self._start_deadline_ns = self.clock.timestamp_ns() + self._cfg.quote_wait_s * NS_PER_S
         self.clock.set_timer_ns(_START, _POLL_NS, 0, 0, self._on_start_poll)
         self.clock.set_timer_ns(_GATE, _POLL_NS, 0, 0, self._on_gate_poll)
@@ -341,12 +384,21 @@ class TrendPortfolio(KfsStrategy):
     # Dollar exits ---------------------------------------------------------------------------
 
     def on_quote_tick(self, tick: QuoteTick) -> None:
-        """At most once a second per coin, close a position that reached either dollar exit."""
+        """At most once a second: the book's daily exits, then this coin's dollar exits."""
+        if not self._started:
+            return
+        now = tick.ts_event
+        if now - self._book_checked >= _EXIT_CHECK_NS:
+            self._book_checked = now
+            try:
+                self._check_book()
+            except Exception:
+                # Fail closed: nothing is sent from this quote; the next check looks again.
+                log.exception("book exit check failed", extra={"fields": {"code": "book_exit_failed"}})
         win, loss = self._cfg.coin_take_profit_usd, self._cfg.coin_stop_loss_usd
-        if win is None or loss is None or not self._started:
+        if win is None or loss is None or self.day_flat:
             return
         key = str(tick.instrument_id)
-        now = tick.ts_event
         if now - self._exit_checked.get(key, 0) < _EXIT_CHECK_NS:
             return
         self._exit_checked[key] = now
@@ -382,6 +434,73 @@ class TrendPortfolio(KfsStrategy):
         self._record_decision(decision, key, Intent.EXIT, -signed, reason, inputs, None)
         self._exiting.add(key)
         self._submit(coin, -signed, reduce_only=True, tags=[f"{DECISION_TAG}{decision}"], coin_exit=key)
+
+    # Daily book exits -----------------------------------------------------------------------
+
+    def _check_book(self) -> None:
+        if self._gate.halted:
+            return  # the kill switch is closing the book
+        if self.day_flat:
+            self._close_book()
+            return
+        take, stop = self._cfg.book_take_profit_pct, self._cfg.book_stop_loss_pct
+        plan = self.plan
+        if plan is None or (take is None and stop is None):
+            return
+        equity = self._equity()
+        if equity is None:
+            return
+        notional = book_notional([item.target_notional for item in plan.coins.values()])
+        day_pnl = equity - plan.equity
+        reason = book_exit(day_pnl, notional, take, stop)
+        if reason is None:
+            return
+        self._drop_round()  # no retry or pending open may trade into the flat book
+        self.day_flat = True
+        self._book_reason = reason
+        self._book_inputs = {
+            "equity": equity,
+            "plan_equity": plan.equity,
+            "day_pnl": day_pnl,
+            "book_notional": notional,
+            "book_take_profit_pct": take,
+            "book_stop_loss_pct": stop,
+        }
+        log.info(
+            "book closes for the day",
+            extra={"fields": {"code": "book_exit", "reason": reason, "day_pnl": str(day_pnl), "equity": str(equity)}},
+        )
+        self._close_book()
+
+    def _close_book(self) -> None:
+        # Close every coin still held; called again each second of a flat day, so a refused or late fill is caught.
+        now = self.clock.timestamp_ns()
+        for position in self.cache.positions_open(strategy_id=self.id):
+            coin = position.instrument_id
+            key = str(coin)
+            if key in self._closing or now < self._book_wait_until.get(key, 0):
+                continue
+            if self.cache.orders_open(instrument_id=coin, strategy_id=self.id):
+                continue  # an order still working on this coin goes first
+            signed = position.signed_decimal_qty()
+            decision = self._book_decisions.get(key)
+            if decision is None:
+                decision = uuid.uuid7()
+                self._book_decisions[key] = decision
+                inputs: JsonObject = {**self._book_inputs, "current_qty": signed}
+                self._record_decision(decision, key, Intent.EXIT, -signed, self._book_reason, inputs, None)
+            self._closing.add(key)
+            self._submit(coin, -signed, reduce_only=True, tags=[f"{DECISION_TAG}{decision}"], book_close=key)
+
+    def _end_flat_day(self) -> bool:
+        """Clear the flat day at a daily run that planned. True when the book was flat."""
+        was = self.day_flat
+        self.day_flat = False
+        self._book_reason = ""
+        self._book_inputs = {}
+        self._book_decisions = {}
+        self._book_wait_until = {}
+        return was
 
     def _on_reenter(self, key: str, event: object) -> None:
         coin = InstrumentId.from_str(key)
@@ -420,9 +539,12 @@ class TrendPortfolio(KfsStrategy):
         today = datetime.fromtimestamp(now / NS_PER_S, tz=UTC).date()
         try:
             planned = self._make_plan(today - timedelta(days=1))
+            was_flat = planned and self._end_flat_day()
             if planned and today.weekday() == self._cfg.rebalance_weekday and self._last_weekly != today:
                 self._last_weekly = today
                 self._rebalance(WEEKLY)
+            elif was_flat:
+                self._rebalance(DAILY)
         except Exception:
             log.exception("daily portfolio run failed", extra={"fields": {"code": "portfolio_run_failed"}})
 
@@ -516,6 +638,11 @@ class TrendPortfolio(KfsStrategy):
         plan = self.plan
         if plan is None:
             return
+        if self.day_flat:
+            log.info(
+                "rebalance held, the book is flat for the day", extra={"fields": {"code": DAY_FLAT, "reason": reason}}
+            )
+            return
         self._drop_round()
         self._reason = reason
         self._grows_sent = False
@@ -608,6 +735,8 @@ class TrendPortfolio(KfsStrategy):
         """Size again at the mid and send one opening or growing order through the gate and the check."""
         if key in self._grows:
             self._grows.remove(key)
+        if self.day_flat:
+            return  # nothing opens or grows on a flat day
         assert self.plan is not None
         coin = InstrumentId.from_str(key)
         instrument = self._instrument(coin)
@@ -707,6 +836,7 @@ class TrendPortfolio(KfsStrategy):
 
     def on_order_filled(self, event: OrderFilled) -> None:
         """A filled reduction may let the grows go; a filled flip close opens the new side."""
+        self._book_exits.pop(event.client_order_id, None)
         tracked = self._orders.get(event.client_order_id)
         if tracked is None:
             return
@@ -755,6 +885,15 @@ class TrendPortfolio(KfsStrategy):
             log.warning(
                 "coin dollar exit refused",
                 extra={"fields": {"code": "coin_exit_refused", "instrument": exiting, "why": why}},
+            )
+            return
+        closing = self._book_exits.pop(client_order_id, None)
+        if closing is not None:
+            self._closing.discard(closing)
+            self._book_wait_until[closing] = self.clock.timestamp_ns() + self._cfg.retry_wait_s * NS_PER_S
+            log.warning(
+                "book exit close refused",
+                extra={"fields": {"code": "book_exit_refused", "instrument": closing, "why": why}},
             )
             return
         tracked = self._orders.pop(client_order_id, None)
@@ -889,6 +1028,7 @@ class TrendPortfolio(KfsStrategy):
         track: tuple[str, Leg] | None = None,
         inflight: Decimal | None = None,
         coin_exit: str | None = None,
+        book_close: str | None = None,
     ) -> ClientOrderId:
         # The order is tracked before it is sent: a denial (the Nautilus risk engine's) arrives inside
         # ``submit_order`` itself, and must find the order to be retried (AC-5, AC-6).
@@ -910,6 +1050,8 @@ class TrendPortfolio(KfsStrategy):
             self._inflight_grow[client_id] = inflight
         if coin_exit is not None:
             self._coin_exits[client_id] = coin_exit
+        if book_close is not None:
+            self._book_exits[client_id] = book_close
         self.submit_order(order)
         return client_id
 
@@ -996,4 +1138,8 @@ class TrendPortfolio(KfsStrategy):
             "failed": sorted(self.failed),
             "run_at_utc": self._cfg.run_at_utc,
             "rebalance_weekday": self._cfg.rebalance_weekday,
+            "day_flat": self.day_flat,
+            "day_flat_reason": self._book_reason or None,
+            "book_take_profit_pct": _text(self._cfg.book_take_profit_pct),
+            "book_stop_loss_pct": _text(self._cfg.book_stop_loss_pct),
         }
