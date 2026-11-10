@@ -3,9 +3,12 @@
 It is its own module with its own config, so the frozen ``donchian_scalp`` hash does not move. The rule, the
 resting ATR stop, and the time stop are ``donchian_scalp``'s.
 
-The dollar exits: while the position is protected, every quote is checked, and a close that would make
-``take_profit_usd`` or lose ``stop_loss_usd`` (before fees) exits at market as ``take_profit`` or ``stop_loss``.
-The ATR stop is the backstop if quotes stop.
+The dollar exits (the owner's demo choice, 2026-11-10, in place of a fixed take profit): while the position is
+protected, every quote is checked. A close that would lose ``stop_loss_usd`` exits at market as ``stop_loss``;
+once a close would have made ``trail_arm_usd``, a fall of ``trail_usd`` from the best such close exits at market
+as ``trailing_stop`` (all before fees, see ``strategy.trailing_exit``). The best is kept in memory per entry
+order, so a new position starts its own and a restart starts it again from the next quote. The ATR stop is the
+backstop if quotes stop.
 
 The warmup seed: candles fetched before the node runs are held until the first live bar, which is partial
 and so is ignored. If that bar closes more than two intervals after the seed's last close the seed is
@@ -20,6 +23,7 @@ from decimal import Decimal
 from typing import Final
 
 from nautilus_trader.model.data import Bar, QuoteTick
+from nautilus_trader.model.identifiers import ClientOrderId
 
 from trading_core.node.bar_rule import BarRuleConfig, BarRuleStrategy, Phase
 from trading_core.node.strategy import PauseGate
@@ -28,7 +32,7 @@ from trading_core.recording.spool import WriteItem
 from trading_core.strategy.bar_rule import BarInput
 from trading_core.strategy.blocks import EntryBlocks
 from trading_core.strategy.donchian import DonchianRule
-from trading_core.strategy.take_profit import dollar_exit
+from trading_core.strategy.trailing_exit import open_pnl, trailing_exit
 
 log = logging.getLogger(__name__)
 
@@ -41,14 +45,15 @@ SEED_JOIN_INTERVALS: Final = 2
 
 
 class DonchianScalpTpConfig(BarRuleConfig, frozen=True, kw_only=True):
-    """``donchian_scalp``'s rule settings plus the two dollar exits, per position and before fees."""
+    """``donchian_scalp``'s rule settings plus the dollar trailing stop and hard stop, per position and before fees."""
 
     bar_spec: str = BAR_SPEC
     time_stop_bars: int = 60
     entry_bars: int = 20
     stop_atr: Decimal = Decimal(3)
-    take_profit_usd: Decimal = Decimal(3)
-    stop_loss_usd: Decimal = Decimal(2)
+    trail_arm_usd: Decimal = Decimal("1.5")
+    trail_usd: Decimal = Decimal("0.5")
+    stop_loss_usd: Decimal = Decimal(3)
 
     def __post_init__(self) -> None:
         """The base's checks, then the rule's and the dollar exits'."""
@@ -57,8 +62,10 @@ class DonchianScalpTpConfig(BarRuleConfig, frozen=True, kw_only=True):
             raise ValueError(f"entry_bars must be at least 2, got {self.entry_bars}")
         if self.stop_atr < 1:
             raise ValueError(f"stop_atr must be at least 1, got {self.stop_atr}")
-        if self.take_profit_usd <= 0:
-            raise ValueError(f"take_profit_usd must be above 0, got {self.take_profit_usd}")
+        if self.trail_arm_usd <= 0:
+            raise ValueError(f"trail_arm_usd must be above 0, got {self.trail_arm_usd}")
+        if self.trail_usd <= 0:
+            raise ValueError(f"trail_usd must be above 0, got {self.trail_usd}")
         if self.stop_loss_usd <= 0:
             raise ValueError(f"stop_loss_usd must be above 0, got {self.stop_loss_usd}")
 
@@ -81,11 +88,13 @@ class DonchianScalpTp(BarRuleStrategy):
         self._seed: tuple[BarInput, ...] = tuple(seed)
         self._seed_pending = bool(self._seed)
         self._seed_last_ns: int | None = self._seed[-1].ts_ns if self._seed else None
+        self._trail_peak: Decimal | None = None
+        self._trail_entry: ClientOrderId | None = None
 
     # Dollar exits ---------------------------------------------------------------------------
 
     def on_quote_tick(self, tick: QuoteTick) -> None:
-        """Exit at market once a protected position's close would reach either dollar exit."""
+        """Exit at market once a protected position's close would hit the hard stop or the armed trail."""
         if self.phase != Phase.PROTECTED or self._entry_px is None or self._side is None:
             return
         if tick.instrument_id != self._instrument_id:
@@ -96,15 +105,22 @@ class DonchianScalpTp(BarRuleStrategy):
             if position is None:
                 return
             cfg = self._tp
-            quantity = position.quantity.as_decimal()
-            reason = dollar_exit(self._side, self._entry_px, quantity, bid, ask, cfg.take_profit_usd, cfg.stop_loss_usd)
-            if reason is None:
+            if self._trail_entry != self._entry_id:  # a new position starts its own best
+                self._trail_entry, self._trail_peak = self._entry_id, None
+            pnl = open_pnl(self._side, self._entry_px, position.quantity.as_decimal(), bid, ask)
+            step = trailing_exit(pnl, self._trail_peak, cfg.trail_arm_usd, cfg.trail_usd, cfg.stop_loss_usd)
+            self._trail_peak = step.peak
+            if step.reason is None:
                 return
+            reason = step.reason
             inputs: JsonObject = {
                 "bid": bid,
                 "ask": ask,
                 "entry_px": self._entry_px,
-                "take_profit_usd": cfg.take_profit_usd,
+                "open_pnl": step.pnl,
+                "best_pnl": step.peak,
+                "trail_arm_usd": cfg.trail_arm_usd,
+                "trail_usd": cfg.trail_usd,
                 "stop_loss_usd": cfg.stop_loss_usd,
                 "bars_held": self.bars_held,
                 "stop": self._stop_px,

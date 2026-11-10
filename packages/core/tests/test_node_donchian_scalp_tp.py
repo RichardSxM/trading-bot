@@ -1,4 +1,4 @@
-"""covers: ``donchian_scalp_tp``: the live dollar exits, the size the order cap sets, and the warmup seed.
+"""covers: ``donchian_scalp_tp``: the live trailing stop and hard stop, the order cap's size, and the warmup seed.
 
 Runs the node with a scripted rule in a BacktestEngine on the synthetic data of ``test_node_bar_rule``.
 Needs the ``node`` extra.
@@ -92,32 +92,60 @@ def _jump(sign):
     return prices
 
 
+def _out_and_back(sign):
+    """Near 85000 for 8 minutes, 1% away in the direction of ``sign`` until minute 12, then back near 85000."""
+
+    def prices(t):
+        return 85000 + sign * 850 if 8 <= t < 12 else _wobble(t)
+
+    return prices
+
+
 def _bar(minutes_after_start, close=85000):
     px = D(close)
     return BarInput(_ns(START + timedelta(minutes=minutes_after_start)), px, px + 10, px - 10, px, D(1))
 
 
-@pytest.mark.parametrize(
-    ("side", "sign", "reason"),
-    [
-        (Side.LONG, 1, "take_profit"),
-        (Side.SHORT, -1, "take_profit"),
-        (Side.LONG, -1, "stop_loss"),
-        (Side.SHORT, 1, "stop_loss"),
-    ],
-)
-def test_a_dollar_exit_closes_at_market_on_the_first_quote_past_it(side, sign, reason):
-    engine, strategy, rows = _run(Script(entries={5: (side, 2000)}), prices=_jump(sign))
-
+def _closed_by(engine, strategy, rows, reason, at_minute):
     enter, exit_ = _decisions(rows)
     assert (enter.intent, exit_.intent, exit_.reason) == (Intent.ENTER, Intent.EXIT, reason)
-    assert (exit_.inputs["take_profit_usd"], exit_.inputs["stop_loss_usd"]) == ("3", "2")
-    assert exit_.decided_ns == _ns(START + timedelta(minutes=8))
+    assert (exit_.inputs["trail_arm_usd"], exit_.inputs["trail_usd"], exit_.inputs["stop_loss_usd"]) == (
+        "1.5",
+        "0.5",
+        "3",
+    )
+    assert exit_.decided_ns == _ns(START + timedelta(minutes=at_minute))
     assert strategy.phase == Phase.FLAT
     assert engine.cache.positions_open() == []
     stops = _by_type(engine, OrderType.STOP_MARKET)
     assert len(stops) == 1
     assert stops[0].is_canceled
+    return exit_
+
+
+@pytest.mark.parametrize(("side", "sign"), [(Side.LONG, 1), (Side.SHORT, -1)])
+def test_a_gain_past_the_arm_level_that_falls_back_exits_on_the_trail(side, sign):
+    engine, strategy, rows = _run(Script(entries={5: (side, 2000)}), prices=_out_and_back(sign))
+
+    exit_ = _closed_by(engine, strategy, rows, "trailing_stop", 12)
+    assert D(exit_.inputs["best_pnl"]) >= D("1.5")
+    assert D(exit_.inputs["open_pnl"]) <= D(exit_.inputs["best_pnl"]) - D("0.5")
+
+
+@pytest.mark.parametrize(("side", "sign"), [(Side.LONG, 1), (Side.SHORT, -1)])
+def test_a_gain_that_holds_keeps_the_position_open(side, sign):
+    engine, strategy, rows = _run(Script(entries={5: (side, 2000)}), prices=_jump(sign))
+
+    assert [d.intent for d in _decisions(rows)] == [Intent.ENTER]
+    assert strategy.phase == Phase.PROTECTED
+    assert len(engine.cache.positions_open()) == 1
+
+
+@pytest.mark.parametrize(("side", "sign"), [(Side.LONG, -1), (Side.SHORT, 1)])
+def test_a_loss_past_the_hard_stop_closes_at_market_on_the_first_quote_past_it(side, sign):
+    engine, strategy, rows = _run(Script(entries={5: (side, 2000)}), prices=_jump(sign))
+
+    _closed_by(engine, strategy, rows, "stop_loss", 8)
 
 
 def test_a_move_inside_both_exits_leaves_the_position_open_and_its_stop_resting():
@@ -167,7 +195,7 @@ def test_a_seed_too_old_for_the_first_live_bar_is_dropped():
     assert rule.n == no_seed.n - 1
 
 
-@pytest.mark.parametrize("field", ["take_profit_usd", "stop_loss_usd"])
+@pytest.mark.parametrize("field", ["trail_arm_usd", "trail_usd", "stop_loss_usd"])
 @pytest.mark.parametrize("value", ["0", "-2"])
 def test_the_config_refuses_a_dollar_exit_that_is_not_above_zero(field, value):
     with pytest.raises(ValueError, match=field):

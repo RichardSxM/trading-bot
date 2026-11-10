@@ -124,8 +124,11 @@ CONNORS_RISK_PER_TRADE: Final = Decimal("0.5")
 CONNORS_SEED_BARS: Final = 300
 CONNORS_SEED_MIN_BARS: Final = 250
 # donchian_scalp_tp: the donchian_scalp point, the owner's dollar exits, and the order cap as the trade size.
-DONCHIAN_TP_TAKE_PROFIT_USD: Final = Decimal(3)
-DONCHIAN_TP_STOP_LOSS_USD: Final = Decimal(2)
+# The owner's demo choice (2026-11-10, no study): a $0.50 trail armed at +$1.50 and a -$3 hard stop, picked
+# by replaying one day's 79 entries, in place of the fixed +$3 take profit and -$2 stop.
+DONCHIAN_TP_TRAIL_ARM_USD: Final = Decimal("1.5")
+DONCHIAN_TP_TRAIL_USD: Final = Decimal("0.5")
+DONCHIAN_TP_STOP_LOSS_USD: Final = Decimal(3)
 DONCHIAN_TP_RISK_PER_TRADE: Final = Decimal("0.5")
 TP_LOOKBACK_DAYS: Final = 30
 TP_VOL_DAYS: Final = 30
@@ -280,7 +283,8 @@ def paper_version(settings: StrategySettings) -> PaperVersion:
     if settings.paper_strategy == donchian_scalp_tp.STRATEGY_NAME:
         donchian_tp_config: JsonObject = {
             **_donchian_version_config(settings, donchian_scalp_tp.STRATEGY_NAME, donchian_scalp_tp.BAR_SPEC),
-            "take_profit_usd": str(DONCHIAN_TP_TAKE_PROFIT_USD),
+            "trail_arm_usd": str(DONCHIAN_TP_TRAIL_ARM_USD),
+            "trail_usd": str(DONCHIAN_TP_TRAIL_USD),
             "stop_loss_usd": str(DONCHIAN_TP_STOP_LOSS_USD),
             "risk_per_trade": str(DONCHIAN_TP_RISK_PER_TRADE),
             "instruments": list(settings.instrument_list),
@@ -639,7 +643,8 @@ def donchian_scalp_tp_config(settings: StrategySettings, run_id: UUID, instrumen
         atr_period=DONCHIAN_ATR_PERIOD,
         atr_floor_mult=DONCHIAN_ATR_FLOOR_MULT,
         time_stop_bars=DONCHIAN_TIME_STOP_BARS,
-        take_profit_usd=DONCHIAN_TP_TAKE_PROFIT_USD,
+        trail_arm_usd=DONCHIAN_TP_TRAIL_ARM_USD,
+        trail_usd=DONCHIAN_TP_TRAIL_USD,
         stop_loss_usd=DONCHIAN_TP_STOP_LOSS_USD,
         max_order_notional_usd=settings.risk_max_order_notional_usd,
         max_leverage=settings.risk_max_leverage,
