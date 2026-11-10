@@ -16,6 +16,11 @@ every scalping verdict already recorded in specs 0017, 0021, 0025, and 0026.
   noise: on 1 and 5 minute bars wins fall to 10 to 28 % and the trade ends in minutes with the full cost
   paid. On the one setup with a positive development result, the trail cut it from +14.8 bps to +7.3
   (5 ATR) or −6.1 (2 ATR).
+- A take profit does not rescue the short bars either (table 5). All 72 setups on 1 and 5 minute bars, with a
+  target at 1, 2, or 3 ATR and a stop at 1.5 or 3 ATR, lost 8.5 to 14.6 bps a trade. A close target lifts the
+  win rate (up to 72 % on 5 minute bars) without lifting the result: the wins are small and each one still
+  pays the fees. On 1 minute bars a 1 ATR target is about 6 bps, less than the round trip's cost, so even a
+  trade that reaches its target loses.
 - The one candidate that looked alive, a 15 minute volume impulse, earned +15 bps a trade after costs on the
   development range and lost 3 to 17 bps a trade on the held out months, depending on the exit.
 - One effect is real and stable: after a sharp 1 minute BTC move, a thin altcoin that has not moved yet catches
@@ -39,7 +44,8 @@ that candles cannot hold. The order book signals were tested in the replay lab a
 - Kraken Futures 1 minute trade candles, 2025-01-01 to 2026-11-09, for BTC, ETH, SOL, XRP, DOGE, and LINK
   (`fetch.py`). Minutes with no trade are filled flat at the last close.
 - Development range 2025-01-01 to 2026-04-30. Every choice was made there. The held out range, 2026-05-01 to
-  2026-11-09, was read once, for the shortlist in table 2.
+  2026-11-09, was read once, for the shortlist in table 2. Table 5 was added later the same day; none of its setups was positive on the
+  development range, so none was read on the held out range.
 - Signals are decided at a bar close and entered at the next minute's open. Exits are walked on 1 minute bars
   (`bt.py`): a stop market at the stop price, or at the open when the bar gaps through it; a resting target
   fills only when a bar trades through it and pays the maker fee. A bar is checked against the stop as it stood
@@ -173,3 +179,89 @@ is the mean net divided by its standard error.
 | 5m, limits 3 ATR from the EMA; stop 3 ATR, trail 2 ATR | 33270 | 68.6 | 19 | -1.7 | -9.5 | 30% | -28.9 |
 | 5m, limits 4 ATR from the EMA; stop 3 ATR | 12711 | 26.2 | 50 | -3.4 | -10.5 | 41% | -10.8 |
 | 5m, limits 4 ATR from the EMA; stop 3 ATR, trail 2 ATR | 16201 | 33.4 | 14 | -3.1 | -11.4 | 29% | -22.1 |
+
+## 5. Take profits on 1 and 5 minute bars, six coins pooled, time stop 60 bars
+
+Development range; a held out row follows any setup whose development net is above zero.
+
+### 1 minute bars
+
+| entry, exit | trades | per day | median hold (min) | gross bps | net bps | wins | t |
+|---|---|---|---|---|---|---|---|
+| Donchian 20 breakout, EMA 200 side; stop 1.5 ATR, take profit 1 ATR | 328869 | 678.1 | 1 | -0.5 | -12.1 | 32% | -364.2 |
+| Donchian 20 breakout, EMA 200 side; stop 1.5 ATR, take profit 2 ATR | 263978 | 544.3 | 2 | 0.1 | -12.1 | 33% | -251.8 |
+| Donchian 20 breakout, EMA 200 side; stop 1.5 ATR, take profit 3 ATR | 228014 | 470.1 | 3 | 0.4 | -12.2 | 28% | -200.7 |
+| Donchian 20 breakout, EMA 200 side; stop 3 ATR, take profit 1 ATR | 302720 | 624.2 | 3 | -1.2 | -11.9 | 43% | -237.0 |
+| Donchian 20 breakout, EMA 200 side; stop 3 ATR, take profit 2 ATR | 226714 | 467.5 | 5 | -0.6 | -12.0 | 48% | -159.3 |
+| Donchian 20 breakout, EMA 200 side; stop 3 ATR, take profit 3 ATR | 185406 | 382.3 | 8 | -0.3 | -12.1 | 43% | -125.4 |
+| Volume impulse (3 ATR bar, 3x volume), follow; stop 1.5 ATR, take profit 1 ATR | 30663 | 63.2 | 0 | -1.1 | -12.9 | 24% | -129.9 |
+| Volume impulse (3 ATR bar, 3x volume), follow; stop 1.5 ATR, take profit 2 ATR | 30624 | 63.1 | 1 | -0.1 | -12.4 | 29% | -95.3 |
+| Volume impulse (3 ATR bar, 3x volume), follow; stop 1.5 ATR, take profit 3 ATR | 30408 | 62.7 | 1 | 0.4 | -12.3 | 26% | -78.6 |
+| Volume impulse (3 ATR bar, 3x volume), follow; stop 3 ATR, take profit 1 ATR | 30575 | 63.0 | 2 | -1.6 | -12.6 | 34% | -88.9 |
+| Volume impulse (3 ATR bar, 3x volume), follow; stop 3 ATR, take profit 2 ATR | 30319 | 62.5 | 4 | -0.8 | -12.2 | 43% | -66.2 |
+| Volume impulse (3 ATR bar, 3x volume), follow; stop 3 ATR, take profit 3 ATR | 29827 | 61.5 | 5 | -0.3 | -12.1 | 41% | -54.9 |
+| Volume impulse (3 ATR bar, 3x volume), fade; stop 1.5 ATR, take profit 1 ATR | 30662 | 63.2 | 1 | 0.3 | -11.3 | 27% | -113.9 |
+| Volume impulse (3 ATR bar, 3x volume), fade; stop 1.5 ATR, take profit 2 ATR | 30627 | 63.1 | 1 | 1.2 | -10.8 | 33% | -82.0 |
+| Volume impulse (3 ATR bar, 3x volume), fade; stop 1.5 ATR, take profit 3 ATR | 30426 | 62.7 | 2 | 1.7 | -10.8 | 30% | -67.7 |
+| Volume impulse (3 ATR bar, 3x volume), fade; stop 3 ATR, take profit 1 ATR | 30563 | 63.0 | 1 | -0.3 | -11.1 | 35% | -80.6 |
+| Volume impulse (3 ATR bar, 3x volume), fade; stop 3 ATR, take profit 2 ATR | 30335 | 62.5 | 3 | 0.4 | -10.9 | 46% | -59.0 |
+| Volume impulse (3 ATR bar, 3x volume), fade; stop 3 ATR, take profit 3 ATR | 29852 | 61.6 | 6 | 0.8 | -11.0 | 43% | -49.6 |
+| RSI(2) 5/95 with the EMA 200 trend; stop 1.5 ATR, take profit 1 ATR | 127661 | 263.2 | 2 | 0.4 | -11.2 | 30% | -217.8 |
+| RSI(2) 5/95 with the EMA 200 trend; stop 1.5 ATR, take profit 2 ATR | 123578 | 254.8 | 3 | 0.9 | -11.3 | 33% | -166.8 |
+| RSI(2) 5/95 with the EMA 200 trend; stop 1.5 ATR, take profit 3 ATR | 118014 | 243.3 | 4 | 1.3 | -11.3 | 28% | -137.2 |
+| RSI(2) 5/95 with the EMA 200 trend; stop 3 ATR, take profit 1 ATR | 101150 | 208.6 | 4 | -0.2 | -11.0 | 40% | -137.6 |
+| RSI(2) 5/95 with the EMA 200 trend; stop 3 ATR, take profit 2 ATR | 93199 | 192.2 | 7 | 0.3 | -11.1 | 47% | -101.6 |
+| RSI(2) 5/95 with the EMA 200 trend; stop 3 ATR, take profit 3 ATR | 86331 | 178.0 | 10 | 0.8 | -11.0 | 43% | -83.2 |
+| EMA 20/100 pullback; stop 1.5 ATR, take profit 1 ATR | 87014 | 179.4 | 2 | -0.3 | -11.8 | 35% | -140.6 |
+| EMA 20/100 pullback; stop 1.5 ATR, take profit 2 ATR | 80839 | 166.7 | 3 | 0.2 | -12.0 | 35% | -112.1 |
+| EMA 20/100 pullback; stop 1.5 ATR, take profit 3 ATR | 76911 | 158.6 | 4 | 0.6 | -11.9 | 29% | -94.8 |
+| EMA 20/100 pullback; stop 3 ATR, take profit 1 ATR | 78148 | 161.1 | 4 | -1.0 | -11.7 | 46% | -95.2 |
+| EMA 20/100 pullback; stop 3 ATR, take profit 2 ATR | 69326 | 142.9 | 7 | -0.6 | -11.9 | 50% | -73.4 |
+| EMA 20/100 pullback; stop 3 ATR, take profit 3 ATR | 64203 | 132.4 | 10 | -0.1 | -11.9 | 44% | -61.9 |
+| Bollinger squeeze breakout; stop 1.5 ATR, take profit 1 ATR | 117450 | 242.2 | 1 | -0.0 | -11.8 | 23% | -302.4 |
+| Bollinger squeeze breakout; stop 1.5 ATR, take profit 2 ATR | 103872 | 214.2 | 2 | 0.4 | -11.9 | 29% | -223.5 |
+| Bollinger squeeze breakout; stop 1.5 ATR, take profit 3 ATR | 97354 | 200.7 | 3 | 0.7 | -11.9 | 26% | -184.4 |
+| Bollinger squeeze breakout; stop 3 ATR, take profit 1 ATR | 108893 | 224.5 | 3 | -0.7 | -11.6 | 31% | -202.2 |
+| Bollinger squeeze breakout; stop 3 ATR, take profit 2 ATR | 91346 | 188.3 | 5 | -0.3 | -11.7 | 44% | -145.9 |
+| Bollinger squeeze breakout; stop 3 ATR, take profit 3 ATR | 81678 | 168.4 | 7 | 0.0 | -11.9 | 40% | -118.8 |
+
+### 5 minute bars
+
+| entry, exit | trades | per day | median hold (min) | gross bps | net bps | wins | t |
+|---|---|---|---|---|---|---|---|
+| Donchian 20 breakout, EMA 200 side; stop 1.5 ATR, take profit 1 ATR | 56881 | 117.3 | 9 | -0.8 | -12.0 | 54% | -63.0 |
+| Donchian 20 breakout, EMA 200 side; stop 1.5 ATR, take profit 2 ATR | 43734 | 90.2 | 16 | -0.0 | -12.0 | 40% | -40.9 |
+| Donchian 20 breakout, EMA 200 side; stop 1.5 ATR, take profit 3 ATR | 37060 | 76.4 | 21 | 0.3 | -12.2 | 32% | -31.9 |
+| Donchian 20 breakout, EMA 200 side; stop 3 ATR, take profit 1 ATR | 53036 | 109.4 | 17 | -1.1 | -11.6 | 70% | -40.8 |
+| Donchian 20 breakout, EMA 200 side; stop 3 ATR, take profit 2 ATR | 37806 | 78.0 | 37 | -0.5 | -11.6 | 57% | -25.7 |
+| Donchian 20 breakout, EMA 200 side; stop 3 ATR, take profit 3 ATR | 30222 | 62.3 | 55 | 0.2 | -11.5 | 48% | -19.3 |
+| Volume impulse (3 ATR bar, 3x volume), follow; stop 1.5 ATR, take profit 1 ATR | 3147 | 6.5 | 3 | -2.7 | -14.0 | 53% | -14.3 |
+| Volume impulse (3 ATR bar, 3x volume), follow; stop 1.5 ATR, take profit 2 ATR | 3147 | 6.5 | 6 | 0.9 | -11.0 | 41% | -8.4 |
+| Volume impulse (3 ATR bar, 3x volume), follow; stop 1.5 ATR, take profit 3 ATR | 3142 | 6.5 | 9 | 3.7 | -8.7 | 34% | -5.4 |
+| Volume impulse (3 ATR bar, 3x volume), follow; stop 3 ATR, take profit 1 ATR | 3145 | 6.5 | 7 | -3.4 | -13.9 | 69% | -9.4 |
+| Volume impulse (3 ATR bar, 3x volume), follow; stop 3 ATR, take profit 2 ATR | 3140 | 6.5 | 21 | 0.3 | -10.8 | 58% | -5.7 |
+| Volume impulse (3 ATR bar, 3x volume), follow; stop 3 ATR, take profit 3 ATR | 3124 | 6.4 | 33 | 3.0 | -8.6 | 50% | -3.9 |
+| Volume impulse (3 ATR bar, 3x volume), fade; stop 1.5 ATR, take profit 1 ATR | 3147 | 6.5 | 2 | 0.2 | -10.9 | 55% | -11.6 |
+| Volume impulse (3 ATR bar, 3x volume), fade; stop 1.5 ATR, take profit 2 ATR | 3146 | 6.5 | 8 | 0.3 | -11.6 | 41% | -8.8 |
+| Volume impulse (3 ATR bar, 3x volume), fade; stop 1.5 ATR, take profit 3 ATR | 3143 | 6.5 | 13 | 0.1 | -12.4 | 32% | -7.9 |
+| Volume impulse (3 ATR bar, 3x volume), fade; stop 3 ATR, take profit 1 ATR | 3146 | 6.5 | 5 | -4.1 | -14.6 | 68% | -10.6 |
+| Volume impulse (3 ATR bar, 3x volume), fade; stop 3 ATR, take profit 2 ATR | 3142 | 6.5 | 18 | -2.5 | -13.7 | 56% | -7.5 |
+| Volume impulse (3 ATR bar, 3x volume), fade; stop 3 ATR, take profit 3 ATR | 3129 | 6.5 | 33 | -2.5 | -14.3 | 46% | -6.4 |
+| RSI(2) 5/95 with the EMA 200 trend; stop 1.5 ATR, take profit 1 ATR | 20200 | 41.6 | 13 | 1.8 | -9.3 | 57% | -31.2 |
+| RSI(2) 5/95 with the EMA 200 trend; stop 1.5 ATR, take profit 2 ATR | 19025 | 39.2 | 27 | 2.5 | -9.4 | 42% | -21.8 |
+| RSI(2) 5/95 with the EMA 200 trend; stop 1.5 ATR, take profit 3 ATR | 17585 | 36.3 | 37 | 2.7 | -9.6 | 34% | -17.9 |
+| RSI(2) 5/95 with the EMA 200 trend; stop 3 ATR, take profit 1 ATR | 16805 | 34.6 | 22 | 1.5 | -8.9 | 72% | -19.5 |
+| RSI(2) 5/95 with the EMA 200 trend; stop 3 ATR, take profit 2 ATR | 14876 | 30.7 | 53 | 2.6 | -8.5 | 59% | -12.8 |
+| RSI(2) 5/95 with the EMA 200 trend; stop 3 ATR, take profit 3 ATR | 13417 | 27.7 | 80 | 3.0 | -8.7 | 49% | -10.5 |
+| EMA 20/100 pullback; stop 1.5 ATR, take profit 1 ATR | 24855 | 51.2 | 13 | -0.1 | -11.3 | 55% | -37.8 |
+| EMA 20/100 pullback; stop 1.5 ATR, take profit 2 ATR | 21670 | 44.7 | 23 | 0.3 | -11.7 | 40% | -27.7 |
+| EMA 20/100 pullback; stop 1.5 ATR, take profit 3 ATR | 19848 | 40.9 | 31 | 0.7 | -11.7 | 32% | -22.4 |
+| EMA 20/100 pullback; stop 3 ATR, take profit 1 ATR | 21548 | 44.4 | 23 | -0.2 | -10.7 | 70% | -23.4 |
+| EMA 20/100 pullback; stop 3 ATR, take profit 2 ATR | 17584 | 36.3 | 49 | 0.8 | -10.4 | 57% | -15.7 |
+| EMA 20/100 pullback; stop 3 ATR, take profit 3 ATR | 15592 | 32.1 | 71 | 1.4 | -10.3 | 48% | -12.5 |
+| Bollinger squeeze breakout; stop 1.5 ATR, take profit 1 ATR | 21521 | 44.4 | 10 | -0.7 | -12.0 | 51% | -56.0 |
+| Bollinger squeeze breakout; stop 1.5 ATR, take profit 2 ATR | 18101 | 37.3 | 17 | -0.9 | -13.0 | 38% | -41.0 |
+| Bollinger squeeze breakout; stop 1.5 ATR, take profit 3 ATR | 16596 | 34.2 | 23 | -0.6 | -13.2 | 30% | -33.2 |
+| Bollinger squeeze breakout; stop 3 ATR, take profit 1 ATR | 19856 | 40.9 | 20 | -1.3 | -11.8 | 67% | -37.4 |
+| Bollinger squeeze breakout; stop 3 ATR, take profit 2 ATR | 15349 | 31.6 | 40 | -1.5 | -12.7 | 55% | -26.0 |
+| Bollinger squeeze breakout; stop 3 ATR, take profit 3 ATR | 13287 | 27.4 | 57 | -1.2 | -12.9 | 46% | -20.4 |

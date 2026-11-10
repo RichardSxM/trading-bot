@@ -249,8 +249,25 @@ def table_maker():
                 line(f"{n}m, limits {k} ATR from the EMA; {exit_name}", np.concatenate(rows), DEV)
 
 
+def table_take_profit():
+    print("\n## 5. Take profits on 1 and 5 minute bars, six coins pooled, time stop 60 bars\n")
+    print("Development range; a held out row follows any setup whose development net is above zero.")
+    for n in (1, 5):
+        print(f"\n### {n} minute bars\n\n" + HEAD.format("entry, exit"))
+        for fname, fn in FAMILIES.items():
+            for sl in (1.5, 3):
+                for tp in (1, 2, 3):
+                    x = pooled(fn, n, sl=sl, tp=tp, mx=60 * n)
+                    name = f"{fname}; stop {sl} ATR, take profit {tp} ATR"
+                    line(name, x, DEV)
+                    dev = x[(x[:, 0] >= DEV[0]) & (x[:, 0] < DEV[1])]
+                    if dev[:, 3].mean() > 0:
+                        line(name + ", held out", x, HOLD)
+
+
 if __name__ == "__main__":
     table_families()
     table_shortlist()
     table_lead()
     table_maker()
+    table_take_profit()
