@@ -257,7 +257,9 @@ services:
     # The kernel must never pick the process holding positions first.
     oom_score_adj: -900
     stop_grace_period: 30s
-    mem_limit: 1g
+    # 12 coins hold about 850 MiB steady (2026-11-10), so 1g was killed at the limit. The VPS has
+    # 3.8 GB: with the portfolio profile on as well, the limits add up to more than the box holds.
+    mem_limit: 1536m
 
   # The second demo trader (spec 0030 AC-18): trend_portfolio beside six vote, with its own sandbox,
   # TRADER_ID, slot keys, spool, and risk caps. Off unless COMPOSE_PROFILES holds `portfolio`; it runs
