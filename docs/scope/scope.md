@@ -583,7 +583,7 @@ spec [0031](../specs/0031-liquidity-trap-scalper/index.md)
   - [x] Pre check: frozen run file, verdict, `lab lts-precheck`, the 12 day run and the own data cross check (AC-15 to AC-19) (2026-11-09: `fail`, 1 trial, pooled 15 s markout −0.14 bps against 10.5, 3 of 12 days positive)
   - [x] Close out: results recorded, stop on a fail (AC-1, AC-20) (2026-11-09: the feature stops here, no revision or second setting set)
   - [ ] Only after a pass: instrument metadata, health gate, feed actor, laptop smoke (AC-4 to AC-9) (not built: the pre check failed)
-- [ ] Verify it: `/check verify liquidity trap scalper`
+- [x] Verify it: `/check verify liquidity trap scalper` (2026-11-10: PASS on phase 1, AC-4 to AC-9 correctly not built after the fail)
 - [ ] Test it: `/test liquidity trap scalper`
 - [ ] Review it (fresh model): `/check review liquidity trap scalper`
 - [ ] Document it: `/document liquidity trap scalper`
