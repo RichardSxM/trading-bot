@@ -118,7 +118,7 @@ def test_it_is_a_seeded_book_strategy_on_daily_candles(daily):
     fetch = seed_fetch("trend_daily")
 
     assert "trend_daily" in SEEDED_STRATEGIES
-    assert BOOK_STRATEGIES == ("trend_portfolio", "trend_daily")
+    assert BOOK_STRATEGIES == ("trend_portfolio", "trend_daily", "trend_vol")
     assert fetch.keywords == {"interval": "1d", "keep_bars": 150, "min_bars": 121}  # type: ignore[attr-defined]
 
 

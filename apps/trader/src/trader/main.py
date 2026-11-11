@@ -68,10 +68,13 @@ from trader.paper_strategy import (
     TD_SEED_MIN_DAYS,
     TP_SEED_DAYS,
     TP_SEED_MIN_DAYS,
+    TV_SEED_DAYS,
+    TV_SEED_MIN_DAYS,
     StrategySettings,
     build_paper_strategy,
     build_trend_daily,
     build_trend_portfolio,
+    build_trend_vol,
     paper_version,
 )
 from trader.snapshot_writer import log_writer_crash, write_heartbeats, write_snapshot
@@ -85,7 +88,7 @@ from trading_core.control.records import PostgresCommandRecorder
 from trading_core.control.slots import TraderSlot, snapshot_name
 from trading_core.env_guard import SANDBOX, ExecClientAllowlist, allowed_exec_clients
 from trading_core.naming import node_id
-from trading_core.node import connors_rsi_tp, six_vote_trend, trend_daily, trend_portfolio
+from trading_core.node import connors_rsi_tp, six_vote_trend, trend_daily, trend_portfolio, trend_vol
 from trading_core.node.context_feed import ContextFeedActor, ContextFeedConfig
 from trading_core.node.control import (
     ControlActor,
@@ -503,7 +506,7 @@ class PaperLoop:
 
 # The paper strategies that hold one book over every coin: one instance, a daily seed, the ``portfolio_plan``
 # snapshot, the start cooldown, and the ``book`` flag (spec 0030, spec 0032 AC-5, AC-6).
-BOOK_STRATEGIES: Final = (trend_portfolio.STRATEGY_NAME, trend_daily.STRATEGY_NAME)
+BOOK_STRATEGIES: Final = (trend_portfolio.STRATEGY_NAME, trend_daily.STRATEGY_NAME, trend_vol.STRATEGY_NAME)
 
 
 def is_book(settings: StrategySettings, paper_built: bool) -> bool:
@@ -856,7 +859,11 @@ def run_node(
         views: list[PaperStrategyView] = []
         if settings.paper_strategy in BOOK_STRATEGIES:
             build_book = (
-                build_trend_daily if settings.paper_strategy == trend_daily.STRATEGY_NAME else build_trend_portfolio
+                build_trend_vol
+                if settings.paper_strategy == trend_vol.STRATEGY_NAME
+                else build_trend_daily
+                if settings.paper_strategy == trend_daily.STRATEGY_NAME
+                else build_trend_portfolio
             )
             portfolio, portfolio_views = build_book(
                 settings, paper.run_id, control.gate, paper.blocks, record, daily_seeds or {}, paper.last_start_ns
@@ -1166,7 +1173,9 @@ def main() -> None:
 
 def seed_fetch(strategy: str) -> Callable[[str], tuple[BarInput, ...]]:
     """The seed fetch for ``strategy``: 1 hour candles (300, at least 250) for ``six_vote_trend``, daily candles
-    (150, at least 121) for ``trend_portfolio`` and ``trend_daily``, else 5 minute."""
+    (150, at least 121) for the book strategies, else 5 minute."""
+    if strategy == trend_vol.STRATEGY_NAME:
+        return functools.partial(warmup_seed, interval="1d", keep_bars=TV_SEED_DAYS, min_bars=TV_SEED_MIN_DAYS)
     if strategy == trend_daily.STRATEGY_NAME:
         return functools.partial(warmup_seed, interval="1d", keep_bars=TD_SEED_DAYS, min_bars=TD_SEED_MIN_DAYS)
     if strategy == trend_portfolio.STRATEGY_NAME:
