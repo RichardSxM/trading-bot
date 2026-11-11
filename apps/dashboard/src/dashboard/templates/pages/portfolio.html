@@ -1,9 +1,33 @@
 {% extends "shell.html" %}
+{# book_on_main: DASHBOARD_PORTFOLIO_SLOT=main, the main trader's book (spec 0032 AC-8). churn: its notional and
+   fees per UTC day, newest first (None: not read); churn_error: Postgres did not answer. #}
 {% block page %}
 <div class="board">
   <section class="region region--wide" aria-labelledby="portfolio-h">
-    <header class="region__head"><h2 class="region__title" id="portfolio-h">Trend portfolio</h2><span class="region__meta">30 day trend on every coin · rebalanced weekly · its own demo account</span></header>
+    <header class="region__head"><h2 class="region__title" id="portfolio-h">Trend portfolio</h2><span class="region__meta">30 day trend on every coin · {% if book_on_main %}the main demo trader{% else %}its own demo account{% endif %}</span></header>
     <div class="portfolio-board" sse-swap="portfolio-board">{{ live["portfolio-board"] }}</div>
   </section>
+  {%- if book_on_main %}
+  <section class="region region--wide" aria-labelledby="churn-h">
+    <header class="region__head"><h2 class="region__title" id="churn-h">Traded per day</h2><span class="region__meta">last 7 UTC days · every fill of the main trader · read when the page loads</span></header>
+    {%- if churn_error %}
+    <p class="figures__unavailable">Unavailable: the database did not answer. Reload the page to try again.</p>
+    {%- elif churn is none %}
+    <p class="figures__unavailable">Unavailable without the database.</p>
+    {%- else %}
+    <div class="table-wrap">
+      <table class="table portfolio__churn">
+        <caption class="visually-hidden">Notional traded and fees paid per UTC day, newest first</caption>
+        <thead><tr><th scope="col">Day (UTC)</th><th scope="col" class="is-num">Notional traded</th><th scope="col" class="is-num">Fees paid</th></tr></thead>
+        <tbody>
+        {%- for day in churn %}
+          <tr><th scope="row">{{ day.day.isoformat() }}</th><td class="is-num">{{ day.notional|num }} <span class="figures__unit">USD</span></td><td class="is-num">{{ day.fees|num }} <span class="figures__unit">USD</span></td></tr>
+        {%- endfor %}
+        </tbody>
+      </table>
+    </div>
+    {%- endif %}
+  </section>
+  {%- endif %}
 </div>
 {% endblock %}

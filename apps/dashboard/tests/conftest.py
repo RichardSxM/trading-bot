@@ -177,6 +177,7 @@ def make_app(
     open_export=None,
     read_journal_summary=None,
     read_portfolio_pnl=lambda run: Decimal(0),
+    read_portfolio_churn=None,
     **settings,
 ):
     settings.setdefault("dashboard_cookie_secure", False)
@@ -196,6 +197,7 @@ def make_app(
         open_export=open_export or (lambda journal_range: FakeExport()),
         read_journal_summary=read_journal_summary or summary_of,
         read_portfolio_pnl=read_portfolio_pnl,
+        read_portfolio_churn=read_portfolio_churn,
     )
 
 

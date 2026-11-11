@@ -415,6 +415,8 @@ services:
       DASHBOARD_COMMAND_HIDE_S: ${DASHBOARD_COMMAND_HIDE_S:-900}
       # The `trader` service's TRADER_ID (spec 0030 AC-16); empty is its default, TRADER-<ENV>.
       DASHBOARD_MAIN_TRADER_ID: ${DASHBOARD_MAIN_TRADER_ID:-}
+      # Which trader's book the Portfolio page reads: portfolio (default) or main (spec 0032 AC-8).
+      DASHBOARD_PORTFOLIO_SLOT: ${DASHBOARD_PORTFOLIO_SLOT:-portfolio}
       DASHBOARD_ACK_WARN_S: ${DASHBOARD_ACK_WARN_S:-10}
       # spec 0023 AC-18: the Kraken view on the position card is unknown after 3 check intervals.
       RECONCILE_INTERVAL_S: ${RECONCILE_INTERVAL_S:-60}

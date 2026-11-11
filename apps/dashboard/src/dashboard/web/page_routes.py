@@ -27,6 +27,7 @@ from dashboard.web.session import SessionDep, session_end_cue
 from dashboard.web.strategies import detail_context, log_context, strategies_context
 from dashboard.web.styleguide import styleguide_context
 from dashboard.web.trades import trades_context
+from trading_core.control.slots import TraderSlot
 
 router = APIRouter()
 log = logging.getLogger(__name__)
@@ -251,9 +252,19 @@ async def reconciliations(request: Request, session: SessionDep, page: Annotated
 
 @router.get("/portfolio")
 async def portfolio(request: Request, session: SessionDep) -> Response:
-    """The trend portfolio trader's plan, positions, and account (spec 0030 AC-19 to AC-21), live over SSE."""
+    """The book trader's plan, positions, and account (spec 0030 AC-19 to AC-21), live over SSE. With
+    ``DASHBOARD_PORTFOLIO_SLOT=main`` it is the main trader's book, plus its notional and fees per UTC day over
+    the last 7 days, read once per page load (spec 0032 AC-8)."""
     context = app_context(request)
-    return await render_page(request, context, session, *PAGES["/portfolio"])
+    main = context.settings.portfolio_slot is TraderSlot.MAIN
+    data: dict[str, object] = {"book_on_main": main, "churn": None, "churn_error": False}
+    if main and context.read_portfolio_churn is not None:
+        try:
+            data["churn"] = await context.read_portfolio_churn()
+        except SQLAlchemyError as exc:
+            _read_failed("portfolio churn", exc)
+            data["churn_error"] = True
+    return await render_page(request, context, session, *PAGES["/portfolio"], data=data)
 
 
 @router.get("/system")
