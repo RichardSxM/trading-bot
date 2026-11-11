@@ -227,6 +227,17 @@ PORTFOLIO_COINS_FAILED: Final = Rule(
     key=_subject("portfolio_coins_failed", "last_rebalance_at"),
     codes=frozenset({"rebalance_coin_failed"}),
 )
+# Also from ``portfolio_plan`` (spec 0032 AC-2b): one push per plan date whose rebalance kept coins because their
+# daily close was missing, keyed by ``plan_day``. The node's own ``close_missing`` log lines never match.
+PORTFOLIO_CLOSE_MISSING: Final = Rule(
+    "portfolio_close_missing",
+    Tier.WARNING,
+    RuleKind.EVENT,
+    source="redis",
+    matches=lambda obs: obs.source == "redis" and obs.code == "close_missing",
+    key=_subject("portfolio_close_missing", "plan_day"),
+    codes=frozenset({"close_missing"}),
+)
 CONTEXT_FEED_DOWN: Final = _code_rule(
     "context_feed_down",
     Tier.WARNING,
@@ -315,6 +326,7 @@ RULES: Final[tuple[Rule, ...]] = (
     BACKUP_FAILED,
     ENTRY_BLOCK,
     PORTFOLIO_COINS_FAILED,
+    PORTFOLIO_CLOSE_MISSING,
     CONTEXT_FEED_DOWN,
     CONTEXT_HOUR_MISSING,
     BOOK_GAP_LONG,

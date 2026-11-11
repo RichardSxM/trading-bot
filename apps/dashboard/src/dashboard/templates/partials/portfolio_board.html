@@ -29,6 +29,7 @@
     <div class="figures__row"><dt>Realized since start</dt><dd>{% if view.realized is not none %}{{ view.realized|pnl }} <span class="figures__unit">USD, net of fees and funding</span>{% else %}<span class="figures__note">unavailable</span>{% endif %}</dd></div>
     <div class="figures__row"><dt>Last rebalance</dt><dd>{% if view.last_rebalance is not none %}{{ view.last_rebalance|ts }} · {{ view.last_rebalance|local_hm }} Amsterdam{% if view.last_reason %} <span class="figures__note">{{ view.last_reason }}</span>{% endif %}{% else %}<span class="figures__note">none yet</span>{% endif %}</dd></div>
     <div class="figures__row"><dt>Next rebalance</dt><dd>{% if view.next_rebalance is not none %}{{ view.next_rebalance|ts }} · {{ view.next_rebalance|local_hm }} Amsterdam{% else %}<span class="figures__note">after the first plan</span>{% endif %}</dd></div>
+    <div class="figures__row"><dt>Schedule</dt><dd>{% if view.schedule == "daily" %}rebalanced every day{% else %}rebalanced weekly{% endif %}</dd></div>
     <div class="figures__row"><dt>Failed coins</dt><dd>{% if view.failed %}<span class="figures__warn">{{ view.failed|join(", ") }}</span>{% else %}none{% endif %}</dd></div>
     {{ last_command(view.last_command) }}
   </dl>

@@ -3,12 +3,13 @@
 import base64
 import binascii
 from collections.abc import Mapping
-from typing import ClassVar, Final, Self
+from typing import ClassVar, Final, Literal, Self
 
 from argon2 import Type, extract_parameters
 from argon2.exceptions import InvalidHashError
 from pydantic import Field, SecretStr, field_validator, model_validator
 
+from trading_core.control.slots import TraderSlot
 from trading_core.env_guard import EnvGuardRefused
 from trading_core.naming import node_id
 from trading_core.secrets import (
@@ -48,6 +49,14 @@ class DashboardSettings(ReconcileSettings):
     # The `trader` service's TRADER_ID (spec 0030 AC-16): P&L, Overview, and Trades read only its runs, so the
     # portfolio trader's fills never mix into six vote's figures. Unset is the trader's own default id.
     dashboard_main_trader_id: str | None = None
+    # Which trader's book the Portfolio page reads (spec 0032 AC-8): ``portfolio`` (trader-portfolio's
+    # ``portfolio_*`` snapshots, the default) or ``main`` (a book run by the main trader, ``trend_daily``).
+    dashboard_portfolio_slot: Literal["portfolio", "main"] = "portfolio"
+
+    @property
+    def portfolio_slot(self) -> TraderSlot:
+        """``DASHBOARD_PORTFOLIO_SLOT`` as a ``TraderSlot``."""
+        return TraderSlot(self.dashboard_portfolio_slot)
 
     @property
     def main_trader_id(self) -> str:

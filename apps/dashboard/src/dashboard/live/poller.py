@@ -69,6 +69,7 @@ from dashboard.live.state import (
     reconcile_view,
 )
 from trading_core.control.messages import ControlMessage, Fields, field, to_fields
+from trading_core.control.slots import TraderSlot
 
 log = logging.getLogger(__name__)
 
@@ -139,8 +140,10 @@ class Poller:
         read_portfolio: Callable[[], Awaitable[PortfolioRaw]] | None = None,
         read_portfolio_pnl: Callable[[UUID], Awaitable[Decimal]] | None = None,
         render_portfolio: Callable[[PortfolioView], str] | None = None,
+        portfolio_slot: TraderSlot = TraderSlot.PORTFOLIO,
     ) -> None:
         self._read_portfolio = read_portfolio
+        self._portfolio_slot = portfolio_slot
         self._read_portfolio_pnl = read_portfolio_pnl
         self._render_portfolio = render_portfolio
         # The run whose realized P&L was read last, its figure (None: unknown), and when it was read.
@@ -261,7 +264,7 @@ class Poller:
         if self._render_portfolio is not None and portfolio is not None:
             realized = await self._refresh_portfolio_pnl(run_id(portfolio.trader_state))
             partials[PORTFOLIO_EVENT] = self._render_portfolio(
-                portfolio_view(portfolio, realized, self._clock_ns(), self._amber_s, self._red_s)
+                portfolio_view(portfolio, realized, self._clock_ns(), self._amber_s, self._red_s, self._portfolio_slot)
             )
         return partials
 

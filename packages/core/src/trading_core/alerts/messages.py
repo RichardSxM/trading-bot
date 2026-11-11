@@ -72,6 +72,19 @@ def portfolio_coins_failed(fields: Mapping[str, object]) -> tuple[str, str]:
     )
 
 
+def portfolio_close_missing(fields: Mapping[str, object]) -> tuple[str, str]:
+    """Title text and body for ``portfolio_close_missing`` (spec 0032 AC-2b): the coins a rebalance kept as they were
+    because their daily close had not arrived."""
+    coins = str(fields.get("coins") or "?")
+    count = fields.get("count")
+    noun = "coin" if count == 1 else "coins"
+    day = fields.get("plan_day")
+    return (
+        f"Portfolio rebalance: {count if isinstance(count, int) else '?'} {noun} without a daily close",
+        f"{coins} kept their position: no daily close for {day if isinstance(day, str) else 'the plan day'}.",
+    )
+
+
 def words(code: str) -> str:
     """A code in plain words: ``stop_not_accepted`` becomes "Stop not accepted"."""
     return code.replace("_", " ").capitalize()
@@ -98,6 +111,8 @@ def log_line(
         return fill(fields)
     if rule_id == "portfolio_coins_failed":
         return portfolio_coins_failed(fields)
+    if rule_id == "portfolio_close_missing":
+        return portfolio_close_missing(fields)
     event_key = str(fields.get("event_key") or "")
     if rule_id in _RISK_RULES:
         head = words(event_key.split(":", 1)[0] if event_key else (code or rule_id))

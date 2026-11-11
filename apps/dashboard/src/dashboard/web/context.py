@@ -14,6 +14,7 @@ from dashboard.auth.password import PasswordChecker
 from dashboard.auth.session import SessionCodec
 from dashboard.auth.totp import TotpGuard
 from dashboard.data.journal import JournalExport
+from dashboard.data.portfolio import DayChurn
 from dashboard.data.strategies import StrategiesView
 from dashboard.data.trades import TradesView
 from dashboard.live.poller import Poller
@@ -75,6 +76,8 @@ class AppContext:
     open_journal: Callable[[JournalRange], Awaitable[JournalExport]]
     read_journal_summary: Callable[[JournalRange], Awaitable[JournalSummary]]
     trusted_peers: frozenset[str] = frozenset()
+    # The main trader's notional and fees per UTC day for the Portfolio page (spec 0032 AC-8); None without Postgres.
+    read_portfolio_churn: Callable[[], Awaitable[Sequence[DayChurn]]] | None = None
 
 
 def app_context(request: Request) -> AppContext:

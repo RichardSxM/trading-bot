@@ -121,6 +121,7 @@ def test_r1_r2_six_vote_trend_trend_portfolio_and_connors_rsi_tp_take_the_warmup
         "donchian_scalp_r2",
         "six_vote_trend",
         "trend_portfolio",
+        "trend_daily",
     }
 
 

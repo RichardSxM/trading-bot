@@ -64,10 +64,13 @@ from trader.paper_strategy import (
     SEEDED_STRATEGIES,
     SIX_SEED_BARS,
     SIX_SEED_MIN_BARS,
+    TD_SEED_DAYS,
+    TD_SEED_MIN_DAYS,
     TP_SEED_DAYS,
     TP_SEED_MIN_DAYS,
     StrategySettings,
     build_paper_strategy,
+    build_trend_daily,
     build_trend_portfolio,
     paper_version,
 )
@@ -82,7 +85,7 @@ from trading_core.control.records import PostgresCommandRecorder
 from trading_core.control.slots import TraderSlot, snapshot_name
 from trading_core.env_guard import SANDBOX, ExecClientAllowlist, allowed_exec_clients
 from trading_core.naming import node_id
-from trading_core.node import connors_rsi_tp, six_vote_trend, trend_portfolio
+from trading_core.node import connors_rsi_tp, six_vote_trend, trend_daily, trend_portfolio
 from trading_core.node.context_feed import ContextFeedActor, ContextFeedConfig
 from trading_core.node.control import (
     ControlActor,
@@ -494,8 +497,19 @@ class PaperLoop:
     writer: RecordingWriter
     sessions: Callable[[], Session]
     ledger: FundingLedger
-    # trend_portfolio's last ``start`` rebalance of this trader, its crash loop guard (spec 0030 AC-4).
+    # A book strategy's last ``start`` rebalance of this trader, its crash loop guard (spec 0030 AC-4).
     last_start_ns: int | None = None
+
+
+# The paper strategies that hold one book over every coin: one instance, a daily seed, the ``portfolio_plan``
+# snapshot, the start cooldown, and the ``book`` flag (spec 0030, spec 0032 AC-5, AC-6).
+BOOK_STRATEGIES: Final = (trend_portfolio.STRATEGY_NAME, trend_daily.STRATEGY_NAME)
+
+
+def is_book(settings: StrategySettings, paper_built: bool) -> bool:
+    """``trader_state.book`` (spec 0032 AC-6): true only for a demo trader whose paper strategy is built and is in
+    ``BOOK_STRATEGIES``; false for every live trader, whatever ``PAPER_STRATEGY`` says."""
+    return settings.trading_env == "demo" and paper_built and settings.paper_strategy in BOOK_STRATEGIES
 
 
 def run_config(settings: PaperLoopSettings) -> JsonObject:
@@ -530,7 +544,7 @@ def start_paper_loop(settings: TraderSettings, secrets: Mapping[str, SecretStr],
             session, version.name, version.kind, None, version.config, version.frozen
         )
     last_start_ns = None
-    if settings.paper_strategy == trend_portfolio.STRATEGY_NAME:
+    if settings.paper_strategy in BOOK_STRATEGIES:
         with sessions.begin() as session:
             last_start_ns = last_decision_ns(session, env, trader_id, trend_portfolio.START)
     with sessions.begin() as session:
@@ -704,8 +718,8 @@ def run_node(
     ``seeds`` is ``donchian_scalp_r1``'s, ``donchian_scalp_r2``'s, or ``six_vote_trend``'s warmup candles per coin,
     fetched before the node (spec 0025 AC-7, spec 0026 AC-16, spec 0029 AC-8). ``six_vote_trend`` also gets BTC's
     seed as ``btc_seed``; its config builder requires BTC in ``PAPER_INSTRUMENTS``, so BTC's seed is fetched once.
-    ``trend_portfolio`` is one instance over every coin, seeded from ``daily_seeds``, and also writes the
-    ``portfolio_plan`` snapshot (spec 0030 AC-8, AC-10, AC-13).
+    ``trend_portfolio`` and ``trend_daily`` (``BOOK_STRATEGIES``) are one instance over every coin, seeded from
+    ``daily_seeds``, and also write the ``portfolio_plan`` snapshot (spec 0030 AC-8, AC-10, AC-13, spec 0032 AC-5).
     """
     env = settings.trading_env
     if env == "live" and exchange is None:
@@ -817,6 +831,7 @@ def run_node(
                 losses.snapshot_fields,
                 reconcile.snapshot_fields,
                 run_id=None if paper is None else paper.run_id,
+                book=is_book(settings, paper is not None),
             ),
         ),
     ]
@@ -839,15 +854,18 @@ def run_node(
             )
         )
         views: list[PaperStrategyView] = []
-        if settings.paper_strategy == trend_portfolio.STRATEGY_NAME:
-            portfolio, portfolio_views = build_trend_portfolio(
+        if settings.paper_strategy in BOOK_STRATEGIES:
+            build_book = (
+                build_trend_daily if settings.paper_strategy == trend_daily.STRATEGY_NAME else build_trend_portfolio
+            )
+            portfolio, portfolio_views = build_book(
                 settings, paper.run_id, control.gate, paper.blocks, record, daily_seeds or {}, paper.last_start_ns
             )
             node.trader.add_strategy(portfolio)
             views.extend(portfolio_views)
             snapshot_readers.append((plan_snapshot_base(slot), portfolio.plan_snapshot))
-        # trend_portfolio is one instance over every coin, built above; every other strategy is one per coin.
-        per_coin_coins = () if settings.paper_strategy == trend_portfolio.STRATEGY_NAME else coins
+        # A book strategy is one instance over every coin, built above; every other strategy is one per coin.
+        per_coin_coins = () if settings.paper_strategy in BOOK_STRATEGIES else coins
         per_coin = coin_blocks(paper.blocks, coins)
         for coin in per_coin_coins:
             strategy, coin_view = build_paper_strategy(
@@ -1126,7 +1144,7 @@ def main() -> None:
     seeded = paper is not None and settings.paper_strategy in SEEDED_STRATEGIES
     seeds = warmup_seeds(settings.instrument_list, seed_fetch(settings.paper_strategy)) if seeded else {}
     daily_seeds: dict[str, tuple[DailyClose, ...]] = {}
-    if settings.paper_strategy == trend_portfolio.STRATEGY_NAME:
+    if settings.paper_strategy in BOOK_STRATEGIES:
         today = datetime.now(UTC).date()
         daily_seeds = {coin: daily_seed(coin, bars, today) for coin, bars in seeds.items()}
         seeds = {}
@@ -1148,7 +1166,9 @@ def main() -> None:
 
 def seed_fetch(strategy: str) -> Callable[[str], tuple[BarInput, ...]]:
     """The seed fetch for ``strategy``: 1 hour candles (300, at least 250) for ``six_vote_trend``, daily candles
-    (150, at least 121) for ``trend_portfolio``, else 5 minute."""
+    (150, at least 121) for ``trend_portfolio`` and ``trend_daily``, else 5 minute."""
+    if strategy == trend_daily.STRATEGY_NAME:
+        return functools.partial(warmup_seed, interval="1d", keep_bars=TD_SEED_DAYS, min_bars=TD_SEED_MIN_DAYS)
     if strategy == trend_portfolio.STRATEGY_NAME:
         return functools.partial(warmup_seed, interval="1d", keep_bars=TP_SEED_DAYS, min_bars=TP_SEED_MIN_DAYS)
     if strategy == connors_rsi_tp.STRATEGY_NAME:
