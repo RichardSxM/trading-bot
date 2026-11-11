@@ -570,13 +570,13 @@ spec [0030](../specs/0030-trend-portfolio/index.md)
 ### 33. Trend daily on the main trader · in-progress
 Replace the main demo trader's losing 5 minute scalper (`donchian_scalp_tp`) with `trend_daily`: the 30 day trend book of feature 31 at 5x, rebalanced every day at 00:05 UTC, every change traded, no stops, no brake. A thin subclass of `trend_portfolio`, plus a `book` flag so deploys skip the flat wait, and a Portfolio page that can read the main trader. Straight to demo as an open ended forward test; a study and gate are owed before live. From the 2026-11-11 research: the 30 day trend pays at day holds (+25 to 40 bps a day), not at 5 minutes.
 **Done when:** every existing strategy hash is unchanged, the VPS main trader runs `trend_daily` with a `resume` rebalance on all 12 coins after the switch deploy, a later deploy skips the flat wait, the next 00:05 UTC run logs a `daily` rebalance, and the Portfolio page shows the book with fees per day.
-spec [0032](../specs/0032-trend-daily/index.md)
+spec [0032](../specs/0032-trend-daily/index.md) · code in `packages/core/src/trading_core/node/trend_daily.py`
 
 - [x] Design it (spec): `/architect trend daily`
 - [ ] Build it: `/develop trend daily`
-  - [ ] Strategy: hash baseline, `TrendDaily` module with daily rebalance, plan snapshot schedule, late bar list, settings and wiring, laptop run (AC-1 to AC-5)
-  - [ ] Book on main: `book` flag and the deploy flat wait skip (AC-6, AC-7)
-  - [ ] Dashboard and alerts: Portfolio page slot, daily schedule, fees per day, main slot alerts (AC-2a, AC-2b, AC-8, AC-9)
+  - [x] Strategy: hash baseline, `TrendDaily` module with daily rebalance, plan snapshot schedule, late bar list, settings and wiring, laptop run (AC-1 to AC-5)
+  - [x] Book on main: `book` flag and the deploy flat wait skip (AC-6, AC-7)
+  - [x] Dashboard and alerts: Portfolio page slot, daily schedule, fees per day, main slot alerts (AC-2a, AC-2b, AC-8, AC-9)
   - [ ] Close out and VPS switch: hash check, order cap computation, kfs.env, deploy, your promote, start checks (AC-10, AC-11)
 - [ ] Verify it: `/check verify trend daily`
 - [ ] Test it: `/test trend daily`
