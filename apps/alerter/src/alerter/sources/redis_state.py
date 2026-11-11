@@ -73,6 +73,9 @@ class PlanFailures:
 
     last_rebalance_at: int
     failed: tuple[str, ...]
+    # The plan's day and the coins its rebalance kept for a missing close (spec 0032 AC-2b); empty without them.
+    plan_day: str | None = None
+    close_missing: tuple[str, ...] = ()
 
 
 async def plan_failures(redis: SnapshotReader, key: str) -> PlanFailures | None:
@@ -95,4 +98,20 @@ async def plan_failures(redis: SnapshotReader, key: str) -> PlanFailures | None:
     if not isinstance(last, int) or isinstance(last, bool):
         return None
     coins = tuple(c for c in failed if isinstance(c, str)) if isinstance(failed, list) else ()
-    return PlanFailures(last, coins)
+    day = snapshot.data.get("plan_day")
+    missing = snapshot.data.get("close_missing")
+    kept = tuple(c for c in missing if isinstance(c, str)) if isinstance(missing, list) else ()
+    return PlanFailures(last, coins, day if isinstance(day, str) else None, kept)
+
+
+async def trader_book(redis: SnapshotReader, key: str) -> bool:
+    """``book`` of ``trader_state`` (spec 0032 AC-6): True only when the field is ``true``; a missing key, a
+    malformed snapshot, or a missing field is False. A Redis error propagates."""
+    raw = await redis.get(key)
+    if raw is None:
+        return False
+    try:
+        snapshot = decode(raw)
+    except SnapshotFormatError:
+        return False
+    return snapshot.data.get("book") is True
