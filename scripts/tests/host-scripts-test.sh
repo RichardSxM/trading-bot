@@ -124,7 +124,7 @@ kfs_control() {
         state)
             local rc=$STATE_RC
             [ "$WAITED" = 1 ] && rc=$STATE_AFTER_RC
-            [ "$rc" = 0 ] && echo "{\"data\":{\"paused\":$PAUSED,\"pause_source\":\"$SOURCE\"}}"
+            [ "$rc" = 0 ] && echo "{\"data\":{\"paused\":$PAUSED,\"pause_source\":\"$SOURCE\"${BOOK:+,\"book\":$BOOK}}}"
             return "$rc"
             ;;
         pause)
@@ -169,6 +169,22 @@ check "drain: a Pause you press during the wait is never lifted (review 2026-10-
 STATE_RC=0 PAUSED=false PAUSE_RC=0 FLAT_RC=2 TAKEOVER=0 STATE_AFTER_RC=1
 check "drain: unreadable state after the wait leaves the pause in place" "$KFS_DRAIN_NOT_FLAT true state,pause,wait-flat,state" "$(drain false)"
 STATE_AFTER_RC=0
+# A demo book (spec 0032 AC-7): the pause still goes and is confirmed, the wait for flat does not.
+printf 'TRADING_ENV=demo\n' >"$work/kfs.env"
+STATE_RC=0 PAUSED=false PAUSE_RC=0 FLAT_RC=2 BOOK=true
+check "drain: a demo book pauses and does not wait for flat" "0 true state,pause" "$(drain false)"
+STATE_RC=0 PAUSED=true PAUSE_RC=0 FLAT_RC=2 BOOK=true
+check "drain: a demo book already paused goes on, pause left alone" "0 false state" "$(drain false)"
+STATE_RC=0 PAUSED=false PAUSE_RC=1 FLAT_RC=0 BOOK=true
+check "drain: a demo book whose pause is unconfirmed still aborts" "$KFS_DRAIN_PAUSE_FAILED true state,pause,state,unpause" "$(drain false)"
+STATE_RC=0 PAUSED=false PAUSE_RC=0 FLAT_RC=2 BOOK=false
+check "drain: book false still aborts not flat" "$KFS_DRAIN_NOT_FLAT true state,pause,wait-flat,state,unpause" "$(drain false)"
+STATE_RC=0 PAUSED=false PAUSE_RC=0 FLAT_RC=2 BOOK=
+check "drain: a missing book field still aborts not flat" "$KFS_DRAIN_NOT_FLAT true state,pause,wait-flat,state,unpause" "$(drain false)"
+printf 'TRADING_ENV=live\n' >"$work/kfs.env"
+STATE_RC=0 PAUSED=false PAUSE_RC=0 FLAT_RC=2 BOOK=true
+check "drain: book true on live still waits for flat" "$KFS_DRAIN_NOT_FLAT true state,pause,wait-flat,state,unpause" "$(drain false)"
+BOOK=
 : >"$calls"; KFS_PAUSED_BY_US=false; kfs_unpause_if_ours >/dev/null
 check "unpause only a pause we sent" "" "$(cat "$calls")"
 
