@@ -95,9 +95,12 @@ def test_every_html_response_carries_the_security_headers(logged_in, redis, cloc
         assert "strict-transport-security" not in response.headers
 
 
-def test_static_files_are_cached_for_a_day(client):
+def test_static_files_are_revalidated_on_every_load(client):
     response = client.get("/static/js/shell.js")
-    assert response.headers["cache-control"] == "public, max-age=86400"
+    assert response.headers["cache-control"] == "public, no-cache"
+    assert response.headers["etag"]
+    again = client.get("/static/js/shell.js", headers={"If-None-Match": response.headers["etag"]})
+    assert again.status_code == 304
 
 
 def test_no_page_has_inline_script_inline_style_hx_on_or_another_origin(logged_in, redis, clock):
@@ -362,10 +365,10 @@ def test_no_shell_page_has_a_style_attribute_after_any_whitespace(logged_in, pat
 
 
 def test_static_errors_are_not_cached(client):
-    """covers: AC-18 (only a real static file gets the day long cache)"""
+    """covers: AC-18 (only a real static file gets the static cache header)"""
     response = client.get("/static/js/missing.js")
     assert response.status_code == 404
-    assert response.headers.get("cache-control") != "public, max-age=86400"
+    assert response.headers.get("cache-control") != "public, no-cache"
 
 
 # --- accessibility

@@ -93,7 +93,7 @@ Session cookie `kfs_session` (itsdangerous `URLSafeSerializer` keyed by `dashboa
 | Endpoint | Method | Key inputs | Key outputs | Auth | Key errors |
 |---|---|---|---|---|---|
 | `/healthz` | GET | none | `{"status": "ok"}` | public | none |
-| `/static/*` | GET | path | file, `Cache-Control: public, max-age=86400` | public | 404 |
+| `/static/*` | GET | path | file, `Cache-Control: public, no-cache` (revalidated by ETag, amended 2026-11-12) | public | 404 |
 | `/login` | GET | `next` (opt), `stop_lost` (opt flag) | login form; 303 `/` when a session exists | public | none |
 | `/login` | POST | `password`, `code`, `next` (opt) form fields | 303 to `next`, cookie set | public | 200 with error and `next` kept, 429 locked |
 | `/logout` | POST | csrf | 303 `/login`, cookie cleared | session | 403 csrf |
