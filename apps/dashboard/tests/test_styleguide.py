@@ -65,8 +65,9 @@ def test_the_chart_script_turns_the_library_logo_off(redis, clock):
     assert "attributionLogo: false" in script
 
 
-def test_only_the_styleguide_loads_the_chart_library(logged_in):
-    assert "lightweight-charts" not in logged_in.get("/").text
+def test_only_the_pages_with_a_chart_load_the_chart_library(logged_in):
+    assert "lightweight-charts" in logged_in.get("/").text  # Overview's season curve
+    assert "lightweight-charts" not in logged_in.get("/trades").text
 
 
 # --- gaps found against spec 0004 (/test pass)

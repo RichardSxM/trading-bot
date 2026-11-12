@@ -162,8 +162,8 @@ def test_the_parser_reads_a_real_declaration_not_a_commented_one():
 
 
 def test_a_text_pair_just_under_4_5_is_named(front):
-    """covers: AC-15 (the faint on bg example from verify step 18)"""
-    colors = {name: normalize(value) for name, value in front["colors"].items()} | {"faint": "#4a515c"}
+    """covers: AC-15 (the faint on bg example from verify step 18, moved to the paper ground)"""
+    colors = {name: normalize(value) for name, value in front["colors"].items()} | {"faint": "#6e737b"}
     weak = weak_pairs(colors, [{"fg": "faint", "bg": "bg", "use": "text"}])
     assert list(weak) == [("faint", "bg")]
     assert weak[("faint", "bg")] < 4.5

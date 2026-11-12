@@ -1,20 +1,34 @@
 {% extends "shell.html" %}
-{% from "components/pulse.html" import pulse %}
-{% block scripts %}<script defer src="/static/js/pulse.js"></script>{% endblock %}
+{% block scripts %}<script defer src="/static/vendor/lightweight-charts.standalone.production.js"></script><script defer src="/static/js/season.js"></script><script defer src="/static/js/standings.js"></script>{% endblock %}
 {% block page %}
-<div class="board board--overview">
-  <section class="region region--wide" aria-labelledby="pulse-h">
-    {{ pulse("pulse-h", stale_s) }}
+<div class="overview">
+  <section class="scoreboard" aria-labelledby="score-h">
+    <h2 class="visually-hidden" id="score-h">Book</h2>
+    <div class="scoreboard__figures" sse-swap="overview-score">{{ live["overview-score"] }}</div>
+    <figure class="season">
+      <figcaption class="season__caption">Season · book value per hour, UTC</figcaption>
+      <div class="season__chart" data-season="/overview/season" role="img" aria-label="Book value per hour over the current strategy's season"><p class="season__empty">The season curve draws once the page has loaded.</p></div>
+      <p class="season__credit"><a href="https://www.tradingview.com/" rel="noopener noreferrer">Charting by TradingView</a></p>
+    </figure>
   </section>
-  <section class="region region--main" aria-labelledby="activity-h">
-    <header class="region__head"><h2 class="region__title" id="activity-h">Activity</h2><span class="region__meta">newest first</span><span class="activity-mute" sse-swap="overview-mute">{{ live["overview-mute"] }}</span></header>
+
+  <section class="standings-region" aria-labelledby="standings-h">
+    <header class="region__head"><h2 class="region__title" id="standings-h">Standings</h2><span class="region__meta">12 coins ranked by live 30 day trend · the side each holds is its zone</span></header>
+    <div class="blocked-reasons" sse-swap="overview-blocked">{{ live["overview-blocked"] }}</div>
+    <div class="standings-live" sse-swap="overview-standings">{{ live["overview-standings"] }}</div>
+  </section>
+
+  <section class="region region--activity" aria-labelledby="activity-h">
+    <header class="region__head"><h2 class="region__title" id="activity-h">Activity</h2><span class="region__meta">alerts and commands, newest first</span><span class="activity-mute" sse-swap="overview-mute">{{ live["overview-mute"] }}</span></header>
     {% with csrf=csrf, error=alerts_error, note=alerts_note %}{% include "partials/alerts_area.html" %}{% endwith %}
     <div class="activity-feed" sse-swap="overview-activity">{{ live["overview-activity"] }}</div>
   </section>
-  <section class="region region--side" aria-labelledby="position-h">
-    <header class="region__head"><h2 class="region__title" id="position-h">Position and P&amp;L</h2></header>
-    <div class="blocked-reasons" sse-swap="overview-blocked">{{ live["overview-blocked"] }}</div>
-    <div class="position-card" sse-swap="overview-position">{{ live["overview-position"] }}</div>
+
+  <section class="region region--ledger" aria-labelledby="position-h">
+    <details class="ledger">
+      <summary class="region__head ledger__summary"><h2 class="region__title" id="position-h">Trader and Kraken, per coin</h2><span class="region__meta">what the trader wants and holds, and what Kraken reports · the top bar's Kraken check flags any mismatch</span></summary>
+      <div class="position-card" sse-swap="overview-position">{{ live["overview-position"] }}</div>
+    </details>
   </section>
 </div>
 {% endblock %}

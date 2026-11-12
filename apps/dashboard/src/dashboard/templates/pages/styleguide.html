@@ -46,7 +46,7 @@
     {% for role in type_roles %}
     <div class="sg-row" data-sample="type:{{ role }}">
       <dt class="sg-row__key">{{ role }}</dt>
-      <dd class="sg-row__val sg-type--{{ role }}">{% if role.startswith("number") %}64,288.00 −1,234.50{% else %}Trader heartbeat is fresh{% endif %}</dd>
+      <dd class="sg-row__val sg-type--{{ role }}">{% if role == "poster" %}1,030.11{% elif role.startswith("number") %}64,288.00 −1,234.50{% else %}Trader heartbeat is fresh{% endif %}</dd>
     </div>
     {% endfor %}
   </dl>

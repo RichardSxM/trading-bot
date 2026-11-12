@@ -1,0 +1,47 @@
+{# Overview's scoreboard (live.standings.ScoreView): book value at poster size, today and the season, the next
+   matchday (the daily rebalance), gross against its cap as a fixed length bar, and the count of coins by side.
+   States: running, not_running, bad, lost. Words carry every state; colour only repeats them. #}
+{% from "components/states.html" import error_state %}
+{% from "components/badge.html" import badge %}
+<div class="score score--{{ view.status }}">
+{%- if view.status == "lost" %}
+  {{ error_state("Book unavailable: no data from Redis", " The dashboard can't read Redis; this updates once it can.") }}
+{%- elif view.status == "bad" %}
+  {{ error_state("Book heartbeat unreadable", " The trader wrote a heartbeat the dashboard does not understand; check its logs.") }}
+{%- elif view.status == "not_running" %}
+  {{ error_state("Trader not running", " Nothing on this page is live until it is back.") }}
+{%- else %}
+  <div class="score__book">
+    <p class="score__label">Book value</p>
+    <p class="score__value">{% if view.equity is not none %}<span class="num">{{ view.equity|num }}</span><span class="score__unit">USD</span>{% else %}<span class="score__none">not known yet</span>{% endif %}</p>
+    <dl class="score__changes">
+      <div class="score__change"><dt>Today, since 00:00 UTC</dt><dd>{% if view.today is not none %}{{ view.today|pnl }}{% else %}<span class="score__none">unavailable</span>{% endif %}</dd></div>
+      <div class="score__change"><dt>Season{% if view.strategy %} · {{ view.strategy }}{% endif %}{% if view.season_start is not none %} since {{ view.season_start.strftime("%-d %b") }}{% endif %}</dt><dd>{% if view.season_change is not none %}{{ view.season_change|pnl }}{% else %}<span class="score__none">unavailable</span>{% endif %}</dd></div>
+    </dl>
+  </div>
+  <dl class="score__facts">
+    <div class="score__fact score__fact--matchday">
+      <dt>Next rebalance</dt>
+      <dd>{% if view.next_run is not none %}<span class="score__big">{{ view.until }}</span><span class="score__when">{{ view.next_run|ts }} · {{ view.next_run|local_hm }} Amsterdam</span>{% else %}<span class="score__none">after the first plan</span>{% endif %}</dd>
+    </div>
+    <div class="score__fact">
+      <dt>Gross</dt>
+      <dd>
+        {%- if view.gross is not none %}
+        <span class="score__big"><span class="num">{{ view.gross|num }}</span>×</span><span class="score__when">of the {{ view.gross_cap|num }}× cap</span>
+        <svg class="gauge" viewBox="0 0 100 8" preserveAspectRatio="none" role="img" aria-label="Gross {{ view.gross|num }} times of a {{ view.gross_cap|num }} times cap"><rect class="gauge__track" x="0" y="0" width="100" height="8"/><rect class="gauge__fill" x="0" y="0" width="{{ (gross_share(view) * 100)|round(1) }}" height="8"/></svg>
+        {%- else %}<span class="score__none">not known yet</span>{% endif %}
+      </dd>
+    </div>
+    <div class="score__fact">
+      <dt>Book</dt>
+      <dd><span class="score__big"><span class="score__long">{{ view.longs }} long</span> · <span class="score__short">{{ view.shorts }} short</span></span>
+        <span class="score__when">{% if view.flips %}<span class="score__flip">{{ view.flips }} flip{{ "s" if view.flips != 1 }} if the trend holds</span>{% elif view.near %}<span class="score__flip">{{ view.near }} near the line</span>{% else %}none near the line{% endif %}</span></dd>
+    </div>
+    <div class="score__fact">
+      <dt>Trader</dt>
+      <dd>{{ badge(view.state_text, "ok" if view.state_level == "ok" else "bad" if view.state_level == "bad" else "warn") }}{% if view.failed %} <span class="score__failed">failed: {{ view.failed|join(", ") }}</span>{% endif %}</dd>
+    </div>
+  </dl>
+{%- endif %}
+</div>

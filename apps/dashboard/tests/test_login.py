@@ -253,7 +253,8 @@ def test_the_session_end_cue_shows_within_the_last_hour(redis, clock):
         assert "session ends" not in client.get("/").text
         clock.now += 23.5 * 3600
         text = client.get("/").text
-    topbar = text[text.index('<header class="topbar">') : text.index("</header>")]
+    start = text.index('<header class="topbar">')
+    topbar = text[start : text.index("</header>", start)]
     assert re.search(r"session ends \d\d:\d\dZ", topbar)
     assert text.count("session ends") == 1
 

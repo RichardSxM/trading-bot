@@ -136,7 +136,8 @@ TITLES["/styleguide"] = "Styleguide"
 
 
 def _topbar(page):
-    return page[page.index('<header class="topbar">') : page.index("</header>")]
+    start = page.index('<header class="topbar">')
+    return page[start : page.index("</header>", start)]
 
 
 def _csrf(page):
@@ -333,6 +334,8 @@ def test_the_event_stream_carries_the_security_headers(logged_in, monkeypatch):
         "system-losses",
         "overview-mute",
         "portfolio-board",
+        "overview-standings",
+        "overview-score",
     }
     assert "event: topbar-age\n" in response.text
 

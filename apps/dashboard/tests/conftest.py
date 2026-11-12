@@ -12,6 +12,7 @@ from pydantic import SecretStr
 from dashboard.data.pnl import PnlFigures
 from dashboard.data.strategies import StrategiesView
 from dashboard.data.trades import TradesView
+from dashboard.live.standings import Season
 from dashboard.settings import DashboardSettings
 from dashboard.web.app import create_app
 from trading_core.journal.summary import JournalTotals, PositionFigures, summarize
@@ -127,6 +128,12 @@ ZERO_PNL = PnlFigures(realized_today=Decimal(0), realized_all=Decimal(0), fees_t
 
 
 NO_TRADES = TradesView(round_trips=(), fills=())
+NO_SEASON = Season(None, ())
+
+
+async def no_closes(instruments):
+    """No daily closes: tests never call Kraken."""
+    return None
 
 
 class FakeExport:
@@ -178,6 +185,8 @@ def make_app(
     read_journal_summary=None,
     read_portfolio_pnl=lambda run: Decimal(0),
     read_portfolio_churn=None,
+    read_season=lambda run: NO_SEASON,
+    read_closes=None,
     **settings,
 ):
     settings.setdefault("dashboard_cookie_secure", False)
@@ -194,6 +203,8 @@ def make_app(
         read_study=read_study,
         read_promotions=read_promotions,
         read_reconciliations=read_reconciliations,
+        read_season=read_season,
+        read_closes=read_closes or no_closes,
         open_export=open_export or (lambda journal_range: FakeExport()),
         read_journal_summary=read_journal_summary or summary_of,
         read_portfolio_pnl=read_portfolio_pnl,

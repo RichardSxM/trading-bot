@@ -1,0 +1,68 @@
+{# Overview's standings (live.standings.StandingsView): every coin ranked by its live 30 day trend, the flip line
+   under the last coin with a positive trend. Each row: rank, coin with its zone stripe (the side held), the held
+   size, the trend, the flip price and the move to it, the weight, unrealized P&L, and the form guide. Near the
+   line and flips are words in the reserved flip colour. States: running, not_running, bad, lost; no closes. #}
+{% from "components/states.html" import error_state, empty_state %}
+{%- macro row(item, rank, run_at) -%}
+<tr data-coin="{{ item.base }}" data-state="{{ rank }}|{{ item.side }}|{{ item.near }}|{{ item.flips }}" class="standing standing--{{ item.side }}{% if item.near %} is-near{% endif %}{% if item.flips %} is-flipping{% endif %}">
+  <td class="standing__rank num">{{ rank }}</td>
+  <th scope="row" class="standing__coin"><span class="standing__name"><span class="standing__stripe" aria-hidden="true"></span><span class="standing__base">{{ item.base }}</span>{% if item.failed %} <span class="standing__failed">failed</span>{% endif %}</span><span class="standing__side-phone">{{ item.side|capitalize }}{% if item.quantity is not none %} {{ item.quantity|num }}{% endif %}</span></th>
+  <td class="standing__held" data-label="Held">
+    {%- if item.side in ("long", "short") %}<span class="standing__side">{{ item.side|capitalize }}</span>{% if item.quantity is not none %} <span class="num standing__qty">{{ item.quantity|num }}</span>{% endif %}
+    {%- elif item.side == "flat" %}<span class="standing__muted">Flat</span>
+    {%- else %}<span class="standing__muted">unknown</span>{% endif -%}
+  </td>
+  <td class="is-num standing__trend" data-label="30 day trend"{% if item.flip_move_pct is not none %} data-flip="{{ 'flips at ' ~ run_at if item.flips else 'near the line' if item.near else 'to flip ' ~ ('+' if item.flip_move_pct > 0 else '') ~ (item.flip_move_pct|num) ~ '%' }}"{% endif %}>{% if item.trend_pct is not none %}<span class="num standing__trend--{{ 'up' if item.trend_pct > 0 else 'down' if item.trend_pct < 0 else 'flat' }}">{{ "+" if item.trend_pct > 0 }}{{ item.trend_pct|num }}%</span>{% else %}·{% endif %}</td>
+  <td class="is-num standing__flip" data-label="Flip at">{% if item.flip_px is not none %}<span class="num">{{ item.flip_px|num }}</span>{% else %}·{% endif %}</td>
+  <td class="is-num standing__distance" data-label="To flip">
+    {%- if item.flip_move_pct is not none %}<span class="num">{{ "+" if item.flip_move_pct > 0 }}{{ item.flip_move_pct|num }}%</span>
+      {%- if item.flips %}<span class="standing__mark">flips at {{ run_at }}</span>
+      {%- elif item.near %}<span class="standing__mark">near the line</span>
+      {%- elif item.moves is not none %}<span class="standing__moves">{{ item.moves|num }} daily moves</span>{% endif %}
+    {%- else %}·{% endif -%}
+  </td>
+  <td class="is-num standing__weight" data-label="Weight">{% if item.weight_pct is not none %}<span class="num">{{ item.weight_pct|num }}%</span>{% else %}·{% endif %}</td>
+  <td class="is-num standing__pnl" data-label="P&amp;L">{% if item.unrealized is not none %}{{ item.unrealized|pnl }}{% else %}·{% endif %}</td>
+  <td class="standing__form" data-label="Form">
+    <span class="form" role="img" aria-label="Last {{ item.form|length }} days: {% for d in item.form %}{{ 'won' if d.won else 'lost' if d.won is false else 'no result' }}{{ ', ' if not loop.last }}{% endfor %}">
+    {%- for d in item.form %}<span class="form__day form__day--{{ 'won' if d.won else 'lost' if d.won is false else 'none' }}" title="{{ d.day.isoformat() }}: {{ 'won' if d.won else 'lost' if d.won is false else 'no result' }}" aria-hidden="true">{{ "W" if d.won else "L" if d.won is false else "·" }}</span>{% endfor -%}
+    </span>
+  </td>
+</tr>
+{%- endmacro -%}
+<div class="standings standings--{{ view.status }}">
+{%- if view.status == "lost" %}
+  {{ error_state("Standings unavailable: no data from Redis", " The dashboard can't read Redis; the table returns once it can.") }}
+{%- elif view.status == "bad" %}
+  {{ error_state("Book heartbeat unreadable", " Check the trader's logs.") }}
+{%- elif view.status == "not_running" %}
+  {{ error_state("Trader not running", " The table shows nothing live until it is back.") }}
+{%- elif not view.rows %}
+  {{ empty_state("No plan or position yet. The first plan lands once the daily history is loaded.", glyph="chart-pie") }}
+{%- else %}
+  {%- set run_at = view.next_run.strftime("%H:%M UTC") if view.next_run is not none else "the next rebalance" %}
+  {%- if not view.has_closes %}
+  <p class="standings__note">Daily closes from Kraken are unavailable right now, so trend and flip distance are blank; positions and P&amp;L are live.</p>
+  {%- endif %}
+  <table class="standings__table">
+    <caption class="visually-hidden">Coins ranked by live 30 day trend; coins above the flip line plan long at the next rebalance, below it short</caption>
+    <thead><tr>
+      <th scope="col" class="standing__rank"><abbr title="Rank">#</abbr></th><th scope="col">Coin</th><th scope="col">Held</th>
+      <th scope="col" class="is-num">30 day trend</th><th scope="col" class="is-num">Flip at</th><th scope="col" class="is-num">To flip</th>
+      <th scope="col" class="is-num">Weight</th><th scope="col" class="is-num">P&amp;L</th><th scope="col">Form, last 7 days</th>
+    </tr></thead>
+    <tbody class="standings__zone standings__zone--long">
+    {%- for item in view.rows[:view.above] %}{{ row(item, loop.index, run_at) }}{% else %}
+      <tr class="standings__empty"><td colspan="9">No coin above the line: none plans long at the next rebalance.</td></tr>{% endfor %}
+    </tbody>
+    <tbody class="standings__line-group">
+      <tr class="standings__line"><td colspan="9"><span class="standings__line-label">Flip line · 0% · above plans long, below plans short at the next rebalance</span></td></tr>
+    </tbody>
+    <tbody class="standings__zone standings__zone--short">
+    {%- for item in view.rows[view.above:] %}{{ row(item, view.above + loop.index, run_at) }}{% else %}
+      <tr class="standings__empty"><td colspan="9">No coin below the line: none plans short at the next rebalance.</td></tr>{% endfor %}
+    </tbody>
+  </table>
+  <p class="standings__source">Trend and flip prices from Kraken's public daily closes{% if view.closes_day %} up to {{ view.closes_day.isoformat() }}{% endif %}; the trader uses its own bars, so the last digit can differ.</p>
+{%- endif %}
+</div>

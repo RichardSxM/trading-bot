@@ -6,19 +6,19 @@
 {% block body %}
 <a class="skip-link" href="#main">Skip to content</a>
 <div class="app">
-  <aside class="sidebar">
+  <header class="masthead">
     <a class="brand" href="/">
-      <svg class="brand__mark" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><rect class="brand__tile" x="0.5" y="0.5" width="19" height="19" rx="4"/><path class="brand__trace" d="M3.5 11h3l1.75-4.5 3 8L13 8.5l1 2.5h2.5"/></svg>
+      <svg class="brand__mark" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><rect class="brand__tile" x="0.5" y="0.5" width="19" height="19" rx="2"/><path class="brand__trace" d="M4 5.5h2M8 5.5h8M4 8h2M8 8h6M4 13h2M8 13h5M4 15.5h2M8 15.5h7"/><path class="brand__line" d="M3 10.5h14"/></svg>
       <span class="brand__text"><span class="brand__name">Scalper</span><span class="brand__venue">Kraken Futures</span></span>
     </a>
     <nav class="nav" aria-label="Pages">{{ nav_links(nav, path) }}</nav>
-    <div class="sidebar__foot">
+    <div class="masthead__foot">
       <form method="post" action="/logout">
         <input type="hidden" name="csrf" value="{{ csrf }}">
         <button type="submit" class="nav__item nav__item--quiet">{{ icon("log-out") }}<span>Log out</span></button>
       </form>
     </div>
-  </aside>
+  </header>
 
   <div class="workspace" hx-ext="sse" sse-connect="/events">
     <header class="topbar">
