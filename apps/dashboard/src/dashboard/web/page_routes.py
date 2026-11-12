@@ -12,7 +12,7 @@ from typing import Annotated, Final
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from markupsafe import Markup
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -156,6 +156,20 @@ async def render_referring_page(
 async def overview(request: Request, session: SessionDep) -> Response:
     context = app_context(request)
     return await render_page(request, context, session, *PAGES["/"])
+
+
+@router.get("/overview/season")
+async def season(request: Request, session: SessionDep) -> Response:
+    """The season curve as JSON for Overview's chart: ``{"strategy", "points": [{"time": unix s, "value": "..."}]}``.
+
+    Equity travels as strings, never floats; the browser converts only to draw. Empty points when the book trader
+    has no run yet or Postgres did not answer.
+    """
+    poller = app_context(request).poller
+    curve = await poller.season(poller.season_run)
+    points = [] if curve is None else [{"time": int(p.at.timestamp()), "value": str(p.equity)} for p in curve.points]
+    body = {"strategy": None if curve is None else curve.strategy, "points": points}
+    return JSONResponse(body, headers={"Cache-Control": "no-store"})
 
 
 @router.get("/trades")

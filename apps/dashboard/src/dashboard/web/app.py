@@ -5,7 +5,7 @@ import contextlib
 import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Final
@@ -26,15 +26,18 @@ from dashboard.auth.session import SessionCodec
 from dashboard.auth.totp import TotpGuard
 from dashboard.data.alerts import AlertLine, recent_alerts
 from dashboard.data.journal import JournalExport, open_journal, read_summary
+from dashboard.data.kraken_daily import DailyCloses
 from dashboard.data.pnl import PnlFigures, pnl_figures
 from dashboard.data.portfolio import DayChurn, daily_churn, run_realized
 from dashboard.data.reconciliations import reconciliations_view
+from dashboard.data.season import season_curve
 from dashboard.data.strategies import StrategiesView, promotions_view, strategies_view, study_view
 from dashboard.data.trades import TradesView, trades_view
 from dashboard.live.alerts import MuteView
 from dashboard.live.poller import ACTIVITY_SIZE, Poller, supervise
 from dashboard.live.portfolio import PortfolioRaw, PortfolioView
 from dashboard.live.position import PositionView
+from dashboard.live.standings import ScoreView, Season, StandingsView, gross_share
 from dashboard.live.state import (
     ActivityRow,
     AgeView,
@@ -133,13 +136,17 @@ def create_app(
     read_journal_summary: Callable[[JournalRange], JournalSummary] | None = None,
     read_portfolio_pnl: Callable[[UUID], Decimal] | None = None,
     read_portfolio_churn: Callable[[], Sequence[DayChurn]] | None = None,
+    read_season: Callable[[UUID], Season] | None = None,
+    read_closes: Callable[[Sequence[str]], Awaitable[Mapping[str, Mapping[date, Decimal]] | None]] | None = None,
 ) -> FastAPI:
     """Build the dashboard app. Tests pass fake settings, secrets, a fake Redis, fake clocks, and Postgres readers.
 
     ``read_pnl``, ``read_trades``, ``read_strategies``, ``read_alerts``, ``read_reconciliations``,
     ``open_export``, ``read_journal_summary``, ``read_portfolio_pnl``, and ``read_portfolio_churn`` are blocking
     (they query Postgres as ``dashboard_app``); the poller and the page routes run them in a thread. Without
-    ``read_portfolio_churn`` and without Postgres the Portfolio page shows no churn.
+    ``read_portfolio_churn`` and without Postgres the Portfolio page shows no churn. ``read_season`` (blocking, the
+    season curve) defaults to Postgres when it is used; ``read_closes`` (async, each coin's daily closes) defaults to
+    Kraken's public candles, cached for ``REFRESH_S``.
     """
     client: LiveRedis = redis if redis is not None else redis_client(settings, secrets[REDIS_PASSWORD])
     engine = None
@@ -206,6 +213,11 @@ def create_app(
 
         read_portfolio_churn = read_portfolio_churn or postgres_portfolio_churn
 
+        def postgres_season(run: UUID) -> Season:
+            return season_curve(sessions, env, run)
+
+        read_season = read_season or postgres_season
+
         read_reconciliations = read_reconciliations or postgres_reconciliations
         read_portfolio_pnl = read_portfolio_pnl or postgres_portfolio_pnl
         open_export = open_export or postgres_export
@@ -215,8 +227,11 @@ def create_app(
     reconciliations_reader, export_opener, summary_reader = read_reconciliations, open_export, read_journal_summary
     portfolio_pnl_reader = read_portfolio_pnl
     churn_reader = read_portfolio_churn
+    season_reader = read_season
+    closes_reader = read_closes if read_closes is not None else DailyCloses(clock=clock).get
     templates = Jinja2Templates(directory=PACKAGE_DIR / "templates")
     templates.env.filters.update(num=num, pnl=pnl, ts=ts, local_hm=local_hm)
+    templates.env.globals.update(gross_share=gross_share)
     age_template = templates.get_template("partials/topbar_age.html")
     command_template = templates.get_template("partials/topbar_command.html")
     alert_template = templates.get_template("partials/topbar_alert.html")
@@ -229,6 +244,8 @@ def create_app(
     losses_template = templates.get_template("partials/system_losses.html")
     check_template = templates.get_template("partials/topbar_check.html")
     portfolio_template = templates.get_template("partials/portfolio_board.html")
+    standings_template = templates.get_template("partials/overview_standings.html")
+    score_template = templates.get_template("partials/overview_score.html")
     position_key = snapshot_key(settings.trading_env, "positions")
     account_key = snapshot_key(settings.trading_env, "account")
     heartbeat_key = snapshot_key(settings.trading_env, "heartbeat")
@@ -284,6 +301,12 @@ def create_app(
 
     def render_portfolio(view: PortfolioView) -> str:
         return portfolio_template.render(view=view)
+
+    def render_standings(view: StandingsView) -> str:
+        return standings_template.render(view=view)
+
+    def render_score(view: ScoreView) -> str:
+        return score_template.render(view=view)
 
     async def read_portfolio() -> PortfolioRaw:
         heartbeat, state, plan, positions, account = [await client.get(key) for key in portfolio_keys]
@@ -343,6 +366,10 @@ def create_app(
             read_portfolio_pnl=lambda run: asyncio.to_thread(portfolio_pnl_reader, run),
             render_portfolio=render_portfolio,
             portfolio_slot=book_slot,
+            read_closes=closes_reader,
+            read_season=None if season_reader is None else (lambda run: asyncio.to_thread(season_reader, run)),
+            render_standings=render_standings,
+            render_score=render_score,
         ),
         redis=client,
         clock=clock,
