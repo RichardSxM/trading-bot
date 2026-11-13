@@ -441,6 +441,63 @@ def test_a_stop_during_a_flip_cancels_the_open_leg_and_closes_every_coin():
     assert not strategy.has_open_positions()
 
 
+class _RefusesFirstClose(_Planned):
+    """The first kill switch close never reaches the venue: denied inside ``submit_order``, or rejected 1 s later."""
+
+    mode = "deny"
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.refused = False
+
+    def submit_order(self, order, *args, **kwargs):
+        if self.refused or not order.is_reduce_only or not any(t.startswith("halt:") for t in order.tags or []):
+            super().submit_order(order, *args, **kwargs)
+            return
+        self.refused = True
+        self.sent.append(_Sent(self.clock.timestamp_ns(), str(order.instrument_id), order.side,
+                               order.quantity.as_decimal(), True, order))  # fmt: skip
+        event = SimpleNamespace(client_order_id=order.client_order_id, reason="test says no")
+        if type(self).mode == "deny":
+            self.on_order_denied(event)
+            return
+        at = self.clock.timestamp_ns() + NS_PER_S
+        self.clock.set_time_alert_ns(f"reject-{order.client_order_id}", at, lambda _e: self.on_order_rejected(event))
+
+
+def _flatten(strategy):
+    strategy.flatten(HALT_ID)
+
+
+@pytest.mark.parametrize("mode", ["deny", "reject"])
+def test_a_refused_kill_switch_close_is_sent_again_on_the_next_flatten(mode):
+    cls = _plan("P", base=_RefusesFirstClose, first={BTC: 2000}, later=((1, _flatten), (1.5, _flatten)), mode=mode)
+    engine, strategy, _ = _run(cls)
+
+    closes = [s for s in _after(strategy, 1) if s.reduce_only]
+    assert [(s.coin, s.side, s.qty) for s in closes] == [(BTC, OrderSide.SELL, D("0.0250"))] * 2
+    assert closes[1].ts >= cls.t0_ns + int(1.5 * MINUTE_NS)
+    assert engine.cache.positions_open() == []
+
+
+def _flatten_then_late_grow(strategy):
+    # A grow already in flight fills after the close was sized from the cache, so the close leaves a rest.
+    grow = strategy.order_factory.market(INSTRUMENT.id, OrderSide.BUY, INSTRUMENT.make_qty(D("0.01")))
+    TrendPortfolio.submit_order(strategy, grow)
+    strategy._cancel_entries = lambda: 0  # the grow is past cancelling
+    strategy.flatten(HALT_ID)
+    del strategy._cancel_entries
+
+
+def test_a_kill_switch_close_left_short_is_topped_up_on_the_next_flatten():
+    cls = _plan("P", first={BTC: 2000}, later=((1, _flatten_then_late_grow), (1.5, _flatten)))
+    engine, strategy, _ = _run(cls)
+
+    closes = [s for s in _after(strategy, 1) if s.reduce_only]
+    assert [(s.coin, s.qty) for s in closes] == [(BTC, D("0.0250")), (BTC, D("0.0100"))]
+    assert engine.cache.positions_open() == []
+
+
 def test_resume_position_adopts_the_position_with_nothing_sent(caplog):
     engine, strategy, _ = _run(_plan("P", first={BTC: 2000}))
     [position] = engine.cache.positions_open()

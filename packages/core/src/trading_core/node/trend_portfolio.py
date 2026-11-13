@@ -293,27 +293,25 @@ class TrendPortfolio(KfsStrategy):
 
     def flatten(self, halt_id: UUID) -> None:
         """Cancel retries and pending flip opens, then close every coin reduce only at market (idempotent)."""
-        self._drop_round()
-        tags = [f"{ORIGIN_TAG}{OrderOrigin.KILL_SWITCH}", f"{HALT_TAG}{halt_id}"]
-        self._cancel_entries()
-        for position in self.cache.positions_open(strategy_id=self.id):
-            coin = str(position.instrument_id)
-            if coin in self._closing:
-                continue
-            self._closing.add(coin)
-            self._submit(position.instrument_id, -position.signed_decimal_qty(), reduce_only=True, tags=tags)
+        self.flatten_for(halt_id, frozenset())
+
+    def _close_pending(self, coin: InstrumentId) -> bool:
+        # A coin is skipped only while a reduce only close for it is still working; a refused close, or one that
+        # filled but left a rest (a grow filled after it was sized), gets a fresh close on the next poll.
+        working = [
+            *self.cache.orders_open(instrument_id=coin, strategy_id=self.id),
+            *self.cache.orders_inflight(instrument_id=coin, strategy_id=self.id),
+        ]
+        return any(order.is_reduce_only for order in working)
 
     def flatten_for(self, halt_id: UUID, untrusted: frozenset[str]) -> None:
         """``flatten`` that skips the close of an untrusted coin (spec 0023 AC-8); its entries are still cancelled."""
-        if not untrusted:
-            self.flatten(halt_id)
-            return
         self._drop_round()
         self._cancel_entries()
         tags = [f"{ORIGIN_TAG}{OrderOrigin.KILL_SWITCH}", f"{HALT_TAG}{halt_id}"]
         for position in self.cache.positions_open(strategy_id=self.id):
             coin = str(position.instrument_id)
-            if coin in untrusted or coin in self._closing:
+            if coin in untrusted or self._close_pending(position.instrument_id):
                 continue
             self._closing.add(coin)
             self._submit(position.instrument_id, -position.signed_decimal_qty(), reduce_only=True, tags=tags)
