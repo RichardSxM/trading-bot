@@ -2,8 +2,11 @@
 
 Each running trader records the same command once, so the row gains ``slot`` (text, not null, server
 default ``main``, ``main`` or ``portfolio``) and the primary key becomes ``(id, slot)``. Every old row
-becomes ``main``'s, and the previous release, which never names the column, still works on this schema.
-The downgrade deletes the ``portfolio`` rows, restores the key on ``id``, and drops the column.
+becomes ``main``'s. A release from before this change does not work on this schema: it records a command
+with ``ON CONFLICT (id)``, and with the key on ``(id, slot)`` Postgres refuses that, so a trader rolled back
+past this revision runs its commands but records none (and loses the duplicate check) until this downgrade
+runs. No unique index on ``id`` alone can be kept, since two slots record the same id. The downgrade deletes
+the ``portfolio`` rows, restores the key on ``id``, and drops the column.
 
 Revision ID: 0015_command_slot
 Revises: 0014_trend_kind

@@ -57,7 +57,7 @@ def test_a_book_on_main_alerts_failed_coins_without_the_portfolio_slot():
 
     [push] = deliverer.sent
     assert push.tier is Tier.WARNING
-    assert push.episode.fingerprint == "portfolio_coins_failed:100"
+    assert push.episode.fingerprint == "portfolio_coins_failed:100:1"
     [obs] = seen
     assert (obs.service, obs.fields["slot"]) == ("trader", "main")
     assert push.episode.details["slot"] == "main"
