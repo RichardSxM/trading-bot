@@ -1,6 +1,7 @@
 """covers: spec 0025 AC-7 (the fetch window and a good seed), AC-9 (retries, then an empty seed and one
 ``warmup_seed_failed`` warning the alert rule catches; it never raises), AC-20 (one fetch per coin from that
-coin's candles, the coin on the warning, and a failed coin leaving the others seeded).
+coin's candles, the coin on the warning, and a failed coin leaving the others seeded); spec 0030 AC-8 (the
+daily seed: 150 closed candles, the in progress one dropped, the 121 minimum, a stale seed dropped).
 
 The fetch is scripted: no request leaves the test.
 """
@@ -8,14 +9,17 @@ The fetch is scripted: no request leaves the test.
 import json
 import logging
 import urllib.error
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from email.message import Message
 
 import pytest
 
-from trader.warmup import SEED_BARS, warmup_seed, warmup_seeds
+from trader.main import seed_fetch
+from trader.warmup import SEED_BARS, daily_seed, warmup_seed, warmup_seeds
 from trading_core.alerts.model import Observation
 from trading_core.alerts.rules import first_match
+from trading_core.strategy.trend_portfolio import DailyClose
 
 INTERVAL_MS = 300_000
 NOW_S = int(datetime(2026, 10, 30, 12, 2, 30, tzinfo=UTC).timestamp())
@@ -173,3 +177,86 @@ def test_each_coin_is_fetched_in_turn_and_a_failed_coin_alone_starts_without_a_s
     assert len(seeds[BTC]) == SEED_BARS
     [warning] = _failures(caplog)
     assert (warning.fields["instrument"], warning.fields["reason"]) == (PEPE, "not_json")
+
+
+# The daily seed of trend_portfolio (spec 0030 AC-8) ---------------------------------------------------
+
+DAY_MS = 86_400_000
+TODAY = date(2026, 10, 30)
+YESTERDAY = TODAY - timedelta(days=1)
+
+
+def _daily_body(count):
+    # The last candle opens at 00:00 today and is still in progress at 12:02:30; closes go up by one a day.
+    last_open = int(datetime(2026, 10, 30, tzinfo=UTC).timestamp()) * 1000
+    candles = [
+        {
+            "time": last_open - (count - 1 - i) * DAY_MS,
+            "open": str(100 + i),
+            "high": str(101 + i),
+            "low": str(99 + i),
+            "close": str(100 + i),
+            "volume": "2",
+        }
+        for i in range(count)
+    ]
+    return json.dumps({"candles": candles, "more_candles": False}).encode()
+
+
+def _daily(script, coin=BTC):
+    return seed_fetch("trend_portfolio")(coin, lambda: NOW_NS, script.get, script.sleep)
+
+
+def test_the_daily_seed_asks_for_150_days_and_a_margin_from_the_1d_candles():
+    script = _Script(_daily_body(171))
+
+    _daily(script)
+
+    [(url, _)] = script.urls
+    assert url == f"https://futures.kraken.com/api/charts/v1/trade/PF_XBTUSD/1d?from={NOW_S - 170 * 86_400}&to={NOW_S}"
+
+
+def test_the_daily_seed_keeps_150_closed_candles_and_drops_the_one_in_progress():
+    seed = _daily(_Script(_daily_body(171)))
+
+    closes = daily_seed(BTC, seed, TODAY)
+
+    assert len(closes) == 150
+    # Candle 170 is today's, still in progress; candle 169 is yesterday's.
+    assert closes[-1] == DailyClose(YESTERDAY, Decimal(269))
+    assert closes[0].day == YESTERDAY - timedelta(days=149)
+
+
+def test_121_closed_daily_candles_are_enough(caplog):
+    with caplog.at_level(logging.WARNING):
+        seed = _daily(_Script(_daily_body(122)))
+
+    assert len(seed) == 121
+    assert _failures(caplog) == []
+
+
+def test_120_closed_daily_candles_fail_as_too_few(caplog):
+    with caplog.at_level(logging.WARNING):
+        seed = _daily(_Script(_daily_body(121)))
+
+    assert seed == ()
+    assert [r.fields["reason"] for r in _failures(caplog)] == ["too_few"]
+
+
+def test_a_seed_ending_two_days_ago_is_dropped_as_stale_naming_the_coin(caplog):
+    seed = _daily(_Script(_daily_body(171)))
+
+    with caplog.at_level(logging.WARNING):
+        closes = daily_seed(BTC, seed, TODAY + timedelta(days=1))
+
+    assert closes == ()
+    [stale] = [r for r in caplog.records if getattr(r, "fields", {}).get("code") == "seed_stale"]
+    assert stale.levelname == "WARNING"
+    assert (stale.fields["instrument"], stale.fields["last_close_day"]) == (BTC, YESTERDAY.isoformat())
+
+
+def test_an_empty_seed_stays_empty_with_no_second_warning(caplog):
+    with caplog.at_level(logging.WARNING):
+        assert daily_seed(BTC, (), TODAY) == ()
+
+    assert caplog.records == []

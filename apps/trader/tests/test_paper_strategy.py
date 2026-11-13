@@ -11,11 +11,14 @@ from pydantic import ValidationError
 from trader.main import TraderSettings
 from trader.paper_strategy import (
     BarRuleView,
+    TrendPortfolioView,
     build_paper_strategy,
+    build_trend_portfolio,
     donchian_config,
     donchian_scalp_config,
     donchian_scalp_r1_config,
     paper_version,
+    trend_portfolio_config,
 )
 from trading_core import versioning
 from trading_core.node.donchian_4h import Donchian4h
@@ -25,6 +28,7 @@ from trading_core.node.funding import FundingLedger
 from trading_core.node.kraken import BTC_PERP
 from trading_core.node.placeholder import PlaceholderTimed
 from trading_core.node.strategy import PauseGate
+from trading_core.node.trend_portfolio import TrendPortfolio
 from trading_core.strategy.bar_rule import BarInput
 from trading_core.strategy.blocks import EntryBlocks
 
@@ -190,3 +194,57 @@ def test_only_r1_takes_a_seed(demo, monkeypatch):
 
     assert isinstance(strategy, DonchianScalp)
     assert not hasattr(strategy, "_seed")
+
+
+TP_COINS = f"{BTC_PERP},PF_ETHUSD.KRAKEN"
+
+
+@pytest.fixture
+def portfolio(demo, monkeypatch):
+    monkeypatch.setenv("PAPER_STRATEGY", "trend_portfolio")
+    monkeypatch.setenv("PAPER_INSTRUMENTS", TP_COINS)
+
+
+def test_trend_portfolio_builds_the_owner_s_10x_demo_settings(portfolio):  # covers: spec 0030 AC-3
+    config = trend_portfolio_config(TraderSettings(), uuid4())
+
+    assert (config.vol_target, config.gross_cap) == (Decimal("0.31"), Decimal(10))
+    assert (config.lookback_days, config.vol_days, config.min_history_days) == (30, 30, 120)
+    assert (config.rebalance_weekday, config.run_at_utc, config.order_id_tag) == (0, "00:05", "TP")
+    assert (config.seed_days, config.seed_min_days) == (150, 121)
+    assert config.instruments == tuple(sorted(TP_COINS.split(",")))
+
+
+def test_trend_portfolio_records_the_10x_settings_in_its_version(portfolio):  # covers: spec 0030 AC-3, AC-10
+    version = paper_version(TraderSettings())
+
+    assert (version.name, version.kind.value) == ("trend_portfolio", "trend")
+    assert (version.config["vol_target"], version.config["gross_cap"]) == ("0.31", "10")
+    assert version.config["instruments"] == sorted(TP_COINS.split(","))
+    assert version.frozen == versioning.freeze(TrendPortfolio.__module__, version.config)
+
+
+def test_a_different_vol_target_gives_a_different_version(portfolio):  # covers: spec 0030 AC-3
+    version = paper_version(TraderSettings())
+
+    edited = versioning.freeze(TrendPortfolio.__module__, {**version.config, "vol_target": "0.02"})
+
+    assert edited.frozen_hash != version.frozen.frozen_hash
+
+
+def test_trend_portfolio_is_refused_outside_demo(portfolio):  # covers: spec 0030 AC-3
+    settings = TraderSettings().model_copy(update={"trading_env": "live"})
+
+    with pytest.raises(ValueError, match="live taker fee"):
+        trend_portfolio_config(settings, uuid4())
+
+
+def test_one_instance_gets_every_coin_and_one_view_each(portfolio):  # covers: spec 0030 AC-10
+    settings = TraderSettings()
+
+    strategy, views = build_trend_portfolio(settings, uuid4(), PauseGate(), EntryBlocks(), lambda item: None, {}, None)
+
+    assert isinstance(strategy, TrendPortfolio)
+    assert len(views) == 2
+    assert all(isinstance(view, TrendPortfolioView) for view in views)
+    assert [(view.exiting, view.exit_due_ns, view.stop_order()) for view in views] == [(False, None, None)] * 2

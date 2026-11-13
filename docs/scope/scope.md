@@ -562,7 +562,7 @@ spec [0030](../specs/0030-trend-portfolio/index.md)
   - [x] Alerts, deploy, and the Portfolio page (AC-17 to AC-21)
   - [x] Close out and VPS start: hashes, deploy, your promote, profile on, start checks (AC-11, AC-22, AC-23)
 - [x] Verify it: `/check verify trend portfolio`
-- [ ] Test it: `/test trend portfolio`
+- [x] Test it: `/test trend portfolio`
 - [ ] Review it (fresh model): `/check review trend portfolio`
 - [ ] Document it: `/document trend portfolio`
 
