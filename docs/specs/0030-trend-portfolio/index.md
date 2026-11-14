@@ -1,6 +1,6 @@
 # 0030. trend_portfolio: a weekly 30 day trend portfolio on a second demo trader, beside six_vote_trend
 
-**Date**: 2026-11-07 (revised the same day after a cross check by a second model: per trader pause key and result readers, rebalance on resume, the portfolio's own risk caps, dashboard reads per trader, the frozen file list; amended 2026-11-09: AC-3 lets the demo run at about 10x by your choice, with AC-1's tested values kept as the rule's defaults, and AC-23 allows a one step order on resume)
+**Date**: 2026-11-07 (revised the same day after a cross check by a second model: per trader pause key and result readers, rebalance on resume, the portfolio's own risk caps, dashboard reads per trader, the frozen file list; amended 2026-11-09: AC-3 lets the demo run at about 10x by your choice, with AC-1's tested values kept as the rule's defaults, and AC-23 allows a one step order on resume; amended 2026-11-14: AC-17 makes the trader log alert rules cover `trader-portfolio`, from the 2026-11-13 review)
 **Status**: In Progress
 
 ## Summary
@@ -132,6 +132,7 @@ It runs **beside** `six_vote_trend`, not instead of it, as a second trader servi
   - The gate's run reads are by version, so they are already per strategy and are unchanged.
   - The `RISK_*` limit values are applied to each trader on its own.
 - **AC-17** (alerts): a new alerter setting `ALERTER_TRADER_SLOTS` (default `main`; the VPS sets `main,portfolio`). For each listed slot the alerter runs its heartbeat and entry block checks on that slot's keys, and its alert text names the slot. For `portfolio` it also sends one alert per rebalance when `portfolio_plan.failed` is not empty, naming the coins, deduped by the plan's `last_rebalance_at`.
+  - Log rules for both traders (amended 2026-11-14, review 2026-11-13 Major 2): every trader log rule (`loss_limit_halt`, `risk_critical`, `risk_halt_manual`, `trader_critical_codes`, `snapshot_write_failed`, `stale_feed`, `warmup_seed_failed`, `engine_error`, `fill`) matches lines from both compose services, `trader` and `trader-portfolio` (`TRADER_SERVICES` in `alerts/rules.py`). This keeps the user story: safety does not get weaker with two traders. An episode from `trader-portfolio` takes its usual fingerprint plus `:trader-portfolio`, so the two traders' episodes of one event stay apart. The main trader's fingerprints stay exactly as before, so its open episodes carry over a deploy. A risk alert title from `trader-portfolio` ends in "on trader-portfolio". Fill pushes stay on for the portfolio on purpose: they are live only, about a dozen a week, and every real money fill is worth a look. A `fill` fingerprint keeps only the trade id, since a trade id is unique across traders.
 - **AC-18** (compose and deploy):
   - **The service**: a new compose service `trader-portfolio`, using the trader image, under the compose profile `portfolio`, with:
     - `TRADER_SLOT=portfolio`, its own `TRADER_ID`, and `PAPER_STRATEGY=trend_portfolio` fixed in the service;
@@ -323,7 +324,7 @@ No new secret. The new trader uses the same Postgres and Redis users as `trader`
 - Commands: one `pause` is read by both groups and gives two results, one with `slot=portfolio`; a new group starts at `$` and does not replay an old `stop`; the CLI with default `--slot` ignores the portfolio's result; `--slot all` waits for both; the same command id is stored once per slot; `flatten` gets `not_for_slot` from the portfolio. Verifies **AC-14**.
 - Pause and halt: a `stop` writes both halt keys and flattens both; a daily loss trip on `portfolio` writes only its key; a restarted portfolio does not pick up `main`'s pause. Verifies **AC-15**.
 - Reads: the loss seed ignores the other trader's positions; the dashboard P&L ignores portfolio fills; the journal shows both with a `trader` column. Verifies **AC-16**.
-- Alerts: a stale `portfolio_heartbeat` alerts naming the slot only when the slot is listed; a non empty `failed` alerts once per `last_rebalance_at`. Verifies **AC-17**.
+- Alerts: a stale `portfolio_heartbeat` alerts naming the slot only when the slot is listed; a non empty `failed` alerts once per `last_rebalance_at`; a `loss_limit_halt`, a CRITICAL risk line, and a `trader_critical_codes` line from `trader-portfolio` each match their rule with a `:trader-portfolio` fingerprint, and the promise rows cover them (`test_alerts_rules.py`, `test_alerts_coverage.py`). Verifies **AC-17**.
 - Deploy: with the profile on, the promotion check refuses an unpromoted portfolio version; the pause waits for both results; a portfolio health failure rolls back; with the profile off the script runs as today (dry run). Verifies **AC-18**.
 - Page: snapshots for 12 coins render 12 rows with text signals; no heartbeat shows the empty state; times show in UTC and Amsterdam. Verifies **AC-19** to **AC-21**.
 - Hashes: every registered version hash matches the baseline. Verifies **AC-11**.
