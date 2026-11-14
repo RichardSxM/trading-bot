@@ -1,7 +1,7 @@
 # 0030. trend_portfolio: a weekly 30 day trend portfolio on a second demo trader, beside six_vote_trend
 
 **Date**: 2026-11-07 (revised the same day after a cross check by a second model: per trader pause key and result readers, rebalance on resume, the portfolio's own risk caps, dashboard reads per trader, the frozen file list; amended 2026-11-09: AC-3 lets the demo run at about 10x by your choice, with AC-1's tested values kept as the rule's defaults, and AC-23 allows a one step order on resume; amended 2026-11-14: AC-17 makes the trader log alert rules cover `trader-portfolio`, from the 2026-11-13 review, and AC-3 records the move from about 10x to 5x (PR #138) and that `trader-portfolio` has been off on the VPS since 2026-11-10)
-**Status**: In Progress
+**Status**: Accepted
 
 ## Summary
 
