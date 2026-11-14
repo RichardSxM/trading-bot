@@ -33,13 +33,14 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 23 | Intraday trend candidates | Slice 7 | done |
 | 24 | Imbalance fade candidate | Slice 7 | done |
 | 25 | Multi coin portfolio | Slice 7 | done |
-| 26 | Donchian scalp r1 | Slice 7 | in-progress |
-| 27 | Donchian scalp r2 | Slice 7 | in-progress |
+| 26 | Donchian scalp r1 | Slice 7 | dropped |
+| 27 | Donchian scalp r2 | Slice 7 | dropped |
 | 28 | Daily trend candidate (tsmom) | Slice 7 | done |
 | 29 | Market context candidates | Slice 7 | done |
-| 30 | Six vote trend (demo forward test) | Slice 7 | in-progress |
-| 31 | Trend portfolio beside six vote | Slice 7 | in-progress |
-| 33 | Trend daily on the main trader | Slice 7 | in-progress |
+| 30 | Six vote trend (demo forward test) | Slice 7 | done |
+| 31 | Trend portfolio beside six vote | Slice 7 | done |
+| 33 | Trend daily on the main trader | Slice 7 | dropped |
+| 34 | Trend vol on the main trader | Slice 7 | in-progress |
 | 17 | Hour level strategy candidates | Slice 7 | dropped |
 | 18 | Trade journal export | Slice 8 | done |
 | 19 | Go live with small capital | Slice 9 | in-progress |
@@ -473,7 +474,8 @@ spec [0022](../specs/0022-multi-coin-portfolio/index.md)
 - [x] Review it (fresh model): `/check review multi coin portfolio`
 - [x] Document it: `/document multi coin portfolio` (CHANGELOG, 2026-10-29)
 
-### 26. Donchian scalp r1 · in-progress
+### 26. Donchian scalp r1 · dropped
+**Dropped 2026-11-14:** both screens failed, and r2 replaced r1 on the VPS on 2026-10-31. The open boxes below (AC-13a, the PEPE spread check, the GA steps) are not worth closing for a strategy that no longer runs.
 `donchian_scalp` plus three ideas from the Donchian blueprint you shared on 2026-10-30: trade only with the 200 bar EMA, exit when a close crosses the channel middle, and skip an entry when the spread is wide against the ATR. It is a new variant, so the frozen `donchian_scalp` stays as the baseline. A seed from Kraken's 5 minute candles makes it ready right after a deploy. Two lab screens compare it with the baseline, then it runs on demo whatever their verdict. Amended 2026-10-30: one trader runs it on both BTC and PEPE (`PAPER_INSTRUMENTS`), with a PEPE screen too.
 **Done when:** the BTC and PEPE screens are recorded with gross and cost per trade, the real spread to ATR distribution is recorded for both coins, no existing strategy's hash moved, and the VPS demo runs `donchian_scalp_r1` on BTC and PEPE with a working seed for each.
 spec [0025](../specs/0025-donchian-scalp-r1/index.md) · code in [donchian_midline.py](../../packages/core/src/trading_core/strategy/donchian_midline.py), [donchian_scalp_r1.py](../../packages/core/src/trading_core/node/donchian_scalp_r1.py), [trader/warmup.py](../../apps/trader/src/trader/warmup.py)
@@ -494,7 +496,8 @@ spec [0025](../specs/0025-donchian-scalp-r1/index.md) · code in [donchian_midli
 - [ ] Review it (fresh model): `/check review donchian scalp r1`
 - [ ] Document it: `/document donchian scalp r1`
 
-### 27. Donchian scalp r2 · in-progress
+### 27. Donchian scalp r2 · dropped
+**Dropped 2026-11-14:** the screens failed, and six vote (feature 30) replaced it on the VPS on 2026-11-06. The demo week review and the GA steps below were never run and are left as they are.
 r1's signals traded with maker orders, from the exit and maker studies of 2026-10-31: the entry rests as a post only limit 0.5 ATR behind the signal close for 3 bars, the midline exit and the time stop rest at the touch for 3 bars and then go to market, and entries are skipped when ATR is below 10 bps of price. The stop and every forced close stay market. A new maker base sits beside the frozen `BarRuleStrategy`. Screened on BTC and PEPE, then it replaces r1 on demo whatever the verdict. From spec 0025's results. Amended 2026-11-02: PEPE never passes the spread check, so demo moves to the coins among BTC ETH SOL XRP LINK UNI ZEC TRX DOGE QNT that pass a 1 hour quote gap check, the recorder goes back to BTC only, and the demo week restarts on that set.
 **Done when:** the BTC and PEPE screens are recorded with the entry fill share and maker exit share, no existing strategy's hash moved, the quote gap check picks the coin set, the VPS demo runs `donchian_scalp_r2` on that set with a working seed for each coin, and one demo week of fill and fallback counts per coin is recorded.
 spec [0026](../specs/0026-donchian-scalp-r2/index.md)
@@ -535,7 +538,7 @@ Slower strategies (hold hours to days) driven by the perp market's own context i
 **Carried over from feature 20 (2026-10-04, an article, rules of thumb only):** funding above +0.05 % per period reads as crowded longs, below −0.02 % as crowded shorts; rising open interest in a tight range reads as pressure before a breakout. Hypotheses to test, not thresholds to hard code.
 - [x] Pre check (2026-11-05, no spec needed since nothing passed): Kraken's free hourly chart history on BTC, ETH, SOL, XRP (liquidations, mark and index since 2022-03, open interest since 2023-03, long/short ratio since 2023-05), development range only, holdout untouched. Five signals × holds of 4, 12, 24, 72 h = 20 trials. Pass bar: net of 14 bps, t at least 3, at least 30 trades, consistent across years and coins. Verdict per signal: basis fade (the funding proxy) **fail**, open interest flush fade **fail**, open interest build follow **fail**, liquidation spike fade **fail** (cascades tend to continue), long/short ratio contrarian **fail** (best, +12 to +42 bps net at 12 to 72 h, but t at most 1.5). 0 of 20 pass. Follow up the same day: the long/short signal with a take profit of 1, 2, or 3 % and a stop of 1 or 2 % (72 h time limit, 6 more trials, 26 in all) **fail**. Tighter exits are worse (1 % / 1 % nets −17 bps per trade, t −9), and the best (3 % / 2 %) nets +5 bps, t 0.8.
 
-### 30. Six vote trend (demo forward test) · in-progress
+### 30. Six vote trend (demo forward test) · done
 Trade a coin on 1 hour bars only when six votes agree: its own EMA 200 trend, BTC's EMA 200 trend, 9/21 EMA, RSI 14 (55/45), a 20 bar breakout, and a volume spike. A maker entry falls back to market, a 3 ATR stop trails on every tick, and a trade ends after about 24 hours. It replaces r2 on the VPS demo on the same 12 coins as soon as it is promoted, with no lab screen and no gate, as a live forward test. From the 2026-11-06 research: about 870 backtest trials failed fresh data after fees; this rule made +70 and +33 bps a trade on the development year and −12 on the fresh year.
 **Done when:** every existing strategy hash is unchanged, the VPS demo runs `six_vote_trend` on the 12 coins with a `six_vote_values` line (V2 set) for each coin, and r2's last run is noted.
 spec [0029](../specs/0029-six-vote-trend/index.md) · code in [six_vote.py](../../packages/core/src/trading_core/strategy/six_vote.py), [six_vote_trend.py](../../packages/core/src/trading_core/node/six_vote_trend.py), [trader/paper_strategy.py](../../apps/trader/src/trader/paper_strategy.py), [trader/warmup.py](../../apps/trader/src/trader/warmup.py)
@@ -550,7 +553,7 @@ spec [0029](../specs/0029-six-vote-trend/index.md) · code in [six_vote.py](../.
 - [x] Review it (fresh model): `/check review six vote trend`
 - [x] Document it: `/document six vote trend`
 
-### 31. Trend portfolio beside six vote · in-progress
+### 31. Trend portfolio beside six vote · done
 Hold all 12 demo coins long or short by the sign of each coin's 30 day return, scaled by volatility, gross at most 2 times equity, rebalanced every Monday 00:05 UTC with market orders. It runs as a second demo trader with its own sandbox account beside `six_vote_trend`, which keeps its version and its figures. One stop button stops both, and a new Portfolio page shows the book. Straight to demo as a forward test; a lab study and gate verdict are owed before live. From the 2026-11-06 and 2026-11-07 research: the only idea that held on data it never saw (Binance 2018 to 2022, Sharpe 1.36 on these coins, every year positive).
 **Done when:** every existing strategy hash is unchanged, the `main` trader keeps every key and name, the VPS demo runs `trader-portfolio` with a start rebalance on all 12 coins, both traders answer one pause and unpause, and the Portfolio page shows the book.
 spec [0030](../specs/0030-trend-portfolio/index.md)
@@ -567,7 +570,8 @@ spec [0030](../specs/0030-trend-portfolio/index.md)
 - [x] Review it (fresh model): `/check review trend portfolio`
 - [x] Document it: `/document trend portfolio` (CHANGELOG, 2026-11-14)
 
-### 33. Trend daily on the main trader · in-progress
+### 33. Trend daily on the main trader · dropped
+**Dropped 2026-11-14:** `trend_vol` (feature 34) replaced it on the main trader about 8 hours after it went live on 2026-11-11, so the close out and GA steps below were never run. Its code stays, since `trend_vol` subclasses it.
 Replace the main demo trader's losing 5 minute scalper (`donchian_scalp_tp`) with `trend_daily`: the 30 day trend book of feature 31 at 5x, rebalanced every day at 00:05 UTC, every change traded, no stops, no brake. A thin subclass of `trend_portfolio`, plus a `book` flag so deploys skip the flat wait, and a Portfolio page that can read the main trader. Straight to demo as an open ended forward test; a study and gate are owed before live. From the 2026-11-11 research: the 30 day trend pays at day holds (+25 to 40 bps a day), not at 5 minutes.
 **Done when:** every existing strategy hash is unchanged, the VPS main trader runs `trend_daily` with a `resume` rebalance on all 12 coins after the switch deploy, a later deploy skips the flat wait, the next 00:05 UTC run logs a `daily` rebalance, and the Portfolio page shows the book with fees per day.
 spec [0032](../specs/0032-trend-daily/index.md) · code in `packages/core/src/trading_core/node/trend_daily.py`
@@ -582,6 +586,19 @@ spec [0032](../specs/0032-trend-daily/index.md) · code in `packages/core/src/tr
 - [ ] Test it: `/test trend daily`
 - [ ] Review it (fresh model): `/check review trend daily`
 - [ ] Document it: `/document trend daily`
+
+### 34. Trend vol on the main trader · in-progress
+`trend_daily` (feature 33) with the size of the whole book set from the book's own volatility: the same 30 day signals and split between coins, but the gross follows the book's 30 day volatility toward a 50% annual target (never past 5x), and a rebalance leaves a coin alone when it is within 30% of its target. Built after the 2026-11-11 replay showed the plain 5x rule losing about 98% over 4.6 years, while the book volatility target survived (Sharpe about 0.72, about 0.87 with the band). The gain is almost all in the first half of the replay, so it fixes ruin but does not prove an edge. Straight to demo as a forward test; a spec, study, and gate verdict are owed before live.
+**Done when:** every existing strategy hash is unchanged, the VPS main trader runs `trend_vol` on the 12 coins with its daily rebalance, and its book volatility and gross are recorded each run.
+code in [strategy/trend_vol.py](../../packages/core/src/trading_core/strategy/trend_vol.py), [node/trend_vol.py](../../packages/core/src/trading_core/node/trend_vol.py) · on the VPS demo since 2026-11-11 22:47 UTC (PR #143)
+
+- [ ] Design it (spec): `/architect trend vol` (built before a spec; record the decision)
+- [ ] Build it: `/develop trend vol`
+  - [x] Strategy and VPS switch: `book_vol_plan`, `within_band`, `TrendVol` on `TrendDaily`, `TV_*` settings, deploy, your promote (PR #143)
+- [ ] Verify it: `/check verify trend vol`
+- [ ] Test it: `/test trend vol`
+- [ ] Review it (fresh model): `/check review trend vol`
+- [ ] Document it: `/document trend vol`
 
 ### 17. Hour level strategy candidates · dropped
 The fallback set: trend following and mean reversion on 1h to 4h candles, tested in the candle lab.

@@ -1,7 +1,7 @@
 # 0029. six_vote_trend: a six vote confluence strategy on 1 hour bars, demo forward test
 
 **Date**: 2026-11-06 (amended 2026-11-06: AC-12 lets the demo run with the loss limits and cooldown off, at your request, since r2 had hit the daily loss limit that day and you are busy testing)
-**Status**: In Progress
+**Status**: Accepted
 
 ## Summary
 
