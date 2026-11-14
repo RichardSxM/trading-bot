@@ -124,7 +124,7 @@ class Alerter:
             for slot in self._slots
         )
         self._plan_key = snapshot_key(env, snapshot_name(TraderSlot.PORTFOLIO, "plan"))
-        self._failed_seen: int | None = None
+        self._failed_seen: tuple[int | None, int] | None = None
         self._missing_seen: str | None = None
         self._trader_down_s = trader_down_s
         self._load_wait_s = load_wait_s
@@ -201,8 +201,8 @@ class Alerter:
 
         Read while main's ``trader_state.book`` is true (a book on the main trader, spec 0032 AC-9: service
         ``trader``, ``slot`` ``main``), else only while ``portfolio`` is watched (service ``trader-portfolio``).
-        Each ``last_rebalance_at`` and each ``plan_day`` is fed once; after a restart the stored open episode
-        absorbs the repeat. A Redis error is the heartbeat loop's to report.
+        Each ``last_rebalance_at`` (again whenever its ``failed`` grows) and each ``plan_day`` is fed once; after
+        a restart the stored open episode absorbs the repeat. A Redis error is the heartbeat loop's to report.
         """
         try:
             main_book = await trader_book(self._redis, self._state_key)
@@ -215,8 +215,10 @@ class Alerter:
             return
         service = "trader" if main_book else "trader-portfolio"
         slot_fields: dict[str, object] = {"slot": TraderSlot.MAIN.value} if main_book else {}
-        if plan.failed and plan.last_rebalance_at != self._failed_seen:
-            self._failed_seen = plan.last_rebalance_at
+        seen = (plan.last_rebalance_at, len(plan.failed))
+        if plan.failed and seen != self._failed_seen:
+            # ``failed`` only grows within a rebalance; a coin that fails later pushes again with the full list.
+            self._failed_seen = seen
             self.apply(
                 self._engine.observe(
                     Observation(
@@ -229,6 +231,7 @@ class Alerter:
                             "coins": ", ".join(plan.failed),
                             "count": len(plan.failed),
                             "last_rebalance_at": plan.last_rebalance_at,
+                            "round": f"{plan.last_rebalance_at}:{len(plan.failed)}",
                             **slot_fields,
                         },
                     )

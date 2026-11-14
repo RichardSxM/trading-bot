@@ -37,11 +37,11 @@ from test_node_six_vote_trend import COIN, COIN_ID
 from trading_core.control.pause import PauseState
 from trading_core.node.strategy import PauseGate
 from trading_core.node.trend_portfolio import WEEKLY, Leg, TrendPortfolio, TrendPortfolioConfig
-from trading_core.recording.enums import ControlSource, RiskVerdict
+from trading_core.recording.enums import ControlSource, Intent, RiskVerdict
 from trading_core.recording.mappers import DECISION_TAG
 from trading_core.recording.rows import DecisionRow
 from trading_core.recording.spool import WriteItem
-from trading_core.strategy.blocks import EntryBlocks
+from trading_core.strategy.blocks import BlockReason, EntryBlocks
 from trading_core.strategy.trend_portfolio import CoinPlan, PortfolioPlan
 
 D = Decimal
@@ -441,6 +441,63 @@ def test_a_stop_during_a_flip_cancels_the_open_leg_and_closes_every_coin():
     assert not strategy.has_open_positions()
 
 
+class _RefusesFirstClose(_Planned):
+    """The first kill switch close never reaches the venue: denied inside ``submit_order``, or rejected 1 s later."""
+
+    mode = "deny"
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.refused = False
+
+    def submit_order(self, order, *args, **kwargs):
+        if self.refused or not order.is_reduce_only or not any(t.startswith("halt:") for t in order.tags or []):
+            super().submit_order(order, *args, **kwargs)
+            return
+        self.refused = True
+        self.sent.append(_Sent(self.clock.timestamp_ns(), str(order.instrument_id), order.side,
+                               order.quantity.as_decimal(), True, order))  # fmt: skip
+        event = SimpleNamespace(client_order_id=order.client_order_id, reason="test says no")
+        if type(self).mode == "deny":
+            self.on_order_denied(event)
+            return
+        at = self.clock.timestamp_ns() + NS_PER_S
+        self.clock.set_time_alert_ns(f"reject-{order.client_order_id}", at, lambda _e: self.on_order_rejected(event))
+
+
+def _flatten(strategy):
+    strategy.flatten(HALT_ID)
+
+
+@pytest.mark.parametrize("mode", ["deny", "reject"])
+def test_a_refused_kill_switch_close_is_sent_again_on_the_next_flatten(mode):
+    cls = _plan("P", base=_RefusesFirstClose, first={BTC: 2000}, later=((1, _flatten), (1.5, _flatten)), mode=mode)
+    engine, strategy, _ = _run(cls)
+
+    closes = [s for s in _after(strategy, 1) if s.reduce_only]
+    assert [(s.coin, s.side, s.qty) for s in closes] == [(BTC, OrderSide.SELL, D("0.0250"))] * 2
+    assert closes[1].ts >= cls.t0_ns + int(1.5 * MINUTE_NS)
+    assert engine.cache.positions_open() == []
+
+
+def _flatten_then_late_grow(strategy):
+    # A grow already in flight fills after the close was sized from the cache, so the close leaves a rest.
+    grow = strategy.order_factory.market(INSTRUMENT.id, OrderSide.BUY, INSTRUMENT.make_qty(D("0.01")))
+    TrendPortfolio.submit_order(strategy, grow)
+    strategy._cancel_entries = lambda: 0  # the grow is past cancelling
+    strategy.flatten(HALT_ID)
+    del strategy._cancel_entries
+
+
+def test_a_kill_switch_close_left_short_is_topped_up_on_the_next_flatten():
+    cls = _plan("P", first={BTC: 2000}, later=((1, _flatten_then_late_grow), (1.5, _flatten)))
+    engine, strategy, _ = _run(cls)
+
+    closes = [s for s in _after(strategy, 1) if s.reduce_only]
+    assert [(s.coin, s.qty) for s in closes] == [(BTC, D("0.0250")), (BTC, D("0.0100"))]
+    assert engine.cache.positions_open() == []
+
+
 def test_resume_position_adopts_the_position_with_nothing_sent(caplog):
     engine, strategy, _ = _run(_plan("P", first={BTC: 2000}))
     [position] = engine.cache.positions_open()
@@ -452,3 +509,130 @@ def test_resume_position_adopts_the_position_with_nothing_sent(caplog):
     [adopted] = _logs(caplog, "portfolio_position_adopted")
     assert adopted.fields == {"code": "portfolio_position_adopted", "instrument": BTC, "quantity": "0.0250"}
     assert len(strategy.sent) == before
+
+
+# Review 2026-11-13 minors ------------------------------------------------------------------
+
+
+def test_a_start_within_the_cooldown_rebalances_once_the_cooldown_has_passed(caplog):
+    cls = _plan("P", first={BTC: 2000})
+    with caplog.at_level(logging.INFO):
+        engine, strategy, rows = _run(cls, last_start_ns=_ns(START) - 58 * MINUTE_NS)  # due at minute 2
+
+    [sent] = strategy.sent
+    assert sent.ts >= cls.t0_ns + 2 * MINUTE_NS
+    assert [(r.instrument_id, r.reason) for r in rows] == [(BTC, "start")]
+    assert _position(engine, BTC) == D("0.025")
+    [waits] = _logs(caplog, "start_rebalance_cooldown")
+    assert waits.levelno == logging.WARNING
+
+
+def test_a_start_after_the_cooldown_under_a_pause_is_left_to_the_resume_rebalance():
+    gate = PauseGate()
+    gate.pause(PauseState(ControlSource.DEPLOY, START, uuid.uuid4()))
+    cls = _plan("P", first={BTC: 2000}, later=((3, _unpause),))
+    engine, strategy, rows = _run(cls, gate=gate, last_start_ns=_ns(START) - 58 * MINUTE_NS)
+
+    [sent] = strategy.sent
+    assert sent.ts >= cls.t0_ns + 3 * MINUTE_NS
+    assert [(r.instrument_id, r.reason) for r in rows] == [(BTC, "resume")]
+    assert _position(engine, BTC) == D("0.025")
+
+
+class _Crashes(_Planned):
+    """ETH raises inside its step (``where`` ``step``) or inside its grow (``where`` ``grow``)."""
+
+    where = "step"
+
+    def _step(self, coin, *, first):
+        if type(self).where == "step" and str(coin) == ETH:
+            raise LookupError("instrument gone")
+        super()._step(coin, first=first)
+
+    def _send_grow(self, key):
+        if type(self).where == "grow" and key == ETH:
+            raise LookupError("instrument gone")
+        super()._send_grow(key)
+
+
+@pytest.mark.parametrize("where", ["step", "grow"])
+def test_a_coin_that_raises_fails_alone_and_the_rest_of_the_rebalance_goes_on(where, caplog):
+    # ETH sorts before BTC, so the crash comes first and BTC must still be stepped and grown.
+    cls = _plan("P", base=_Crashes, first={BTC: 2000, ETH: 1500}, where=where)
+    with caplog.at_level(logging.INFO):
+        engine, strategy, _ = _run(cls)
+
+    assert [s.coin for s in strategy.sent] == [BTC]
+    assert _position(engine, BTC) == D("0.025")
+    assert strategy.failed == {ETH}
+    [crash] = _logs(caplog, "portfolio_run_failed")
+    assert (crash.fields["instrument"], crash.levelno) == (ETH, logging.ERROR)
+    assert crash.exc_info is not None
+    [failed] = _logs(caplog, "rebalance_coin_failed")
+    assert failed.fields["why"] == "error"
+
+
+def _block(strategy):
+    strategy._blocks.add(BlockReason.RECORDING_UNHEALTHY)
+
+
+def _unblock(strategy):
+    strategy._blocks.clear(BlockReason.RECORDING_UNHEALTHY)
+
+
+def test_a_grow_held_by_an_entry_block_is_sent_once_the_block_clears(caplog):
+    cls = _plan("P", first={}, later=((1, _block), (1.5, {BTC: 2000}), (2.5, _unblock)))
+    with caplog.at_level(logging.INFO):
+        engine, strategy, rows = _run(cls)
+
+    [sent] = strategy.sent
+    assert sent.ts >= cls.t0_ns + int(2.5 * MINUTE_NS)
+    assert [r.risk_reason for r in rows if r.reason == WEEKLY] == ["held:recording_unhealthy"]
+    [resume] = [r for r in rows if r.reason == "resume"]
+    assert (resume.instrument_id, resume.risk_verdict) == (BTC, RiskVerdict.APPROVED)
+    assert sent.order.tags == [f"{DECISION_TAG}{resume.id}"]
+    assert _position(engine, BTC) == D("0.025")
+
+
+def test_a_block_that_held_nothing_does_not_rebalance_when_it_clears():
+    cls = _plan("P", first={BTC: 2000}, later=((1, _block), (1.5, _unblock)))
+    _engine, strategy, rows = _run(cls)
+
+    assert len(strategy.sent) == 1
+    assert [r.reason for r in rows] == ["start"]
+
+
+def test_a_flip_writes_one_row_for_the_close_and_one_for_the_open():
+    cls = _plan("P", first={BTC: 2000}, later=((1, {BTC: -2000}),))
+    _engine, strategy, rows = _run(cls)
+
+    close, open_ = _after(strategy, 1)
+    close_row, open_row = [r for r in rows if r.reason == WEEKLY]
+    assert (close_row.intent, open_row.intent) == (Intent.ADJUST, Intent.ENTER)
+    assert close_row.id != open_row.id
+    assert close.order.tags == [f"{DECISION_TAG}{close_row.id}"]
+    assert open_.order.tags == [f"{DECISION_TAG}{open_row.id}"]
+    assert D(open_row.inputs["current_qty"]) == 0
+
+
+class _NoEquityOnce(_Planned):
+    """The account cannot be read the first time a grow asks for the equity."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.asked = 0
+
+    def _equity(self):
+        self.asked += 1
+        return None if self.asked == 1 else super()._equity()
+
+
+def test_a_retry_with_a_new_verdict_gets_its_own_row_and_its_fill_links_to_it():
+    _engine, strategy, rows = _run(_plan("P", base=_NoEquityOnce, first={BTC: 2000}))
+
+    refused, approved = rows
+    assert (refused.risk_verdict, refused.risk_reason) == (RiskVerdict.REJECTED, "risk_input_invalid")
+    assert (approved.risk_verdict, approved.risk_reason) == (RiskVerdict.APPROVED, None)
+    assert refused.id != approved.id
+    [sent] = strategy.sent
+    assert sent.order.tags == [f"{DECISION_TAG}{approved.id}"]

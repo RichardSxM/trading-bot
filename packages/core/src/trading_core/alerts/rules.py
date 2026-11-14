@@ -216,7 +216,8 @@ BACKUP_FAILED: Final = _code_rule(
 # ``min_open_s`` is the default; the engine takes ``ALERTS_ENTRY_BLOCK_S`` from its config.
 ENTRY_BLOCK: Final = Rule("entry_block", Tier.WARNING, RuleKind.CONDITION, source="redis", min_open_s=3600)
 # Read from the ``portfolio_plan`` snapshot, not from a log line (spec 0030 AC-17): one push per rebalance
-# that left coins in ``failed``, keyed by the plan's ``last_rebalance_at``. The node's own per coin
+# that left coins in ``failed``, keyed by the plan's ``last_rebalance_at`` and the count (``round``), so coins
+# that fail later in the same rebalance push again with the full list. The node's own per coin
 # ``rebalance_coin_failed`` log lines (``log:<service>`` sources) never match.
 PORTFOLIO_COINS_FAILED: Final = Rule(
     "portfolio_coins_failed",
@@ -224,7 +225,7 @@ PORTFOLIO_COINS_FAILED: Final = Rule(
     RuleKind.EVENT,
     source="redis",
     matches=lambda obs: obs.source == "redis" and obs.code == "rebalance_coin_failed",
-    key=_subject("portfolio_coins_failed", "last_rebalance_at"),
+    key=_subject("portfolio_coins_failed", "round"),
     codes=frozenset({"rebalance_coin_failed"}),
 )
 # Also from ``portfolio_plan`` (spec 0032 AC-2b): one push per plan date whose rebalance kept coins because their
@@ -237,6 +238,14 @@ PORTFOLIO_CLOSE_MISSING: Final = Rule(
     matches=lambda obs: obs.source == "redis" and obs.code == "close_missing",
     key=_subject("portfolio_close_missing", "plan_day"),
     codes=frozenset({"close_missing"}),
+)
+# A portfolio node's run, retry, or coin step that raised (review 2026-11-13): any trader slot, one episode per
+# code and service.
+PORTFOLIO_RUN_FAILED: Final = _code_rule(
+    "portfolio_run_failed",
+    Tier.WARNING,
+    ["portfolio_run_failed", "coin_exit_failed", "coin_reenter_failed"],
+    key=_code_and_service,
 )
 CONTEXT_FEED_DOWN: Final = _code_rule(
     "context_feed_down",
@@ -327,6 +336,7 @@ RULES: Final[tuple[Rule, ...]] = (
     ENTRY_BLOCK,
     PORTFOLIO_COINS_FAILED,
     PORTFOLIO_CLOSE_MISSING,
+    PORTFOLIO_RUN_FAILED,
     CONTEXT_FEED_DOWN,
     CONTEXT_HOUR_MISSING,
     BOOK_GAP_LONG,

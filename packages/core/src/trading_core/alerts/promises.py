@@ -119,6 +119,8 @@ PROMISES: Final[tuple[Promise, ...]] = (
     Promise("review 2026-10-11", "recorder engine ERROR line", "engine_error", "recorder", text="[ERROR] RECORDER: x"),
     _line("scope", "fill_seen", "fill", "trader", "INFO", trade_id="T-1"),
     Promise("0024", "ECB rates over 6 days old", "fx_rates_stale"),
+    _line("review 2026-11-13", "portfolio_run_failed", "portfolio_run_failed", "trader", instrument="PF_XBTUSD.KRAKEN"),
+    _line("review 2026-11-13", "coin_exit_failed", "portfolio_run_failed", "trader-portfolio"),
     _line("0025", "warmup_seed_failed", "warmup_seed_failed", "trader", "WARNING", reason="fetch_failed"),
 )
 

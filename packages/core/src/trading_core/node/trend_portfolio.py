@@ -94,6 +94,7 @@ HELD_PREFIX: Final = "held:"
 
 _RUN: Final = "tp_daily_run"
 _START: Final = "tp_start_wait"
+_START_LATER: Final = "tp_start_after_cooldown"
 _GATE: Final = "tp_gate_watch"
 _GROWS: Final = "tp_grows_fallback"
 _RETRY_PREFIX: Final = "tp_retry:"
@@ -249,7 +250,8 @@ class TrendPortfolio(KfsStrategy):
         self._attempts: dict[str, int] = {}
         self._inflight_grow: dict[ClientOrderId, Decimal] = {}
         self._closing: set[str] = set()
-        self._written: set[str] = set()
+        self._written: dict[str, str | None] = {}  # each coin's recorded verdict: None approved, else the refusal
+        self._held_by_block = False  # a grow was held by an entry block (not a pause or halt) this round
         self._pending_inputs: dict[str, JsonObject] = {}
         self._coin_exits: dict[ClientOrderId, str] = {}
         self._exiting: set[str] = set()
@@ -293,27 +295,25 @@ class TrendPortfolio(KfsStrategy):
 
     def flatten(self, halt_id: UUID) -> None:
         """Cancel retries and pending flip opens, then close every coin reduce only at market (idempotent)."""
-        self._drop_round()
-        tags = [f"{ORIGIN_TAG}{OrderOrigin.KILL_SWITCH}", f"{HALT_TAG}{halt_id}"]
-        self._cancel_entries()
-        for position in self.cache.positions_open(strategy_id=self.id):
-            coin = str(position.instrument_id)
-            if coin in self._closing:
-                continue
-            self._closing.add(coin)
-            self._submit(position.instrument_id, -position.signed_decimal_qty(), reduce_only=True, tags=tags)
+        self.flatten_for(halt_id, frozenset())
+
+    def _close_pending(self, coin: InstrumentId) -> bool:
+        # A coin is skipped only while a reduce only close for it is still working; a refused close, or one that
+        # filled but left a rest (a grow filled after it was sized), gets a fresh close on the next poll.
+        working = [
+            *self.cache.orders_open(instrument_id=coin, strategy_id=self.id),
+            *self.cache.orders_inflight(instrument_id=coin, strategy_id=self.id),
+        ]
+        return any(order.is_reduce_only for order in working)
 
     def flatten_for(self, halt_id: UUID, untrusted: frozenset[str]) -> None:
         """``flatten`` that skips the close of an untrusted coin (spec 0023 AC-8); its entries are still cancelled."""
-        if not untrusted:
-            self.flatten(halt_id)
-            return
         self._drop_round()
         self._cancel_entries()
         tags = [f"{ORIGIN_TAG}{OrderOrigin.KILL_SWITCH}", f"{HALT_TAG}{halt_id}"]
         for position in self.cache.positions_open(strategy_id=self.id):
             coin = str(position.instrument_id)
-            if coin in untrusted or coin in self._closing:
+            if coin in untrusted or self._close_pending(position.instrument_id):
                 continue
             self._closing.add(coin)
             self._submit(position.instrument_id, -position.signed_decimal_qty(), reduce_only=True, tags=tags)
@@ -391,7 +391,7 @@ class TrendPortfolio(KfsStrategy):
             if not self._grows_sent or self._awaiting_reductions:  # a rebalance is working: look again after it
                 self._arm_reenter(key)
                 return
-            self._written.discard(key)
+            self._written.pop(key, None)
             self._decisions.pop(key, None)
             self._attempts.pop(key, None)
             reason, self._reason = self._reason, REENTER
@@ -447,19 +447,45 @@ class TrendPortfolio(KfsStrategy):
                 return
             cooldown_ns = self._cfg.start_cooldown_s * NS_PER_S
             if self._last_start_ns is not None and now - self._last_start_ns < cooldown_ns:
-                log.info(
-                    "start rebalance skipped, one ran recently",
-                    extra={"fields": {"code": "start_rebalance_cooldown", "last_start_ns": self._last_start_ns}},
+                # Bounded, not dropped: the start rebalance runs once the cooldown has passed.
+                at = self._last_start_ns + cooldown_ns
+                log.warning(
+                    "start rebalance waits for the cooldown",
+                    extra={
+                        "fields": {
+                            "code": "start_rebalance_cooldown",
+                            "last_start_ns": self._last_start_ns,
+                            "run_at_ns": at,
+                        }
+                    },
                 )
+                self._alert(_START_LATER, at, self._on_start_later)
                 return
             self._rebalance(START, skip=frozenset(str(coin) for coin in missing))
+        except Exception:
+            log.exception("start rebalance failed", extra={"fields": {"code": "portfolio_run_failed"}})
+
+    def _on_start_later(self, event: object) -> None:
+        # The start rebalance the cooldown held back: not needed once any rebalance has run since (a scheduled
+        # one), and under a pause or halt the resume rebalance does it instead.
+        if self.last_rebalance_ns is not None or self._gate.paused or self._gate.halted:
+            return
+        try:
+            now = self.clock.timestamp_ns()
+            today = datetime.fromtimestamp(now / NS_PER_S, tz=UTC).date()
+            if self._make_plan(today - timedelta(days=1)):
+                self._rebalance(START)
         except Exception:
             log.exception("start rebalance failed", extra={"fields": {"code": "portfolio_run_failed"}})
 
     def _on_gate_poll(self, event: object) -> None:
         blocked = self._gate.paused or self._gate.halted
         was, self._was_blocked = self._was_blocked, blocked
-        if was and not blocked and self._started and self.plan is not None:
+        resume = was and not blocked
+        if not blocked and self._held_by_block and self._held_reason() in (None, BlockReason.ORDER_UNRESOLVED):
+            # A grow held by an entry block that has since cleared (a pause or halt is the case above).
+            resume = True
+        if resume and self._started and self.plan is not None:
             try:
                 self._rebalance(RESUME)
             except Exception:
@@ -535,10 +561,18 @@ class TrendPortfolio(KfsStrategy):
                         extra={"fields": {"code": "close_missing", "instrument": key}},
                     )
                     continue
-                self._step(coin, first=True)
+                try:
+                    self._step(coin, first=True)
+                except Exception:  # one bad coin must not stop the rest; it lands in ``failed`` (alerted)
+                    self._coin_crashed(key)
         finally:
             self._planning = False
         self._maybe_send_grows()
+
+    def _coin_crashed(self, key: str) -> None:
+        # Logged with the trace (``portfolio_run_failed`` is alerted), then given up for this rebalance.
+        log.exception("rebalance coin crashed", extra={"fields": {"code": "portfolio_run_failed", "instrument": key}})
+        self._order_failed(key, "error", retry=False)
 
     def _step(self, coin: InstrumentId, *, first: bool) -> None:
         """Work out and act on one coin's delta; grows wait until every reduction is done."""
@@ -602,7 +636,10 @@ class TrendPortfolio(KfsStrategy):
             return
         self._grows_sent = True
         for key in list(self._grows):
-            self._send_grow(key)
+            try:
+                self._send_grow(key)
+            except Exception:
+                self._coin_crashed(key)
 
     def _send_grow(self, key: str) -> None:
         """Size again at the mid and send one opening or growing order through the gate and the check."""
@@ -614,7 +651,9 @@ class TrendPortfolio(KfsStrategy):
         quote = self.cache.quote_tick(coin)
         current = self._qty(coin)
         if quote is None:
-            sign = Decimal(1) if self.plan.coins[key].target_notional >= current else Decimal(-1)
+            # A grow (or a flip's open leg) always trades toward the target's side; the target is in USD and
+            # ``current`` in coins, so only the target's sign can say which side without a mid.
+            sign = Decimal(1) if self.plan.coins[key].target_notional > 0 else Decimal(-1)
             self._grow_refused(key, "stale_quote", self._pending_inputs.get(key, {}), sign, retry=True)
             return
         mid = (quote.bid_price.as_decimal() + quote.ask_price.as_decimal()) / 2
@@ -623,7 +662,14 @@ class TrendPortfolio(KfsStrategy):
         delta = target_qty - current
         inputs = self._inputs(key, mid, current, target_qty, delta)
         minimum = max(step, Decimal(0) if instrument.min_quantity is None else instrument.min_quantity.as_decimal())
-        if abs(delta) < minimum or (current != 0 and (delta > 0) != (current > 0)):
+        if current != 0 and delta != 0 and (delta > 0) != (current > 0):
+            # At the new mid this grow became a reduction; the next rebalance sizes it with the others.
+            log.info(
+                "rebalance grow became a reduction",
+                extra={"fields": {"code": "rebalance_skip_reversed", "instrument": key}},
+            )
+            return
+        if abs(delta) < minimum:
             log.info("rebalance delta too small", extra={"fields": {"code": "rebalance_skip_small", "instrument": key}})
             return
         held = self._held_reason()
@@ -641,6 +687,8 @@ class TrendPortfolio(KfsStrategy):
                 "rebalance grow held",
                 extra={"fields": {"code": "rebalance_held", "instrument": key, "reason": held}},
             )
+            if held not in ("paused", "halted"):
+                self._held_by_block = True  # the gate poll rebalances once the block clears
             self._decision(key, Intent.ENTER, delta, inputs, f"{HELD_PREFIX}{held}")
             return
         try:
@@ -718,6 +766,9 @@ class TrendPortfolio(KfsStrategy):
         self._attempts.pop(key, None)
         if leg == Leg.FLIP_CLOSE and key in self._pending_opens:
             self._pending_opens.discard(key)
+            # The open leg is its own decision (AC-7): its verdict and any clip get their own row.
+            self._decisions.pop(key, None)
+            self._written.pop(key, None)
             self._grows.append(key)
         self._reduction_done(event.client_order_id)
         if leg == Leg.FLIP_CLOSE and self._grows_sent and key in self._grows:
@@ -794,9 +845,7 @@ class TrendPortfolio(KfsStrategy):
         try:
             self._step(InstrumentId.from_str(key), first=False)
         except Exception:
-            log.exception(
-                "rebalance retry failed", extra={"fields": {"code": "portfolio_run_failed", "instrument": key}}
-            )
+            self._coin_crashed(key)
 
     # Helpers --------------------------------------------------------------------------------
 
@@ -810,7 +859,7 @@ class TrendPortfolio(KfsStrategy):
 
     def _cancel_all_timers(self) -> None:
         for name in list(self.clock.timer_names):
-            if name.startswith((_RETRY_PREFIX, _REENTER_PREFIX)) or name in (_RUN, _START, _GATE, _GROWS):
+            if name.startswith((_RETRY_PREFIX, _REENTER_PREFIX)) or name in (_RUN, _START, _START_LATER, _GATE, _GROWS):
                 self.clock.cancel_timer(name)
 
     def _held_reason(self) -> str | None:
@@ -849,8 +898,12 @@ class TrendPortfolio(KfsStrategy):
             decision = uuid.uuid7()
             self._decisions[key] = decision
         if key in self._written:
-            return decision  # one row per coin per rebalance; retries reuse it
-        self._written.add(key)
+            if self._written[key] == refused:
+                return decision  # a retry with the same verdict reuses the row
+            # A retry with a different verdict gets its own row, so its fills link to the verdict they came from.
+            decision = uuid.uuid7()
+            self._decisions[key] = decision
+        self._written[key] = refused
         self._record_decision(decision, key, intent, delta, self._reason, inputs, refused)
         return decision
 
