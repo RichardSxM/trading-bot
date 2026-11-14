@@ -116,6 +116,9 @@ def log_line(
     event_key = str(fields.get("event_key") or "")
     if rule_id in _RISK_RULES:
         head = words(event_key.split(":", 1)[0] if event_key else (code or rule_id))
+        if service != "trader":
+            # The second trader's risk events say whose they are (review 2026-11-13).
+            head = f"{head} on {service}"
     else:
         head = f"{words(code or rule_id)} on {service}"
     parts = [str(fields.get("msg") or "")]
