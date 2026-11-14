@@ -121,6 +121,19 @@ PROMISES: Final[tuple[Promise, ...]] = (
     Promise("0024", "ECB rates over 6 days old", "fx_rates_stale"),
     _line("review 2026-11-13", "portfolio_run_failed", "portfolio_run_failed", "trader", instrument="PF_XBTUSD.KRAKEN"),
     _line("review 2026-11-13", "coin_exit_failed", "portfolio_run_failed", "trader-portfolio"),
+    # The second trader's safety lines push like the main trader's (review 2026-11-13, spec 0030 AC-17).
+    _line("review 2026-11-13", "loss_limit_halt", "loss_limit_halt", "trader-portfolio", "CRITICAL", halt_id="H-2"),
+    Promise(
+        "review 2026-11-13",
+        "flatten_timeout on trader-portfolio",
+        "risk_critical",
+        "trader-portfolio",
+        "CRITICAL",
+        "halt",
+        {"event_key": "flatten_timeout:F-2"},
+    ),
+    _line("review 2026-11-13", "positions_abandoned", "trader_critical_codes", "trader-portfolio", "CRITICAL"),
+    _line("review 2026-11-13", "record_conflict", "trader_critical_codes", "trader-portfolio", table="fills"),
     _line("0025", "warmup_seed_failed", "warmup_seed_failed", "trader", "WARNING", reason="fetch_failed"),
 )
 

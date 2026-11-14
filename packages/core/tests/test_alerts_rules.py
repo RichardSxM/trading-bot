@@ -75,6 +75,49 @@ ROWS = [
     (line("recorder", text="[ERROR] RECORDER-001.DataEngine: boom"), "engine_error", "engine_error:recorder"),
     (line("trader", "stale_feed", "WARNING", event_key="stale_feed:r:1"), "stale_feed", "stale_feed"),
     (line("trader", "limit_hit", "WARNING", event_key="trade_cap:2026-10-16"), "trade_cap", "trade_cap:2026-10-16"),
+    # The portfolio trader's lines (review 2026-11-13): the same rules, its own fingerprints.
+    (
+        line("trader-portfolio", "loss_limit_halt", "CRITICAL", halt_id="h1"),
+        "loss_limit_halt",
+        "halt:h1:trader-portfolio",
+    ),
+    (
+        line("trader-portfolio", "halt", "CRITICAL", event_key="flatten_timeout:F1"),
+        "risk_critical",
+        "flatten_timeout:F1:trader-portfolio",
+    ),
+    (
+        line("trader-portfolio", "halt", "WARNING", event_key="halt:h2"),
+        "risk_halt_manual",
+        "halt:h2:trader-portfolio",
+    ),
+    (
+        line("trader-portfolio", "positions_abandoned", "CRITICAL"),
+        "trader_critical_codes",
+        "positions_abandoned:trader-portfolio",
+    ),
+    (
+        line("trader-portfolio", "record_conflict", "ERROR", table="fills"),
+        "trader_critical_codes",
+        "record_conflict:trader-portfolio",
+    ),
+    (
+        line("trader-portfolio", "snapshot_write_failed", "WARNING"),
+        "snapshot_write_failed",
+        "snapshot_write_failed:trader-portfolio",
+    ),
+    (
+        line("trader-portfolio", text="[ERROR] TRADER-001.ExecEngine: boom"),
+        "engine_error",
+        "engine_error:trader-portfolio",
+    ),
+    (line("trader-portfolio", "stale_feed", "WARNING"), "stale_feed", "stale_feed:trader-portfolio"),
+    (
+        line("trader-portfolio", "warmup_seed_failed", "WARNING"),
+        "warmup_seed_failed",
+        "warmup_seed_failed:trader-portfolio",
+    ),
+    (line("trader-portfolio", "fill_seen", "INFO", trade_id="T-9"), "fill", "fill:T-9"),
 ]
 
 
@@ -166,3 +209,23 @@ def test_a_record_conflict_push_names_its_table():
 
     assert head == "Record conflict on trader"
     assert body == "record conflict table=fills"
+
+
+def test_the_main_trader_and_the_portfolio_trader_keep_apart_episodes_of_one_event():
+    main = line("trader", "halt", "CRITICAL", event_key="flatten_timeout:F1")
+    portfolio = line("trader-portfolio", "halt", "CRITICAL", event_key="flatten_timeout:F1")
+
+    rule = BY_ID["risk_critical"]
+
+    assert rule.key is not None
+    assert rule.key(main) != rule.key(portfolio)
+
+
+def test_a_portfolio_risk_push_names_its_trader_and_a_main_one_does_not():
+    fields = {"event_key": "flatten_timeout:F1", "msg": "not flat"}
+
+    main_head, _ = log_line("risk_critical", "trader", "halt", fields, None)
+    portfolio_head, _ = log_line("risk_critical", "trader-portfolio", "halt", fields, None)
+
+    assert portfolio_head == f"{main_head} on trader-portfolio"
+    assert not main_head.endswith("on trader")

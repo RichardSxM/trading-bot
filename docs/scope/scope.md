@@ -556,16 +556,16 @@ Hold all 12 demo coins long or short by the sign of each coin's 30 day return, s
 spec [0030](../specs/0030-trend-portfolio/index.md)
 
 - [x] Design it (spec): `/architect trend portfolio`
-- [ ] Build it: `/develop trend portfolio`
+- [x] Build it: `/develop trend portfolio`
   - [x] Strategy thin thread: rule, risk check, node, daily seed, single instance wiring and version, laptop smoke as the main slot (AC-1 to AC-4, AC-7, AC-8, AC-10, AC-11 baseline)
   - [x] Second trader: slots module, keys and names, consumer group and results, migration, loss seed and dashboard reads per trader, compose service with its caps (AC-12 to AC-16, AC-18)
   - [x] Order paths: reductions first, flips, clips, held and resume, retries, start cooldown, flatten, resume (AC-3 to AC-6, AC-9)
   - [x] Alerts, deploy, and the Portfolio page (AC-17 to AC-21)
-  - [ ] Close out and VPS start: hashes, deploy, your promote, profile on, start checks (AC-11, AC-22, AC-23)
-- [ ] Verify it: `/check verify trend portfolio`
-- [ ] Test it: `/test trend portfolio`
-- [ ] Review it (fresh model): `/check review trend portfolio`
-- [ ] Document it: `/document trend portfolio`
+  - [x] Close out and VPS start: hashes, deploy, your promote, profile on, start checks (AC-11, AC-22, AC-23)
+- [x] Verify it: `/check verify trend portfolio`
+- [x] Test it: `/test trend portfolio`
+- [x] Review it (fresh model): `/check review trend portfolio`
+- [x] Document it: `/document trend portfolio` (CHANGELOG, 2026-11-14)
 
 ### 33. Trend daily on the main trader · in-progress
 Replace the main demo trader's losing 5 minute scalper (`donchian_scalp_tp`) with `trend_daily`: the 30 day trend book of feature 31 at 5x, rebalanced every day at 00:05 UTC, every change traded, no stops, no brake. A thin subclass of `trend_portfolio`, plus a `book` flag so deploys skip the flat wait, and a Portfolio page that can read the main trader. Straight to demo as an open ended forward test; a study and gate are owed before live. From the 2026-11-11 research: the 30 day trend pays at day holds (+25 to 40 bps a day), not at 5 minutes.

@@ -134,12 +134,26 @@ def _backup_key(obs: Observation) -> str:
     return f"backup_failed:{step}" if step else "backup_failed"
 
 
+def _per_trader(keyer: Keyer) -> Keyer:
+    """``keyer``'s fingerprint, plus ``:<service>`` for any trader but the main one.
+
+    The main trader's fingerprints stay as they were, so its open episodes carry over a deploy;
+    the two traders' episodes of one event stay apart (review 2026-11-13).
+    """
+
+    def key(obs: Observation) -> str:
+        base = keyer(obs)
+        return base if obs.service == TRADER else f"{base}:{obs.service}"
+
+    return key
+
+
 def _risk_critical(obs: Observation) -> bool:
-    return obs.service == TRADER and obs.level == "CRITICAL" and bool(text_field(obs, "event_key"))
+    return obs.service in TRADER_SERVICES and obs.level == "CRITICAL" and bool(text_field(obs, "event_key"))
 
 
 def _engine_error(obs: Observation) -> bool:
-    return obs.service in {TRADER, RECORDER} and obs.code is None and "[ERROR]" in (obs.text or "")
+    return obs.service in {*TRADER_SERVICES, RECORDER} and obs.code is None and "[ERROR]" in (obs.text or "")
 
 
 def _trade_cap(obs: Observation) -> bool:
@@ -147,12 +161,15 @@ def _trade_cap(obs: Observation) -> bool:
 
 
 TRADER: Final = "trader"
+# The second demo trader's compose service (spec 0030); its slot name is ``portfolio``.
+TRADER_PORTFOLIO: Final = "trader-portfolio"
 RECORDER: Final = "recorder"
 DASHBOARD: Final = "dashboard"
 # The ``source`` (and ``service``) of a ``host.jsonl`` line and of a ``deploys.jsonl`` line.
 HOST: Final = "host"
 DEPLOY: Final = "deploy"
-_TRADER_ONLY: Final = frozenset({TRADER})
+# Every trader's service: the trader rules match lines from any of them (review 2026-11-13, spec 0030 AC-17).
+TRADER_SERVICES: Final = frozenset({TRADER, TRADER_PORTFOLIO})
 BOOK_GAP_LONG_S: Final = 60
 # login_failed_burst: this many dashboard login failures within the window, all clients together.
 LOGIN_BURST_COUNT: Final = 5
@@ -162,13 +179,22 @@ CORE_SERVICES: Final = ("trader", "recorder", "postgres", "redis", "clock")
 
 TRADER_DOWN: Final = Rule("trader_down", Tier.CRITICAL, RuleKind.CONDITION, source="redis")
 LOSS_LIMIT_HALT: Final = _code_rule(
-    "loss_limit_halt", Tier.CRITICAL, ["loss_limit_halt"], services=_TRADER_ONLY, key=_subject("halt", "halt_id")
+    "loss_limit_halt",
+    Tier.CRITICAL,
+    ["loss_limit_halt"],
+    services=TRADER_SERVICES,
+    key=_per_trader(_subject("halt", "halt_id")),
 )
 RISK_CRITICAL: Final = Rule(
-    "risk_critical", Tier.CRITICAL, RuleKind.EVENT, source="log", matches=_risk_critical, key=_event_key
+    "risk_critical", Tier.CRITICAL, RuleKind.EVENT, source="log", matches=_risk_critical, key=_per_trader(_event_key)
 )
 RISK_HALT_MANUAL: Final = _code_rule(
-    "risk_halt_manual", Tier.INFO, ["halt"], services=_TRADER_ONLY, level="WARNING", key=_event_key
+    "risk_halt_manual",
+    Tier.INFO,
+    ["halt"],
+    services=TRADER_SERVICES,
+    level="WARNING",
+    key=_per_trader(_event_key),
 )
 # ``record_conflict`` is logged at ERROR with no ``event_key``, so ``risk_critical`` misses it;
 # spec 0013's ``trader_critical_codes`` row names it, keyed by its code.
@@ -176,7 +202,8 @@ TRADER_CRITICAL_CODES: Final = _code_rule(
     "trader_critical_codes",
     Tier.CRITICAL,
     ["positions_abandoned", "kill_switch_task_crashed", "halt_key_invalid", "record_conflict"],
-    services=_TRADER_ONLY,
+    services=TRADER_SERVICES,
+    key=_per_trader(_by_code),
 )
 # ``kfs-autoheal`` logs its giving up as the message itself (spec 0005).
 AUTOHEAL_GAVE_UP: Final = _field_rule(
@@ -289,7 +316,11 @@ LOGIN_FAILED_BURST: Final = Rule(
     "login_failed_burst", Tier.WARNING, RuleKind.EVENT, source="log", codes=frozenset({"login_failed"})
 )
 SNAPSHOT_WRITE_FAILED: Final = _code_rule(
-    "snapshot_write_failed", Tier.WARNING, ["snapshot_write_failed"], services=_TRADER_ONLY
+    "snapshot_write_failed",
+    Tier.WARNING,
+    ["snapshot_write_failed"],
+    services=TRADER_SERVICES,
+    key=_per_trader(_by_code),
 )
 ENGINE_ERROR: Final = Rule(
     "engine_error",
@@ -299,15 +330,24 @@ ENGINE_ERROR: Final = Rule(
     matches=_engine_error,
     key=lambda obs: f"engine_error:{obs.service}",
 )
-STALE_FEED: Final = _code_rule("stale_feed", Tier.WARNING, ["stale_feed"], services=_TRADER_ONLY)
+STALE_FEED: Final = _code_rule(
+    "stale_feed", Tier.WARNING, ["stale_feed"], services=TRADER_SERVICES, key=_per_trader(_by_code)
+)
 # donchian_scalp_r1 started without its seed and warms up from live bars (spec 0025 AC-9). Keyed by the
-# code alone, so a crash loop of restarts makes one alert.
+# code alone (per trader), so a crash loop of restarts makes one alert.
 WARMUP_SEED_FAILED: Final = _code_rule(
-    "warmup_seed_failed", Tier.WARNING, ["warmup_seed_failed"], services=_TRADER_ONLY, level="WARNING"
+    "warmup_seed_failed",
+    Tier.WARNING,
+    ["warmup_seed_failed"],
+    services=TRADER_SERVICES,
+    level="WARNING",
+    key=_per_trader(_by_code),
 )
 TRADE_CAP: Final = Rule("trade_cap", Tier.INFO, RuleKind.EVENT, source="log", matches=_trade_cap, key=_event_key)
-# Live only: the engine drops it in demo (AC-8). The alerter adds the fills row's fields first.
-FILL: Final = _code_rule("fill", Tier.INFO, ["fill_seen"], services=_TRADER_ONLY, key=_subject("fill", "trade_id"))
+# Live only: the engine drops it in demo (AC-8). The alerter adds the fills row's fields first. The portfolio
+# trader's fills push too, on purpose: about a dozen a week, and every real money fill is worth a look. A trade
+# id is unique across traders, so the fingerprint needs no service.
+FILL: Final = _code_rule("fill", Tier.INFO, ["fill_seen"], services=TRADER_SERVICES, key=_subject("fill", "trade_id"))
 ALERT_STORM: Final = Rule("alert_storm", Tier.WARNING, RuleKind.INTERNAL, source="self")
 SUMMARY: Final = Rule("summary", Tier.WARNING, RuleKind.INTERNAL, source="self")
 # A test push takes the tier it tests; ``tier`` here is only the default.

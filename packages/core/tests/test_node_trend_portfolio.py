@@ -1,7 +1,7 @@
 """covers: spec 0030 AC-3 (flatten across coins, ``has_open_positions``, ``resume_position``), AC-4 (the schedule,
 the start cooldown, ``close_missing``, the resume rebalance), AC-5 (reductions first, flips, clips, the
 liquidation refusal, held grows, denials), AC-6 (retries and ``failed``), AC-7 (one decision per coin, fills
-linked), AC-9 (adopting a position).
+linked), AC-8 (seeds and live daily bars), AC-9 (adopting a position).
 
 Runs ``TrendPortfolio`` in a BacktestEngine with two coins, BTC (``PF_XBTUSD``, mid 80000) and ETH
 (``PF_ETHUSD``, mid 3000), each with a trade and a quote every 10 s. A scripted subclass replaces the rule with
@@ -27,7 +27,7 @@ import itertools
 from nautilus_trader.backtest.engine import BacktestEngine, BacktestEngineConfig
 from nautilus_trader.config import LoggingConfig
 from nautilus_trader.model.currencies import USD
-from nautilus_trader.model.data import QuoteTick, TradeTick
+from nautilus_trader.model.data import Bar, BarType, QuoteTick, TradeTick
 from nautilus_trader.model.enums import AccountType, AggressorSide, OmsType, OrderSide
 from nautilus_trader.model.identifiers import TradeId, Venue
 from nautilus_trader.model.objects import Money, Price, Quantity
@@ -36,13 +36,13 @@ from test_node_six_vote_trend import COIN, COIN_ID
 
 from trading_core.control.pause import PauseState
 from trading_core.node.strategy import PauseGate
-from trading_core.node.trend_portfolio import WEEKLY, Leg, TrendPortfolio, TrendPortfolioConfig
+from trading_core.node.trend_portfolio import BAR_SPEC, WEEKLY, Leg, TrendPortfolio, TrendPortfolioConfig
 from trading_core.recording.enums import ControlSource, Intent, RiskVerdict
 from trading_core.recording.mappers import DECISION_TAG
 from trading_core.recording.rows import DecisionRow
 from trading_core.recording.spool import WriteItem
 from trading_core.strategy.blocks import BlockReason, EntryBlocks
-from trading_core.strategy.trend_portfolio import CoinPlan, PortfolioPlan
+from trading_core.strategy.trend_portfolio import CoinPlan, DailyClose, PortfolioPlan
 
 D = Decimal
 NS_PER_S = 1_000_000_000
@@ -150,7 +150,7 @@ def _plan(name, base=_Planned, **attrs):
     return type(name, (base,), attrs)
 
 
-def _run(cls, minutes=4, start=START, gate=None, last_start_ns=None, **overrides):
+def _run(cls, minutes=4, start=START, gate=None, last_start_ns=None, seeds=None, **overrides):
     engine = BacktestEngine(BacktestEngineConfig(logging=LoggingConfig(bypass_logging=True)))
     engine.add_venue(
         Venue("KRAKEN"),
@@ -170,7 +170,7 @@ def _run(cls, minutes=4, start=START, gate=None, last_start_ns=None, **overrides
         gate.unpause()  # the pause key was read: no pause
     records: list[WriteItem] = []
     cls.t0_ns = _ns(start)
-    strategy = cls(TrendPortfolioConfig(**_fields(**overrides)), gate, EntryBlocks(), records.append, None,
+    strategy = cls(TrendPortfolioConfig(**_fields(**overrides)), gate, EntryBlocks(), records.append, seeds,
                    last_start_ns)  # fmt: skip
     engine.add_strategy(strategy)
 
@@ -509,6 +509,97 @@ def test_resume_position_adopts_the_position_with_nothing_sent(caplog):
     [adopted] = _logs(caplog, "portfolio_position_adopted")
     assert adopted.fields == {"code": "portfolio_position_adopted", "instrument": BTC, "quantity": "0.0250"}
     assert len(strategy.sent) == before
+
+
+# Seeds and live daily bars (AC-8) ------------------------------------------------------------
+
+
+class _RealPlan(_Planned):
+    """The real rule on the stored closes, with the base's order recording."""
+
+    _make_plan = TrendPortfolio._make_plan
+
+
+LAST_CLOSE_DAY = date(2026, 10, 3)  # the day before START
+
+
+def _closes(count, last=LAST_CLOSE_DAY):
+    # Always rising, so every eligible coin has signal +1.
+    return [DailyClose(last - timedelta(days=count - 1 - i), D(100 + i)) for i in range(count)]
+
+
+def _bare(seeds):
+    return TrendPortfolio(TrendPortfolioConfig(**_fields()), PauseGate(), EntryBlocks(), lambda item: None, seeds)
+
+
+def _daily_bar(coin, closes_at, close):
+    bar_type = BarType.from_str(f"{coin}-{BAR_SPEC}-INTERNAL")
+    price = Price.from_str(close)
+    return Bar(bar_type, price, price, price, price, Quantity.from_str("1.0000"), _ns(closes_at), _ns(closes_at))
+
+
+def test_150_seeded_closes_make_every_coin_eligible_and_plan_on_yesterday():
+    _, strategy, rows = _run(_plan("P", base=_RealPlan), seeds={coin: _closes(150) for coin in COINS})
+
+    assert strategy.plan.n == 2
+    for item in strategy.plan.coins.values():
+        assert (item.eligible, item.signal, item.close_date) == (True, 1, LAST_CLOSE_DAY)
+    assert strategy.plan_day == LAST_CLOSE_DAY
+    assert sorted((r.instrument_id, r.reason) for r in rows) == [(c, "start") for c in COINS]
+
+
+def test_a_coin_seeded_with_119_closes_is_not_eligible_and_is_not_traded():
+    seeds = {BTC: _closes(150), ETH: _closes(119)}
+
+    _, strategy, _ = _run(_plan("P", base=_RealPlan), seeds=seeds)
+
+    assert strategy.plan.n == 1
+    assert (strategy.plan.coins[ETH].eligible, strategy.plan.coins[ETH].weight) == (False, D(0))
+    assert [s.coin for s in strategy.sent] == [BTC]
+
+
+def test_a_seed_never_grows_past_seed_days():
+    strategy = _bare({BTC: _closes(170)})
+
+    kept = strategy.closes_until(LAST_CLOSE_DAY)[BTC]
+
+    assert len(kept) == 150
+    assert kept[0].day == LAST_CLOSE_DAY - timedelta(days=149)
+
+
+def test_a_seed_for_a_coin_the_portfolio_does_not_trade_is_ignored():
+    strategy = _bare({"PF_SOLUSD.KRAKEN": _closes(150)})
+
+    assert set(strategy.closes_until(LAST_CLOSE_DAY)) == set(COINS)
+    assert all(closes == [] for closes in strategy.closes_until(LAST_CLOSE_DAY).values())
+
+
+def test_the_first_live_daily_bar_files_its_close_under_the_day_it_covers():
+    strategy = _bare({BTC: _closes(150)})
+
+    strategy.on_bar(_daily_bar(BTC, datetime(2026, 10, 5, tzinfo=UTC), "105.5"))
+
+    assert strategy.closes_until(date(2026, 10, 4))[BTC][-1] == DailyClose(date(2026, 10, 4), D("105.5"))
+    assert strategy.closes_until(date(2026, 10, 4))[ETH] == []
+
+
+def test_a_live_bar_replaces_a_seeded_close_of_the_same_day_and_the_store_stays_capped():
+    strategy = _bare({BTC: _closes(150)})
+
+    strategy.on_bar(_daily_bar(BTC, datetime(2026, 10, 4, tzinfo=UTC), "999.5"))
+    strategy.on_bar(_daily_bar(BTC, datetime(2026, 10, 5, tzinfo=UTC), "105.5"))
+
+    kept = strategy.closes_until(date(2026, 10, 4))[BTC]
+    assert len(kept) == 150
+    assert kept[-2:] == [DailyClose(LAST_CLOSE_DAY, D("999.5")), DailyClose(date(2026, 10, 4), D("105.5"))]
+
+
+def test_a_bar_of_another_type_is_ignored():
+    strategy = _bare({})
+
+    strategy.on_bar(_daily_bar("PF_SOLUSD.KRAKEN", datetime(2026, 10, 5, tzinfo=UTC), "105.5"))
+
+    assert all(closes == [] for closes in strategy.closes_until(date(2026, 10, 4)).values())
 
 
 # Review 2026-11-13 minors ------------------------------------------------------------------
