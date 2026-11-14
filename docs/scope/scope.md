@@ -39,6 +39,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 29 | Market context candidates | Slice 7 | done |
 | 30 | Six vote trend (demo forward test) | Slice 7 | in-progress |
 | 31 | Trend portfolio beside six vote | Slice 7 | in-progress |
+| 33 | Trend daily on the main trader | Slice 7 | in-progress |
 | 17 | Hour level strategy candidates | Slice 7 | dropped |
 | 18 | Trade journal export | Slice 8 | done |
 | 19 | Go live with small capital | Slice 9 | in-progress |
@@ -565,6 +566,22 @@ spec [0030](../specs/0030-trend-portfolio/index.md)
 - [x] Test it: `/test trend portfolio`
 - [x] Review it (fresh model): `/check review trend portfolio`
 - [ ] Document it: `/document trend portfolio`
+
+### 33. Trend daily on the main trader · in-progress
+Replace the main demo trader's losing 5 minute scalper (`donchian_scalp_tp`) with `trend_daily`: the 30 day trend book of feature 31 at 5x, rebalanced every day at 00:05 UTC, every change traded, no stops, no brake. A thin subclass of `trend_portfolio`, plus a `book` flag so deploys skip the flat wait, and a Portfolio page that can read the main trader. Straight to demo as an open ended forward test; a study and gate are owed before live. From the 2026-11-11 research: the 30 day trend pays at day holds (+25 to 40 bps a day), not at 5 minutes.
+**Done when:** every existing strategy hash is unchanged, the VPS main trader runs `trend_daily` with a `resume` rebalance on all 12 coins after the switch deploy, a later deploy skips the flat wait, the next 00:05 UTC run logs a `daily` rebalance, and the Portfolio page shows the book with fees per day.
+spec [0032](../specs/0032-trend-daily/index.md) · code in `packages/core/src/trading_core/node/trend_daily.py`
+
+- [x] Design it (spec): `/architect trend daily`
+- [ ] Build it: `/develop trend daily`
+  - [x] Strategy: hash baseline, `TrendDaily` module with daily rebalance, plan snapshot schedule, late bar list, settings and wiring, laptop run (AC-1 to AC-5)
+  - [x] Book on main: `book` flag and the deploy flat wait skip (AC-6, AC-7)
+  - [x] Dashboard and alerts: Portfolio page slot, daily schedule, fees per day, main slot alerts (AC-2a, AC-2b, AC-8, AC-9)
+  - [ ] Close out and VPS switch: hash check, order cap computation, kfs.env, deploy, your promote, start checks (AC-10, AC-11)
+- [ ] Verify it: `/check verify trend daily`
+- [ ] Test it: `/test trend daily`
+- [ ] Review it (fresh model): `/check review trend daily`
+- [ ] Document it: `/document trend daily`
 
 ### 17. Hour level strategy candidates · dropped
 The fallback set: trend following and mean reversion on 1h to 4h candles, tested in the candle lab.

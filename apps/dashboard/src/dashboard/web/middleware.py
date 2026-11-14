@@ -20,7 +20,9 @@ SECURITY_HEADERS: Final = {
     "Referrer-Policy": "same-origin",
     "Cache-Control": "no-store",
 }
-STATIC_CACHE: Final = "public, max-age=86400"
+# Asset URLs carry no version, so the browser asks again on every load (a cheap 304 by ETag); a day long cache
+# served a new page with the old stylesheet after the 2026-11-12 redesign deploy.
+STATIC_CACHE: Final = "public, no-cache"
 
 
 def session_cookie(value: str, max_age: int, secure: bool) -> str:

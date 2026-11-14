@@ -199,12 +199,13 @@ kfs_unpause_slot_if_ours() {
 
 # kfs_pause_and_wait <now: true|false> <wait: 15m>
 # Pause entries (source deploy) unless already paused, then wait until the trader holds no
-# position and no entry order (AC-8). 0 when flat, or at once with now=true. Otherwise one of
+# position and no entry order (AC-8). 0 when flat, or at once with now=true or a demo book
+# (trader_state.book, spec 0032 AC-7). Otherwise one of
 # the KFS_DRAIN_* codes, with any pause we sent already lifted again (a lifted pause sends
 # nothing). Sets KFS_PAUSED_BY_US and KFS_WAITED_S.
 # shellcheck disable=SC2034 # KFS_DRAIN_REASON is read by the scripts that source this file
 kfs_pause_and_wait() {
-    local now=$1 wait=$2 state paused rc start slot_args=()
+    local now=$1 wait=$2 state paused rc start book=false slot_args=()
     # With the portfolio profile on, the pause goes to every trader and waits for both answers
     # (spec 0030 AC-18); the wait for flat stays on main (the portfolio is never flat by design).
     if kfs_portfolio_on; then slot_args=(--slot all); fi
@@ -213,6 +214,7 @@ kfs_pause_and_wait() {
     KFS_DRAIN_REASON=""
     if state=$(kfs_control state); then
         paused=$(jq -r '.data.paused // false' <<<"$state")
+        book=$(jq -r '.data.book // false' <<<"$state")
     elif [ "$now" = true ]; then
         kfs_log WARNING "trader_state unreadable; --now sends the pause anyway"
         paused=false
@@ -238,6 +240,12 @@ kfs_pause_and_wait() {
     fi
     if [ "$now" = true ]; then
         kfs_log WARNING "--now: not waiting for flat"
+        return 0
+    fi
+    # A demo book (spec 0032 AC-7) is never flat by design: the restart starts it flat and its start
+    # rebalance rebuilds it. A missing or unreadable `book` counts as false, so the wait stays.
+    if [ "$book" = true ] && [ "$(kfs_trading_env)" = demo ]; then
+        kfs_log INFO "trader holds a book, not waiting for flat"
         return 0
     fi
     start=$SECONDS

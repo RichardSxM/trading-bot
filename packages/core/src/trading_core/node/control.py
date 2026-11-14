@@ -734,6 +734,7 @@ def trader_state(
     losses: Callable[[], Mapping[str, object]] | None = None,
     reconcile: Callable[[], Mapping[str, object]] | None = None,
     run_id: uuid.UUID | None = None,
+    book: bool = False,
 ) -> Mapping[str, object] | None:
     """The ``trader_state`` snapshot data (AC-7) from the gate, the risk engine, and the cache.
 
@@ -744,7 +745,9 @@ def trader_state(
     ``losses`` every loss field is null, as before the seed lands. The check fields from ``reconcile``
     (``ReconcileActor.snapshot_fields``) are spec 0023 AC-19's; without it they are null. ``run_id`` (the
     paper run) adds a ``run_id`` field, so the Portfolio page can read that run's realized P&L (spec 0030
-    AC-21); without one the field is left out and the shape is as before.
+    AC-21); without one the field is left out and the shape is as before. ``book`` is true only when the trader
+    runs a demo paper book strategy (spec 0032 AC-6), so the deploy does not wait for it to be flat; a reader
+    treats a missing field as false.
     """
     if not gate.loaded:
         return None
@@ -782,6 +785,7 @@ def trader_state(
         **(losses() if losses is not None else NO_LOSS_FIELDS),
         **(reconcile() if reconcile is not None else NO_RECONCILE_FIELDS),
         **({} if run_id is None else {"run_id": str(run_id)}),
+        "book": book,
     }
 
 

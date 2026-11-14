@@ -1,73 +1,82 @@
 ---
 name: Kraken Futures Scalper
-description: A graphite console for one trader supervising an automated scalper, where the shell recedes, live state is the only thing that moves, and the stop is always one tap away.
+description: The book as a league table. Twelve coins ranked by 30 day trend on printed standings, longs above and shorts below one oranje flip line, book value set at poster size, and the stop one tap away.
 colors:
-  bg: "#08090B"
-  surface: "#0E1013"
-  raised: "#15181D"
-  rule: "#1D2128"
-  edge: "#5F6876"
-  text: "#EDEEF0"
-  muted: "#9AA2AE"
-  faint: "#7E8694"
-  profit: "#2EBD85"
-  loss: "#F0524F"
-  warn: "#E8A33D"
-  info: "#7B86F2"
-  live: "#D62F2F"
-  demo: "#E8A33D"
-  stop: "#C93338"
+  bg: "#F3F4F1"
+  surface: "#FCFCFB"
+  raised: "#E8E9E5"
+  rule: "#D8DAD4"
+  edge: "#7C8079"
+  text: "#111315"
+  muted: "#464B52"
+  faint: "#5C6168"
+  profit: "#0A7445"
+  loss: "#C0102B"
+  warn: "#8F5300"
+  info: "#2648C9"
+  live: "#B0102A"
+  demo: "#8F5300"
+  stop: "#C0102B"
+  flip: "#E04F00"
+  flip-ink: "#A33A00"
   on-alarm: "#FFFFFF"
 typography:
+  poster:
+    fontFamily: '"Barlow Semi Condensed", "Barlow", system-ui, sans-serif'
+    fontSize: 64px
+    fontWeight: 600
+    lineHeight: 0.95
+    letterSpacing: -0.02em
+    fontFeature: '"tnum"'
   display:
-    fontFamily: '"IBM Plex Sans", system-ui, sans-serif'
+    fontFamily: '"Barlow Semi Condensed", "Barlow", system-ui, sans-serif'
     fontSize: 32px
     fontWeight: 600
-    lineHeight: 1.2
-    letterSpacing: -0.02em
+    lineHeight: 1.1
+    letterSpacing: -0.01em
   headline:
-    fontFamily: '"IBM Plex Sans", system-ui, sans-serif'
+    fontFamily: '"Barlow Semi Condensed", "Barlow", system-ui, sans-serif'
     fontSize: 24px
     fontWeight: 600
-    lineHeight: 1.25
+    lineHeight: 1.2
     letterSpacing: -0.01em
   title:
-    fontFamily: '"IBM Plex Sans", system-ui, sans-serif'
+    fontFamily: '"Barlow Semi Condensed", "Barlow", system-ui, sans-serif'
     fontSize: 20px
     fontWeight: 600
-    lineHeight: 1.3
+    lineHeight: 1.25
   body-lg:
-    fontFamily: '"IBM Plex Sans", system-ui, sans-serif'
-    fontSize: 16px
+    fontFamily: '"Barlow", system-ui, sans-serif'
+    fontSize: 17px
     fontWeight: 400
     lineHeight: 1.5
   body:
-    fontFamily: '"IBM Plex Sans", system-ui, sans-serif'
-    fontSize: 14px
+    fontFamily: '"Barlow", system-ui, sans-serif'
+    fontSize: 15px
     fontWeight: 400
     lineHeight: 1.45
   label:
-    fontFamily: '"IBM Plex Sans", system-ui, sans-serif'
-    fontSize: 13px
-    fontWeight: 500
-    lineHeight: 1.4
-  caption:
-    fontFamily: '"IBM Plex Sans", system-ui, sans-serif'
-    fontSize: 12px
-    fontWeight: 500
-    lineHeight: 1.4
-    letterSpacing: 0.06em
-  number:
-    fontFamily: '"IBM Plex Mono", ui-monospace, monospace'
+    fontFamily: '"Barlow", system-ui, sans-serif'
     fontSize: 14px
-    fontWeight: 400
+    fontWeight: 500
+    lineHeight: 1.35
+  caption:
+    fontFamily: '"Barlow Semi Condensed", "Barlow", system-ui, sans-serif'
+    fontSize: 12px
+    fontWeight: 600
+    lineHeight: 1.3
+    letterSpacing: 0.08em
+  number:
+    fontFamily: '"Barlow", system-ui, sans-serif'
+    fontSize: 15px
+    fontWeight: 500
     lineHeight: 1.45
     fontFeature: '"tnum"'
   number-lg:
-    fontFamily: '"IBM Plex Mono", ui-monospace, monospace'
-    fontSize: 20px
-    fontWeight: 500
-    lineHeight: 1.3
+    fontFamily: '"Barlow Semi Condensed", "Barlow", system-ui, sans-serif'
+    fontSize: 24px
+    fontWeight: 600
+    lineHeight: 1.15
     fontFeature: '"tnum"'
 rounded:
   "2": 2px
@@ -84,32 +93,32 @@ motion:
   state: 120ms ease-out
 components:
   button:
-    backgroundColor: "{colors.raised}"
+    backgroundColor: "{colors.surface}"
     textColor: "{colors.text}"
     typography: "{typography.label}"
-    rounded: "{rounded.4}"
+    rounded: "{rounded.2}"
     height: 44px
   button-primary:
     backgroundColor: "{colors.text}"
     textColor: "{colors.bg}"
     typography: "{typography.label}"
-    rounded: "{rounded.4}"
+    rounded: "{rounded.2}"
     height: 44px
   button-quiet:
     textColor: "{colors.muted}"
     typography: "{typography.label}"
-    rounded: "{rounded.4}"
+    rounded: "{rounded.2}"
     height: 44px
   button-danger:
-    backgroundColor: "{colors.raised}"
+    backgroundColor: "{colors.surface}"
     textColor: "{colors.loss}"
-    rounded: "{rounded.4}"
+    rounded: "{rounded.2}"
     height: 44px
   button-stop:
     backgroundColor: "{colors.stop}"
     textColor: "{colors.on-alarm}"
     typography: "{typography.label}"
-    rounded: "{rounded.4}"
+    rounded: "{rounded.2}"
     height: 44px
   badge-demo:
     backgroundColor: "{colors.demo}"
@@ -124,56 +133,59 @@ components:
     rounded: "{rounded.2}"
     height: 20px
   input:
-    backgroundColor: "{colors.bg}"
+    backgroundColor: "{colors.surface}"
     textColor: "{colors.text}"
     typography: "{typography.body-lg}"
-    rounded: "{rounded.4}"
+    rounded: "{rounded.2}"
     height: 44px
   input-code:
-    backgroundColor: "{colors.bg}"
+    backgroundColor: "{colors.surface}"
     textColor: "{colors.text}"
-    typography: "{typography.number}"
-    rounded: "{rounded.4}"
+    typography: "{typography.number-lg}"
+    rounded: "{rounded.2}"
     height: 44px
-  sidebar:
-    backgroundColor: "{colors.bg}"
-    padding: "{spacing.16} {spacing.12}"
-    width: 232px
-  nav-item:
-    textColor: "{colors.muted}"
+  masthead:
+    backgroundColor: "{colors.text}"
+    textColor: "{colors.bg}"
     typography: "{typography.label}"
-    rounded: "{rounded.4}"
-    padding: "0 {spacing.8}"
-    height: 36px
-  nav-item-current:
-    backgroundColor: "{colors.raised}"
-    textColor: "{colors.text}"
-    rounded: "{rounded.4}"
-    height: 36px
+    padding: "0 {spacing.24}"
+    height: 56px
+  nav-item:
+    textColor: "{colors.bg}"
+    typography: "{typography.label}"
+    padding: "0 {spacing.12}"
+    height: 56px
   tab-bar:
-    backgroundColor: "{colors.bg}"
-    textColor: "{colors.muted}"
+    backgroundColor: "{colors.text}"
+    textColor: "{colors.bg}"
     typography: "{typography.caption}"
     height: 60px
-  pane:
+  scoreboard:
     backgroundColor: "{colors.surface}"
-    rounded: "{rounded.4}"
-  topbar:
+    textColor: "{colors.text}"
+    typography: "{typography.poster}"
+    padding: "{spacing.24}"
+  standings-row:
     backgroundColor: "{colors.surface}"
-    typography: "{typography.label}"
-    padding: "{spacing.8} {spacing.8} {spacing.8} {spacing.24}"
-    height: 60px
+    textColor: "{colors.text}"
+    typography: "{typography.number}"
+    height: 48px
+  flip-line:
+    backgroundColor: "{colors.flip}"
+    textColor: "{colors.flip-ink}"
+    typography: "{typography.caption}"
+    height: 2px
   region:
     backgroundColor: "{colors.surface}"
     padding: "{spacing.24}"
   table-cell:
     textColor: "{colors.text}"
     typography: "{typography.label}"
-    padding: "{spacing.8} {spacing.24}"
+    padding: "{spacing.8} {spacing.16}"
   table-head:
     textColor: "{colors.faint}"
     typography: "{typography.caption}"
-    padding: "{spacing.8} {spacing.24}"
+    padding: "{spacing.8} {spacing.16}"
 # Extension (spec 0004 AC-15): every pair the parity test checks for WCAG AA.
 # use: text = 4.5:1, large = 3:1 (18.66px bold or 24px regular and up), ui = 3:1 (a control's only boundary, an icon, a dot).
 contrast_pairs:
@@ -197,260 +209,249 @@ contrast_pairs:
   - {fg: info, bg: raised, use: text}
   - {fg: faint, bg: bg, use: text}
   - {fg: faint, bg: surface, use: text}
+  - {fg: faint, bg: raised, use: text}
+  - {fg: flip-ink, bg: bg, use: text}
+  - {fg: flip-ink, bg: surface, use: text}
+  - {fg: flip-ink, bg: raised, use: text}
   - {fg: on-alarm, bg: stop, use: text}
   - {fg: on-alarm, bg: live, use: text}
   - {fg: bg, bg: demo, use: text}
   - {fg: bg, bg: info, use: text}
+  - {fg: bg, bg: text, use: text}
   - {fg: edge, bg: bg, use: ui}
   - {fg: edge, bg: surface, use: ui}
   - {fg: edge, bg: raised, use: ui}
-  - {fg: bg, bg: text, use: text}
+  - {fg: flip, bg: bg, use: ui}
+  - {fg: flip, bg: surface, use: ui}
 ---
 
 # Design System: Kraken Futures Scalper
 
 ## Overview
 
-**Creative North Star: "The Graphite Console"**
+**Creative North Star: "The League Table"**
 
-The category standard for a trading console, played straight and finished to the craft of Linear and Hyperliquid. The shell recedes: a sidebar on the darkest graphite, a content pane one step lighter set into it, controls one step lighter again. The only things that move are the things that are live. This is an instrument panel for one person supervising a bot, read on a laptop at a desk and on a phone in a hand, and at both sizes the same facts come first: what just happened, whether the picture is fresh, whether this is DEMO or LIVE, and where the stop is.
+The dashboard reads like the Monday standings page: one trader's book of coins printed as a table on paper, ranked by their 30 day trend, with the oranje flip line drawn where the zones split. Coins above the line plan long at the next rebalance and coins below it plan short, so the page answers its first question (who holds what, and who could flip tonight) by position alone. Book value is set at poster size, because it is the one figure you read from across the room.
 
-Calm is the default and the point. Neutral graphite carries structure; color is reserved for state (profit, loss, stale, live, stop), so when color appears it is information. Regions are cut apart by 1 px seams, never boxed as cards. Density is welcome: figures sit in tight, aligned columns because the trader reads them as columns. The world refuses the KPI tile grid, neon glow, and glass.
+The world is ink on paper. Sections open under a two pixel ink rule with a condensed uppercase title, rows part on hairlines, and figures sit in tabular columns. Colour is reserved: green and red say long and short, oranje says the flip line and whatever changes at the next rebalance, and everything else, P&L included, is ink with a sign and an arrow. The shell is a black masthead with the page names in condensed capitals; the status line and the stop sit on paper under it. Nothing is a card, nothing glows, nothing floats.
 
-The signature is the heartbeat: a tape of the trader's data age, one tick a second, and a link dot that beats once for every event the dashboard receives. If the tape is steady and the dot is beating, the picture is live.
+Rejected on purpose: the graphite exchange terminal this replaced (2026-11-12), the KPI tile grid, per coin cards on the first screen, neon on black, and glass.
 
 **Key Characteristics:**
-- Dark only, three graphite steps: sidebar on Night, pane on Desk, controls on Lamp.
-- Regions meet at 1 px seams over the Hairline color; no cards, no shadows.
-- IBM Plex Sans at 13 to 14 px for words, IBM Plex Mono with tabular figures for every figure.
-- One icon set (Lucide) at one stroke (1.5).
-- Color only for state; the stop is crimson and always at the top right of the pane.
-- Every live value carries its age or a `link lost` or `no data` marker.
-- Calm until something is wrong, then unmissable: one alert bar under the top bar says what broke and what to do.
+- Paper ground, ink type, hairline rows, two pixel ink rules over every section.
+- Book value at poster size; the standings table carries the rest of the first screen.
+- Green and red only for long and short; oranje only for the flip line and what changes at the next rebalance.
+- One condensed signage family for words and tabular figures; no mono costume.
+- One authored motion: a coin whose rank, side, or flip state changed flashes its row once.
 
 ## Colors
 
-A near black, slightly cool graphite ramp with a small, strict set of signal colors.
+A newsprint palette: one cool paper, one near black ink, two side colours, and one oranje that means a single thing.
 
 ### Primary
-- **Signal Indigo** (info): focus rings, text links, text selection, the `connecting` link state, and a command that is in flight. It is the only interaction accent and it never fills a button.
+- **Ink** (`text`): every word and figure, section rules (2 px), the masthead fill, the primary button, filled form squares, the season curve above its opening value.
 
 ### Secondary
-- **Ledger Green** (profit): positive P&L, the `live` link dot, healthy dots and outline badges. Never for buttons or decoration.
-- **Ledger Red** (loss): negative P&L, failures, `lost`, `Stop NOT sent`, the error state.
-- **Amber Watch** (warn): stale ages above the amber threshold, `reconnecting`, the `link lost` marker, the `no data` link state, warning alerts, the session ending cue.
+- **Long Green** (`profit`): the side long, wherever it appears: zone stripes, the word `Long`, a rising 30 day trend, the long count. Also the profit tint of the `pnl` component outside the Overview's table and scoreboard.
+- **Short Red** (`loss`): the side short and a falling trend, the same places; also errors and the loss tint of `pnl` outside the Overview.
 
 ### Tertiary
-- **Live Red** (live): the LIVE badge, the 2 px top border of the top bar in live, and the pressed stop. Means real money.
-- **Demo Amber** (demo): the DEMO badge. The same hue as warn on purpose: demo is a caution, not a state of calm.
-- **Stop Crimson** (stop): the stop button only, with On alarm text.
+- **Oranje** (`flip`): the flip line across the standings, the small tick before `near the line` and `flips at`, the flip line in the brand mark, and the one time row flash. Never a fill for a control.
+- **Oranje Ink** (`flip-ink`): text in the flip voice: the flip line label, `near the line`, `flips at 00:05 UTC`, and the scoreboard's flip count.
 
 ### Neutral
-- **Night** (bg): the page behind everything, the sidebar, the phone tab bar, inputs.
-- **Desk** (surface): the content pane, the top bar, every region, table heads.
-- **Lamp** (raised): default buttons, the current nav item, hovered rows, loading bars, notices.
-- **Hairline** (rule): the seams between regions, row rules, status strip dividers, the pane border. Never the only edge of a control.
-- **Edge** (edge): input borders, button borders on hover, off dots, the dashed gap line in the tape; 3:1 or better on every surface.
-- **Paper** (text): primary text and figures, and the fill of the primary button.
-- **Pencil** (muted): secondary text, empty state sentences, idle nav items, fresh ticks in the tape.
-- **Margin** (faint): labels only (`link`, `trader`, `command`, stat labels, table heads, region meta) and empty state icons, never values.
-- **On alarm** (on-alarm): white text on stop and live.
+- **Newsprint** (`bg`): the page ground and the masthead's type.
+- **Sheet** (`surface`): inputs, the season chart's well, and a hovered row.
+- **Pressed** (`raised`): button hover, the gross gauge's track, loading bars.
+- **Hairline** (`rule`): rules between rows and in the status strip.
+- **Ruling** (`edge`): input borders, dotted time underlines, a flat coin's empty stripe.
+- **Pencil** (`muted`): secondary text, held sizes, the season curve below its opening value.
+- **Margin** (`faint`): captions, column heads, ranks, daily move counts.
+- **Amber Watch** (`warn`), **Link Blue** (`info`): warnings and links, as before.
+- **Demo Amber** (`demo`), **Live Red** (`live`), **Stop Red** (`stop`), **White** (`on-alarm`): the env badges and the stop.
 
 ### Named Rules
-**The Meaning Rule.** Every color other than the neutrals means a state. If an element is colored and you cannot name the state it reports, it should be gray.
+**The Two Sides Rule.** Green means long and red means short. A figure that is neither a side nor a trend (P&L, the season curve) on the Overview reads in ink, by its sign and arrow.
 
-**The Pair Rule.** Every text and background combination in use is listed in `contrast_pairs` and passes WCAG AA; a new combination is added there first, and the token test enforces it.
-
-**The Paper Primary Rule.** The one primary action on a screen is Paper with Night text. Indigo marks attention (focus, links, work in flight), never a filled action.
+**The One Oranje Rule.** Oranje means the flip line and what changes at the next rebalance, nothing else. If a new element wants oranje, it must be about a flip.
 
 ## Typography
 
-**Body Font:** IBM Plex Sans (with `system-ui`, `sans-serif`)
-**Number Font:** IBM Plex Mono (with `ui-monospace`, `monospace`), always with tabular figures
+**Display Font:** Barlow Semi Condensed (with Barlow, system-ui)
+**Body Font:** Barlow (with system-ui)
 
-**Character:** Plex is an engineer's typeface: plain, sturdy, slightly mechanical. The console runs small, at 13 to 14 px, the way Linear does; hierarchy comes from weight (600 against 400 and 500) and from Paper against Margin, not from size jumps.
+**Character:** A DIN-like road signage family: condensed capitals for titles, labels, and the poster figure, the regular width for reading, tabular figures (`tnum`) for every number. One family, two widths, no monospace.
 
 ### Hierarchy
-- **Display** (600, 32 px, 1.2): reserved; not used in the built screens.
-- **Headline** (600, 24 px, 1.25): the login heading only.
-- **Title** (600, 20 px, 1.3): reserved for page level headings; its size also sets the authenticator code input.
-- **Body large** (400, 16 px, 1.5): login inputs, so a phone never zooms.
-- **Body** (400, 14 px, 1.45): default text. The page title in the top bar is Body at 600.
-- **Label** (500, 13 px, 1.4): the status strip, nav items, buttons, form labels, table cells. Region titles are Label at 600.
-- **Caption** (500, 12 px): table heads, stat labels, region meta, ages, the tape legend. Badges are Caption at 600, uppercase, with 0.06em tracking.
-- **Number** (Mono 400, 14 px, tabular): every figure in a line or a table.
-- **Number large** (Mono 500, 20 px, tabular): the value in a stat.
-
-### Numbers and time
-These rules are implemented by the `num`, `pnl`, and `ts` template filters; templates never format numbers by hand.
-- **Decimal only.** `num`, `pnl` refuse a `float`, `int`, or `bool` (TypeError) and NaN or infinity (ValueError). Callers quantize to the instrument's precision; the filters never round.
-- **Own precision.** A value shows exactly the digits its `Decimal` carries: `1234.50` → `1,234.50`, `1E+3` → `1,000`.
-- **Grouping and sign.** Comma thousands, dot decimal. Negatives use the true minus sign `−` (U+2212), which matches the plus sign in width. Negative zero shows as `0`.
-- **P&L.** `pnl` adds `+` or `−`, ▲ or ▼, and the profit or loss color. Zero is neutral, with no sign and no arrow. The arrow is hidden from screen readers; the sign carries the meaning.
-- **Time.** Every timestamp is UTC, truncated to seconds, written `2026-10-02 14:03:07Z`. Amsterdam local time appears only in the `title` tooltip (`16:03:07 CEST, Amsterdam`), marked by a dotted Edge underline.
-- **Right aligned.** Numbers in tables align right so digits of the same place line up.
+- **Poster** (600, 64 px, clamped to 48 px on a phone, 0.95): book value only.
+- **Display** (600, 32 px, 1.1): the login title.
+- **Headline** (600, 24 px, 1.2, uppercase): the page title in the status line.
+- **Title** (600 to 700, 20 px, 1.25, uppercase with 0.02em tracking): section titles; coin names in the standings at 700, not uppercased.
+- **Body** (400, 15 px, 1.45) and **Body large** (17 px, inputs).
+- **Label** (500, 14 px): table cells, meta lines, controls.
+- **Caption** (600, 12 px, 0.08em, uppercase, Semi Condensed): column heads, figure labels, the flip line label.
+- **Number** (500, 15 px, `tnum`) and **Number large** (600, 24 px, Semi Condensed, `tnum`): table figures and the scoreboard's facts.
 
 ### Named Rules
-**The Mono for Measurement Rule.** Mono is for numbers, ids, codes, and the tape's time axis. A word set in mono is a costume.
-
-**The Sentence Case Rule.** Titles, labels, and table heads are sentence case. Only badges are uppercase.
+**The Signage Rule.** Labels and titles are condensed capitals; reading text and figures are not. Never set a sentence in capitals.
 
 ## Layout
 
-**Laptop (900 px and wider).** A 232 px sidebar on Night holds the mark, the four nav items, and at its foot the session cue and Log out; it is sticky at full height. Beside it the content pane sits inset by 8 px on the top, right, and bottom, with a 1 px Hairline border and 4 px corners, so the sidebar's darker tone frames it. The pane runs edge to edge: there is no centered maximum width.
+The page is a single column on paper under the masthead, 24 px gutters on a laptop and 16 px on a phone, capped at 1,680 px. The Overview stacks the scoreboard, the standings, Activity, and the per coin ledger, each under its ink rule with 32 px between sections.
 
-**The top bar** lives inside the pane, sticky, at least 60 px tall, on Desk with a Hairline rule below. From left: the env badge and the page title, then the status strip (link, trader age, last command) whose items are divided by 1 px Hairline rules with 12 px either side, then the stop alone at the right edge behind its own 1 px rule. In live the bar gains a 2 px Live Red top border. While the link is reconnecting or lost, the age and command dim to half and an amber `link lost` marker joins the strip. While something is wrong, the alert bar runs full width along the bar's bottom edge, inside the sticky bar, so it never scrolls away.
-
-**Regions.** A page is a board: a grid with 1 px gaps laid over the Hairline color, so every region (on Desk, 24 px padding) is separated by a seam rather than a box. From 1100 px the board has two columns, a wide one and a side column of 320 to 400 px; wide regions span both. Overview leads with the heartbeat tape across the full width, then Activity beside Position and P&L. A region head is a Label 600 title with a Caption meta line beside it, then 16 px of space.
-
-**Phone (below 900 px).** The sidebar becomes a four tab bar fixed to the bottom on Night with a Hairline rule on top: 60 px tabs, a 20 px icon over a Caption label, safe area aware. The top bar keeps the badge, title, and stop on its first row; the status strip wraps onto a second row under them, so the stop never leaves the first viewport. Regions stack with 16 px padding. A session footer under the board, ruled on top, carries the session cue and a quiet Log out.
-
-**Spacing** follows a 4 px base (4, 8, 12, 16, 24, 32, 48): 4 inside a label pair, 8 to 12 inside groups, 16 between related groups, 24 for region padding and top bar gaps on a laptop. Tables scroll inside their own container and bleed to the region edges; the page never scrolls sideways.
+The scoreboard is three columns from 1,200 px (book value, the season curve, the facts), two from 900 px (book and facts, the season under them), and one on a phone. The standings are a full width table; under 760 px each coin becomes a whole row of two lines (rank, stripe, coin, side and size, P&L; then trend, distance to flip, form), never a sideways scroll. Rows are 52 px tall on a laptop. Activity scrolls inside a 26 rem cap; the ledger opens on demand.
 
 ### Named Rules
-**The Seam Rule.** Regions are separated by 1 px seams (a grid gap over Hairline, or a 1 px rule), never by cards, outlines around each region, or extra background tones.
+**The Whole Row Rule.** On a phone a table row repacks whole; nothing scrolls sideways.
 
 ## Elevation & Depth
 
-No shadows anywhere. Depth is tonal and runs in three steps: Night (sidebar, tab bar, page) under Desk (the pane, the top bar, regions) under Lamp (controls, the current nav item, hovered rows). Hairline rules mark where two areas meet. A sticky element (the top bar, a table head) keeps its own Desk tone and a rule along its edge, which is enough to separate it from content scrolling beneath.
+Flat. Depth is only order and rules: a two pixel ink rule opens a section, a hairline parts rows, and the masthead is a solid ink band. There are no shadows, glows, gradients, or blurs anywhere; the season chart's soft fill under its line is data, not depth.
 
 ### Named Rules
-**The Flat Desk Rule.** If something needs to stand out, give it a different surface tone or a rule, never a shadow, a glow, or a blur.
+**The Printed Page Rule.** If it could not be printed in two inks on newsprint, it does not belong.
 
 ## Shapes
 
-Corners are nearly square: 2 px for badges, notices, and focus outlines; 4 px for buttons, inputs, nav items, the pane, and the brand tile. Nothing is pill shaped; status and link dots are 8 px circles. Borders are 1 px; the only thicker lines are the 2 px Live Red top border in live, the 2 px state colored top rule of the alert bar, and the 2 px focus outline. Icons are Lucide, drawn on a 24 px grid with a 1.5 stroke and round caps and joins, at 16 px (20 px in the tab bar, 18 px in the stop). The brand mark is a Lamp tile with an Edge outline and a Paper heartbeat trace.
+Square. Controls and badges take a 2 px corner; tables, sections, gauges, form squares, and stripes are sharp. The zone stripe is a 6 by 28 px bar at the start of each coin row; form squares are 20 px (14 px on a phone).
 
 ## Components
 
-Each component is a Jinja macro in `apps/dashboard/src/dashboard/templates/components/`; `/styleguide` renders every state listed here.
+Each component is a Jinja macro in `apps/dashboard/src/dashboard/templates/components/` unless named otherwise; `/styleguide` renders every state listed here.
 
 ### Number (`num`)
-Plain, right aligned in tables, Mono with tabular figures.
+Plain, right aligned in tables, Barlow with tabular figures and a true minus sign.
 - **States:** `positive`, `negative`, `zero`, `grouped`
 
 ### P&L (`pnl`)
-The only component that colors a number by its sign.
+A sign, an arrow, and the figure at 600. Profit and loss tints apply outside the Overview's standings and scoreboard; there it reads in ink (The Two Sides Rule).
 - **States:** `profit`, `loss`, `zero`
 
 ### Timestamp (`ts`)
-UTC text with the local time on hover or long press.
+UTC text with a dotted underline and the Amsterdam time on hover or long press.
 - **States:** `utc`
 
 ### Badge (`badge`)
-Uppercase Caption at 600 with 0.06em tracking, 20 px tall, 8 px side padding, 2 px corners. The env badge is a solid fill (Demo Amber with Night text, Live Red with On alarm text) and is the loudest object in the top bar on purpose. Status badges are quiet: a 1 px outline and text in their state color, no fill.
+Condensed Caption capitals at 700, 20 px tall, 2 px corners. The env badge is solid (Demo Amber or Live Red); status badges are a 1 px outline in their state colour.
 - **States:** `demo`, `live`, `ok`, `warn`, `bad`, `neutral`
 
 ### Status dot (`status_dot`)
-An 8 px circle beside a text label; never the only signal. Off is an Edge ring with no fill.
+An 8 px circle beside a text label; never the only signal.
 - **States:** `ok`, `warn`, `bad`, `off`
 
 ### Stat (`stat`)
-A Margin Caption label over a Number large value, with an optional Caption note under it; no box. Stale dims the value to 75 percent and turns the note amber; error replaces the value with a Ledger Red Label at 600; loading shows skeleton bars.
+A Caption label over a Number large value; stale dims it and turns the note Amber Watch, error replaces it with a Short Red label.
 - **States:** `default`, `stale`, `error`, `loading`
 
 ### Table (`table`)
-Dense rows at Label size, cells 8 px tall padding and 24 px side padding on a laptop (16 px on a phone), Hairline rules between rows, numbers right aligned in Mono. Heads are sentence case Caption in Margin with no fill of their own (they sit on Desk) and a Hairline rule below; they stick while the body scrolls. A hovered row turns Lamp. Empty and loading rows span every column, left aligned, in Pencil.
+Label size rows on hairlines under a sticky head of Caption capitals and a 2 px ink rule; numbers right aligned; a hovered row turns Sheet.
 - **States:** `default`, `empty`, `loading`
 
 ### Pager (`pager`)
-Under a paged table (Trades, spec 0006 AC-19), above a Hairline: the page as a Margin Caption (`Page 2`) between quiet links, `Newer` with a chevron left and `Older` with a chevron right, in Pencil at Label size that turn Paper on a Lamp fill when hovered, each at least 44 px tall. `Older` shows only while the page is full. A page past the end shows one Pencil line (`Nothing on page 9.`) and a `Back to page 1` link. A lone first page renders no pager.
+Under a paged table: the page as a Caption between `Newer` and `Older` links in ink at 600, each at least 44 px tall.
 - **States:** `first`, `middle`, `past_end`
 
 ### Button (`button`)
-- **Shape:** 4 px corners, at least 44 × 44 px, 16 px side padding, Label type, an optional 16 px icon 8 px from the label.
-- **Default:** Lamp fill, Edge border, Paper text; hover turns the border Pencil; pressed drops to Desk. **Focus:** 2 px Signal Indigo outline, 2 px offset.
-- **Primary:** Paper fill, Night text, 600 weight; hover goes to pure white. One per screen (Log in).
-- **Quiet:** no fill and no border, Pencil text; hover gives a Lamp fill and Paper text. For secondary actions such as Log out.
-- **Danger:** Ledger Red text and border, for destructive actions that are not the stop.
-- **Stop:** Stop Crimson fill, On alarm 600 text, an 18 px octagon icon, an On alarm border on hover, Live Red when pressed. Always visible, never disabled by the client.
-- **Disabled:** 45 percent opacity, no hover, `not-allowed` cursor.
-- **Busy:** the label stays, a 2 px rule in the text color sweeps under it, and the button ignores clicks. The stop takes this state while its request is in flight.
+- **Shape:** 2 px corners, at least 44 × 44 px, 16 px side padding, Label at 600.
+- **Default:** Sheet fill, ink border and text; hover Pressed. **Focus:** 2 px ink outline, 2 px offset.
+- **Primary:** ink fill, Newsprint text; hover Pencil.
+- **Quiet:** no fill or border, Pencil text.
+- **Danger:** Short Red border and text.
+- **Stop:** Stop Red fill, white condensed capitals `STOP` with an 18 px octagon; hover Live Red, pressed ink. Always visible, never disabled by the client.
+- **Disabled / Busy:** 45 percent opacity; busy sweeps a 2 px rule under the label and ignores clicks.
 - **States:** `default`, `quiet`, `danger`, `stop`, `disabled`, `busy`
 
 ### Empty state (`empty_state`)
-A bare Lucide icon in Margin (16 px, on a 20 px line, no tile) beside one sentence in Pencil saying what will appear here and when. No frame, no dashed box.
+A bare icon in Margin beside one Pencil sentence saying what will appear and when.
 - **States:** `default`
 
 ### Loading (`loading`)
-Three 10 px skeleton bars in Lamp at full, 80, and 55 percent width that fade gently (static under reduced motion); never a spinner in the middle of content.
+Three square skeleton bars in Pressed that fade gently.
 - **States:** `default`
 
 ### Error state (`error_state`)
-A Ledger Red octagon icon beside a Ledger Red 600 title that names the problem and a Pencil sentence with the recovery. No banner and no fill.
+A Short Red octagon and title naming the problem, then a Pencil sentence with the recovery.
 - **States:** `default`
 
 ### Stale wrapper (`stale`)
-Wraps any live value with its age in Caption. Fresh shows the age in Margin; above the amber threshold it turns Amber Watch; above red it turns Ledger Red; with the link lost the whole value dims to 60 percent and reads `link lost`, so a frozen number never looks live.
+A live value with its age in Caption; Amber Watch past the amber limit, Short Red past red, dimmed with `link lost`.
 - **States:** `ok`, `warn`, `bad`, `lost`
 
 ### Chart (`chart`)
-A Lightweight Charts canvas, 240 px tall, themed from the tokens: a Night well inside its Desk region, Hairline grid and scale borders, Pencil axis text in Plex Mono, Ledger Green and Red for up and down. A Caption credit sits under each chart with a `Charting by TradingView` text link (the library's logo needs an inline style the CSP forbids).
+A Lightweight Charts canvas themed from the tokens with a `Charting by TradingView` text link (the logo needs an inline style the CSP forbids). On the Overview it draws the season curve (below).
 - **States:** `default`
 
 ### Nav item (`nav_links`)
-A 16 px icon 12 px from a Label, 36 px tall, 4 px corners, in Pencil. Hover lays Desk under it in Paper; the current page sits on Lamp in Paper with `aria-current="page"`. On a phone the same links become the four tab bar: icon over label, no fill, the current tab marked by Paper text and icon.
+Condensed capitals in the masthead, Newsprint at 72 percent on ink, full Newsprint with a 3 px Newsprint underline when current. On a phone the links become the bottom tab bar, icon over label, the current tab marked by a bar along its top.
 - **States:** `default`, `current`
 
 ### Link status (`link`)
-The first item of the status strip: an 8 px dot, a Margin `link` label, and a word. `link` means only the browser's live connection to the dashboard. It starts as `snapshot` (an Edge ring, nothing live without JavaScript), then `connecting` in Signal Indigo, `live` with a Ledger Green dot and Paper word, `reconnecting` in Amber Watch after 5 s without an event, and `lost` in Ledger Red after 15 s. While the link is live but the dashboard cannot read Redis, it reads `no data` in Amber Watch (state `degraded`): a green dot never sits beside dead values. On every event received the dot beats once: a 1 px ring grows from the dot to 2.75 times its size and fades over 700 ms.
+The first item of the status line: an 8 px dot, a Margin `link` label, and a word; the dot beats once on every event received.
 - **States:** `static`, `connecting`, `live`, `degraded`, `reconnecting`, `lost`
 
 ### Command state (`command`)
-The third item of the status strip: a Margin `command` label, the latest command and its outcome in the AC-12 words, and its age as a Margin `· 12s ago` (since it was sent, answered, or expired). Signal Indigo while waiting, Paper when confirmed, Amber Watch when unknown, Ledger Red when failed or expired, Pencil for `none`, and dimmed `no data` when Redis is unreadable.
+The latest command and its outcome with its age, in the outcome's colour.
 - **States:** `none`, `pending`, `ok`, `warn`, `bad`, `lost`
 
 ### Alert bar (`alert`)
-The one place the console raises its voice. A full width line along the bottom of the sticky top bar, on Lamp with a 2 px top rule in Ledger Red (or Amber Watch for a warning), an 18 px Lucide `octagon-alert` (or `triangle-alert`) in the same color, a Label 600 title in that color, and Paper text that says what broke and what to do. It shows only the most severe problem: a stop that did not take effect first, then a silent trader, then a stop the trader has not answered within `DASHBOARD_ACK_WARN_S` (10 s) while its heartbeat is not red (the command state turns Amber Watch with it, and the bar names the send and expiry times), then a dashboard that cannot read Redis. Every stop alert ends with a Pencil line naming the way out when the bot will not stop: close positions on Kraken Futures directly (a text link to the venue for this environment). It is empty, and takes no space, while all is well. Times are absolute through `ts`, never a ticking count, and the bar is a `role="alert"` region, so a screen reader hears each problem once.
+The one loud band: under the status line, a lightly tinted Sheet with a 1 px Short Red (or Amber Watch) top rule, an icon, a bold title, and what to do; empty while all is well.
 - **States:** `stop_unhandled`, `stop_failed`, `stop_late`, `stop_unknown`, `trader_silent`, `stop_unacknowledged`, `no_data`
 
 ### Icon (`icon`)
-Lucide, drawn inline on a 24 px grid with a 1.5 stroke in the text color around it, 16 px by default. Decorative unless given a label.
+Lucide, inline, one 1.5 stroke, 16 px by default.
 - **States:** `default`
 
 ### Pulse (`pulse`)
-The heartbeat tape, the signature of the console. A 56 px canvas across the full region width shows the trader's real data age once a second for the last 2 minutes (120 slots). Each tick is 1 to 3 px wide and its height is the age on a square root scale, so a steady 1 s still reads as a beat and a stale spike fills the band. Fresh ticks are Pencil, fading toward the left; ticks over the amber threshold are Amber Watch and over red are Ledger Red; the newest fresh tick is Paper. The baseline is a Hairline, dashed in Edge under every second without a live link, so a gap is never invented away. A Caption legend sits at the right of the head and a Mono time axis (`2m ago`, `1m`, `now`) runs under the tape.
+The heartbeat tape, kept on the styleguide; the Overview no longer shows it (the trader's age sits in the status line).
 - **States:** `default`
 
 ### Activity feed (`activity`)
-Overview's answer to "what just happened": the newest 20 commands, newest first, as plain rows split by Hairlines, no table head. A run of consecutive commands that read the same (command, outcome) is one row: the command carries a Pencil Mono count (`stop ×16`) and the time a Margin Caption `from` line with the oldest time, so repeats never bury the signal. Each row holds the UTC time (`ts`), the command in Paper at 500 weight, and its outcome at the right edge in the top bar's command colors (Signal Indigo while waiting, Paper when confirmed, Ledger Red when failed or expired, Amber Watch when unknown). A final outcome never hides here. On a phone the time drops under the command. An entry that does not parse is one Amber Watch `unknown entry` row. It dims with the top bar while the link is not live.
+Commands and alerts, newest first, on hairlines; repeats collapse into one row with a count; it scrolls inside its cap.
 - **States:** `empty`, `filled`, `collapsed`, `error`
 
 ### Position card (`position`)
-Overview's Position and P&L region (spec 0006). An open position leads with its unrealized P&L as a Stat, then label and value rows split by Hairlines: side, size, average entry, the mark in a Stale wrapper, the stop with its status (Amber Watch `no stop` when there is none), the exit time, and equity. Flat shows `Flat` and the mark. Under every state a Caption title `Paper P&L, before funding` heads realized today (UTC), realized all time, and fees today. A missing or red aged position snapshot is the error state `Trader offline`, never `Flat`, so a dead trader never looks calm. A snapshot that does not parse and an unreadable Redis are error states too; a Postgres failure keeps the live part and says the figures are unavailable.
+The per coin ledger at the foot of the Overview, opened on demand: per coin blocks of label and value rows on hairlines, tiled four across on a laptop.
 - **States:** `open`, `flat`, `offline`, `bad`, `lost`, `pnl_unavailable`
 
 ### Wanted, Trader, Kraken (`sides`)
-The top of the position card (spec 0023 AC-18), in every state but `lost`: three label over value columns. *Wanted* is the trader's intent for the instrument from `trader_state.intent` (`hold`, `entry submitted`, `flatten submitted`, `stop replacing`), *Trader* the cache position from the `position` snapshot, and *Kraken* the exchange view from the last check with its age as a Pencil Caption under it. Labels are Margin, values Paper at 500 weight, all split from the figures below by a Hairline. When Trader and Kraken differ in side or size, both values turn Ledger Red at 600 weight and a Ledger Red line says they disagree, so a submitted flatten never looks like a confirmed flat. A missing, failed, or more than three checks old exchange view shows `Kraken unknown` in Ledger Red, never `flat`.
+Three label over value columns at the top of each coin's ledger block; a disagreement turns both values Short Red at 700.
 - **States:** `agree`, `disagree`, `unknown`
 
 ### Kraken check (`check`)
-The reconciliation badge (spec 0023 AC-19), from `trader_state.last_clean_check_ns`, `last_check_outcome`, and the halt. A cue in the status strip, always shown: a Margin `kraken check` label, then `clean · 12s` (the last clean check's age) in Pencil. `checking` before the first check finishes is Amber Watch at 600 weight. `mismatch`, `halted`, and `Kraken unknown` (the last fetch failed) are Ledger Red at 600 weight, the alert colour. A missing `trader_state` shows `no data`, dimmed. It dims with the top bar while the link is not live. It links to the Reconciliation page, a Table of every reported check (newest first, 50 per page) with each finding and its action in plain words; an outcome is a Badge, `clean` in Ledger Green, `mismatch` and `failed` in Ledger Red.
+A cue in the status line: `kraken check clean · 12s`, Amber Watch while checking, Short Red on a mismatch, a halt, or an unknown view; links to the Reconciliation page.
 - **States:** `clean`, `checking`, `mismatch`, `halted`, `unknown`, `lost`
 
 ### Entries blocked (`blocked`)
-Why the trader takes no new entries (spec 0006 AC-18), from `trader_state.entries_blocked`. In the top bar a cue in the status strip, like the pause cue: a Margin `entries` label, then `blocked` in Amber Watch at 600 weight, with `· n reasons` when there is more than one and the plain words in its title. On Overview, above the position card, an Amber Watch title `No new entries` heads one row per reason split by Hairlines: the plain words of the spec's *Block reasons* table (those that only clear on a restart say so), with the code as a Pencil Caption at the right. Nothing renders while entries are open. A missing or unreadable `trader_state` shows nothing here, since the pause cue and the heartbeat age already say the state is unknown. Both dim with the top bar while the link is not live.
+An Amber Watch cue in the status line, and above the standings a title over one row per reason.
 - **States:** `none`, `one`, `several`
 
 ### Journal check (`journal`)
-The Check panel of the Trades page's Export journal section (spec 0024 AC-1, AC-5 to AC-9), swapped in by HTMX. A title `P&L check` carries the verdict as a Badge: `match` in Ledger Green, `mismatch` in Amber Watch with the warning icon and an Amber Watch rule down the check's left edge, `not comparable` neutral. A Margin line says why for a mismatch (maybe a recording bug) or a `not comparable` (a position crossed a range edge, or rows belong to no position). Under it Margin label and Paper value pairs give both nets, the difference, the tolerance, and the counts, every amount through `num` or `pnl`. Then a Totals Table (native USD, then EUR) and the Balances at the start and end, a pair with no snapshot reading `none recorded`; paper mode says its balances are simulated. A primary `journal.csv` button and a plain `summary.csv` button close it, in every check state, since no verdict blocks a download. A refused range (bad dates, a missing ECB rate, an inverse instrument) is one alert line, an Amber Watch stop icon then `Nothing to export.` and its message in Paper, with no links; a Postgres failure is the Error state.
+The Trades page's export check: a verdict badge, both nets, the totals table, and the downloads; a mismatch sits on a lightly tinted Amber Watch field.
 - **States:** `match`, `mismatch`, `not_comparable`, `unlinked`, `refused`, `error`
+
+### Scoreboard
+The Overview's opening band (`partials/overview_score.html`). Book value at Poster size with `USD` in Caption; today since 00:00 UTC and the season (strategy and start date) as ink P&L. The facts in a two by two grid on hairlines: next rebalance as a countdown over its UTC and Amsterdam time, gross over its cap with a fixed length gauge (ink fill on Pressed, never overflowing), the book as `n long · n short` in the side colours with any flip count in Oranje Ink, and the trader state badge.
+
+### Season curve
+`static/js/season.js`: the book's value per hour over every run of the current strategy, a baseline series around the season's first value, ink above and Pencil below with faint fills, no grid verticals, no scroll or zoom, redrawn every five minutes.
+
+### Standings row
+`partials/overview_standings.html`, the signature. Rank in Margin; the coin name at Title 700 after its zone stripe (Long Green, Short Red, or an empty Ruling outline when flat); the side and size; the live 30 day trend in the side colour; the flip price; the move to it with its size in daily moves, or `near the line` / `flips at 00:05 UTC` in Oranje Ink with an oranje tick; weight; ink P&L; and seven form squares (won filled ink, lost outlined, unknown dotted). The flip line is a full width oranje rule with its label in Oranje Ink, between the last coin with a positive trend and the first without; an empty zone says so in a Pencil row. A coin whose rank, side, or flip state changed flashes its row once in a faint oranje; price ticks alone never flash.
 
 ## Do's and Don'ts
 
 ### Do:
 - **Do** run every number through `num`, `pnl`, or `ts`, and pass `Decimal` values only.
-- **Do** show every Redis value inside a `stale` wrapper or next to its age.
-- **Do** keep the stop button at the right edge of the top bar of every page, alone behind a 1 px rule, at least 44 × 44 px.
-- **Do** add a new color combination to `contrast_pairs` before using it.
-- **Do** separate regions with 1 px seams over Hairline, on the board grid.
-- **Do** keep motion to 120 ms ease out state changes, one beat per real event, and the busy and loading indicators; nothing moves under `prefers-reduced-motion`.
+- **Do** open every section with a 2 px ink rule and a condensed uppercase title.
+- **Do** keep green and red for long and short, and oranje for the flip line and what changes at the next rebalance.
+- **Do** keep the stop at the right edge of the status line on every page, at least 44 × 44 px.
+- **Do** add a new colour combination to `contrast_pairs` before using it.
+- **Do** keep motion to 120 ms state changes, the link beat, and the one row flash; nothing moves under `prefers-reduced-motion`.
 
 ### Don't:
-- **Don't** use shadows, glows, gradients, blurs, or cards; use the three graphite steps and 1 px rules.
-- **Don't** color anything that is not reporting a state, and don't fill a button with Signal Indigo.
-- **Don't** use a `float` for money, or show a local time outside a tooltip.
+- **Don't** use shadows, glows, gradients, blurs, glass, or cards.
+- **Don't** put coins in tiles or cards on the first screen; they are rows in the standings.
+- **Don't** set figures in a monospace face; use Barlow's tabular figures.
+- **Don't** use a `float` for money, or show a local time outside a tooltip or beside its UTC time.
 - **Don't** write inline `style` or `script`, or `hx-on` attributes; the CSP blocks them.
 - **Don't** load anything from another origin: fonts, icons, and libraries are self hosted.
-- **Don't** build a grid of KPI tiles; figures sit in regions and tables.
-- **Don't** set a colored side border thicker than 1 px on notices or rows.

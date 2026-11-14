@@ -1,11 +1,14 @@
-"""What the Portfolio page shows (spec 0030 AC-19 to AC-21), as pure functions of the portfolio trader's snapshots.
+"""What the Portfolio page shows (spec 0030 AC-19 to AC-21), as pure functions of the book trader's snapshots.
 
-The page reads ``{env}:snapshot:portfolio_heartbeat``, ``portfolio_trader_state``, ``portfolio_plan``,
-``portfolio_positions``, and ``portfolio_account``, plus the newest ``slot=portfolio`` result on
-``{env}:control:results``. A missing heartbeat, or one past the red limit, makes the whole page
-``not_running``, with the time it was last seen when there is one: stale figures never look live. Rows follow
-the plan's coin order, which is the trader's ``PAPER_INSTRUMENTS`` order; positions are joined on
-``instrument_id``. Money arrives as strings and becomes ``Decimal`` here.
+With ``DASHBOARD_PORTFOLIO_SLOT=portfolio`` (the default) the page reads ``{env}:snapshot:portfolio_heartbeat``,
+``portfolio_trader_state``, ``portfolio_plan``, ``portfolio_positions``, and ``portfolio_account``, plus the
+newest ``slot=portfolio`` result on ``{env}:control:results``. With ``main`` (spec 0032 AC-8) it reads main's
+``heartbeat``, ``trader_state``, ``positions``, and ``account``, the same ``portfolio_plan``, and main's newest
+result (one with no ``slot`` field). A plan with ``schedule`` ``daily`` (``trend_daily``) rebalances every day
+at ``run_at_utc``; without the field it is weekly on ``rebalance_weekday``. A missing heartbeat, or one past
+the red limit, makes the whole page ``not_running``, with the time it was last seen when there is one: stale
+figures never look live. Rows follow the plan's coin order, which is the trader's ``PAPER_INSTRUMENTS`` order;
+positions are joined on ``instrument_id``. Money arrives as strings and becomes ``Decimal`` here.
 """
 
 from collections.abc import Mapping, Sequence
@@ -96,6 +99,7 @@ class PortfolioView:
     last_rebalance: datetime | None = None
     last_reason: str | None = None
     next_rebalance: datetime | None = None
+    schedule: str = "weekly"
     failed: tuple[str, ...] = ()
     state_text: str = ""
     state_level: str = "ok"
@@ -165,16 +169,22 @@ def signal_words(eligible: object, signal: object) -> str:
     return "No plan yet"
 
 
-def next_rebalance(run_at_utc: object, weekday: object, now: datetime) -> datetime | None:
-    """The next ``weekday`` (Monday 0) at ``run_at_utc`` (``HH:MM``, UTC) strictly after ``now``; None if unreadable."""
-    if not isinstance(run_at_utc, str) or not isinstance(weekday, int) or isinstance(weekday, bool):
-        return None
-    if not 0 <= weekday <= 6:
+DAILY: Final = "daily"
+
+
+def next_rebalance(run_at_utc: object, weekday: object, now: datetime, schedule: object = None) -> datetime | None:
+    """The next rebalance strictly after ``now``: with ``schedule`` ``daily`` the next ``run_at_utc`` (``HH:MM``,
+    UTC) on any day (spec 0032 AC-2a), else the next ``weekday`` (Monday 0) at that time; None if unreadable."""
+    if not isinstance(run_at_utc, str):
         return None
     try:
         hour, minute = (int(part) for part in run_at_utc.split(":"))
         moment = now.astimezone(UTC).replace(hour=hour, minute=minute, second=0, microsecond=0)
     except ValueError:
+        return None
+    if schedule == DAILY:
+        return moment if moment > now else moment + timedelta(days=1)
+    if not isinstance(weekday, int) or isinstance(weekday, bool) or not 0 <= weekday <= 6:
         return None
     moment += timedelta(days=(weekday - moment.weekday()) % 7)
     return moment if moment > now else moment + timedelta(days=7)
@@ -231,11 +241,14 @@ def _gross_leverage(rows: Sequence[PlanRow], equity: Decimal | None) -> Decimal 
 
 
 def last_command(
-    results: Sequence[Entry] | None, commands: Sequence[Entry] | None, now: datetime
+    results: Sequence[Entry] | None,
+    commands: Sequence[Entry] | None,
+    now: datetime,
+    slot: TraderSlot = TraderSlot.PORTFOLIO,
 ) -> LastCommand | None:
-    """The newest ``slot=portfolio`` result in a newest first ``XREVRANGE`` reply, named from ``commands``."""
+    """The newest result of ``slot`` in a newest first ``XREVRANGE`` reply, named from ``commands``."""
     for _, fields in results or ():
-        if fields is None or result_slot(fields) is not TraderSlot.PORTFOLIO:
+        if fields is None or result_slot(fields) is not slot:
             continue
         try:
             result = result_from_fields(fields)
@@ -257,10 +270,11 @@ def portfolio_view(
     now_ns: int,
     amber_s: float,
     red_s: float,
+    slot: TraderSlot = TraderSlot.PORTFOLIO,
 ) -> PortfolioView:
-    """The page for the raw snapshots and the run's realized P&L (None when unknown)."""
+    """The page for the raw snapshots of ``slot``'s trader and the run's realized P&L (None when unknown)."""
     now = datetime.fromtimestamp(now_ns / NS_PER_S, UTC)
-    command = last_command(raw.results, raw.commands, now)
+    command = last_command(raw.results, raw.commands, now, slot)
     if raw.heartbeat is None:
         return PortfolioView("not_running", last_command=command)
     heartbeat = _decode(raw.heartbeat)
@@ -276,6 +290,7 @@ def portfolio_view(
     rows = _rows(plan, _decode(raw.positions))
     failed = plan.get("failed") if plan is not None else None
     pause = pause_view(raw.trader_state, now)
+    schedule = None if plan is None else plan.get("schedule")
     return PortfolioView(
         "running",
         age=age,
@@ -288,7 +303,8 @@ def portfolio_view(
         last_reason=None if plan is None or not isinstance(plan.get("last_reason"), str) else str(plan["last_reason"]),
         next_rebalance=None
         if plan is None
-        else next_rebalance(plan.get("run_at_utc"), plan.get("rebalance_weekday"), now),
+        else next_rebalance(plan.get("run_at_utc"), plan.get("rebalance_weekday"), now, schedule),
+        schedule=DAILY if schedule == DAILY else "weekly",
         failed=tuple(base_of(coin) for coin in failed if isinstance(coin, str)) if isinstance(failed, list) else (),
         state_text=pause.text or "running",
         state_level=pause.level,

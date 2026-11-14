@@ -28,27 +28,35 @@ from pydantic import model_validator
 from trading_core import versioning
 from trading_core.node import (
     bar_rule_maker,
+    connors_rsi_tp,
     donchian_4h,
     donchian_scalp,
     donchian_scalp_r1,
     donchian_scalp_r2,
+    donchian_scalp_tp,
     placeholder,
     six_vote_trend,
+    trend_daily,
     trend_portfolio,
+    trend_vol,
 )
 from trading_core.node.bar_rule import BarRuleStrategy, Phase
 from trading_core.node.bar_rule_maker import MakerBarRuleStrategy
+from trading_core.node.connors_rsi_tp import ConnorsRsiTp, ConnorsRsiTpConfig
 from trading_core.node.donchian_4h import Donchian4h, Donchian4hConfig
 from trading_core.node.donchian_scalp import DonchianScalp, DonchianScalpConfig
 from trading_core.node.donchian_scalp_r1 import DonchianScalpR1, DonchianScalpR1Config
 from trading_core.node.donchian_scalp_r2 import DonchianScalpR2, DonchianScalpR2Config
+from trading_core.node.donchian_scalp_tp import DonchianScalpTp, DonchianScalpTpConfig
 from trading_core.node.funding import FundingLedger
 from trading_core.node.kraken import BTC_PERP
 from trading_core.node.paper_snapshots import PaperStrategyView
 from trading_core.node.placeholder import PlaceholderConfig, PlaceholderTimed
 from trading_core.node.six_vote_trend import SixVoteTrend, SixVoteTrendConfig
 from trading_core.node.strategy import KfsStrategy, PauseGate
+from trading_core.node.trend_daily import TrendDaily, TrendDailyConfig
 from trading_core.node.trend_portfolio import TrendPortfolio, TrendPortfolioConfig
+from trading_core.node.trend_vol import TrendVol, TrendVolConfig
 from trading_core.recording.enums import StrategyKind
 from trading_core.recording.rows import JsonObject
 from trading_core.recording.spool import WriteItem
@@ -66,6 +74,10 @@ type PaperStrategyName = Literal[
     "donchian_scalp_r2",
     "six_vote_trend",
     "trend_portfolio",
+    "connors_rsi_tp",
+    "donchian_scalp_tp",
+    "trend_daily",
+    "trend_vol",
 ]
 
 # The donchian_4h_pair study's chosen grid point (spec 0022 Results: grid-2), also used by donchian_scalp.
@@ -102,11 +114,33 @@ SIX_BTC_WAIT_S: Final = 3
 SIX_SEED_BARS: Final = 300
 SIX_SEED_MIN_BARS: Final = 250
 # trend_portfolio's settings (spec 0030 AC-3), all recorded in its version.
+# connors_rsi_tp's settings: spec 0019.1's 15 minute values, the grid's first point, and the owner's dollar exits.
+CONNORS_TIME_STOP_BARS: Final = 12
+CONNORS_ATR_PERIOD: Final = 14
+CONNORS_ATR_FLOOR_MULT: Final = Decimal(1)
+CONNORS_RSI_PERIOD: Final = 2
+CONNORS_RSI_LOWER: Final = 5
+CONNORS_TREND_SMA: Final = 200
+CONNORS_EXIT_SMA: Final = 5
+CONNORS_STOP_ATR_MULT: Final = Decimal(3)
+CONNORS_TAKE_PROFIT_USD: Final = Decimal(3)
+CONNORS_STOP_LOSS_USD: Final = Decimal(2)
+# Far above any stop's cost, so the order cap sets every trade's size (see connors_rsi_tp_config).
+CONNORS_RISK_PER_TRADE: Final = Decimal("0.5")
+CONNORS_SEED_BARS: Final = 300
+CONNORS_SEED_MIN_BARS: Final = 250
+# donchian_scalp_tp: the donchian_scalp point, the owner's dollar exits, and the order cap as the trade size.
+# The owner's demo choice (2026-11-10, no study): a $0.50 trail armed at +$1.50 and a -$3 hard stop, picked
+# by replaying one day's 79 entries, in place of the fixed +$3 take profit and -$2 stop.
+DONCHIAN_TP_TRAIL_ARM_USD: Final = Decimal("1.5")
+DONCHIAN_TP_TRAIL_USD: Final = Decimal("0.5")
+DONCHIAN_TP_STOP_LOSS_USD: Final = Decimal(3)
+DONCHIAN_TP_RISK_PER_TRADE: Final = Decimal("0.5")
 TP_LOOKBACK_DAYS: Final = 30
 TP_VOL_DAYS: Final = 30
-# The owner's 10x demo choice (2026-11-09), not the tested 0.02 and 2: the study was wiped out at 10x.
-TP_VOL_TARGET: Final = Decimal("0.31")
-TP_GROSS_CAP: Final = Decimal(10)
+# The owner's 5x demo choice (2026-11-09, down from 10x to cut fees), not the tested 0.02 and 2.
+TP_VOL_TARGET: Final = Decimal("0.155")
+TP_GROSS_CAP: Final = Decimal(5)
 TP_MIN_HISTORY_DAYS: Final = 120
 TP_REBALANCE_WEEKDAY: Final = 0
 TP_RUN_AT_UTC: Final = "00:05"
@@ -116,12 +150,48 @@ TP_QUOTE_WAIT_S: Final = 60
 TP_START_COOLDOWN_S: Final = 3600
 TP_SEED_DAYS: Final = 150
 TP_SEED_MIN_DAYS: Final = 121
+# trend_daily's settings (spec 0032 AC-4): its own constants, so a change to either strategy moves only its own
+# version. The owner's 5x demo choice; rebalance_weekday is recorded (the base config needs it) but ignored.
+TD_LOOKBACK_DAYS: Final = 30
+TD_VOL_DAYS: Final = 30
+TD_VOL_TARGET: Final = Decimal("0.155")
+TD_GROSS_CAP: Final = Decimal(5)
+TD_MIN_HISTORY_DAYS: Final = 120
+TD_REBALANCE_WEEKDAY: Final = 0
+TD_RUN_AT_UTC: Final = "00:05"
+TD_RETRY_MAX: Final = 3
+TD_RETRY_WAIT_S: Final = 60
+TD_QUOTE_WAIT_S: Final = 60
+TD_START_COOLDOWN_S: Final = 3600
+TD_SEED_DAYS: Final = 150
+TD_SEED_MIN_DAYS: Final = 121
+# trend_vol's settings: trend_daily's signals and schedule, with the book sized to a 50 % annual volatility
+# target (never past 5x gross) and a 30 % no trade band. TV_VOL_TARGET only sets the split between coins.
+TV_LOOKBACK_DAYS: Final = 30
+TV_VOL_DAYS: Final = 30
+TV_VOL_TARGET: Final = Decimal("0.155")
+TV_GROSS_CAP: Final = Decimal(5)
+TV_BOOK_VOL_TARGET: Final = Decimal("0.5")
+TV_REBALANCE_BAND: Final = Decimal("0.3")
+TV_MIN_HISTORY_DAYS: Final = 120
+TV_REBALANCE_WEEKDAY: Final = 0
+TV_RUN_AT_UTC: Final = "00:05"
+TV_RETRY_MAX: Final = 3
+TV_RETRY_WAIT_S: Final = 60
+TV_QUOTE_WAIT_S: Final = 60
+TV_START_COOLDOWN_S: Final = 3600
+TV_SEED_DAYS: Final = 150
+TV_SEED_MIN_DAYS: Final = 121
 # The strategies that trade more than one coin (spec 0025 AC-15, spec 0026 AC-16, spec 0029 AC-10).
 _MULTI_COIN: Final = (
     donchian_scalp_r1.STRATEGY_NAME,
     donchian_scalp_r2.STRATEGY_NAME,
     six_vote_trend.STRATEGY_NAME,
     trend_portfolio.STRATEGY_NAME,
+    connors_rsi_tp.STRATEGY_NAME,
+    donchian_scalp_tp.STRATEGY_NAME,
+    trend_daily.STRATEGY_NAME,
+    trend_vol.STRATEGY_NAME,
 )
 # The strategies the trader fetches a warmup seed for before the node (spec 0025 AC-7, spec 0026 AC-16, spec 0029).
 SEEDED_STRATEGIES: Final = (
@@ -129,6 +199,10 @@ SEEDED_STRATEGIES: Final = (
     donchian_scalp_r2.STRATEGY_NAME,
     six_vote_trend.STRATEGY_NAME,
     trend_portfolio.STRATEGY_NAME,
+    connors_rsi_tp.STRATEGY_NAME,
+    donchian_scalp_tp.STRATEGY_NAME,
+    trend_daily.STRATEGY_NAME,
+    trend_vol.STRATEGY_NAME,
 )
 # A PAPER_INSTRUMENTS entry: a Kraken perpetual (spec 0025 AC-15).
 _PAPER_INSTRUMENT: Final = re.compile(r"PF_[A-Z0-9]+\.KRAKEN")
@@ -181,6 +255,46 @@ def paper_version(settings: StrategySettings) -> PaperVersion:
         }
         frozen = versioning.freeze(TrendPortfolio.__module__, tp_config)
         return PaperVersion(trend_portfolio.STRATEGY_NAME, StrategyKind.TREND, tp_config, frozen)
+    if settings.paper_strategy == trend_daily.STRATEGY_NAME:
+        td_config: JsonObject = {
+            "paper_strategy": trend_daily.STRATEGY_NAME,
+            "bar_spec": trend_portfolio.BAR_SPEC,
+            **_trend_daily_settings(),
+            **{key: value for key, value in settings.strategy_config().items() if key.startswith("risk_")},
+            "instruments": list(settings.instrument_list),
+        }
+        frozen = versioning.freeze(TrendDaily.__module__, td_config)
+        return PaperVersion(trend_daily.STRATEGY_NAME, StrategyKind.TREND, td_config, frozen)
+    if settings.paper_strategy == trend_vol.STRATEGY_NAME:
+        tv_config: JsonObject = {
+            "paper_strategy": trend_vol.STRATEGY_NAME,
+            "bar_spec": trend_portfolio.BAR_SPEC,
+            **_trend_vol_settings(),
+            **{key: value for key, value in settings.strategy_config().items() if key.startswith("risk_")},
+            "instruments": list(settings.instrument_list),
+        }
+        frozen = versioning.freeze(TrendVol.__module__, tv_config)
+        return PaperVersion(trend_vol.STRATEGY_NAME, StrategyKind.TREND, tv_config, frozen)
+    if settings.paper_strategy == connors_rsi_tp.STRATEGY_NAME:
+        connors_config: JsonObject = {
+            "paper_strategy": connors_rsi_tp.STRATEGY_NAME,
+            "bar_spec": connors_rsi_tp.BAR_SPEC,
+            "time_stop_bars": CONNORS_TIME_STOP_BARS,
+            "atr_period": CONNORS_ATR_PERIOD,
+            "atr_floor_mult": str(CONNORS_ATR_FLOOR_MULT),
+            "rsi_period": CONNORS_RSI_PERIOD,
+            "rsi_lower": CONNORS_RSI_LOWER,
+            "trend_sma": CONNORS_TREND_SMA,
+            "exit_sma": CONNORS_EXIT_SMA,
+            "stop_atr_mult": str(CONNORS_STOP_ATR_MULT),
+            "take_profit_usd": str(CONNORS_TAKE_PROFIT_USD),
+            "stop_loss_usd": str(CONNORS_STOP_LOSS_USD),
+            **{key: value for key, value in settings.strategy_config().items() if key.startswith("risk_")},
+            "risk_per_trade": str(CONNORS_RISK_PER_TRADE),
+            "instruments": list(settings.instrument_list),
+        }
+        frozen = versioning.freeze(ConnorsRsiTp.__module__, connors_config)
+        return PaperVersion(connors_rsi_tp.STRATEGY_NAME, StrategyKind.HOUR_LEVEL, connors_config, frozen)
     if settings.paper_strategy == six_vote_trend.STRATEGY_NAME:
         six_config: JsonObject = {
             "paper_strategy": six_vote_trend.STRATEGY_NAME,
@@ -228,6 +342,17 @@ def paper_version(settings: StrategySettings) -> PaperVersion:
         }
         frozen = versioning.freeze(DonchianScalpR1.__module__, r1_config)
         return PaperVersion(donchian_scalp_r1.STRATEGY_NAME, StrategyKind.SCALPING, r1_config, frozen)
+    if settings.paper_strategy == donchian_scalp_tp.STRATEGY_NAME:
+        donchian_tp_config: JsonObject = {
+            **_donchian_version_config(settings, donchian_scalp_tp.STRATEGY_NAME, donchian_scalp_tp.BAR_SPEC),
+            "trail_arm_usd": str(DONCHIAN_TP_TRAIL_ARM_USD),
+            "trail_usd": str(DONCHIAN_TP_TRAIL_USD),
+            "stop_loss_usd": str(DONCHIAN_TP_STOP_LOSS_USD),
+            "risk_per_trade": str(DONCHIAN_TP_RISK_PER_TRADE),
+            "instruments": list(settings.instrument_list),
+        }
+        frozen = versioning.freeze(DonchianScalpTp.__module__, donchian_tp_config)
+        return PaperVersion(donchian_scalp_tp.STRATEGY_NAME, StrategyKind.SCALPING, donchian_tp_config, frozen)
     if settings.paper_strategy == donchian_scalp.STRATEGY_NAME:
         config = _donchian_version_config(settings, donchian_scalp.STRATEGY_NAME, donchian_scalp.BAR_SPEC)
         frozen = versioning.freeze(DonchianScalp.__module__, config)
@@ -259,6 +384,56 @@ def _trend_portfolio_settings() -> JsonObject:
         "start_cooldown_s": TP_START_COOLDOWN_S,
         "seed_days": TP_SEED_DAYS,
         "seed_min_days": TP_SEED_MIN_DAYS,
+    }
+
+
+def _trend_daily_settings() -> JsonObject:
+    # Every spec 0032 AC-4 setting, as the version records it (AC-5): no dollar exits, no protective stop.
+    return {
+        "order_id_tag": trend_daily.ORDER_ID_TAG,
+        "instrument_id": BTC_PERP,
+        "lookback_days": TD_LOOKBACK_DAYS,
+        "vol_days": TD_VOL_DAYS,
+        "vol_target": str(TD_VOL_TARGET),
+        "gross_cap": str(TD_GROSS_CAP),
+        "min_history_days": TD_MIN_HISTORY_DAYS,
+        "rebalance_weekday": TD_REBALANCE_WEEKDAY,
+        "run_at_utc": TD_RUN_AT_UTC,
+        "retry_max": TD_RETRY_MAX,
+        "retry_wait_s": TD_RETRY_WAIT_S,
+        "quote_wait_s": TD_QUOTE_WAIT_S,
+        "start_cooldown_s": TD_START_COOLDOWN_S,
+        "seed_days": TD_SEED_DAYS,
+        "seed_min_days": TD_SEED_MIN_DAYS,
+        "coin_take_profit_usd": None,
+        "coin_stop_loss_usd": None,
+        "uses_stop": TrendDaily.uses_stop,
+    }
+
+
+def _trend_vol_settings() -> JsonObject:
+    # Every trend_vol setting, as the version records it: no dollar exits, no protective stop.
+    return {
+        "order_id_tag": trend_vol.ORDER_ID_TAG,
+        "instrument_id": BTC_PERP,
+        "lookback_days": TV_LOOKBACK_DAYS,
+        "vol_days": TV_VOL_DAYS,
+        "vol_target": str(TV_VOL_TARGET),
+        "gross_cap": str(TV_GROSS_CAP),
+        "book_vol_target": str(TV_BOOK_VOL_TARGET),
+        "rebalance_band": str(TV_REBALANCE_BAND),
+        "min_history_days": TV_MIN_HISTORY_DAYS,
+        "rebalance_weekday": TV_REBALANCE_WEEKDAY,
+        "run_at_utc": TV_RUN_AT_UTC,
+        "retry_max": TV_RETRY_MAX,
+        "retry_wait_s": TV_RETRY_WAIT_S,
+        "quote_wait_s": TV_QUOTE_WAIT_S,
+        "start_cooldown_s": TV_START_COOLDOWN_S,
+        "seed_days": TV_SEED_DAYS,
+        "seed_min_days": TV_SEED_MIN_DAYS,
+        "coin_take_profit_usd": None,
+        "coin_stop_loss_usd": None,
+        "uses_stop": TrendVol.uses_stop,
     }
 
 
@@ -525,6 +700,78 @@ def six_vote_trend_config(settings: StrategySettings, run_id: UUID, instrument_i
     )
 
 
+def connors_rsi_tp_config(settings: StrategySettings, run_id: UUID, instrument_id: str) -> ConnorsRsiTpConfig:
+    """``connors_rsi_tp`` with the ``RISK_*`` caps, under ``run_id``. Raises ``ValueError`` outside demo.
+
+    ``CONNORS_RISK_PER_TRADE`` is set far above any stop's cost on purpose, so ``RISK_MAX_ORDER_NOTIONAL_USD``
+    sets every trade's size (the owner's fixed size on the demo) instead of the stop distance.
+    """
+    _demo_only(settings)
+    return ConnorsRsiTpConfig(
+        order_id_tag=order_id_tag(instrument_id),
+        env=settings.trading_env,
+        run_id=str(run_id),
+        instrument_id=instrument_id,
+        bar_spec=connors_rsi_tp.BAR_SPEC,
+        time_stop_bars=CONNORS_TIME_STOP_BARS,
+        atr_period=CONNORS_ATR_PERIOD,
+        atr_floor_mult=CONNORS_ATR_FLOOR_MULT,
+        rsi_period=CONNORS_RSI_PERIOD,
+        rsi_lower=CONNORS_RSI_LOWER,
+        trend_sma=CONNORS_TREND_SMA,
+        exit_sma=CONNORS_EXIT_SMA,
+        stop_atr_mult=CONNORS_STOP_ATR_MULT,
+        take_profit_usd=CONNORS_TAKE_PROFIT_USD,
+        stop_loss_usd=CONNORS_STOP_LOSS_USD,
+        max_order_notional_usd=settings.risk_max_order_notional_usd,
+        max_leverage=settings.risk_max_leverage,
+        max_total_exposure_usd=settings.risk_max_total_exposure_usd,
+        risk_per_trade=CONNORS_RISK_PER_TRADE,
+        maintenance_margin_rate=settings.risk_maintenance_margin_rate,
+        min_liq_distance_pct=settings.risk_min_liq_distance_pct,
+        liq_stop_multiple=settings.risk_liq_stop_multiple,
+        stop_slippage_bps=settings.risk_stop_slippage_bps,
+        taker_fee=settings.sandbox_taker_fee,
+        stale_quote_s=settings.risk_stale_quote_s,
+        use_market_context=True,
+    )
+
+
+def donchian_scalp_tp_config(settings: StrategySettings, run_id: UUID, instrument_id: str) -> DonchianScalpTpConfig:
+    """``donchian_scalp_tp`` with the ``RISK_*`` caps, under ``run_id``. Raises ``ValueError`` outside demo.
+
+    ``DONCHIAN_TP_RISK_PER_TRADE`` is far above any stop's cost on purpose, so ``RISK_MAX_ORDER_NOTIONAL_USD``
+    sets every trade's size (the owner's fixed size on the demo) instead of the stop distance.
+    """
+    _demo_only(settings)
+    return DonchianScalpTpConfig(
+        order_id_tag=order_id_tag(instrument_id),
+        env=settings.trading_env,
+        run_id=str(run_id),
+        instrument_id=instrument_id,
+        bar_spec=donchian_scalp_tp.BAR_SPEC,
+        entry_bars=DONCHIAN_ENTRY_BARS,
+        stop_atr=DONCHIAN_STOP_ATR,
+        atr_period=DONCHIAN_ATR_PERIOD,
+        atr_floor_mult=DONCHIAN_ATR_FLOOR_MULT,
+        time_stop_bars=DONCHIAN_TIME_STOP_BARS,
+        trail_arm_usd=DONCHIAN_TP_TRAIL_ARM_USD,
+        trail_usd=DONCHIAN_TP_TRAIL_USD,
+        stop_loss_usd=DONCHIAN_TP_STOP_LOSS_USD,
+        max_order_notional_usd=settings.risk_max_order_notional_usd,
+        max_leverage=settings.risk_max_leverage,
+        max_total_exposure_usd=settings.risk_max_total_exposure_usd,
+        risk_per_trade=DONCHIAN_TP_RISK_PER_TRADE,
+        maintenance_margin_rate=settings.risk_maintenance_margin_rate,
+        min_liq_distance_pct=settings.risk_min_liq_distance_pct,
+        liq_stop_multiple=settings.risk_liq_stop_multiple,
+        stop_slippage_bps=settings.risk_stop_slippage_bps,
+        taker_fee=settings.sandbox_taker_fee,
+        stale_quote_s=settings.risk_stale_quote_s,
+        use_market_context=True,
+    )
+
+
 def trend_portfolio_config(settings: StrategySettings, run_id: UUID) -> TrendPortfolioConfig:
     """``trend_portfolio`` (spec 0030 AC-3) over every ``PAPER_INSTRUMENTS`` coin, with the ``RISK_*`` settings.
 
@@ -551,6 +798,88 @@ def trend_portfolio_config(settings: StrategySettings, run_id: UUID) -> TrendPor
         start_cooldown_s=TP_START_COOLDOWN_S,
         seed_days=TP_SEED_DAYS,
         seed_min_days=TP_SEED_MIN_DAYS,
+        stale_quote_s=settings.risk_stale_quote_s,
+        max_order_notional_usd=settings.risk_max_order_notional_usd,
+        max_leverage=settings.risk_max_leverage,
+        max_total_exposure_usd=settings.risk_max_total_exposure_usd,
+        risk_per_trade=settings.risk_per_trade,
+        maintenance_margin_rate=settings.risk_maintenance_margin_rate,
+        min_liq_distance_pct=settings.risk_min_liq_distance_pct,
+        liq_stop_multiple=settings.risk_liq_stop_multiple,
+        stop_slippage_bps=settings.risk_stop_slippage_bps,
+        taker_fee=settings.sandbox_taker_fee,
+        use_market_context=False,
+    )
+
+
+def trend_daily_config(settings: StrategySettings, run_id: UUID) -> TrendDailyConfig:
+    """``trend_daily`` (spec 0032 AC-4) over every ``PAPER_INSTRUMENTS`` coin, with the ``RISK_*`` settings.
+
+    One instance trades every coin under ``order_id_tag`` ``TD``; ``instrument_id`` is BTC, the base's context
+    instrument only. Raises ``ValueError`` outside demo, and when ``PAPER_INSTRUMENTS`` does not hold BTC.
+    """
+    _demo_only(settings)
+    return TrendDailyConfig(
+        order_id_tag=trend_daily.ORDER_ID_TAG,
+        env=settings.trading_env,
+        run_id=str(run_id),
+        instrument_id=BTC_PERP,
+        instruments=tuple(settings.instrument_list),
+        lookback_days=TD_LOOKBACK_DAYS,
+        vol_days=TD_VOL_DAYS,
+        vol_target=TD_VOL_TARGET,
+        gross_cap=TD_GROSS_CAP,
+        min_history_days=TD_MIN_HISTORY_DAYS,
+        rebalance_weekday=TD_REBALANCE_WEEKDAY,
+        run_at_utc=TD_RUN_AT_UTC,
+        retry_max=TD_RETRY_MAX,
+        retry_wait_s=TD_RETRY_WAIT_S,
+        quote_wait_s=TD_QUOTE_WAIT_S,
+        start_cooldown_s=TD_START_COOLDOWN_S,
+        seed_days=TD_SEED_DAYS,
+        seed_min_days=TD_SEED_MIN_DAYS,
+        stale_quote_s=settings.risk_stale_quote_s,
+        max_order_notional_usd=settings.risk_max_order_notional_usd,
+        max_leverage=settings.risk_max_leverage,
+        max_total_exposure_usd=settings.risk_max_total_exposure_usd,
+        risk_per_trade=settings.risk_per_trade,
+        maintenance_margin_rate=settings.risk_maintenance_margin_rate,
+        min_liq_distance_pct=settings.risk_min_liq_distance_pct,
+        liq_stop_multiple=settings.risk_liq_stop_multiple,
+        stop_slippage_bps=settings.risk_stop_slippage_bps,
+        taker_fee=settings.sandbox_taker_fee,
+        use_market_context=False,
+    )
+
+
+def trend_vol_config(settings: StrategySettings, run_id: UUID) -> TrendVolConfig:
+    """``trend_vol`` over every ``PAPER_INSTRUMENTS`` coin, with the ``RISK_*`` settings.
+
+    One instance trades every coin under ``order_id_tag`` ``TV``; ``instrument_id`` is BTC, the base's context
+    instrument only. Raises ``ValueError`` outside demo, and when ``PAPER_INSTRUMENTS`` does not hold BTC.
+    """
+    _demo_only(settings)
+    return TrendVolConfig(
+        order_id_tag=trend_vol.ORDER_ID_TAG,
+        env=settings.trading_env,
+        run_id=str(run_id),
+        instrument_id=BTC_PERP,
+        instruments=tuple(settings.instrument_list),
+        lookback_days=TV_LOOKBACK_DAYS,
+        vol_days=TV_VOL_DAYS,
+        vol_target=TV_VOL_TARGET,
+        gross_cap=TV_GROSS_CAP,
+        book_vol_target=TV_BOOK_VOL_TARGET,
+        rebalance_band=TV_REBALANCE_BAND,
+        min_history_days=TV_MIN_HISTORY_DAYS,
+        rebalance_weekday=TV_REBALANCE_WEEKDAY,
+        run_at_utc=TV_RUN_AT_UTC,
+        retry_max=TV_RETRY_MAX,
+        retry_wait_s=TV_RETRY_WAIT_S,
+        quote_wait_s=TV_QUOTE_WAIT_S,
+        start_cooldown_s=TV_START_COOLDOWN_S,
+        seed_days=TV_SEED_DAYS,
+        seed_min_days=TV_SEED_MIN_DAYS,
         stale_quote_s=settings.risk_stale_quote_s,
         max_order_notional_usd=settings.risk_max_order_notional_usd,
         max_leverage=settings.risk_max_leverage,
@@ -610,6 +939,34 @@ def build_trend_portfolio(
 ) -> tuple[TrendPortfolio, list[TrendPortfolioView]]:
     """The single ``trend_portfolio`` instance and one view per coin, in ``PAPER_INSTRUMENTS`` order (AC-10)."""
     strategy = TrendPortfolio(trend_portfolio_config(settings, run_id), gate, blocks, record, seeds, last_start_ns)
+    return strategy, [TrendPortfolioView(strategy, coin) for coin in settings.instrument_list]
+
+
+def build_trend_daily(
+    settings: StrategySettings,
+    run_id: UUID,
+    gate: PauseGate,
+    blocks: EntryBlocks,
+    record: Callable[[WriteItem], None],
+    seeds: Mapping[str, Sequence[DailyClose]],
+    last_start_ns: int | None,
+) -> tuple[TrendDaily, list[TrendPortfolioView]]:
+    """The single ``trend_daily`` instance and one view per coin, in ``PAPER_INSTRUMENTS`` order (spec 0032 AC-5)."""
+    strategy = TrendDaily(trend_daily_config(settings, run_id), gate, blocks, record, seeds, last_start_ns)
+    return strategy, [TrendPortfolioView(strategy, coin) for coin in settings.instrument_list]
+
+
+def build_trend_vol(
+    settings: StrategySettings,
+    run_id: UUID,
+    gate: PauseGate,
+    blocks: EntryBlocks,
+    record: Callable[[WriteItem], None],
+    seeds: Mapping[str, Sequence[DailyClose]],
+    last_start_ns: int | None,
+) -> tuple[TrendVol, list[TrendPortfolioView]]:
+    """The single ``trend_vol`` instance and one view per coin, in ``PAPER_INSTRUMENTS`` order."""
+    strategy = TrendVol(trend_vol_config(settings, run_id), gate, blocks, record, seeds, last_start_ns)
     return strategy, [TrendPortfolioView(strategy, coin) for coin in settings.instrument_list]
 
 
@@ -695,6 +1052,14 @@ def build_paper_strategy(
 
     Only r1, r2, and ``six_vote_trend`` take the ``seed``; only ``six_vote_trend`` takes ``btc_seed`` (spec 0029 AC-8).
     """
+    if settings.paper_strategy == connors_rsi_tp.STRATEGY_NAME:
+        connors = ConnorsRsiTp(connors_rsi_tp_config(settings, run_id, instrument_id), gate, blocks, record, seed)
+        return connors, BarRuleView(connors)
+    if settings.paper_strategy == donchian_scalp_tp.STRATEGY_NAME:
+        scalp_tp = DonchianScalpTp(
+            donchian_scalp_tp_config(settings, run_id, instrument_id), gate, blocks, record, seed
+        )
+        return scalp_tp, BarRuleView(scalp_tp)
     if settings.paper_strategy == six_vote_trend.STRATEGY_NAME:
         six = SixVoteTrend(six_vote_trend_config(settings, run_id, instrument_id), gate, blocks, record, seed, btc_seed)
         return six, MakerBarRuleView(six)

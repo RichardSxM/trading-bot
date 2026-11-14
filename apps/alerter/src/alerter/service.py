@@ -26,7 +26,7 @@ from alerter.sources.disk import free_bytes
 from alerter.sources.docker_api import DockerApiError
 from alerter.sources.docker_watch import DockerWatch
 from alerter.sources.host_files import HostFiles
-from alerter.sources.redis_state import SnapshotReader, heartbeat_ts, plan_failures, trader_blocks
+from alerter.sources.redis_state import SnapshotReader, heartbeat_ts, plan_failures, trader_blocks, trader_book
 from alerter.store import StoreWriter
 from alerter.watchdog import Watchdog
 from trading_core.alerts.checks import disk_check, entry_block_checks, heartbeat_check, reachable
@@ -124,7 +124,8 @@ class Alerter:
             for slot in self._slots
         )
         self._plan_key = snapshot_key(env, snapshot_name(TraderSlot.PORTFOLIO, "plan"))
-        self._failed_seen: int | None = None
+        self._failed_seen: tuple[int | None, int] | None = None
+        self._missing_seen: str | None = None
         self._trader_down_s = trader_down_s
         self._load_wait_s = load_wait_s
         self._fx = fx
@@ -194,33 +195,67 @@ class Alerter:
                 self.apply(self._engine.check(for_slot(slot, result)))
 
     async def check_portfolio_failed(self) -> None:
-        """One ``portfolio_coins_failed`` per rebalance that left coins in ``portfolio_plan.failed`` (spec 0030 AC-17).
+        """One ``portfolio_coins_failed`` per rebalance that left coins in ``portfolio_plan.failed`` (spec 0030 AC-17),
+        and one ``portfolio_close_missing`` per plan date whose rebalance kept coins for a missing close (spec 0032
+        AC-2b).
 
-        Only while ``portfolio`` is watched. Each ``last_rebalance_at`` is fed once; after a restart the
-        stored open episode absorbs the repeat. A Redis error is the heartbeat loop's to report.
+        Read while main's ``trader_state.book`` is true (a book on the main trader, spec 0032 AC-9: service
+        ``trader``, ``slot`` ``main``), else only while ``portfolio`` is watched (service ``trader-portfolio``).
+        Each ``last_rebalance_at`` (again whenever its ``failed`` grows) and each ``plan_day`` is fed once; after
+        a restart the stored open episode absorbs the repeat. A Redis error is the heartbeat loop's to report.
         """
-        if TraderSlot.PORTFOLIO not in self._slots:
-            return
         try:
+            main_book = await trader_book(self._redis, self._state_key)
+            if not main_book and TraderSlot.PORTFOLIO not in self._slots:
+                return
             plan = await plan_failures(self._redis, self._plan_key)
         except RedisError:
             return
-        if plan is None or not plan.failed or plan.last_rebalance_at == self._failed_seen:
+        if plan is None:
             return
-        self._failed_seen = plan.last_rebalance_at
-        obs = Observation(
-            source="redis",
-            service="trader-portfolio",
-            at=self._clock(),
-            code="rebalance_coin_failed",
-            level="WARNING",
-            fields={
-                "coins": ", ".join(plan.failed),
-                "count": len(plan.failed),
-                "last_rebalance_at": plan.last_rebalance_at,
-            },
-        )
-        self.apply(self._engine.observe(obs))
+        service = "trader" if main_book else "trader-portfolio"
+        slot_fields: dict[str, object] = {"slot": TraderSlot.MAIN.value} if main_book else {}
+        seen = (plan.last_rebalance_at, len(plan.failed))
+        if plan.failed and seen != self._failed_seen:
+            # ``failed`` only grows within a rebalance; a coin that fails later pushes again with the full list.
+            self._failed_seen = seen
+            self.apply(
+                self._engine.observe(
+                    Observation(
+                        source="redis",
+                        service=service,
+                        at=self._clock(),
+                        code="rebalance_coin_failed",
+                        level="WARNING",
+                        fields={
+                            "coins": ", ".join(plan.failed),
+                            "count": len(plan.failed),
+                            "last_rebalance_at": plan.last_rebalance_at,
+                            "round": f"{plan.last_rebalance_at}:{len(plan.failed)}",
+                            **slot_fields,
+                        },
+                    )
+                )
+            )
+        if plan.close_missing and plan.plan_day is not None and plan.plan_day != self._missing_seen:
+            self._missing_seen = plan.plan_day
+            self.apply(
+                self._engine.observe(
+                    Observation(
+                        source="redis",
+                        service=service,
+                        at=self._clock(),
+                        code="close_missing",
+                        level="WARNING",
+                        fields={
+                            "coins": ", ".join(plan.close_missing),
+                            "count": len(plan.close_missing),
+                            "plan_day": plan.plan_day,
+                            **slot_fields,
+                        },
+                    )
+                )
+            )
 
     async def read_host(self) -> None:
         """Feed every new ``host.jsonl`` and ``deploys.jsonl`` line to the engine (AC-4, AC-11)."""

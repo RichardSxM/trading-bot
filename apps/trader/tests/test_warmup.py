@@ -260,3 +260,16 @@ def test_an_empty_seed_stays_empty_with_no_second_warning(caplog):
         assert daily_seed(BTC, (), TODAY) == ()
 
     assert caplog.records == []
+
+
+def test_connors_rsi_tp_seeds_from_15_minute_candles():
+    import functools
+
+    from trader.main import seed_fetch
+    from trader.warmup import INTERVALS_S
+
+    fetch = seed_fetch("connors_rsi_tp")
+
+    assert isinstance(fetch, functools.partial)
+    assert fetch.keywords == {"interval": "15m", "keep_bars": 300, "min_bars": 250}
+    assert INTERVALS_S["15m"] == 900

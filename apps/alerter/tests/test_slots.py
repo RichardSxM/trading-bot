@@ -133,11 +133,32 @@ def test_failed_coins_alert_once_per_rebalance_naming_the_coins():
 
     first, second = asyncio.run(run()).sent
     assert first.tier is Tier.WARNING
-    assert first.episode.fingerprint == "portfolio_coins_failed:100"
+    assert first.episode.fingerprint == "portfolio_coins_failed:100:2"
     assert "2 coins failed" in first.title
     assert first.message.startswith("PF_ETHUSD.KRAKEN, PF_SOLUSD.KRAKEN did not reach their target")
-    assert second.episode.fingerprint == "portfolio_coins_failed:300"
+    assert second.episode.fingerprint == "portfolio_coins_failed:300:1"
     assert "1 coin failed" in second.title
+
+
+def test_a_coin_that_fails_later_in_the_same_rebalance_pushes_again_with_the_full_list():
+    async def run():
+        alerter, clock, redis, deliverer, writer = make()
+        assert await writer.load_once()
+        _plan(redis, clock, 100, ["PF_SOLUSD.KRAKEN"])  # the liquidation refusal, at once
+        await alerter.check_portfolio_failed()
+        clock.advance(15)
+        _plan(redis, clock, 100, ["PF_ETHUSD.KRAKEN", "PF_SOLUSD.KRAKEN"])  # a retry ran out minutes later
+        for _ in range(2):
+            await alerter.check_portfolio_failed()
+            clock.advance(15)
+        await settle(alerter)
+        return deliverer
+
+    first, second = asyncio.run(run()).sent
+    assert "1 coin failed" in first.title
+    assert second.episode.fingerprint == "portfolio_coins_failed:100:2"
+    assert "2 coins failed" in second.title
+    assert second.message.startswith("PF_ETHUSD.KRAKEN, PF_SOLUSD.KRAKEN did not reach their target")
 
 
 def test_failed_coins_are_not_read_unless_the_portfolio_is_watched():

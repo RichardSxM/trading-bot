@@ -14,6 +14,7 @@ from trader.paper_strategy import (
     TrendPortfolioView,
     build_paper_strategy,
     build_trend_portfolio,
+    connors_rsi_tp_config,
     donchian_config,
     donchian_scalp_config,
     donchian_scalp_r1_config,
@@ -21,9 +22,11 @@ from trader.paper_strategy import (
     trend_portfolio_config,
 )
 from trading_core import versioning
+from trading_core.node.connors_rsi_tp import ConnorsRsiTp
 from trading_core.node.donchian_4h import Donchian4h
 from trading_core.node.donchian_scalp import DonchianScalp
 from trading_core.node.donchian_scalp_r1 import DonchianScalpR1
+from trading_core.node.donchian_scalp_tp import DonchianScalpTp
 from trading_core.node.funding import FundingLedger
 from trading_core.node.kraken import BTC_PERP
 from trading_core.node.placeholder import PlaceholderTimed
@@ -205,21 +208,22 @@ def portfolio(demo, monkeypatch):
     monkeypatch.setenv("PAPER_INSTRUMENTS", TP_COINS)
 
 
-def test_trend_portfolio_builds_the_owner_s_10x_demo_settings(portfolio):  # covers: spec 0030 AC-3
+def test_trend_portfolio_builds_the_owner_s_5x_demo_settings(portfolio):  # covers: spec 0030 AC-3
+    # 5x since 2be0634 (was 10x on the first VPS start).
     config = trend_portfolio_config(TraderSettings(), uuid4())
 
-    assert (config.vol_target, config.gross_cap) == (Decimal("0.31"), Decimal(10))
+    assert (config.vol_target, config.gross_cap) == (Decimal("0.155"), Decimal(5))
     assert (config.lookback_days, config.vol_days, config.min_history_days) == (30, 30, 120)
     assert (config.rebalance_weekday, config.run_at_utc, config.order_id_tag) == (0, "00:05", "TP")
     assert (config.seed_days, config.seed_min_days) == (150, 121)
     assert config.instruments == tuple(sorted(TP_COINS.split(",")))
 
 
-def test_trend_portfolio_records_the_10x_settings_in_its_version(portfolio):  # covers: spec 0030 AC-3, AC-10
+def test_trend_portfolio_records_the_5x_settings_in_its_version(portfolio):  # covers: spec 0030 AC-3, AC-10
     version = paper_version(TraderSettings())
 
     assert (version.name, version.kind.value) == ("trend_portfolio", "trend")
-    assert (version.config["vol_target"], version.config["gross_cap"]) == ("0.31", "10")
+    assert (version.config["vol_target"], version.config["gross_cap"]) == ("0.155", "5")
     assert version.config["instruments"] == sorted(TP_COINS.split(","))
     assert version.frozen == versioning.freeze(TrendPortfolio.__module__, version.config)
 
@@ -248,3 +252,103 @@ def test_one_instance_gets_every_coin_and_one_view_each(portfolio):  # covers: s
     assert len(views) == 2
     assert all(isinstance(view, TrendPortfolioView) for view in views)
     assert [(view.exiting, view.exit_due_ns, view.stop_order()) for view in views] == [(False, None, None)] * 2
+
+
+def test_connors_rsi_tp_records_its_settings_and_takes_the_seed(demo, monkeypatch):
+    monkeypatch.setenv("PAPER_STRATEGY", "connors_rsi_tp")
+    settings = TraderSettings()
+    seed = [BarInput(900_000_000_000, Decimal(1), Decimal(2), Decimal(1), Decimal(1), Decimal(1))]
+
+    version = paper_version(settings)
+    strategy, view = _build(settings, seed)
+
+    assert (version.name, version.kind.value) == ("connors_rsi_tp", "hour_level")
+    assert version.config["bar_spec"] == "15-MINUTE-LAST"
+    assert version.config["time_stop_bars"] == 12
+    assert (version.config["take_profit_usd"], version.config["stop_loss_usd"]) == ("3", "2")
+    assert (version.config["rsi_period"], version.config["rsi_lower"]) == (2, 5)
+    assert version.config["risk_per_trade"] == "0.5"
+    assert version.frozen == versioning.freeze(ConnorsRsiTp.__module__, version.config)
+    assert isinstance(strategy, ConnorsRsiTp)
+    assert isinstance(view, BarRuleView)
+    assert str(strategy.bar_type) == f"{BTC_PERP}-15-MINUTE-LAST-INTERNAL"
+    assert strategy._seed == tuple(seed)
+
+
+def test_connors_rsi_tp_lets_the_order_cap_set_each_trade_s_size(demo, monkeypatch):
+    monkeypatch.setenv("PAPER_STRATEGY", "connors_rsi_tp")
+    settings = TraderSettings()
+
+    config = connors_rsi_tp_config(settings, uuid4(), BTC_PERP)
+
+    assert config.risk_per_trade == Decimal("0.5")
+    assert config.max_order_notional_usd == settings.risk_max_order_notional_usd
+    assert (config.take_profit_usd, config.stop_loss_usd) == (Decimal(3), Decimal(2))
+    assert config.use_market_context is True
+
+
+def test_connors_rsi_tp_is_refused_outside_demo(demo, monkeypatch):
+    monkeypatch.setenv("PAPER_STRATEGY", "connors_rsi_tp")
+    settings = TraderSettings().model_copy(update={"trading_env": "live"})
+
+    with pytest.raises(ValueError, match="live taker fee"):
+        connors_rsi_tp_config(settings, uuid4(), BTC_PERP)
+
+
+def test_connors_rsi_tp_may_trade_many_coins(demo, monkeypatch):
+    monkeypatch.setenv("PAPER_STRATEGY", "connors_rsi_tp")
+    monkeypatch.setenv("PAPER_INSTRUMENTS", f"{BTC_PERP},PF_ETHUSD.KRAKEN")
+
+    assert TraderSettings().instrument_list == sorted([BTC_PERP, "PF_ETHUSD.KRAKEN"])
+
+
+def test_trend_portfolio_holds_each_coin_without_dollar_exits(demo, monkeypatch):
+    monkeypatch.setenv("PAPER_STRATEGY", "trend_portfolio")
+    settings = TraderSettings()
+
+    version_config = paper_version(settings).config
+    config = trend_portfolio_config(settings, uuid4())
+
+    assert not {"coin_take_profit_usd", "coin_stop_loss_usd", "coin_reenter_wait_s"} & set(version_config)
+    assert (config.coin_take_profit_usd, config.coin_stop_loss_usd) == (None, None)
+
+
+def test_trend_portfolio_runs_at_5x_on_the_demo(demo, monkeypatch):
+    monkeypatch.setenv("PAPER_STRATEGY", "trend_portfolio")
+
+    config = paper_version(TraderSettings()).config
+
+    assert (config["vol_target"], config["gross_cap"]) == ("0.155", "5")
+
+
+def test_donchian_scalp_tp_records_its_settings_and_takes_the_seed(demo, monkeypatch):
+    monkeypatch.setenv("PAPER_STRATEGY", "donchian_scalp_tp")
+    settings = TraderSettings()
+    seed = [BarInput(300_000_000_000, Decimal(1), Decimal(2), Decimal(1), Decimal(1), Decimal(1))]
+
+    version = paper_version(settings)
+    strategy, view = _build(settings, seed)
+
+    assert (version.name, version.kind.value) == ("donchian_scalp_tp", "scalping")
+    assert version.config["bar_spec"] == "5-MINUTE-LAST"
+    assert (version.config["entry_bars"], version.config["time_stop_bars"]) == (20, 60)
+    assert (version.config["trail_arm_usd"], version.config["trail_usd"]) == ("1.5", "0.5")
+    assert version.config["stop_loss_usd"] == "3"
+    assert "take_profit_usd" not in version.config
+    assert version.config["risk_per_trade"] == "0.5"
+    assert version.frozen == versioning.freeze(DonchianScalpTp.__module__, version.config)
+    assert (strategy._tp.trail_arm_usd, strategy._tp.trail_usd, strategy._tp.stop_loss_usd) == (
+        Decimal("1.5"),
+        Decimal("0.5"),
+        Decimal(3),
+    )
+    assert isinstance(strategy, DonchianScalpTp)
+    assert isinstance(view, BarRuleView)
+    assert strategy._seed_pending
+
+
+def test_donchian_scalp_tp_may_trade_many_coins(demo, monkeypatch):
+    monkeypatch.setenv("PAPER_STRATEGY", "donchian_scalp_tp")
+    monkeypatch.setenv("PAPER_INSTRUMENTS", f"{BTC_PERP},PF_ETHUSD.KRAKEN")
+
+    assert TraderSettings().instrument_list == sorted([BTC_PERP, "PF_ETHUSD.KRAKEN"])

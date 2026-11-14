@@ -47,7 +47,18 @@ SWATCH_TEXT: Final = {
     "on-alarm": "stop",
     "demo": "bg",
 }
-TYPE_ROLES: Final = ("display", "headline", "title", "body-lg", "body", "label", "caption", "number", "number-lg")
+TYPE_ROLES: Final = (
+    "poster",
+    "display",
+    "headline",
+    "title",
+    "body-lg",
+    "body",
+    "label",
+    "caption",
+    "number",
+    "number-lg",
+)
 SAMPLE_TIME: Final = datetime(2026, 10, 2, 14, 3, 7, 512_000, tzinfo=UTC)
 # Sample Activity rows (labelled sample data on /styleguide only): one of each outcome color.
 ACTIVITY_SAMPLE: Final = (

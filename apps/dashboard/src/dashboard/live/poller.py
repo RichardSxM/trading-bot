@@ -21,14 +21,19 @@ command results every tick for the mute badge.
 With a portfolio reader (spec 0030 AC-19) it also reads the portfolio trader's snapshots every tick and
 renders the Portfolio page's board, its realized P&L read from Postgres at most every ``pnl_refresh_s``
 (and at once when the run changes); a Postgres error shows that figure as unavailable.
+
+With a standings renderer it also renders Overview's scoreboard and standings from the same book view, each coin's
+daily closes (``read_closes``, Kraken's public candles, cached by the reader), and the season curve read from
+Postgres at most every ``season_refresh_s`` (and at once when the run changes); either source failing shows its
+figures as unavailable, never stale numbers as live.
 """
 
 import asyncio
 import dataclasses
 import logging
 import time
-from collections.abc import Awaitable, Callable, Sequence
-from datetime import UTC, datetime
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Final, Protocol
 from uuid import UUID
@@ -42,6 +47,7 @@ from dashboard.live.portfolio import LOST as PORTFOLIO_LOST
 from dashboard.live.portfolio import PortfolioRaw, PortfolioView, portfolio_view, run_id
 from dashboard.live.position import LOST, PositionView, position_view
 from dashboard.live.sides import Holding, SidesView, sides_view
+from dashboard.live.standings import ScoreView, Season, StandingsView, score_view, standings_view
 from dashboard.live.state import (
     COMMAND_NO_DATA,
     LOSSES_NO_DATA,
@@ -69,6 +75,7 @@ from dashboard.live.state import (
     reconcile_view,
 )
 from trading_core.control.messages import ControlMessage, Fields, field, to_fields
+from trading_core.control.slots import TraderSlot
 
 log = logging.getLogger(__name__)
 
@@ -84,6 +91,10 @@ LOSSES_EVENT: Final = "system-losses"
 CHECK_EVENT: Final = "topbar-check"
 MUTE_EVENT: Final = "overview-mute"
 PORTFOLIO_EVENT: Final = "portfolio-board"
+STANDINGS_EVENT: Final = "overview-standings"
+SCORE_EVENT: Final = "overview-score"
+SEASON_REFRESH_S: Final = 60.0
+GROSS_CAP: Final = Decimal(5)
 ALERTS_REFRESH_S: Final = 10.0
 PNL_REFRESH_S: Final = 5.0
 PNL_TIMEOUT_S: Final = 2.0
@@ -139,8 +150,27 @@ class Poller:
         read_portfolio: Callable[[], Awaitable[PortfolioRaw]] | None = None,
         read_portfolio_pnl: Callable[[UUID], Awaitable[Decimal]] | None = None,
         render_portfolio: Callable[[PortfolioView], str] | None = None,
+        portfolio_slot: TraderSlot = TraderSlot.PORTFOLIO,
+        read_closes: Callable[[Sequence[str]], Awaitable[Mapping[str, Mapping[date, Decimal]] | None]] | None = None,
+        read_season: Callable[[UUID], Awaitable[Season]] | None = None,
+        render_standings: Callable[[StandingsView], str] | None = None,
+        render_score: Callable[[ScoreView], str] | None = None,
+        season_refresh_s: float = SEASON_REFRESH_S,
+        gross_cap: Decimal = GROSS_CAP,
     ) -> None:
+        self._read_closes = read_closes
+        self._read_season = read_season
+        self._render_standings = render_standings
+        self._render_score = render_score
+        self._season_refresh_s = season_refresh_s
+        self._gross_cap = gross_cap
+        # The run whose season was read last, the curve (None: unknown), and when it was read.
+        self._season_run: UUID | None = None
+        self._season: Season | None = None
+        self._season_read_at: float | None = None
+        self._last_season_warning: float | None = None
         self._read_portfolio = read_portfolio
+        self._portfolio_slot = portfolio_slot
         self._read_portfolio_pnl = read_portfolio_pnl
         self._render_portfolio = render_portfolio
         # The run whose realized P&L was read last, its figure (None: unknown), and when it was read.
@@ -259,11 +289,66 @@ class Poller:
                 view = self._with_sides(view, raw_exchange, state)
             partials[POSITION_EVENT] = self._render_position(view)
         if self._render_portfolio is not None and portfolio is not None:
-            realized = await self._refresh_portfolio_pnl(run_id(portfolio.trader_state))
-            partials[PORTFOLIO_EVENT] = self._render_portfolio(
-                portfolio_view(portfolio, realized, self._clock_ns(), self._amber_s, self._red_s)
+            run = run_id(portfolio.trader_state)
+            realized = await self._refresh_portfolio_pnl(run)
+            book = portfolio_view(
+                portfolio, realized, self._clock_ns(), self._amber_s, self._red_s, self._portfolio_slot
             )
+            partials[PORTFOLIO_EVENT] = self._render_portfolio(book)
+            partials |= await self._standings(book, run)
         return partials
+
+    async def _standings(self, book: PortfolioView, run: UUID | None) -> dict[str, str]:
+        """Overview's scoreboard and standings from the book view, the daily closes, and the season."""
+        if self._render_standings is None or self._render_score is None:
+            return {}
+        now = self._now()
+        closes = None
+        if self._read_closes is not None and book.rows:
+            try:
+                closes = await self._read_closes([row.instrument_id for row in book.rows])
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # the reader logs Kraken failures; anything else is logged here
+                log.warning(
+                    "daily closes failed",
+                    extra={"fields": {"code": "daily_closes_failed", "error": type(exc).__name__}},
+                )
+        table = standings_view(book, closes, now.date())
+        season = await self.season(run)
+        return {
+            STANDINGS_EVENT: self._render_standings(table),
+            SCORE_EVENT: self._render_score(score_view(book, table, season, now, self._gross_cap)),
+        }
+
+    @property
+    def season_run(self) -> UUID | None:
+        """The run whose season was read last."""
+        return self._season_run
+
+    async def season(self, run: UUID | None) -> Season | None:
+        """The season of ``run``, read again when the run changed or the last read is older than
+        ``season_refresh_s``; None without a run, without a reader, or after a failed read (logged once a minute)."""
+        if self._read_season is None or run is None:
+            self._season_run, self._season = run, None
+            return None
+        now = self._monotonic()
+        fresh = self._season_read_at is not None and now - self._season_read_at < self._season_refresh_s
+        if run == self._season_run and fresh:
+            return self._season
+        self._season_run, self._season_read_at = run, now
+        try:
+            self._season = await asyncio.wait_for(self._read_season(run), timeout=self._pnl_timeout_s)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._season = None
+            if self._last_season_warning is None or now - self._last_season_warning >= PNL_WARN_EVERY_S:
+                self._last_season_warning = now
+                log.warning(
+                    "season read failed", extra={"fields": {"code": "season_read_failed", "error": type(exc).__name__}}
+                )
+        return self._season
 
     def no_data(self) -> dict[str, str]:
         """Every partial in its ``no data`` state (Redis unreadable), without reading Redis."""
@@ -286,6 +371,9 @@ class Poller:
             partials[POSITION_EVENT] = self._render_position(dataclasses.replace(LOST, pnl=self._pnl))
         if self._render_portfolio is not None and self._read_portfolio is not None:
             partials[PORTFOLIO_EVENT] = self._render_portfolio(PORTFOLIO_LOST)
+            if self._render_standings is not None and self._render_score is not None:
+                partials[STANDINGS_EVENT] = self._render_standings(StandingsView("lost"))
+                partials[SCORE_EVENT] = self._render_score(ScoreView("lost", gross_cap=self._gross_cap))
         return partials
 
     def _now(self) -> datetime:
