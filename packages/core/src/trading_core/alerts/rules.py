@@ -266,6 +266,16 @@ PORTFOLIO_CLOSE_MISSING: Final = Rule(
     key=_subject("portfolio_close_missing", "plan_day"),
     codes=frozenset({"close_missing"}),
 )
+# Read from Postgres (spec 0033 AC-7): main's book run has no ``book_plans`` row for too long. One push per run and
+# UTC day, keyed by ``round`` (``<run id>:<day>``); the alerter feeds it once per round.
+BOOK_PLAN_STALE: Final = Rule(
+    "book_plan_stale",
+    Tier.WARNING,
+    RuleKind.EVENT,
+    source="postgres",
+    matches=lambda obs: obs.source == "postgres" and obs.code == "book_plan_stale",
+    key=_subject("book_plan_stale", "round"),
+)
 # A portfolio node's run, retry, or coin step that raised (review 2026-11-13): any trader slot, one episode per
 # code and service.
 PORTFOLIO_RUN_FAILED: Final = _code_rule(
@@ -377,6 +387,7 @@ RULES: Final[tuple[Rule, ...]] = (
     PORTFOLIO_COINS_FAILED,
     PORTFOLIO_CLOSE_MISSING,
     PORTFOLIO_RUN_FAILED,
+    BOOK_PLAN_STALE,
     CONTEXT_FEED_DOWN,
     CONTEXT_HOUR_MISSING,
     BOOK_GAP_LONG,

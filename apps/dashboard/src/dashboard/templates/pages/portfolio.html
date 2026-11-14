@@ -1,6 +1,8 @@
 {% extends "shell.html" %}
 {# book_on_main: DASHBOARD_PORTFOLIO_SLOT=main, the main trader's book (spec 0032 AC-8). churn: its notional and
-   fees per UTC day, newest first (None: not read); churn_error: Postgres did not answer. #}
+   fees per UTC day, newest first (None: not read); churn_error: Postgres did not answer. book_plans: the book run's
+   last 30 rebalances, newest first (spec 0033 AC-8; None: no run named); book_plans_read: false without Postgres;
+   book_plans_error: Redis or Postgres did not answer. #}
 {% block page %}
 <div class="board">
   <section class="region region--wide" aria-labelledby="portfolio-h">
@@ -29,5 +31,27 @@
     {%- endif %}
   </section>
   {%- endif %}
+  <section class="region region--wide" aria-labelledby="book-plans-h">
+    <header class="region__head"><h2 class="region__title" id="book-plans-h">Rebalances</h2><span class="region__meta">last 30 of this run · book sizing and what each rebalance did · read when the page loads</span></header>
+    {%- if book_plans_error %}
+    <p class="figures__unavailable">Unavailable: the database did not answer. Reload the page to try again.</p>
+    {%- elif not book_plans_read %}
+    <p class="figures__unavailable">Unavailable without the database.</p>
+    {%- elif not book_plans %}
+    <p class="figures__unavailable">No rebalances recorded yet</p>
+    {%- else %}
+    <div class="table-wrap">
+      <table class="table portfolio__plans">
+        <caption class="visually-hidden">The run's rebalances, newest first: book volatility, gross, and the orders each sent</caption>
+        <thead><tr><th scope="col">Rebalanced (UTC)</th><th scope="col">Reason</th><th scope="col" class="is-num">Unit vol (annual)</th><th scope="col" class="is-num">Book gross</th><th scope="col" class="is-num">Orders sent</th><th scope="col" class="is-num">Refused</th><th scope="col" class="is-num">No order</th></tr></thead>
+        <tbody>
+        {%- for line in book_plans %}
+          <tr><th scope="row">{{ line.rebalanced_at|ts }}</th><td>{{ line.reason }}</td><td class="is-num">{% if line.unit_vol_pct is none %}–{% else %}{{ line.unit_vol_pct|num }} %{% endif %}</td><td class="is-num">{% if line.book_gross is none %}–{% else %}{{ line.book_gross|num }}x{% endif %}</td><td class="is-num">{{ line.sent }}</td><td class="is-num">{{ line.refused }}</td><td class="is-num">{{ line.no_order }}</td></tr>
+        {%- endfor %}
+        </tbody>
+      </table>
+    </div>
+    {%- endif %}
+  </section>
 </div>
 {% endblock %}

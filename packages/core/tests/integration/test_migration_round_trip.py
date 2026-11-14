@@ -60,8 +60,8 @@ def test_upgrade_downgrade_upgrade_gives_the_same_schema_and_keeps_the_roles():
         drop_database(name)
 
     assert (
-        len([item for kind, item in first if kind == "constraint" and " pk_" in item]) == 27
-    )  # spec 0023 added two tables
+        len([item for kind, item in first if kind == "constraint" and " pk_" in item]) == 29
+    )  # spec 0033 added two more tables
     assert tables == ["alembic_version"]
     assert [kind for kind, _ in after_down if kind in {"grant", "function", "default acl"}] == []
     assert sorted(roles) == sorted(APP_ROLES)

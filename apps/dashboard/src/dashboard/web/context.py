@@ -14,7 +14,7 @@ from dashboard.auth.password import PasswordChecker
 from dashboard.auth.session import SessionCodec
 from dashboard.auth.totp import TotpGuard
 from dashboard.data.journal import JournalExport
-from dashboard.data.portfolio import DayChurn
+from dashboard.data.portfolio import BookPlanLine, DayChurn
 from dashboard.data.strategies import StrategiesView
 from dashboard.data.trades import TradesView
 from dashboard.live.poller import Poller
@@ -78,6 +78,9 @@ class AppContext:
     trusted_peers: frozenset[str] = frozenset()
     # The main trader's notional and fees per UTC day for the Portfolio page (spec 0032 AC-8); None without Postgres.
     read_portfolio_churn: Callable[[], Awaitable[Sequence[DayChurn]]] | None = None
+    # The book run's last rebalances for the Portfolio page (spec 0033 AC-8); None without Postgres. The callable
+    # gives None while no run is named.
+    read_book_plans: Callable[[], Awaitable[Sequence[BookPlanLine] | None]] | None = None
 
 
 def app_context(request: Request) -> AppContext:
