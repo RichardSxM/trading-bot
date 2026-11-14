@@ -450,7 +450,10 @@ class HourStream:
             keep.append(index)
         if len(keep) == rows.num_rows:
             return rows, ts
-        return rows.take(keep), ts[keep]
+        # Typed, because an empty list (every row a duplicate) would make pyarrow infer a null array
+        # that ``take`` rejects.
+        indices = pa.array(keep, type=pa.int64())
+        return rows.take(indices), ts[np.asarray(keep, dtype=np.int64)]
 
     def _start(self, hour: int, schema: Any) -> None:
         sink = HourSink(self._store.data_file(self.table, self.instrument_id, hour), schema, hour)
