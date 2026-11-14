@@ -6,6 +6,7 @@ daily seed: 150 closed candles, the in progress one dropped, the 121 minimum, a 
 The fetch is scripted: no request leaves the test.
 """
 
+import functools
 import json
 import logging
 import urllib.error
@@ -204,7 +205,9 @@ def _daily_body(count):
 
 
 def _daily(script, coin=BTC):
-    return seed_fetch("trend_portfolio")(coin, lambda: NOW_NS, script.get, script.sleep)
+    fetch = seed_fetch("trend_portfolio")
+    assert isinstance(fetch, functools.partial)
+    return fetch(coin, lambda: NOW_NS, script.get, script.sleep)
 
 
 def test_the_daily_seed_asks_for_150_days_and_a_margin_from_the_1d_candles():
