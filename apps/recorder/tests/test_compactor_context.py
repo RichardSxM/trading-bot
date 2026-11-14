@@ -183,6 +183,23 @@ def test_a_liquidation_resent_after_a_restart_across_the_hour_is_kept_once(tmp_p
     assert {p: p.read_bytes() for p in (tmp_path / "data").rglob("*.parquet")} == before
 
 
+def test_an_hour_whose_only_liquidations_are_resends_writes_no_rows_and_passes(tmp_path):
+    """covers: spec 0009 AC-2, AC-5. Regression: every row dropped made ``take`` fail on an untyped
+    empty index (ArrowNotImplementedError), failing every pass from 2026-11-14 14:29 UTC on the VPS."""
+    from recorder.compactor.store import LIQUIDATION_TABLE
+
+    a = [liquidation(H0 + 3_590 * SECOND_NS, "y")]
+    b = [liquidation(H0 + HOUR_NS + 3 * SECOND_NS, "y"), liquidation(H0 + HOUR_NS + 4 * SECOND_NS, "y")]
+    store = _two_runs_with(tmp_path, {LIQUIDATION_TABLE: a}, {LIQUIDATION_TABLE: b})
+
+    _compactor(store).run_pass(_later())
+
+    assert store.data_file(LIQUIDATION_TABLE, INSTRUMENT, H0).is_file()
+    # The hour opens before duplicates are dropped, so it is written, with no rows.
+    assert pq.read_table(store.data_file(LIQUIDATION_TABLE, INSTRUMENT, H0 + HOUR_NS)).num_rows == 0
+    assert H0 + HOUR_NS in store.load_done().hours[stream_key(LIQUIDATION_TABLE, INSTRUMENT)]
+
+
 def test_an_outage_line_is_a_reconnect_gap_of_both_raw_streams_and_beats_a_silence(tmp_path):
     """covers: spec 0009 AC-6, AC-7."""
     from recorder.compactor.days import read_gaps
