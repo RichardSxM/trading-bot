@@ -94,6 +94,26 @@ def newest_fx_date(session: Session) -> date | None:
     ).scalar_one()
 
 
+class BookPlanAges(NamedTuple):
+    """A book run's start and its newest ``book_plans`` row's rebalance time (spec 0033 AC-7); either may be None."""
+
+    run_started_at: datetime | None
+    newest_rebalanced_at: datetime | None
+
+
+def book_plan_ages(session: Session, env: Env, run_id: UUID) -> BookPlanAges:
+    """When ``run_id`` started and when its newest book plan was rebalanced (None when it has none)."""
+    started = session.execute(
+        select(models.StrategyRun.started_at).where(models.StrategyRun.id == run_id, models.StrategyRun.env == env)
+    ).scalar_one_or_none()
+    newest = session.execute(
+        select(func.max(models.BookPlan.rebalanced_at)).where(
+            models.BookPlan.run_id == run_id, models.BookPlan.env == env
+        )
+    ).scalar_one()
+    return BookPlanAges(started, newest)
+
+
 def _utc_ns(name: str, value: datetime) -> int:
     if value.tzinfo is None or value.utcoffset() != timedelta(0):
         raise ValueError(f"{name} must be a UTC aware datetime, got {value!r}")

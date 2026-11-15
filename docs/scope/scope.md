@@ -590,11 +590,15 @@ spec [0032](../specs/0032-trend-daily/index.md) · code in `packages/core/src/tr
 ### 34. Trend vol on the main trader · in-progress
 `trend_daily` (feature 33) with the size of the whole book set from the book's own volatility: the same 30 day signals and split between coins, but the gross follows the book's 30 day volatility toward a 50% annual target (never past 5x), and a rebalance leaves a coin alone when it is within 30% of its target. Built after the 2026-11-11 replay showed the plain 5x rule losing about 98% over 4.6 years, while the book volatility target survived (Sharpe about 0.72, about 0.87 with the band). The gain is almost all in the first half of the replay, so it fixes ruin but does not prove an edge. Straight to demo as a forward test; a spec, study, and gate verdict are owed before live.
 **Done when:** every existing strategy hash is unchanged, the VPS main trader runs `trend_vol` on the 12 coins with its daily rebalance, and its book volatility and gross are recorded each run.
-code in [strategy/trend_vol.py](../../packages/core/src/trading_core/strategy/trend_vol.py), [node/trend_vol.py](../../packages/core/src/trading_core/node/trend_vol.py) · on the VPS demo since 2026-11-11 22:47 UTC (PR #143)
+spec [0033](../specs/0033-trend-vol/index.md) · code in [strategy/trend_vol.py](../../packages/core/src/trading_core/strategy/trend_vol.py), [node/trend_vol.py](../../packages/core/src/trading_core/node/trend_vol.py) · on the VPS demo since 2026-11-11 22:47 UTC (PR #143)
 
-- [ ] Design it (spec): `/architect trend vol` (built before a spec; record the decision)
+- [x] Design it (spec): `/architect trend vol`
 - [ ] Build it: `/develop trend vol`
-  - [x] Strategy and VPS switch: `book_vol_plan`, `within_band`, `TrendVol` on `TrendDaily`, `TV_*` settings, deploy, your promote (PR #143)
+  - [x] Strategy and VPS switch: `book_vol_plan`, `within_band`, `TrendVol` on `TrendDaily`, `TV_*` settings, deploy, your promote (PR #143) (AC-1 to AC-3)
+  - [ ] Sizing history thin thread: hash baseline, `book_plans` migration, `write_book_plans` task, Portfolio panel, `book_plan_stale` alert, deploy on your go ahead (AC-4 to AC-8)
+  - [ ] Research tools: pure book replay, lab book mode, independent reimplementation and parity, Jesse profile and cross check (AC-9 to AC-11)
+  - [ ] Pre check and r2: pre registration, one run, `trend_vol_r2` only if EWMA passes, `/architect` again if tranches pass (AC-12, AC-13)
+  - [ ] Study and gate: benchmark, bootstrap target pick, trade count, thresholds v4, study, holdout, verdict, demo switch and paper stage on a pass (AC-14 to AC-20)
 - [ ] Verify it: `/check verify trend vol`
 - [ ] Test it: `/test trend vol`
 - [ ] Review it (fresh model): `/check review trend vol`

@@ -48,6 +48,8 @@ TABLES = (
     "run_daily_equity",
     "run_measures",
     "promotion_folds",
+    "book_plans",
+    "book_plan_coins",
 )
 TRADER_UPDATES = {"orders", "positions", "strategy_runs", "control_commands", "fills", "funding_payments"}
 # What a replay bundle writes (spec 0008 AC-17): lab_app may read and insert these, nothing else.
@@ -87,6 +89,9 @@ ALERTER_GRANTS = {
     ("fills", "SELECT"),
     ("instruments", "SELECT"),
     ("positions", "SELECT"),
+    # Spec 0033 AC-7: the book_plan_stale rule reads the newest book plan and the run's start.
+    ("book_plans", "SELECT"),
+    ("strategy_runs", "SELECT"),
 }
 
 
@@ -194,6 +199,10 @@ def test_only_backup_app_may_run_the_downsample(engine: Engine):
         (TRADER_ROLE, "DELETE FROM studies"),
         (DASHBOARD_ROLE, "DELETE FROM promotion_folds"),
         (ALERTER_ROLE, "SELECT count(*) FROM orders"),
+        # Spec 0033 AC-5: book plans are written by the trader only and never changed.
+        (DASHBOARD_ROLE, "INSERT INTO book_plans (id) VALUES (gen_random_uuid())"),
+        (TRADER_ROLE, "UPDATE book_plans SET equity = equity"),
+        (TRADER_ROLE, "DELETE FROM book_plan_coins"),
         (
             TRADER_ROLE,
             "INSERT INTO alerts (env, rule, fingerprint, severity, source, title, message, details,"

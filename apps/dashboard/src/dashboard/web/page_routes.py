@@ -14,6 +14,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from markupsafe import Markup
+from redis.exceptions import RedisError
 from sqlalchemy.exc import SQLAlchemyError
 
 from dashboard.auth.next_path import referer_page
@@ -185,7 +186,7 @@ async def trades(
     return await render_page(request, context, session, *PAGES["/trades"], data=data)
 
 
-def _read_failed(what: str, exc: SQLAlchemyError) -> None:
+def _read_failed(what: str, exc: SQLAlchemyError | RedisError) -> None:
     log.warning(f"{what} read failed", extra={"fields": {"code": f"{what}_read_failed", "error": type(exc).__name__}})
 
 
@@ -271,7 +272,20 @@ async def portfolio(request: Request, session: SessionDep) -> Response:
     the last 7 days, read once per page load (spec 0032 AC-8)."""
     context = app_context(request)
     main = context.settings.portfolio_slot is TraderSlot.MAIN
-    data: dict[str, object] = {"book_on_main": main, "churn": None, "churn_error": False}
+    data: dict[str, object] = {
+        "book_on_main": main,
+        "churn": None,
+        "churn_error": False,
+        "book_plans": None,
+        "book_plans_read": context.read_book_plans is not None,
+        "book_plans_error": False,
+    }
+    if context.read_book_plans is not None:
+        try:
+            data["book_plans"] = await context.read_book_plans()
+        except (SQLAlchemyError, RedisError) as exc:
+            _read_failed("book plans", exc)
+            data["book_plans_error"] = True
     if main and context.read_portfolio_churn is not None:
         try:
             data["churn"] = await context.read_portfolio_churn()

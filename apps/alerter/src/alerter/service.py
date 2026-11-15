@@ -17,6 +17,7 @@ from typing import Final
 
 from redis.exceptions import RedisError
 
+from alerter.book_plans import BookPlanStore
 from alerter.commands import AlertCommands, MuteKey
 from alerter.daily import DailyNote
 from alerter.delivery import Deliverer, Outcome
@@ -26,17 +27,24 @@ from alerter.sources.disk import free_bytes
 from alerter.sources.docker_api import DockerApiError
 from alerter.sources.docker_watch import DockerWatch
 from alerter.sources.host_files import HostFiles
-from alerter.sources.redis_state import SnapshotReader, heartbeat_ts, plan_failures, trader_blocks, trader_book
+from alerter.sources.redis_state import (
+    SnapshotReader,
+    book_run,
+    heartbeat_ts,
+    plan_failures,
+    trader_blocks,
+    trader_book,
+)
 from alerter.store import StoreWriter
 from alerter.watchdog import Watchdog
-from trading_core.alerts.checks import disk_check, entry_block_checks, heartbeat_check, reachable
+from trading_core.alerts.checks import book_plan_stale, disk_check, entry_block_checks, heartbeat_check, reachable
 from trading_core.alerts.engine import LIVE, AlertEngine
 from trading_core.alerts.model import CheckResult, Decision, Delivery, Hold, HoldKind, Observation, Push, Tier
 from trading_core.alerts.rules import FILL, POSTGRES_UNREACHABLE, REDIS_UNREACHABLE, text_field
 from trading_core.control.alerts import AlertCommand, AlertResult
 from trading_core.control.consumer import ControlRedis
 from trading_core.control.slots import TraderSlot, snapshot_name
-from trading_core.recording.enums import AlertCmd, ControlOutcome
+from trading_core.recording.enums import AlertCmd, ControlOutcome, Env
 from trading_core.settings import TradingEnv
 from trading_core.snapshot.envelope import snapshot_key
 
@@ -53,6 +61,7 @@ TICK_S: Final = 5.0
 RETRY_CYCLE_S: Final = 60.0
 PING_S: Final = 60.0
 DAILY_S: Final = 60.0
+BOOK_PLANS_S: Final = 60.0
 # The watchdog pings only while the Redis read and the log pass succeeded this recently (AC-2).
 SOURCE_FRESH_S: Final = 60.0
 LIVENESS_S: Final = 10.0
@@ -104,6 +113,7 @@ class Alerter:
         daily_tz: str = "Europe/Amsterdam",
         load_wait_s: float = LOAD_WAIT_S,
         fx: FxFetcher | None = None,
+        book_plans: BookPlanStore | None = None,
     ) -> None:
         self._env = env
         self._sleep = sleep
@@ -129,6 +139,8 @@ class Alerter:
         self._trader_down_s = trader_down_s
         self._load_wait_s = load_wait_s
         self._fx = fx
+        self._book_plans = book_plans
+        self._stale_seen: set[str] = set()
         self._watchdog = watchdog
         self._docker = docker
         self._host = host
@@ -256,6 +268,53 @@ class Alerter:
                     )
                 )
             )
+
+    async def check_book_plans(self) -> None:
+        """One ``book_plan_stale`` per run and UTC day (spec 0033 AC-7) while main's book run (``trader_state``
+        ``book`` and ``run_id``) has no ``book_plans`` row for over 24 h 20 min, or none at all 1 h 20 min after
+        its start. Postgres is the source, so a trader restart or an expired snapshot changes nothing. A Redis
+        or Postgres error skips the round; the heartbeat and Postgres loops report those."""
+        if self._book_plans is None:
+            return
+        try:
+            run_id = await book_run(self._redis, self._state_key)
+        except RedisError:
+            return
+        if run_id is None:
+            return
+        try:
+            ages = await asyncio.to_thread(self._book_plans.ages, Env(self._env), run_id)
+        except Exception as exc:
+            log.warning(
+                "book plan read failed", extra={"fields": {"code": "alerter_book_plans_failed", "error": str(exc)}}
+            )
+            return
+        now = self._clock()
+        why = book_plan_stale(ages.run_started_at, ages.newest_rebalanced_at, now)
+        round_key = f"{run_id}:{now.date().isoformat()}"
+        if why is None or round_key in self._stale_seen:
+            return
+        self._stale_seen.add(round_key)
+        since = ages.newest_rebalanced_at if why == "old_row" else ages.run_started_at
+        age = "?" if since is None else _hours(now - since)
+        self.apply(
+            self._engine.observe(
+                Observation(
+                    source="postgres",
+                    service="trader",
+                    at=now,
+                    code="book_plan_stale",
+                    level="WARNING",
+                    fields={
+                        "run_id": str(run_id),
+                        "why": why,
+                        "age": age,
+                        "round": round_key,
+                        "slot": TraderSlot.MAIN.value,
+                    },
+                )
+            )
+        )
 
     async def read_host(self) -> None:
         """Feed every new ``host.jsonl`` and ``deploys.jsonl`` line to the engine (AC-4, AC-11)."""
@@ -526,6 +585,7 @@ class Alerter:
             ("heartbeat", self.check_heartbeat, CHECK_S),
             ("entry_blocks", self.check_entry_blocks, BLOCKS_S),
             ("portfolio_failed", self.check_portfolio_failed, BLOCKS_S),
+            ("book_plans", self.check_book_plans, BOOK_PLANS_S),
             ("logs", self.read_logs, LOGS_S),
             ("host", self.read_host, HOST_S),
             ("containers", self.check_containers, CONTAINERS_S),
@@ -547,6 +607,12 @@ def for_slot(slot: TraderSlot, result: CheckResult) -> CheckResult:
         return result
     subject = slot.value if result.subject is None else f"{slot.value}:{result.subject}"
     return replace(result, subject=subject, fields={**result.fields, "slot": slot.value})
+
+
+def _hours(delta: timedelta) -> str:
+    """A duration as ``<h> h <m> min``, rounded down to the minute."""
+    minutes = int(delta.total_seconds()) // 60
+    return f"{minutes // 60} h {minutes % 60} min"
 
 
 def _sync(step: Callable[[], None]) -> Callable[[], Awaitable[None]]:

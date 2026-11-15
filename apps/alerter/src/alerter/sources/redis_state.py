@@ -4,6 +4,7 @@ import logging
 from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass
 from typing import Protocol
+from uuid import UUID
 
 from trading_core.snapshot.envelope import SnapshotFormatError, decode
 
@@ -115,3 +116,22 @@ async def trader_book(redis: SnapshotReader, key: str) -> bool:
     except SnapshotFormatError:
         return False
     return snapshot.data.get("book") is True
+
+
+async def book_run(redis: SnapshotReader, key: str) -> UUID | None:
+    """The active book run of ``trader_state`` (spec 0033 AC-7): its ``run_id`` while ``book`` is true, else None
+    (also for a missing key, a malformed snapshot, or a bad id). A Redis error propagates."""
+    raw = await redis.get(key)
+    if raw is None:
+        return None
+    try:
+        snapshot = decode(raw)
+    except SnapshotFormatError:
+        return None
+    run_id = snapshot.data.get("run_id")
+    if snapshot.data.get("book") is not True or not isinstance(run_id, str):
+        return None
+    try:
+        return UUID(run_id)
+    except ValueError:
+        return None

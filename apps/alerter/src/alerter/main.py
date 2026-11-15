@@ -11,6 +11,7 @@ from redis.asyncio import Redis
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from alerter.book_plans import BookPlanRepository
 from alerter.commands import MuteKey
 from alerter.delivery import Deliverer, LogDelivery, PushoverDelivery
 from alerter.fx import FxFetcher, FxRepository
@@ -135,6 +136,7 @@ async def serve(started: Boot[AlerterSettings]) -> None:
                 utc_now,
                 stale_days=settings.fx_stale_days,
             ),
+            book_plans=BookPlanRepository(db),
         )
         log.info(
             "alerter running",

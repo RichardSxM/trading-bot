@@ -185,6 +185,7 @@ def make_app(
     read_journal_summary=None,
     read_portfolio_pnl=lambda run: Decimal(0),
     read_portfolio_churn=None,
+    read_book_plans=None,
     read_season=lambda run: NO_SEASON,
     read_closes=None,
     **settings,
@@ -209,6 +210,7 @@ def make_app(
         read_journal_summary=read_journal_summary or summary_of,
         read_portfolio_pnl=read_portfolio_pnl,
         read_portfolio_churn=read_portfolio_churn,
+        read_book_plans=read_book_plans,
     )
 
 

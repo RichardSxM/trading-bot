@@ -1,7 +1,7 @@
 """Pure condition checks the alerter feeds the engine (spec 0013, *Value sourcing*)."""
 
 from collections.abc import Iterable, Mapping
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
 from typing import Final
 
@@ -10,6 +10,9 @@ from trading_core.alerts.rules import DISK_LOW, ENTRY_BLOCK, FX_RATES_STALE, TRA
 from trading_core.strategy.blocks import BlockReason
 
 _GB: Final = 1_000_000_000
+# Spec 0033 AC-7: a daily book writes a row a day (plus margin), a new run its first after the 1 h start cooldown.
+BOOK_PLAN_MAX_AGE: Final = timedelta(hours=24, minutes=20)
+BOOK_PLAN_FIRST_WITHIN: Final = timedelta(hours=1, minutes=20)
 _NS: Final = 1_000_000_000
 
 ENTRY_BLOCK_REASONS: Final = frozenset(
@@ -97,3 +100,17 @@ def entry_block_checks(blocked: Iterable[str], since_ns: Mapping[str, int], now:
 
 def _from_ns(ns: int) -> datetime:
     return datetime.fromtimestamp(ns // _NS, UTC).replace(microsecond=ns % _NS // 1_000)
+
+
+def book_plan_stale(run_started_at: datetime | None, newest: datetime | None, now: datetime) -> str | None:
+    """Why main's book run counts as stale (spec 0033 AC-7), or None while it is fine.
+
+    ``old_row`` when its newest ``book_plans`` row is older than ``BOOK_PLAN_MAX_AGE``; ``no_row`` when it has
+    none and the run started more than ``BOOK_PLAN_FIRST_WITHIN`` ago. A run the database does not know is fine
+    (nothing to judge yet).
+    """
+    if newest is not None:
+        return "old_row" if now - newest > BOOK_PLAN_MAX_AGE else None
+    if run_started_at is not None and now - run_started_at > BOOK_PLAN_FIRST_WITHIN:
+        return "no_row"
+    return None

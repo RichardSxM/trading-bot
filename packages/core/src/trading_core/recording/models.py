@@ -34,6 +34,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from trading_core.alerts.model import Delivery, Tier
 from trading_core.control.slots import TraderSlot
 from trading_core.db import Base
+from trading_core.recording.book_plan_rows import BookPlanReason
 from trading_core.recording.enums import (
     CLOSED_ORDER_STATUSES,
     TERMINAL_RUN_STATUSES,
@@ -807,6 +808,59 @@ class ReconciliationMismatch(Base):
     action: Mapped[str]
     action_result: Mapped[str]
     details: Mapped[dict[str, object]]
+    created_at: Mapped[datetime] = _created()
+
+
+# Book sizing history (spec 0033) ----------------------------------------------------------
+
+
+class BookPlan(Base):
+    """One rebalance of a book strategy: the plan's book level sizing (spec 0033 AC-5). Immutable, kept forever.
+
+    The vol fields are null for a book that is not sized by its own volatility.
+    """
+
+    __tablename__ = "book_plans"
+    __table_args__ = (
+        _env_fk("run_id", "strategy_runs"),
+        _env_check(),
+        _one_of("reason", BookPlanReason),
+        UniqueConstraint("env", "run_id", "rebalanced_ns"),
+        _ix("book_plans", "run_id", "rebalanced_ns"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    env: Mapped[str]
+    run_id: Mapped[uuid.UUID]
+    plan_day: Mapped[date]
+    reason: Mapped[str]
+    rebalanced_at: Mapped[datetime]
+    rebalanced_ns: Mapped[int] = mapped_column(BigInteger)
+    equity: Mapped[Decimal]
+    n: Mapped[int]
+    gross: Mapped[Decimal]
+    unit_vol: Mapped[Decimal | None]
+    book_gross: Mapped[Decimal | None]
+    book_vol_target: Mapped[Decimal | None]
+    rebalance_band: Mapped[Decimal | None]
+    gross_cap: Mapped[Decimal]
+    created_at: Mapped[datetime] = _created()
+
+
+class BookPlanCoin(Base):
+    """One coin's plan item at a rebalance (spec 0033 AC-5); ``signal`` is 0 when the coin is not eligible."""
+
+    __tablename__ = "book_plan_coins"
+    __table_args__ = (CheckConstraint("signal IN (-1, 0, 1) AND (eligible OR signal = 0)", name="signal_valid"),)
+
+    book_plan_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("book_plans.id"), primary_key=True)
+    instrument_id: Mapped[str] = mapped_column(ForeignKey("instruments.instrument_id"), primary_key=True)
+    eligible: Mapped[bool]
+    signal: Mapped[int]
+    vol: Mapped[Decimal | None]
+    weight: Mapped[Decimal]
+    target_notional: Mapped[Decimal]
+    close_date: Mapped[date | None]
     created_at: Mapped[datetime] = _created()
 
 

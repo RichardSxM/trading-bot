@@ -28,14 +28,14 @@ from dashboard.data.alerts import AlertLine, recent_alerts
 from dashboard.data.journal import JournalExport, open_journal, read_summary
 from dashboard.data.kraken_daily import DailyCloses
 from dashboard.data.pnl import PnlFigures, pnl_figures
-from dashboard.data.portfolio import DayChurn, daily_churn, run_realized
+from dashboard.data.portfolio import BookPlanLine, DayChurn, book_plan_lines, daily_churn, run_realized
 from dashboard.data.reconciliations import reconciliations_view
 from dashboard.data.season import season_curve
 from dashboard.data.strategies import StrategiesView, promotions_view, strategies_view, study_view
 from dashboard.data.trades import TradesView, trades_view
 from dashboard.live.alerts import MuteView
 from dashboard.live.poller import ACTIVITY_SIZE, Poller, supervise
-from dashboard.live.portfolio import PortfolioRaw, PortfolioView
+from dashboard.live.portfolio import PortfolioRaw, PortfolioView, run_id
 from dashboard.live.position import PositionView
 from dashboard.live.standings import ScoreView, Season, StandingsView, gross_share
 from dashboard.live.state import (
@@ -109,6 +109,21 @@ def redis_client(settings: DashboardSettings, password: SecretStr) -> Redis:
     )
 
 
+def _book_plans(
+    read: Callable[[UUID], Sequence[BookPlanLine]], client: LiveRedis, state_key: str
+) -> Callable[[], Awaitable[Sequence[BookPlanLine] | None]]:
+    """The sizing history of the run the book's ``trader_state`` names (spec 0033 AC-8), read in a thread; None
+    while no run is named. A Redis or Postgres error propagates to the page route."""
+
+    async def run() -> Sequence[BookPlanLine] | None:
+        book_run = run_id(await client.get(state_key))
+        if book_run is None:
+            return None
+        return await asyncio.to_thread(read, book_run)
+
+    return run
+
+
 def _in_thread[T](read: Callable[[], T]) -> Callable[[], Awaitable[T]]:
     """``read`` run in a thread, so a blocking Postgres read never holds the event loop."""
 
@@ -136,6 +151,7 @@ def create_app(
     read_journal_summary: Callable[[JournalRange], JournalSummary] | None = None,
     read_portfolio_pnl: Callable[[UUID], Decimal] | None = None,
     read_portfolio_churn: Callable[[], Sequence[DayChurn]] | None = None,
+    read_book_plans: Callable[[UUID], Sequence[BookPlanLine]] | None = None,
     read_season: Callable[[UUID], Season] | None = None,
     read_closes: Callable[[Sequence[str]], Awaitable[Mapping[str, Mapping[date, Decimal]] | None]] | None = None,
 ) -> FastAPI:
@@ -144,7 +160,8 @@ def create_app(
     ``read_pnl``, ``read_trades``, ``read_strategies``, ``read_alerts``, ``read_reconciliations``,
     ``open_export``, ``read_journal_summary``, ``read_portfolio_pnl``, and ``read_portfolio_churn`` are blocking
     (they query Postgres as ``dashboard_app``); the poller and the page routes run them in a thread. Without
-    ``read_portfolio_churn`` and without Postgres the Portfolio page shows no churn. ``read_season`` (blocking, the
+    ``read_portfolio_churn`` and without Postgres the Portfolio page shows no churn; ``read_book_plans`` (blocking, the
+    sizing history of a run, spec 0033 AC-8) likewise. ``read_season`` (blocking, the
     season curve) defaults to Postgres when it is used; ``read_closes`` (async, each coin's daily closes) defaults to
     Kraken's public candles, cached for ``REFRESH_S``.
     """
@@ -213,6 +230,11 @@ def create_app(
 
         read_portfolio_churn = read_portfolio_churn or postgres_portfolio_churn
 
+        def postgres_book_plans(run: UUID) -> Sequence[BookPlanLine]:
+            return book_plan_lines(sessions, env, run, clock_ns())
+
+        read_book_plans = read_book_plans or postgres_book_plans
+
         def postgres_season(run: UUID) -> Season:
             return season_curve(sessions, env, run)
 
@@ -227,6 +249,7 @@ def create_app(
     reconciliations_reader, export_opener, summary_reader = read_reconciliations, open_export, read_journal_summary
     portfolio_pnl_reader = read_portfolio_pnl
     churn_reader = read_portfolio_churn
+    book_plans_reader = read_book_plans
     season_reader = read_season
     closes_reader = read_closes if read_closes is not None else DailyCloses(clock=clock).get
     templates = Jinja2Templates(directory=PACKAGE_DIR / "templates")
@@ -382,6 +405,9 @@ def create_app(
         read_journal_summary=lambda journal_range: asyncio.to_thread(summary_reader, journal_range),
         trusted_peers=trusted_peers(),
         read_portfolio_churn=None if churn_reader is None else _in_thread(churn_reader),
+        read_book_plans=None
+        if book_plans_reader is None
+        else _book_plans(book_plans_reader, client, portfolio_keys[1]),
     )
 
     @contextlib.asynccontextmanager

@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from trading_core.control.slots import TraderSlot
 from trading_core.db import Base
 from trading_core.recording import models
+from trading_core.recording.book_plan_rows import BookPlanCoinRow, BookPlanRow
 from trading_core.recording.enums import (
     CLOSED_ORDER_STATUSES,
     SIM_MODES,
@@ -746,6 +747,33 @@ def record_reconciliation_mismatch(session: Session, row: ReconciliationMismatch
     """Record one finding of a check (spec 0023 AC-13), idempotent on its id, so a retried write adds no row."""
     check_env(row.env)
     _insert_or_compare(session, models.ReconciliationMismatch, column_values(row), ["id"])
+
+
+def record_book_plan(session: Session, row: BookPlanRow, coins: Sequence[BookPlanCoinRow]) -> None:
+    """Record one rebalance's sizing and its coin rows (spec 0033 AC-5), idempotent on (env, run, rebalance time).
+
+    The same row and coins again is a no op; a different row or coin at the same key raises
+    ``RecordConflictError``, and so does a coin with no ``instruments`` row. The caller commits.
+    """
+    check_env(row.env)
+    values = column_values(row)
+    _insert_or_compare(session, models.BookPlan, values, ["env", "run_id", "rebalanced_ns"])
+    table = table_of(models.BookPlan)
+    plan_id: UUID = session.execute(
+        select(table.c.id).where(
+            table.c.env == row.env, table.c.run_id == row.run_id, table.c.rebalanced_ns == row.rebalanced_ns
+        )
+    ).scalar_one()
+    wanted = {coin.instrument_id for coin in coins}
+    instruments = table_of(models.Instrument)
+    known: set[str] = set(
+        session.execute(select(instruments.c.instrument_id).where(instruments.c.instrument_id.in_(wanted))).scalars()
+    )
+    for coin in coins:
+        coin_values = {"book_plan_id": plan_id, **column_values(coin)}
+        if coin.instrument_id not in known:
+            raise RecordConflictError("instruments", {"instrument_id": coin.instrument_id}, {}, coin_values)
+        _insert_or_compare(session, models.BookPlanCoin, coin_values, ["book_plan_id", "instrument_id"])
 
 
 def report_conflict(session: Session, error: RecordConflictError) -> None:

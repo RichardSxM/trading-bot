@@ -134,6 +134,7 @@ PROMISES: Final[tuple[Promise, ...]] = (
     ),
     _line("review 2026-11-13", "positions_abandoned", "trader_critical_codes", "trader-portfolio", "CRITICAL"),
     _line("review 2026-11-13", "record_conflict", "trader_critical_codes", "trader-portfolio", table="fills"),
+    Promise("0033", "book run with no book_plans row for a day", "book_plan_stale"),
     _line("0025", "warmup_seed_failed", "warmup_seed_failed", "trader", "WARNING", reason="fetch_failed"),
 )
 

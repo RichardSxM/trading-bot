@@ -7,7 +7,14 @@ from decimal import Decimal
 
 import pytest
 
-from trading_core.strategy.trend_portfolio import DailyClose, PortfolioParams, portfolio_plan, sample_vol
+from trading_core.strategy.trend_portfolio import (
+    CoinPlan,
+    DailyClose,
+    PortfolioParams,
+    PortfolioPlan,
+    portfolio_plan,
+    sample_vol,
+)
 from trading_core.strategy.trend_vol import (
     BookVolParams,
     book_vol_plan,
@@ -89,6 +96,19 @@ def test_the_gross_cap_binds_for_a_quiet_book():
 
     assert sized.gross == 3
     assert sized.plan.coins["A"].weight == 3
+
+
+def test_a_book_with_zero_vol_is_sized_at_the_gross_cap():
+    flat = [DailyClose(DAY0 + timedelta(days=i), D(100)) for i in range(40)]
+    coin = CoinPlan(True, 1, D("0.02"), D(2), D(2000), flat[-1].day)
+    base = PortfolioPlan({"A": coin}, 1, D(2), D(1), D(1000), flat[-1].day)
+
+    sized = book_vol_plan({"A": flat}, base, BookVolParams(gross_cap=D(4)))
+
+    assert sized.unit_vol == 0
+    assert sized.gross == 4
+    assert sized.plan.coins["A"].weight == 4
+    assert sized.plan.coins["A"].target_notional == 4000
 
 
 def test_a_plan_with_no_weight_comes_back_unchanged():

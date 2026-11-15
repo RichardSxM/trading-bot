@@ -85,6 +85,15 @@ def portfolio_close_missing(fields: Mapping[str, object]) -> tuple[str, str]:
     )
 
 
+def book_plan_stale(fields: Mapping[str, object]) -> tuple[str, str]:
+    """Title text and body for ``book_plan_stale`` (spec 0033 AC-7): main's book run recorded no rebalance lately."""
+    if fields.get("why") == "no_row":
+        body = f"Run {fields.get('run_id', '?')} started {fields.get('age', '?')} ago and has no book_plans row yet."
+    else:
+        body = f"Run {fields.get('run_id', '?')}: the newest book_plans row is {fields.get('age', '?')} old."
+    return "Book plan not recorded", f"{body} A daily run may have been missed, or its write is failing."
+
+
 def words(code: str) -> str:
     """A code in plain words: ``stop_not_accepted`` becomes "Stop not accepted"."""
     return code.replace("_", " ").capitalize()
@@ -113,6 +122,8 @@ def log_line(
         return portfolio_coins_failed(fields)
     if rule_id == "portfolio_close_missing":
         return portfolio_close_missing(fields)
+    if rule_id == "book_plan_stale":
+        return book_plan_stale(fields)
     event_key = str(fields.get("event_key") or "")
     if rule_id in _RISK_RULES:
         head = words(event_key.split(":", 1)[0] if event_key else (code or rule_id))

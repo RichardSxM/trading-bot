@@ -159,3 +159,20 @@ def test_the_real_plan_is_sized_by_book_volatility_not_the_gross_cap(caplog):
     assert sized.fields["gross"] == str(strategy.book_gross)
     assert {r.reason for r in rows} == {"daily"}
     assert strategy.plan_snapshot()["book_gross"] == str(strategy.book_gross)
+
+
+def test_a_sizing_failure_keeps_the_old_plan_and_does_not_rebalance(caplog, monkeypatch):
+    # The base plan succeeds, the book sizing raises: the larger base plan must never be traded.
+    def fail(*args, **kwargs):
+        raise ValueError("too few closes")
+
+    monkeypatch.setattr(trend_vol, "book_vol_plan", fail)
+    seeds = {BTC: _seed(60000, "0.05", "-0.03"), ETH: _seed(2000, "0.06", "-0.04")}
+    with caplog.at_level(logging.INFO):
+        strategy, rows = _run(TrendVol, minutes=3, seeds=seeds)
+
+    assert (strategy.plan, strategy.plan_day) == (None, None)
+    assert strategy.book_gross is None
+    assert _logs(caplog, "plan_empty")
+    assert not _logs(caplog, "book_vol_sized")
+    assert rows == []

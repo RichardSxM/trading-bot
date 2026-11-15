@@ -56,6 +56,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from trader import paper_strategy
+from trader.book_plans import write_book_plans
 from trader.coin_blocks import coin_blocks
 from trader.instrument_check import InstrumentCheck
 from trader.paper_strategy import (
@@ -125,6 +126,7 @@ from trading_core.node.reconcile_executor import ReconcileExecutor, ReconcileExe
 from trading_core.node.recording import RecordingActor
 from trading_core.node.sandbox import FeeSandboxExecClientFactory, sandbox_exec_client
 from trading_core.node.strategy import KfsStrategy, PauseGate
+from trading_core.node.trend_portfolio import TrendPortfolioConfig
 from trading_core.node.untrusted import UntrustedCache
 from trading_core.reconcile.recover import cache_untrusted_key
 from trading_core.reconcile.views import ExchangePort, ExchangeUnavailable
@@ -820,6 +822,8 @@ def run_node(
     # Before any strategy, so `reconciling` blocks entries until the start check is clean (spec 0023 AC-1).
     node.trader.add_actor(reconcile)
     paper_state: Callable[[], PaperStatus] | None = None
+    # A book strategy's plan snapshot and its gross cap, for the book_plans writer (spec 0033 AC-6).
+    book_source: tuple[Callable[[], Mapping[str, object] | None], Decimal] | None = None
     snapshot_readers: list[tuple[str, Callable[[], Mapping[str, object] | None]]] = [
         ("heartbeat", lambda: heartbeat_state(node, settings)),
         (
@@ -871,6 +875,10 @@ def run_node(
             node.trader.add_strategy(portfolio)
             views.extend(portfolio_views)
             snapshot_readers.append((plan_snapshot_base(slot), portfolio.plan_snapshot))
+            book_config = portfolio.config
+            if not isinstance(book_config, TrendPortfolioConfig):
+                raise TypeError(f"book strategy config is {type(book_config).__name__}, not TrendPortfolioConfig")
+            book_source = (portfolio.plan_snapshot, book_config.gross_cap)
         # A book strategy is one instance over every coin, built above; every other strategy is one per coin.
         per_coin_coins = () if settings.paper_strategy in BOOK_STRATEGIES else coins
         per_coin = coin_blocks(paper.blocks, coins)
@@ -1006,6 +1014,13 @@ def run_node(
         )
         for name, read_state in snapshot_readers
     ]
+    if book_source is not None and paper is not None:
+        read_plan, gross_cap = book_source
+        writers.append(
+            loop.create_task(
+                write_book_plans(read_plan, Env(settings.trading_env), paper.run_id, gross_cap, paper.sessions)
+            )
+        )
     for task in writers:
         task.add_done_callback(log_writer_crash)
     stop_signals = (signal.SIGTERM, signal.SIGINT)

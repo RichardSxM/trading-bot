@@ -37,6 +37,9 @@ EXPECTED_TABLES = {
     # Spec 0023.
     "reconciliations",
     "reconciliation_mismatches",
+    # Spec 0033.
+    "book_plans",
+    "book_plan_coins",
 }
 
 
