@@ -595,7 +595,7 @@ spec [0033](../specs/0033-trend-vol/index.md) · code in [strategy/trend_vol.py]
 - [x] Design it (spec): `/architect trend vol`
 - [ ] Build it: `/develop trend vol`
   - [x] Strategy and VPS switch: `book_vol_plan`, `within_band`, `TrendVol` on `TrendDaily`, `TV_*` settings, deploy, your promote (PR #143) (AC-1 to AC-3)
-  - [ ] Sizing history thin thread: hash baseline, `book_plans` migration, `write_book_plans` task, Portfolio panel, `book_plan_stale` alert, deploy on your go ahead (AC-4 to AC-8)
+  - [x] Sizing history thin thread: hash baseline, `book_plans` migration, `write_book_plans` task, Portfolio panel, `book_plan_stale` alert, deploy on your go ahead (AC-4 to AC-8)
   - [ ] Research tools: pure book replay, lab book mode, independent reimplementation and parity, Jesse profile and cross check (AC-9 to AC-11)
   - [ ] Pre check and r2: pre registration, one run, `trend_vol_r2` only if EWMA passes, `/architect` again if tranches pass (AC-12, AC-13)
   - [ ] Study and gate: benchmark, bootstrap target pick, trade count, thresholds v4, study, holdout, verdict, demo switch and paper stage on a pass (AC-14 to AC-20)
