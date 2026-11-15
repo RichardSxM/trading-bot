@@ -204,7 +204,7 @@ Tracer Bullet: the sizing history goes end to end first (trader to Postgres to d
 
 1. [x] Hash baseline of every registered version (main a8a5a6d, `scripts/spikes/hash_check.py`), satisfies **AC-4**.
 2. [x] Record the as built facts: unit and node tests already exist (`test_strategy_trend_vol.py`, `test_node_trend_vol.py`, `test_paper_trend_vol.py`); confirm they cover AC-1 to AC-3 and add any missing case, satisfies **AC-1**, **AC-2**, **AC-3**.
-3. Thin thread: migration, rows, `record_book_plan`, the `write_book_plans` task, the Portfolio panel, the `book_plan_stale` alert, laptop demo run, then PR and a VPS deploy on your go ahead (pause, flatten, deploy, unpause; no promote, the version is unchanged), satisfies **AC-5**, **AC-6**, **AC-7**, **AC-8**.
+3. [x] Thin thread: migration, rows, `record_book_plan`, the `write_book_plans` task, the Portfolio panel, the `book_plan_stale` alert, laptop demo run, then PR and a VPS deploy on your go ahead (pause, flatten, deploy, unpause; no promote, the version is unchanged), satisfies **AC-5**, **AC-6**, **AC-7**, **AC-8**.
 4. Candles for the 12 coins, the pure book replay with its mechanics table, and the `lab book` group, satisfies **AC-9**.
 5. Lab book mode (one instance, seeds) with `trend_vol` registered, the independent Decimal reimplementation, and the parity runs on both bands, satisfies **AC-10**, **AC-10a**.
 6. Jesse profile, secret, cross check script on BTC and ETH, MCP in local scope, satisfies **AC-11**.
