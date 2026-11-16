@@ -20,6 +20,7 @@ points, or a spent holdout; 2 a replay study day with no manifest, every one lis
 writes nothing (64 an unknown study). ``audit`` measures the Tardis development days' spreads, moves,
 and order flow into report files (spec 0017 AC-1: 64 a range reaching the holdout, 2 a missing day);
 ``screen <study>`` judges a scalping candidate's candle screen (AC-9: 3 a fail, 64 not a complete screen).
+``book replay`` runs the pure book replay over the candles tree (spec 0033 AC-9: 2 a coin without candles).
 Only ``replay``, ``backtest``, ``study``, ``holdout``, ``gate``, and ``screen`` connect to Postgres, so the
 other commands run with ``--no-deps``.
 """
@@ -39,11 +40,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from lab.audit import AuditRangeError, audit_days, run_audit
+from lab.book import add_book_parser, run_book_replay
 from lab.candle_backtest import backtest
 from lab.candle_fetch import DEFAULT_INSTRUMENT_ID, fetch_candles
 from lab.candle_parity import candle_parity
 from lab.funding_import import import_funding
-from lab.instruments import UnknownInstrumentError, pinned_instrument
+from lab.instruments import UnknownInstrumentError, fetch_rules, pinned_instrument
 from lab.paper_csv import read_paper_csv
 from lab.parity import parity
 from lab.replay import PostgresStore, replay
@@ -56,7 +58,7 @@ from lab.tardis_import import import_context, import_tardis, prune
 from trading_core.boot import boot
 from trading_core.gate.thresholds import ThresholdsError
 from trading_core.gate.verdict import evaluate_candidate
-from trading_core.lab.candles import fetch_months
+from trading_core.lab.candles import FetchRulesError, fetch_months
 from trading_core.lab.errors import CandleInputError, MissingDaysError
 from trading_core.lab.parity import ParityInputError
 from trading_core.lab.tardis_days import import_days
@@ -152,6 +154,7 @@ def parser() -> argparse.ArgumentParser:
     audit.add_argument("--to", type=_day, help="last UTC day (default the day before the holdout)")
     screen = commands.add_parser("screen", help="judge a scalping candidate's candle screen study (spec 0017)")
     screen.add_argument("study", help="the candle study's name")
+    add_book_parser(commands, _day)
     drop = commands.add_parser("prune", help="delete a source tree of the lab catalog")
     drop.add_argument("--source", choices=("tardis", "own"), help="the tree to delete (both without it)")
     return root
@@ -413,6 +416,12 @@ def _fetch_candles(args: argparse.Namespace) -> int:
         return EXIT_USAGE
     if not _pinned(args.instrument, "fetch-candles"):
         return EXIT_USAGE
+    try:
+        fetch_rules(args.instrument)
+    except FetchRulesError as exc:
+        print(f"lab fetch-candles: {args.instrument}: {exc}", file=sys.stderr)
+        log.error("lab_bad_input", extra={"fields": {"problems": [str(exc)]}})
+        return EXIT_USAGE
     started = boot("worker", settings_cls=LabSettings)
     return fetch_candles(started.settings, months, instrument_id=args.instrument, refetch=args.refetch)
 
@@ -465,6 +474,13 @@ def _screen(args: argparse.Namespace) -> int:
         engine.dispose()
 
 
+def _book(args: argparse.Namespace) -> int:
+    """``lab book replay`` (spec 0033 AC-9): files only, no database."""
+    configure_logging(process=PROCESS, env=os.environ.get("TRADING_ENV", ""))
+    started = boot("worker", settings_cls=LabSettings)
+    return run_book_replay(started.settings, args)
+
+
 def _prune(args: argparse.Namespace) -> int:
     started = boot("worker", settings_cls=LabSettings)
     try:
@@ -505,6 +521,8 @@ def main(argv: list[str] | None = None) -> NoReturn:
         sys.exit(_screen(args))
     if args.command == "audit":
         sys.exit(_audit(args))
+    if args.command == "book":
+        sys.exit(_book(args))
     if args.command == "prune":
         sys.exit(_prune(args))
     sys.exit(EXIT_USAGE)  # unreachable: the subparser is required

@@ -323,7 +323,7 @@ def test_the_sol_and_xrp_pins_load(coin, tick, step, margins):
     assert (str(instrument.price_increment), str(instrument.size_increment)) == (tick, step)
     assert (str(instrument.margin_init), str(instrument.margin_maint)) == margins
     assert (str(instrument.maker_fee), str(instrument.taker_fee)) == ("0.0002", "0.0005")
-    assert not is_pinned("PF_DOGEUSD.KRAKEN")
+    assert not is_pinned("PF_NOSUCHUSD.KRAKEN")
 
 
 def test_the_xrp_pin_holds_the_historical_tick_and_todays_prices_sit_on_it():

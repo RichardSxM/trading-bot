@@ -1,0 +1,37 @@
+{
+  "_note": "Read 2026-11-15 UTC from Kraken Futures' public instruments endpoint (/derivatives/api/v3/instruments, PF_QNTUSD) for spec 0033 task 4: tickSize 0.01 gives price_increment, contractSize 1 the multiplier, contractValueTradePrecision 2 the size_increment 0.01, and the first marginLevels tier (from size 0) initialMargin 0.1 and maintenanceMargin 0.05. maker_fee and taker_fee are written in by hand: Kraken's base tier fees, the same as BTC and ETH. The loader ignores this key. _drop_spans (spec 0033 AC-9a): the 2023-08-17 21:44 to 22:04 UTC glitch is removed and stored as a gap.",
+  "_drop_spans": [
+    {
+      "from": "2023-08-17T21:44:00Z",
+      "until": "2023-08-17T22:05:00Z",
+      "why": "21 minutes: 18 touching 92.56186715334, off tick, then 3 quiet at 93.91 that the move inside the glitch leaves unmatched; refused by the 2026-11-15 and 2026-11-16 fetches"
+    }
+  ],
+  "base_currency": "QNT",
+  "id": "PF_QNTUSD.KRAKEN",
+  "info": {},
+  "is_inverse": false,
+  "lot_size": "1",
+  "maker_fee": "0.0002",
+  "margin_init": "0.1",
+  "margin_maint": "0.05",
+  "max_notional": null,
+  "max_price": null,
+  "max_quantity": null,
+  "min_notional": null,
+  "min_price": null,
+  "min_quantity": null,
+  "multiplier": "1",
+  "price_increment": "0.01",
+  "price_precision": 2,
+  "quote_currency": "USD",
+  "raw_symbol": "PF_QNTUSD",
+  "settlement_currency": "USD",
+  "size_increment": "0.01",
+  "size_precision": 2,
+  "taker_fee": "0.0005",
+  "tick_scheme_name": null,
+  "ts_event": 1794709094000000000,
+  "ts_init": 1794709094000000000,
+  "type": "CryptoPerpetual"
+}
