@@ -58,6 +58,7 @@ Tranches average the cut hour instead of picking one, so they do not repeat the 
 - The study's risk block follows the 5x cap (`leverage` 5, `max_leverage` 9, exposure 50000 on 10000), not `tsmom.toml`'s 2x, which would clip the book.
 - Study grid `lookback_days = [20, 30, 40, 60]`, the same neighbours tsmom used (runner up: a band grid, less tied to the edge).
 - Binance 2018 to 2022 shown for information in the pre check, not a pass condition (it was seen on 2026-11-07 for the 30 day portfolio).
+- AC-9a (2026-11-16, your picks of 2026-11-15): DOGE and TRX keep the tick of their time through a `_tick_history` pin key, checked per candle minute (runner up: round old prices to today's tick at fetch, which stores prices that never traded and hides a wrong history date). The QNT glitch is removed by a `_drop_spans` pin key and stored as an ordinary gap (runner up: rounding the 19 minutes like AC-2a, which would keep 19 copies of one stuck print as real closes). Both live in the pin as data, so the one coin they touch is the only coin that changes, and a new case is an amendment, not a looser `OFF_TICK_BODY_MAX`.
 
 ### Trial ledger (source of `prior_trials = 119`: tsmom's 13 plus 106 below)
 
