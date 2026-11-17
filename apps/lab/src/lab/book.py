@@ -26,6 +26,7 @@ import pyarrow.parquet as pq
 from nautilus_trader.model.data import Bar
 from nautilus_trader.serialization.arrow.serializer import ArrowSerializer
 
+from lab.binance_fetch import add_binance_parser
 from lab.book_mode import BookModePlan, daily_seed, run_book_mode
 from lab.candle_fetch import candle_tree
 from lab.instruments import UnknownInstrumentError, pinned_instrument
@@ -99,7 +100,8 @@ INDEPENDENT_FILE: Final = "book_independent.py"
 def add_book_parser[P: argparse.ArgumentParser](
     commands: argparse._SubParsersAction[P], day: Callable[[str], date]
 ) -> None:
-    """Add ``lab book`` and its ``replay``, ``parity``, and ``jesse-export`` commands to the ``lab`` parser."""
+    """Add ``lab book`` and its ``replay``, ``parity``, ``jesse-export``, ``binance-fetch``, and ``precheck``
+    commands to the ``lab`` parser."""
     book = commands.add_parser("book", help="book strategies over the candles tree (spec 0033)")
     sub = book.add_subparsers(dest="book_command", required=True, parser_class=type(book))
     run = sub.add_parser("replay", help="the pure book replay of one strategy over the candles tree")
@@ -132,6 +134,10 @@ def add_book_parser[P: argparse.ArgumentParser](
     jes.add_argument("--to", type=day, default=PARITY_TO, help=f"default {PARITY_TO}")
     jes.add_argument("--equity", type=Decimal, default=Decimal(10000))
     jes.add_argument("--cost", type=Decimal, default=DEFAULT_COST, help="a side, on traded notional (0.0007)")
+    add_binance_parser(sub)
+    from lab.book_precheck import add_precheck_parser  # here, since book_precheck imports this module
+
+    add_precheck_parser(sub)
 
 
 def _months(tree: CandleTree) -> list[Month]:

@@ -40,8 +40,10 @@ class LabSettings(Settings):
     lab_kraken_futures_url: str = "https://futures.kraken.com"
     # The pause between two Kraken requests (spec 0014 AC-5).
     lab_kraken_pause_ms: int = Field(default=250, ge=0, le=5_000)
+    # The public Binance spot API for the pre check information runs (spec 0033 AC-12b).
+    lab_binance_url: str = "https://api.binance.com"
 
-    @field_validator("lab_kraken_futures_url")
+    @field_validator("lab_kraken_futures_url", "lab_binance_url")
     @classmethod
     def _https_only(cls, value: str) -> str:
         parsed = urlsplit(value)
