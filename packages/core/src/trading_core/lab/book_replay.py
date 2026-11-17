@@ -134,7 +134,12 @@ class ReplayConfig:
 @dataclass(frozen=True)
 class DayResult:
     """One traded day: its equity after the day's trades (marked at the fill prices), the book's gross then
-    (absolute notional over equity), what it paid, and what each coin did."""
+    (absolute notional over equity), what it paid, and what each coin did.
+
+    ``positions`` is each coin's signed quantity after the day's trades. ``band_gaps`` is, for each coin the
+    day's plan judged at a fill price with a target other than 0, how far its position was from the target
+    before the trade, as a share of the target (``|target - qty x price| / |target|``); the band edge is
+    where it equals the band (spec 0033 AC-10a)."""
 
     day: date
     fill_ns: int
@@ -152,6 +157,8 @@ class DayResult:
     unit_vol: Decimal | None
     book_gross: Decimal | None
     btc_return: Decimal | None
+    positions: Mapping[str, Decimal] = field(default_factory=dict)
+    band_gaps: Mapping[str, Decimal] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -321,6 +328,7 @@ def replay_book(
             plan, planned = fresh, True
         fees = Decimal(0)
         traded = band = small = close_missing = no_fill = closed = 0
+        gaps: dict[str, Decimal] = {}
         if planned and plan is not None:
             for coin in sorted(coins):
                 item = plan.plan.coins[coin]
@@ -332,6 +340,8 @@ def replay_book(
                     no_fill += 1
                     continue
                 pos = positions[coin]
+                if item.target_notional != 0:
+                    gaps[coin] = abs(item.target_notional - pos.qty * price) / abs(item.target_notional)
                 if within_band(item.target_notional, pos.qty * price, plan.band):
                     band += 1
                     continue
@@ -369,6 +379,8 @@ def replay_book(
                 plan.unit_vol if planned and plan is not None else None,
                 plan.gross if planned and plan is not None else None,
                 btc_return,
+                {c: p.qty for c, p in sorted(positions.items())},
+                gaps,
             )
         )
         if equity <= 0:

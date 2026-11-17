@@ -20,7 +20,8 @@ points, or a spent holdout; 2 a replay study day with no manifest, every one lis
 writes nothing (64 an unknown study). ``audit`` measures the Tardis development days' spreads, moves,
 and order flow into report files (spec 0017 AC-1: 64 a range reaching the holdout, 2 a missing day);
 ``screen <study>`` judges a scalping candidate's candle screen (AC-9: 3 a fail, 64 not a complete screen).
-``book replay`` runs the pure book replay over the candles tree (spec 0033 AC-9: 2 a coin without candles).
+``book replay`` runs the pure book replay over the candles tree (spec 0033 AC-9: 2 a coin without candles);
+``book parity`` compares it with the Nautilus book mode and the independent copy (AC-10a: 1 a parity fail).
 Only ``replay``, ``backtest``, ``study``, ``holdout``, ``gate``, and ``screen`` connect to Postgres, so the
 other commands run with ``--no-deps``.
 """
@@ -40,7 +41,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from lab.audit import AuditRangeError, audit_days, run_audit
-from lab.book import add_book_parser, run_book_replay
+from lab.book import add_book_parser, run_book_parity, run_book_replay
 from lab.candle_backtest import backtest
 from lab.candle_fetch import DEFAULT_INSTRUMENT_ID, fetch_candles
 from lab.candle_parity import candle_parity
@@ -475,9 +476,11 @@ def _screen(args: argparse.Namespace) -> int:
 
 
 def _book(args: argparse.Namespace) -> int:
-    """``lab book replay`` (spec 0033 AC-9): files only, no database."""
+    """``lab book replay`` (spec 0033 AC-9) and ``lab book parity`` (AC-10a): files only, no database."""
     configure_logging(process=PROCESS, env=os.environ.get("TRADING_ENV", ""))
     started = boot("worker", settings_cls=LabSettings)
+    if args.book_command == "parity":
+        return run_book_parity(started.settings, args)
     return run_book_replay(started.settings, args)
 
 

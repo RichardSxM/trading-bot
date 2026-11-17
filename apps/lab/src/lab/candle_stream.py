@@ -85,13 +85,16 @@ class CandleStream:
         *,
         on_month: MonthDone | None = None,
         segment_start_ns: int | None = None,
+        quiet_lead: bool = False,
     ) -> None:
         self._tree = tree
         self._start = start_ns
         # A trend run's pre roll (spec 0027.1 AC-10a): candles are read from ``start_ns``, the segment
         # starts here. ``first_trade_ns`` reports the segment's first trade, not the pre roll's.
         self._segment_start = start_ns if segment_start_ns is None else segment_start_ns
-        self._traded = False
+        # The book mode (spec 0033 AC-10) sends the quiet minutes before the first trade too (one quote at the
+        # close each), so every coin has a quote for the start rebalance, as on a live venue.
+        self._traded = quiet_lead
         self._end = end_ns
         self._slippage = slippage_bps
         self._flag = flag

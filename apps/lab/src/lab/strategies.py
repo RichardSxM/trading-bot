@@ -7,7 +7,7 @@ a strategy. The exceptions are the test only ``raise_probe`` and ``peek_probe`` 
 which exist only when the caller asks for the test strategies (``LAB_TEST_STRATEGIES=1``, AC-13).
 """
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Final, Literal
@@ -54,6 +54,8 @@ from trading_core.node.placeholder import STRATEGY_NAME as PLACEHOLDER
 from trading_core.node.placeholder import PlaceholderConfig, PlaceholderTimed, Record
 from trading_core.node.random_taker import RandomTaker, RandomTakerConfig
 from trading_core.node.strategy import KfsStrategy, PauseGate
+from trading_core.node.trend_vol import STRATEGY_NAME as TREND_VOL
+from trading_core.node.trend_vol import TrendVol, TrendVolConfig
 from trading_core.node.tsmom import STRATEGY_NAME as TSMOM
 from trading_core.node.tsmom import Tsmom, TsmomConfig
 from trading_core.node.vwap_retest import STRATEGY_NAME as VWAP_RETEST
@@ -63,10 +65,14 @@ from trading_core.recording.rows import JsonObject
 from trading_core.recording.spool import WriteItem
 from trading_core.risk.check import RiskLimits
 from trading_core.strategy.blocks import EntryBlocks
+from trading_core.strategy.trend_portfolio import DailyClose
 from trading_core.versioning import FrozenHashes
 
 type ConfigValue = int | str | bool
 type Factory = Callable[[StrategyConfig, PauseGate, EntryBlocks, Record], KfsStrategy]
+type Seeds = Mapping[str, Sequence[DailyClose]]
+# A book strategy's constructor, as the trader calls it: plus the daily close seeds and the last start time.
+type BookFactory = Callable[[StrategyConfig, PauseGate, EntryBlocks, Record, Seeds, int | None], KfsStrategy]
 
 _BASE_FIELDS: Final = frozenset(StrategyConfig.__struct_fields__)
 
@@ -122,6 +128,8 @@ class RunContext:
     stale_check_s: int = CANDLE_STALE_CHECK_S
     # Which lab builds the strategy: a scalping candidate takes the candle fields only in a candle run (spec 0017 AC-7).
     lab: Literal["replay", "candle"] = "replay"
+    # A book run's coins (spec 0033 AC-10): one strategy instance over all of them; empty outside book mode.
+    instruments: tuple[str, ...] = ()
 
 
 # Stands in for the run while checking a config at startup, before any run exists.
@@ -601,6 +609,115 @@ TEST_REGISTRY: Final[Mapping[str, StrategyEntry]] = {
         default_entry_mode="maker",
     ),
 }
+
+
+def _book_fields(context: RunContext) -> dict[str, object]:
+    # A book strategy (spec 0033 AC-10): one instance over the run's coins, ``instrument_id`` the context coin
+    # (BTC), no market context, and the candle run's stale quote limit.
+    return {
+        "env": context.env.value,
+        "run_id": str(context.run_id),
+        "instrument_id": context.instrument_id,
+        "instruments": list(context.instruments or (context.instrument_id,)),
+        "order_id_tag": context.order_id_tag,
+        "stale_quote_s": str(context.stale_quote_s),
+        "use_market_context": False,
+        **_risk_fields(context.risk, context.taker_fee),
+    }
+
+
+def _trend_vol_config(config: StrategyConfig) -> TrendVolConfig:
+    if not isinstance(config, TrendVolConfig):
+        raise TypeError(f"trend_vol needs a TrendVolConfig, not {type(config).__name__}")
+    return config
+
+
+def _trend_vol(config: StrategyConfig, gate: PauseGate, blocks: EntryBlocks, record: Record) -> KfsStrategy:
+    return TrendVol(_trend_vol_config(config), gate, blocks, record)
+
+
+def _trend_vol_book(
+    config: StrategyConfig,
+    gate: PauseGate,
+    blocks: EntryBlocks,
+    record: Record,
+    seeds: Seeds,
+    last_start_ns: int | None,
+) -> KfsStrategy:
+    return TrendVol(_trend_vol_config(config), gate, blocks, record, seeds, last_start_ns)
+
+
+@dataclass(frozen=True)
+class BookEntry:
+    """One strategy the lab's book mode runs (spec 0033 AC-10): its registry entry (config, run fields,
+    module) and the constructor that also takes the seeds and the last start time, as the trader passes them.
+
+    ``order_id_tag`` is the trader's own tag; ``config`` holds the trader's settings for it (the ``TV_*``
+    constants), which a book run's own values override."""
+
+    entry: StrategyEntry
+    book_factory: BookFactory
+    order_id_tag: str
+    config: Mapping[str, ConfigValue]
+
+    def build(
+        self,
+        config: StrategyConfig,
+        gate: PauseGate,
+        blocks: EntryBlocks,
+        record: Record,
+        seeds: Seeds,
+        last_start_ns: int | None,
+    ) -> KfsStrategy:
+        """The strategy with the same constructor arguments the trader passes."""
+        return self.book_factory(config, gate, blocks, record, seeds, last_start_ns)
+
+
+# The trader's ``TV_*`` settings (spec 0033 AC-3), as ``[strategy.config]`` values (the lab never imports the
+# trader). ``rebalance_weekday`` is recorded but ignored, as in the trader.
+TREND_VOL_SETTINGS: Final[Mapping[str, ConfigValue]] = {
+    "lookback_days": 30,
+    "vol_days": 30,
+    "vol_target": "0.155",
+    "gross_cap": "5",
+    "book_vol_target": "0.5",
+    "rebalance_band": "0.3",
+    "min_history_days": 120,
+    "rebalance_weekday": 0,
+    "run_at_utc": "00:05",
+    "retry_max": 3,
+    "retry_wait_s": 60,
+    "quote_wait_s": 60,
+    "start_cooldown_s": 3600,
+    "seed_days": 150,
+    "seed_min_days": 121,
+}
+
+# The book mode's strategies (spec 0033 AC-10), kept apart from ``REGISTRY``: ``lab backtest`` and ``lab study``
+# run one instance per coin and cannot run a book.
+BOOK_REGISTRY: Final[Mapping[str, BookEntry]] = {
+    TREND_VOL: BookEntry(
+        entry=StrategyEntry(
+            name=TREND_VOL,
+            module=TrendVol.__module__,
+            config_cls=TrendVolConfig,
+            factory=_trend_vol,
+            run_fields=_book_fields,
+            kind=StrategyKind.TREND,
+        ),
+        book_factory=_trend_vol_book,
+        order_id_tag="TV",
+        config=TREND_VOL_SETTINGS,
+    ),
+}
+
+
+def book_entry(name: str) -> BookEntry:
+    """The book strategy called ``name``; ``StrategyConfigError`` when there is none."""
+    entry = BOOK_REGISTRY.get(name)
+    if entry is None:
+        raise StrategyConfigError([f"{name!r} is not a book strategy (known: {sorted(BOOK_REGISTRY)})"])
+    return entry
 
 
 CANDLE_BAR_STEPS: Final = frozenset({BarAggregation.MINUTE, BarAggregation.HOUR, BarAggregation.DAY})

@@ -9,6 +9,7 @@ Exit codes: 0 done, 2 a coin has no candles in the range, 64 bad input.
 """
 
 import argparse
+import importlib.util
 import json
 import logging
 import sys
@@ -17,6 +18,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
+from types import ModuleType
 from typing import Final
 
 import pyarrow as pa
@@ -24,10 +26,12 @@ import pyarrow.parquet as pq
 from nautilus_trader.model.data import Bar
 from nautilus_trader.serialization.arrow.serializer import ArrowSerializer
 
+from lab.book_mode import BookModePlan, daily_seed, run_book_mode
 from lab.candle_fetch import candle_tree
 from lab.instruments import UnknownInstrumentError, pinned_instrument
 from lab.settings import LabSettings
 from trading_core.catalog.candles import CandleTree
+from trading_core.lab.book_parity import BookDay, ParityResult, compare_books
 from trading_core.lab.book_replay import (
     DEFAULT_COST,
     FILL_DELAY_NS,
@@ -85,6 +89,12 @@ class BookDefaults:
 
 TREND_VOL: Final = BookDefaults()
 
+# The pinned parity window (spec 0033 AC-10a).
+PARITY_FROM: Final = date(2024, 1, 1)
+PARITY_TO: Final = date(2024, 6, 30)
+EXIT_PARITY_FAIL: Final = 1
+INDEPENDENT_FILE: Final = "book_independent.py"
+
 
 def add_book_parser[P: argparse.ArgumentParser](
     commands: argparse._SubParsersAction[P], day: Callable[[str], date]
@@ -105,6 +115,17 @@ def add_book_parser[P: argparse.ArgumentParser](
     run.add_argument("--cost", type=Decimal, default=DEFAULT_COST, help="a side, on traded notional (0.0007)")
     run.add_argument("--coins", default=",".join(BOOK_COINS), help="comma separated pinned ids (default the 12)")
     run.add_argument("--name", help="report file name (default from the strategy, cut hour, and band)")
+    par = sub.add_parser("parity", help="the pure replay against Nautilus book mode and the independent copy")
+    par.add_argument("--strategy", choices=("trend_vol",), default="trend_vol")
+    par.add_argument("--from", dest="from_", type=day, default=PARITY_FROM, help=f"default {PARITY_FROM}")
+    par.add_argument("--to", type=day, default=PARITY_TO, help=f"default {PARITY_TO}")
+    par.add_argument("--band", type=Decimal, required=True, help="no trade band (AC-10a runs 0.3 and 0)")
+    par.add_argument("--equity", type=Decimal, default=Decimal(10000))
+    par.add_argument("--cost", type=Decimal, default=DEFAULT_COST, help="a side, on traded notional (0.0007)")
+    par.add_argument("--coins", default=",".join(BOOK_COINS), help="comma separated pinned ids (default the 12)")
+    par.add_argument(
+        "--engines", default="nautilus,independent", help="which to compare with the pure replay (default both)"
+    )
 
 
 def _months(tree: CandleTree) -> list[Month]:
@@ -279,3 +300,163 @@ def run_book_replay(settings: LabSettings, args: argparse.Namespace) -> int:
     print(f"report {out}")
     log.info("lab_book_replay_done", extra={"fields": {"report": str(out), "days": len(result.days)}})
     return 0
+
+
+def independent_module() -> ModuleType:
+    """``apps/lab/crosscheck/book_independent.py`` (spec 0033 AC-10a), loaded from its file: it is not part of
+    the ``lab`` package and imports nothing from ``trading_core``."""
+    path = Path(__file__).resolve().parents[2] / "crosscheck" / INDEPENDENT_FILE
+    spec = importlib.util.spec_from_file_location("book_independent", path)
+    if spec is None or spec.loader is None:
+        raise FileNotFoundError(f"no independent book at {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # dataclasses look their module up while the file runs
+    spec.loader.exec_module(module)
+    return module
+
+
+def independent_days(
+    data: Mapping[str, CoinData], first: date, last: date, equity: Decimal, cost: Decimal, band: Decimal
+) -> list[BookDay]:
+    """The independent copy's run over the same inputs, as ``BookDay``s."""
+    ind = independent_module()
+    coins = {
+        coin: ind.Coin(d.hourly, d.minutes, d.funding, d.spec.size_increment, d.spec.min_quantity)
+        for coin, d in data.items()
+    }
+    rules = ind.Rules(
+        lookback_days=TREND_VOL.lookback_days,
+        vol_days=TREND_VOL.vol_days,
+        vol_target=TREND_VOL.vol_target,
+        gross_cap=TREND_VOL.gross_cap,
+        min_history_days=TREND_VOL.min_history_days,
+        book_vol_target=TREND_VOL.book_vol_target,
+        band=band,
+        keep_days=TREND_VOL.seed_days,
+        cost=cost,
+    )
+    return [BookDay(d.day, d.equity, dict(d.positions)) for d in ind.run_book(coins, first, last, equity, rules)]
+
+
+def _parity_text(result: ParityResult) -> dict[str, object]:
+    return {
+        "passed": result.passed,
+        "days": result.days,
+        "unmatched_days": [d.isoformat() for d in result.unmatched_days],
+        "worst_day_bps": str(result.worst_day_bps),
+        "worst_day": None if result.worst_day is None else result.worst_day.isoformat(),
+        "reference_return": str(result.reference_return),
+        "other_return": str(result.other_return),
+        "cumulative_gap_pp": str(result.cumulative_gap_pp),
+        "side_misses": [
+            {
+                "day": m.day.isoformat(),
+                "coin": m.coin,
+                "reference": m.reference,
+                "other": m.other,
+                "gap": None if m.gap is None else str(m.gap),
+                "excused": m.excused,
+            }
+            for m in result.side_misses
+        ],
+    }
+
+
+def run_book_parity(settings: LabSettings, args: argparse.Namespace) -> int:
+    """``lab book parity`` (spec 0033 AC-10a): the pure replay of ``trend_vol`` over the window against the
+    Nautilus book mode and the independent copy; exit 1 when either fails the pass rule."""
+    coins = sorted(c.strip() for c in args.coins.split(",") if c.strip())
+    engines = [e.strip() for e in args.engines.split(",") if e.strip()]
+    unknown = [e for e in engines if e not in ("nautilus", "independent")]
+    if unknown or not engines:
+        print(f"lab book parity: --engines takes nautilus and independent, got {args.engines!r}", file=sys.stderr)
+        return EXIT_USAGE
+    try:
+        trees = {coin: candle_tree(settings.lab_catalog_dir, coin) for coin in coins}
+    except UnknownInstrumentError as exc:
+        print(f"lab book parity: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    data = {coin: load_coin(tree) for coin, tree in trees.items()}
+    if not any(d.hourly for d in data.values()):
+        print("lab book parity: no candles; run lab fetch-candles first", file=sys.stderr)
+        return EXIT_MISSING
+    params = PortfolioParams(
+        lookback_days=TREND_VOL.lookback_days,
+        vol_days=TREND_VOL.vol_days,
+        vol_target=TREND_VOL.vol_target,
+        gross_cap=TREND_VOL.gross_cap,
+        min_history_days=TREND_VOL.min_history_days,
+    )
+    try:
+        book = BookVolParams(TREND_VOL.book_vol_target, TREND_VOL.vol_days, TREND_VOL.gross_cap, args.band)
+        config = ReplayConfig(0, args.from_, args.to, equity=args.equity, cost=args.cost, keep_days=TREND_VOL.seed_days)
+        pure = replay_book(data, trend_vol_planner(params, book), config)
+    except ValueError as exc:
+        print(f"lab book parity: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    reference = [BookDay(d.day, d.equity, dict(d.positions)) for d in pure.days]
+    gaps = {d.day: d.band_gaps for d in pure.days}
+    results: dict[str, ParityResult] = {}
+    extra: dict[str, dict[str, object]] = {}
+    if "independent" in engines:
+        other = independent_days(data, args.from_, args.to, args.equity, args.cost, args.band)
+        results["independent"] = compare_books(reference, other, args.equity, args.band, gaps)
+    if "nautilus" in engines:
+        plan = BookModePlan(
+            strategy=args.strategy,
+            candles_root=settings.lab_catalog_dir / "candles",
+            coins=tuple(coins),
+            first=args.from_,
+            last=args.to,
+            equity=args.equity,
+            cost=args.cost,
+            config={"rebalance_band": str(args.band)},
+            seeds={coin: daily_seed(d.hourly, args.from_, TREND_VOL.seed_days) for coin, d in data.items()},
+            funding={coin: d.funding for coin, d in data.items()},
+        )
+        mode = run_book_mode(plan)
+        results["nautilus"] = compare_books(reference, list(mode.days), args.equity, args.band, gaps)
+        extra["nautilus"] = {
+            "decisions": mode.decisions,
+            "fills": mode.fills,
+            "funding": str(mode.funding),
+            "funding_missing_samples": mode.funding_missing,
+            "streamed": list(mode.streamed),
+            "wall_seconds": round(mode.wall_seconds),
+        }
+    passed = all(r.passed for r in results.values())
+    out_report = {
+        "inputs": _text(
+            {
+                "strategy": args.strategy,
+                "coins": coins,
+                "from": args.from_,
+                "to": args.to,
+                "band": args.band,
+                "equity": args.equity,
+                "cost": args.cost,
+            }
+        ),
+        "passed": passed,
+        "pure": {
+            "return": str(pure.days[-1].equity / args.equity - 1),
+            "traded": sum(d.traded for d in pure.days),
+            "band": sum(d.band for d in pure.days),
+            "funding_missing_days": pure.funding_missing_days,
+        },
+        "engines": {name: {**_parity_text(r), **extra.get(name, {})} for name, r in results.items()},
+    }
+    name = f"parity_{args.strategy}_band{args.band}_{args.from_}_{args.to}"
+    out = Path(settings.lab_reports_dir) / "book" / f"{name}.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(out_report, indent=2) + "\n", encoding="utf-8")
+    for engine_name, r in results.items():
+        unexcused = len(r.unexcused)
+        print(
+            f"{engine_name:<12} {'PASS' if r.passed else 'FAIL'}  days {r.days}  worst day {r.worst_day_bps:.2f} bps "
+            f"({r.worst_day})  return pure {r.reference_return:.4%} other {r.other_return:.4%}  "
+            f"gap {r.cumulative_gap_pp:.3f} pp  side misses {len(r.side_misses)} ({unexcused} not excused)"
+        )
+    print(f"report {out}")
+    log.info("lab_book_parity_done", extra={"fields": {"report": str(out), "passed": passed}})
+    return 0 if passed else EXIT_PARITY_FAIL

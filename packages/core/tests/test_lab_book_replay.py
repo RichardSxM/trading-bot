@@ -252,3 +252,17 @@ def test_bad_config_refused():
             ReplayConfig(**{"cut_hour": 0, "start": D0, "end": D0, **bad})
     with pytest.raises(ValueError, match="is before start"):
         ReplayConfig(0, D0, D0 - timedelta(days=1))
+
+
+def test_each_day_keeps_positions_and_band_gaps():
+    # covers: spec 0033 AC-10a, the reference's sides and band edge distances for the parity compare.
+    coins = {BTC: series(D0, ["100", "100", "125"]), ETH: series(D0, ["50", "50", "50"])}
+    result = replay_book(coins, fixed({BTC: 1000, ETH: -500}, band=Decimal("0.3")), config(days=3))
+    first, second, third = result.days
+    assert first.positions == {BTC: Decimal("10.000"), ETH: Decimal("-10.000")}
+    assert first.band_gaps == {BTC: Decimal(1), ETH: Decimal(1)}  # flat: the whole target away
+    assert second.band_gaps == {BTC: Decimal(0), ETH: Decimal(0)}
+    # Day 3: BTC at 125 holds 1250 against 1000, 25 % off, inside the 30 % band, so it is kept.
+    assert third.band_gaps[BTC] == Decimal("0.25")
+    assert third.positions[BTC] == Decimal("10.000")
+    assert third.band == 2
