@@ -15,8 +15,15 @@ from datetime import UTC, date, datetime
 from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_EVEN, Decimal
 from typing import Any, Final, Literal
 
-from trading_core.lab.errors import CandleInputError, OutdatedManifestError
+from trading_core.lab.errors import CandleInputError, LabError, OutdatedManifestError
 from trading_core.marketdata.hours import HOUR_NS, SECOND_NS
+
+
+class FetchRulesError(LabError):
+    """A pin's ``_tick_history`` or ``_drop_spans`` is malformed (spec 0033 AC-9a); the fetch refuses to start.
+
+    It lives here, not in ``lab/errors.py``, because that file is in node closures (spec 0033 AC-4)."""
+
 
 MINUTE_NS: Final = 60 * SECOND_NS
 FUNDING_HOURLY_FROM: Final = datetime(2022, 9, 29, 12, tzinfo=UTC)
@@ -222,16 +229,110 @@ class PriceRounding:
     stored: Decimal
 
 
+@dataclass(frozen=True)
+class TickPeriod:
+    """An earlier tick of a coin (spec 0033 AC-9a): it holds for candles opening before ``until_ns`` and
+    at or after the previous period's ``until_ns``; the pinned tick holds from the last ``until_ns`` on."""
+
+    tick: Decimal
+    until_ns: int
+
+
+@dataclass(frozen=True)
+class DropSpan:
+    """Minutes a fetch refused and the spec names (spec 0033 AC-9a): raw candles opening at or after
+    ``from_ns`` and before ``until_ns`` are removed before the build and end up as a gap."""
+
+    from_ns: int
+    until_ns: int
+    why: str
+
+    def holds(self, open_ns: int) -> bool:
+        """Whether a candle opening at ``open_ns`` lies in the span."""
+        return self.from_ns <= open_ns < self.until_ns
+
+
+@dataclass(frozen=True)
+class FetchRules:
+    """A coin's tick history and dropped spans, read from its pin (spec 0033 AC-9a); empty for most coins."""
+
+    ticks: tuple[TickPeriod, ...] = ()
+    drop: tuple[DropSpan, ...] = ()
+
+
+def _utc_minute_ns(value: object, what: str) -> int:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        raise FetchRulesError(f"{what} must be a UTC ISO time ending in Z, got {value!r}")
+    try:
+        moment = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise FetchRulesError(f"{what} is not an ISO time: {value!r}") from exc
+    ns = int(moment.timestamp()) * SECOND_NS
+    if moment.second or moment.microsecond:
+        raise FetchRulesError(f"{what} must be on a whole minute, got {value!r}")
+    return ns
+
+
+def _entries(value: object, key: str) -> list[Mapping[str, object]]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(entry, dict) for entry in value):
+        raise FetchRulesError(f"{key} must be a list of objects")
+    return list(value)
+
+
+def parse_fetch_rules(tick_history: object, drop_spans: object) -> FetchRules:
+    """The fetch rules from a pin's ``_tick_history`` and ``_drop_spans`` values (``None`` when absent).
+
+    Refuses a tick at or below 0, a history out of time order, a span whose ``until`` is not after its
+    ``from``, and a time that is not a whole UTC minute (``FetchRulesError``)."""
+    ticks: list[TickPeriod] = []
+    for entry in _entries(tick_history, "_tick_history"):
+        try:
+            tick = Decimal(str(entry["price_increment"]))
+        except (KeyError, ArithmeticError) as exc:
+            raise FetchRulesError(f"_tick_history entry {entry!r} has no valid price_increment") from exc
+        if not tick.is_finite() or tick <= 0:
+            raise FetchRulesError(f"_tick_history tick must be above 0, got {tick}")
+        until_ns = _utc_minute_ns(entry.get("until"), "_tick_history until")
+        if ticks and until_ns <= ticks[-1].until_ns:
+            raise FetchRulesError("_tick_history must be in time order")
+        ticks.append(TickPeriod(tick, until_ns))
+    drop: list[DropSpan] = []
+    for entry in _entries(drop_spans, "_drop_spans"):
+        from_ns = _utc_minute_ns(entry.get("from"), "_drop_spans from")
+        until_ns = _utc_minute_ns(entry.get("until"), "_drop_spans until")
+        if until_ns <= from_ns:
+            raise FetchRulesError(f"_drop_spans until must be after from: {entry!r}")
+        why = entry.get("why")
+        if not isinstance(why, str) or not why:
+            raise FetchRulesError(f"_drop_spans entry needs a why: {entry!r}")
+        drop.append(DropSpan(from_ns, until_ns, why))
+    return FetchRules(tuple(ticks), tuple(drop))
+
+
+def tick_at(open_ns: int, tick: Decimal, ticks: Sequence[TickPeriod]) -> Decimal:
+    """The tick in force for a candle opening at ``open_ns``: the first history period it opens before,
+    else the pinned ``tick``."""
+    for period in ticks:
+        if open_ns < period.until_ns:
+            return period.tick
+    return tick
+
+
 @dataclass
 class CandleBuild:
     """The rows built from one month's raw candles, with the counts the manifest keeps and every bad row.
 
     ``quiet_unchecked`` is true when the month opens with quiet rows and no previous close was given,
     so those rows were only checked flat (AC-3). ``price_roundings`` lists the real roundings of the
-    candles counted in ``price_rounded_rows``.
+    candles counted in ``price_rounded_rows``. ``history_ticks`` holds the earlier ticks the month's
+    stored candles used and ``dropped_rows`` the raw candles a dropped span removed (spec 0033 AC-9a).
     """
 
     rows: list[CandleRow] = field(default_factory=list)
+    history_ticks: set[Decimal] = field(default_factory=set)
+    dropped_rows: int = 0
     volume_rounded_rows: int = 0
     price_rounded_rows: int = 0
     price_roundings: list[PriceRounding] = field(default_factory=list)
@@ -322,7 +423,14 @@ def _store(
 
 
 def build_candles(
-    raw: Iterable[RawCandle], month: Month, tick: Decimal, step: Decimal, prev_close: Decimal | None = None
+    raw: Iterable[RawCandle],
+    month: Month,
+    tick: Decimal,
+    step: Decimal,
+    prev_close: Decimal | None = None,
+    *,
+    ticks: Sequence[TickPeriod] = (),
+    drop: Sequence[DropSpan] = (),
 ) -> CandleBuild:
     """Turn a month's raw candles into rows, sorted by close time, one per minute (AC-1, AC-3).
 
@@ -336,6 +444,10 @@ def build_candles(
     ``prev_close`` (the previous month's last stored candle); when it is ``None`` they are only
     checked flat and ``quiet_unchecked`` says so. A candle that is not a bad row and had any price
     snapped or rounded counts once in ``price_rounded_rows``.
+
+    Spec 0033 AC-9a: a raw candle opening inside a ``drop`` span is removed first (before every check,
+    so the next candle is quiet checked against the last one before the span), and every check that
+    uses a tick uses ``tick_at`` the candle's own open minute, ``tick`` when ``ticks`` is empty.
     """
     build = CandleBuild()
     copies: dict[int, list[RawCandle]] = {}
@@ -343,22 +455,29 @@ def build_candles(
         open_ns = candle.time_ms * 1_000_000
         if not month.start_ns <= open_ns < month.end_ns:
             continue
+        if any(span.holds(open_ns) for span in drop):
+            build.dropped_rows += 1
+            continue
         if candle.time_ms % (MINUTE_NS // 1_000_000):
             build.bad.append((str(open_ns), "time", f"{candle.time_ms} ms is not on a whole minute"))
             continue
         seen = copies.setdefault(open_ns, [])
         if candle not in seen:
             seen.append(candle)
-    off_tick_bodies = sum(any(_has_off_tick_body(c, tick) for c in seen) for seen in copies.values())
+    minute_tick = {open_ns: tick_at(open_ns, tick, ticks) for open_ns in copies}
+    off_tick_bodies = sum(
+        any(_has_off_tick_body(c, minute_tick[open_ns]) for c in seen) for open_ns, seen in copies.items()
+    )
     round_body = off_tick_bodies <= OFF_TICK_BODY_MAX
     last_close = prev_close
     previous: _Previous | None = None
     for open_ns in sorted(copies):
         candle, *others = copies[open_ns]
-        stored = _store(candle, open_ns, tick, step, round_body, previous)
+        own_tick = minute_tick[open_ns]
+        stored = _store(candle, open_ns, own_tick, step, round_body, previous)
         bad: list[tuple[str, str, str]] = []
         for other in others:
-            if _store(other, open_ns, tick, step, round_body, previous).values != stored.values:
+            if _store(other, open_ns, own_tick, step, round_body, previous).values != stored.values:
                 bad.append((str(open_ns), "duplicate", f"{candle} vs {other}"))
         bad.extend(
             (str(open_ns), name, getattr(candle, name))
@@ -395,6 +514,8 @@ def build_candles(
             build.price_roundings.extend(stored.roundings)
         build.volume_rounded_rows += volume != Decimal(candle.volume)
         build.zero_volume_trade_rows += volume == 0 and not quiet
+        if own_tick != tick:
+            build.history_ticks.add(own_tick)
         build.rows.append(row)
     return build
 

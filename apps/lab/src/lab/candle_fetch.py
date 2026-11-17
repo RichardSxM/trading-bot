@@ -14,7 +14,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Final
 
-from lab.instruments import pinned_instrument
+from lab.instruments import fetch_rules, on_tick, pinned_instrument
 from lab.kraken_http import FetchFailedError, KrakenHttp
 from lab.settings import LabSettings
 from lab.tardis_import import tree_bytes
@@ -169,6 +169,7 @@ def fetch_month(tree: CandleTree, http: KrakenHttp, month: Month, fetch_start_ns
     again from scratch.
     """
     instrument = tree.instrument
+    rules = fetch_rules(str(instrument.id))
     complete = is_complete(month, fetch_start_ns)
     end_ns = month.end_ns if complete else fetch_start_ns - fetch_start_ns % MINUTE_NS
     raw = page_month(http, kraken_symbol(tree), month, end_ns)
@@ -178,9 +179,30 @@ def fetch_month(tree: CandleTree, http: KrakenHttp, month: Month, fetch_start_ns
         instrument.price_increment.as_decimal(),
         instrument.size_increment.as_decimal(),
         prev_close=last_close(tree, month.previous()),
+        ticks=rules.ticks,
+        drop=rules.drop,
     )
     if build.bad:
         raise BadRowsError(str(month), build.bad)
+    write_tree = tree
+    if build.history_ticks:
+        # A month on a finer earlier tick is stored at that tick's precision (spec 0033 AC-9a), through a
+        # tree on a copy of the pin, so the shared catalog writer (in node closures, AC-4) is not edited.
+        finest = min(build.history_ticks, key=lambda t: t.normalize().as_tuple().exponent)
+        finer = on_tick(str(instrument.id), finest)
+        if finer.price_precision > instrument.price_precision:
+            write_tree = CandleTree(tree.root, finer)
+        ticks_used = sorted(str(t) for t in build.history_ticks)
+        log.info("lab_candles_tick_history", extra={"fields": {"month": str(month), "ticks": ticks_used}})
+    for span in rules.drop:
+        if span.from_ns < month.end_ns and span.until_ns > month.start_ns:
+            fields = {
+                "month": str(month),
+                "from": _iso(span.from_ns),
+                "until": _iso(span.until_ns),
+                "removed": build.dropped_rows,
+            }
+            log.info("lab_candles_span_dropped", extra={"fields": fields})
     if build.quiet_unchecked:
         log.warning("lab_candles_quiet_unchecked", extra={"fields": {"month": str(month)}})
     if build.price_rounded_rows:
@@ -201,7 +223,7 @@ def fetch_month(tree: CandleTree, http: KrakenHttp, month: Month, fetch_start_ns
     rows = [r for r in build.rows if r.open_ns < end_ns]
     missing, gaps = find_gaps(rows, month.start_ns, end_ns)
     tree.manifest_file(month).unlink(missing_ok=True)
-    tree.write_bars(month, rows)
+    write_tree.write_bars(month, rows)
     tree.write_gaps(month, gaps)
     manifest = MonthManifest(
         month=str(month),
