@@ -21,6 +21,7 @@ from trading_core.lab.book_replay import (
     first_ready_day,
     measures,
     replay_book,
+    sign_planner,
     trend_vol_planner,
 )
 from trading_core.marketdata.hours import HOUR_NS
@@ -185,6 +186,41 @@ def test_trend_vol_planner_runs_the_real_rule():
     assert result.days[0].book_gross is not None
     assert not result.ruined
     assert result.halves[0].days + result.halves[1].days == result.full.days == 31
+
+
+def test_sign_planner_goes_all_in_and_holds_until_the_flip():
+    # Up for 20 days, then down: the 5 day sign is long, then short once the close is below 5 days back.
+    closes = [str(100 + i) for i in range(20)] + [str(119 - 3 * i) for i in range(1, 15)]
+    coins = {BTC: series(D0, closes)}
+    start = D0 + timedelta(days=11)
+    result = replay_book(coins, sign_planner(5, 10), ReplayConfig(0, start, D0 + timedelta(days=33), cost=Decimal(0)))
+    first = result.days[0]
+    assert first.traded == 1
+    assert first.positions[BTC] > 0
+    assert abs(first.gross - 1) < Decimal("0.001")  # all in at gross 1
+    longs = [d for d in result.days if d.positions[BTC] > 0]
+    assert all(d.traded == 0 for d in longs[1:])  # held, never resized, though the gross drifts
+    flip = next(d for d in result.days if d.positions[BTC] < 0)
+    assert flip.traded == 1
+    # Trading day T reads the closes up to the cut of T: 113 at index 21 is the first below 5 days back (116).
+    assert flip.day == D0 + timedelta(days=21)
+    assert sum(d.traded for d in result.days) == 2
+
+
+def test_sign_planner_splits_equally_and_skips_short_history():
+    planner = sign_planner(5, 10)
+    long_series = series(D0, [str(100 + i) for i in range(14)])
+    short_series = series(D0, [str(100 - i) for i in range(14)])
+    young = series(D0 + timedelta(days=8), [str(50 + i) for i in range(6)])
+    coins = {BTC: long_series, ETH: short_series, "PF_SOLUSD.KRAKEN": young}
+    # Three days, so both halves of the replay have one.
+    result = replay_book(coins, planner, ReplayConfig(0, D0 + timedelta(days=11), D0 + timedelta(days=13)))
+    day = result.days[0]
+    assert day.positions[BTC] > 0
+    assert day.positions[ETH] < 0
+    assert day.positions["PF_SOLUSD.KRAKEN"] == 0
+    with pytest.raises(ValueError, match="min_history_days"):
+        sign_planner(5, 5)
 
 
 def test_first_ready_day_none_when_a_coin_is_short():

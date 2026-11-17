@@ -99,7 +99,7 @@ INDEPENDENT_FILE: Final = "book_independent.py"
 def add_book_parser[P: argparse.ArgumentParser](
     commands: argparse._SubParsersAction[P], day: Callable[[str], date]
 ) -> None:
-    """Add ``lab book`` and its ``replay`` command to the ``lab`` parser."""
+    """Add ``lab book`` and its ``replay``, ``parity``, and ``jesse-export`` commands to the ``lab`` parser."""
     book = commands.add_parser("book", help="book strategies over the candles tree (spec 0033)")
     sub = book.add_subparsers(dest="book_command", required=True, parser_class=type(book))
     run = sub.add_parser("replay", help="the pure book replay of one strategy over the candles tree")
@@ -126,6 +126,12 @@ def add_book_parser[P: argparse.ArgumentParser](
     par.add_argument(
         "--engines", default="nautilus,independent", help="which to compare with the pure replay (default both)"
     )
+    jes = sub.add_parser("jesse-export", help="candles and the single coin pure replay for the Jesse cross check")
+    jes.add_argument("--coins", default="PF_XBTUSD.KRAKEN,PF_ETHUSD.KRAKEN", help="comma separated pinned ids")
+    jes.add_argument("--from", dest="from_", type=day, default=PARITY_FROM, help=f"default {PARITY_FROM}")
+    jes.add_argument("--to", type=day, default=PARITY_TO, help=f"default {PARITY_TO}")
+    jes.add_argument("--equity", type=Decimal, default=Decimal(10000))
+    jes.add_argument("--cost", type=Decimal, default=DEFAULT_COST, help="a side, on traded notional (0.0007)")
 
 
 def _months(tree: CandleTree) -> list[Month]:

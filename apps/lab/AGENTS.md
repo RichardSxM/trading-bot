@@ -21,6 +21,8 @@ The laptop only replay lab (spec 0008). It replays recorded BTC order books (our
 | `src/lab/book.py` | `lab book replay` (the pure book replay, spec 0033 AC-9) and `lab book parity` (AC-10a): files only, no database |
 | `src/lab/book_mode.py` | The Nautilus book mode: one book strategy over every coin, built from `BOOK_REGISTRY` in `strategies.py` (kept apart from `REGISTRY`, which runs one instance per coin), with `FundingModule` booking funding into the engine account |
 | `crosscheck/book_independent.py` | An independent copy of the `trend_vol` book for parity, written again from the spec text |
+| `src/lab/jesse_export.py` | `lab book jesse-export`: the Jesse cross check inputs (`candles.csv` in Jesse rows, `reference.json` from `sign_planner`), spec 0033 AC-11 |
+| `jesse/cross_check.py` | Runs in the `jesse` profile (Python 3.13, `docker/jesse/`), not in the lab image: Jesse's backtest of the single coin sign rule against `reference.json` |
 | `runs/*.toml` | The committed run files (baked into the image) |
 
 Pure rules (segments, variants, metrics, markouts, fill stats, funding, the loser band, parity compare, book diff) live in `packages/core/src/trading_core/lab/`. Keep new logic there and these files thin.
@@ -35,6 +37,9 @@ docker compose run --rm --no-deps lab parity runs/placeholder_paper.toml /lab-re
 docker compose run --rm --no-deps lab prune [--source tardis|own]
 docker compose --profile lab run --rm --no-deps -T lab book replay --strategy trend_vol  # pure book replay over the candles tree
 docker compose --profile lab run --rm --no-deps -T lab book parity --band 0.3 [--engines nautilus]  # about 30 min a band
+docker compose --profile lab run --rm --no-deps -T lab book jesse-export                # BTC and ETH, the parity window
+docker compose --profile jesse build jesse && docker compose --profile jesse run --rm --no-deps -T jesse \
+    python /jesse/cross_check.py /lab-reports/jesse/PF_XBTUSD_2024-01-01_2024-06-30 /lab-reports/jesse/PF_ETHUSD_2024-01-01_2024-06-30
 docker compose --profile lab run --rm --no-deps -T --entrypoint pytest lab -q           # unit tests (about 45 min)
 docker compose --profile lab run --rm -T --entrypoint pytest lab -q -m postgres         # tests that need Postgres
 ```
@@ -56,6 +61,7 @@ docker compose --profile lab run --rm -T --entrypoint pytest lab -q -m postgres 
 - Every hour after a segment's first opens with the compactor's synthetic book snapshot; the stream drops that run of rows so resting orders keep their queue place. Any other `CLEAR` raises `UnexpectedSnapshotError`.
 - Our own catalog days can be copied straight from the VPS without B2: `ssh kfs@kfs-vps 'sudo -n kfs-compose exec -T compactor sh -c "cd /data/catalog && tar cf - <files>"' | tar xf - -C catalog-lab/own`.
 - Never run a big B2 download (`scripts/fetch-catalog.sh`) between 00:00 and 02:30 UTC: the download cap is shared with the VPS nightly backup.
+- Jesse reads `.env` from its working directory and then connects to its Postgres; the `jesse` entrypoint writes one into the project folder (from `secrets/jesse_password`), so `cross_check.py` runs the research backtest from an empty temp folder. Jesse stamps a trade's open and close with the fill time, 00:00 after the decided daily candle.
 - `mem_limit: 3g` fits two workers in the laptop's 4 GB Docker VM; raise `LAB_WORKERS` only with more memory (AC-16).
 
 ## Related specs

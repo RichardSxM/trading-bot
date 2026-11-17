@@ -21,7 +21,8 @@ writes nothing (64 an unknown study). ``audit`` measures the Tardis development 
 and order flow into report files (spec 0017 AC-1: 64 a range reaching the holdout, 2 a missing day);
 ``screen <study>`` judges a scalping candidate's candle screen (AC-9: 3 a fail, 64 not a complete screen).
 ``book replay`` runs the pure book replay over the candles tree (spec 0033 AC-9: 2 a coin without candles);
-``book parity`` compares it with the Nautilus book mode and the independent copy (AC-10a: 1 a parity fail).
+``book parity`` compares it with the Nautilus book mode and the independent copy (AC-10a: 1 a parity fail);
+``book jesse-export`` writes the Jesse cross check inputs (AC-11: 2 a coin without candles).
 Only ``replay``, ``backtest``, ``study``, ``holdout``, ``gate``, and ``screen`` connect to Postgres, so the
 other commands run with ``--no-deps``.
 """
@@ -47,6 +48,7 @@ from lab.candle_fetch import DEFAULT_INSTRUMENT_ID, fetch_candles
 from lab.candle_parity import candle_parity
 from lab.funding_import import import_funding
 from lab.instruments import UnknownInstrumentError, fetch_rules, pinned_instrument
+from lab.jesse_export import run_jesse_export
 from lab.paper_csv import read_paper_csv
 from lab.parity import parity
 from lab.replay import PostgresStore, replay
@@ -476,11 +478,13 @@ def _screen(args: argparse.Namespace) -> int:
 
 
 def _book(args: argparse.Namespace) -> int:
-    """``lab book replay`` (spec 0033 AC-9) and ``lab book parity`` (AC-10a): files only, no database."""
+    """``lab book replay`` (spec 0033 AC-9), ``parity`` (AC-10a), and ``jesse-export`` (AC-11): files only."""
     configure_logging(process=PROCESS, env=os.environ.get("TRADING_ENV", ""))
     started = boot("worker", settings_cls=LabSettings)
     if args.book_command == "parity":
         return run_book_parity(started.settings, args)
+    if args.book_command == "jesse-export":
+        return run_jesse_export(started.settings, args)
     return run_book_replay(started.settings, args)
 
 
