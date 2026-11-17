@@ -29,6 +29,7 @@ from trading_core.lab.candles import MINUTE_NS, expected_charge_times
 from trading_core.lab.funding import funding_amount
 from trading_core.marketdata.hours import HOUR_NS, SECOND_NS
 from trading_core.strategy.trend_portfolio import (
+    CoinPlan,
     DailyClose,
     PortfolioParams,
     PortfolioPlan,
@@ -101,6 +102,49 @@ def trend_vol_planner(params: PortfolioParams, book: BookVolParams) -> Planner:
         return Planned(sized.plan, book.band, sized.unit_vol, sized.gross)
 
     return plan
+
+
+# A band so wide that a position on the target's side is never resized: ``sign_planner`` holds until a flip.
+HOLD_BAND: Final = Decimal(1_000_000_000)
+
+
+def sign_planner(lookback_days: int, min_history_days: int) -> Planner:
+    """The plain sign rule for the Jesse cross check (spec 0033 AC-11): every coin with at least
+    ``min_history_days`` closes gets the sign of ``close[t] / close[t - lookback_days] - 1`` over N eligible
+    coins as its weight (gross 1, so one coin is all in), with ``HOLD_BAND``: a position is set at gross 1 when
+    it opens or flips and then held, as a single coin Jesse strategy trades it. Raises ``ValueError`` when
+    ``min_history_days`` is not above ``lookback_days``."""
+    if min_history_days <= lookback_days:
+        raise ValueError(f"min_history_days must be above lookback_days {lookback_days}, got {min_history_days}")
+
+    def plan(closes: Mapping[str, Sequence[DailyClose]], equity: Decimal) -> Planned:
+        if equity <= 0:
+            raise ValueError(f"equity must be above 0, got {equity}")
+        signals = {
+            coin: _sign(series[-1].close / series[-1 - lookback_days].close - 1)
+            for coin, series in closes.items()
+            if len(series) >= min_history_days
+        }
+        n = len(signals)
+        coins: dict[str, CoinPlan] = {}
+        for coin, series in closes.items():
+            last_day = series[-1].day if series else None
+            signal = signals.get(coin)
+            if signal is None:
+                coins[coin] = CoinPlan(False, 0, None, Decimal(0), Decimal(0), last_day)
+                continue
+            weight = Decimal(signal) / n
+            coins[coin] = CoinPlan(True, signal, None, weight, weight * equity, last_day)
+        gross: Decimal = sum((abs(c.weight) for c in coins.values()), Decimal(0))
+        dates = [c.close_date for c in coins.values() if c.close_date is not None]
+        book = PortfolioPlan(coins, n, gross, Decimal(1), equity, max(dates, default=None))
+        return Planned(book, HOLD_BAND, None, gross)
+
+    return plan
+
+
+def _sign(value: Decimal) -> int:
+    return 1 if value > 0 else -1 if value < 0 else 0
 
 
 @dataclass(frozen=True)

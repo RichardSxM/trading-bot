@@ -55,3 +55,18 @@ Nautilus figures: band 0.3 had 785 decisions, 1,078 fills, funding −536.17; ba
 
   The 0.22 pp left is the tick rounding. The strategy and the pure replay did not change, so this is still the same single trial; no ledger change.
 - **HYPE refusals.** The Nautilus run logs `rebalance_coin_failed` for `PF_HYPEUSD` (`stale_quote`, 3 tries) on rebalance days: HYPE has no candles in the window, so it never has a quote. Harmless; the pure replay skips it the same way.
+
+## AC-11 Jesse cross check (2026-11-17)
+
+`lab book jesse-export` (defaults: BTC and ETH, window 2024-01-01 to 2024-06-30, equity 10,000, cost 0.0007 a side) wrote each coin's 1 minute candles from 150 days before the window (476,640 minutes, 0 filled flat) and the pure replay of the single coin book. Then `docker compose --profile jesse run --rm --no-deps -T jesse python /jesse/cross_check.py <folders>` backtested the same rule with `jesse.research.backtest` (Jesse 3.6.1, Python 3.13, daily timeframe, same fee) in about 90 s for both coins.
+
+| Coin | Verdict | Days | Side misses | Trades pure / Jesse | Pure return (closed) | Jesse return | Gap |
+|---|---|---|---|---|---|---|---|
+| BTC | PASS | 182 | 0 | 22 / 22 | +16.2740% | +15.8178% | 0.456 pp |
+| ETH | PASS | 182 | 0 | 14 / 14 | +5.9180% | +5.8444% | 0.074 pp |
+
+- **The single coin book.** "At gross 1" is read as: all in at gross 1 when the 30 day sign rule opens or flips, then held until the next flip (the pure replay's `sign_planner`, with a hold band of 1e9 so it never resizes in between). Neither engine books funding (Jesse has none), and Jesse closes the last position at its end, so it is compared with the reference's `return_closed`, which takes one closing cost off the last equity.
+- **What the 2 pp covers.** Jesse fills at the daily close (00:00 UTC), the pure replay at the 00:05 minute close; Jesse sizes from its cash balance in floats, the pure replay from marked equity rounded to the size step.
+- **First runs failed, both on the script, not the rule.** The first run stopped at its end trying to reach Jesse's Postgres: Jesse reads `.env` from its working directory, and the entrypoint writes one there, so the script now runs the research backtest from an empty temp folder. The second run had the side wrong on exactly one day per trade (22 and 14) with the returns already as above: Jesse stamps a trade's open and close with the fill time (00:00 after the decided candle), not the candle's open, so the day mapping was one day late. Fixed in `daily_sides`, with a test.
+- AC-4: every `trading_core.node` closure hash (47) is the same on this branch as on main.
+- **The `jesse` profile and the MCP.** `docker compose --profile jesse up -d jesse` starts Jesse with its own TimescaleDB Postgres (`jesse-postgres`, password from `secrets/jesse_password`); the dashboard answers on `127.0.0.1:9000` (200) and the MCP endpoint `/mcp` refuses a request without the token (401). You connect the MCP yourself in local scope with the `claude mcp add` command from the dashboard (More options, AI Assistants, Claude Code); the token never enters the repo. The MCP is not part of any pass condition.

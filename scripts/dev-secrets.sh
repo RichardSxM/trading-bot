@@ -33,6 +33,7 @@ pushover_app_token
 pushover_user_key
 hc_alerter_url
 hc_backup_url
+jesse_password
 "
 
 mkdir -p "$dir"
