@@ -280,6 +280,8 @@ def replay_trial(
         if tranche is None and not pending:
             continue
         fill_ns = now + config.fill_delay_ns
+        # Summed first and added to cash once, in replay_book's order: Decimal rounding depends on it.
+        funding_paid = Decimal(0)
         if prev_fill is not None:
             for charge in expected_charge_times(prev_fill, fill_ns):
                 for coin, pos in positions.items():
@@ -292,9 +294,9 @@ def replay_trial(
                     if rate is None:
                         missing_days.add(day_of_ns(charge))
                         continue
-                    paid = funding_amount(pos.qty, marks[coin], rate)
-                    cash += paid
-                    tally.funding += paid
+                    funding_paid += funding_amount(pos.qty, marks[coin], rate)
+        cash += funding_paid
+        tally.funding += funding_paid
         prev_fill = fill_ns
         fills = {coin: coins[coin].minutes.get(fill_ns) for coin in coins}
         for coin, price in fills.items():

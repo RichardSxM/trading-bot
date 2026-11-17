@@ -79,7 +79,8 @@ def wavy(days, base, step, swing):
 
 def test_no_rules_matches_replay_book_exactly():
     # The real trend_vol rule on two coins with funding: every day's figures must equal replay_book's.
-    rates = {cut_ns(D0, 0) + i * HOUR_NS: Decimal("0.00001") for i in range(24 * 60)}
+    # Rates that differ every hour, so a change in the order funding is added to cash (Decimal rounding) shows.
+    rates = {cut_ns(D0, 0) + i * HOUR_NS: Decimal(1) / Decimal(70_000 + 37 * i) for i in range(24 * 60)}
     coins = {BTC: hourly_coin(D0, wavy(60, 100, 1, 0.3), funding=rates), ETH: hourly_coin(D0, wavy(60, 300, -1, 0.5))}
     params = PortfolioParams(
         lookback_days=5, vol_days=5, vol_target=Decimal("0.02"), gross_cap=Decimal(2), min_history_days=10
