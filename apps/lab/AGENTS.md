@@ -18,6 +18,9 @@ The laptop only replay lab (spec 0008). It replays recorded BTC order books (our
 | `src/lab/strategies.py`, `probes.py` | The strategy registry; `raise_probe` exists only with `LAB_TEST_STRATEGIES=1` |
 | `src/lab/tardis_import.py` | Free Tardis days into spec 0007's catalog layout under `tardis/`, the manifest written last |
 | `src/lab/parity.py`, `paper_csv.py` | `lab parity`: the paper strategy replayed in memory against the CSV from `scripts/fetch-paper-decisions.sh` |
+| `src/lab/book.py` | `lab book replay` (the pure book replay, spec 0033 AC-9) and `lab book parity` (AC-10a): files only, no database |
+| `src/lab/book_mode.py` | The Nautilus book mode: one book strategy over every coin, built from `BOOK_REGISTRY` in `strategies.py` (kept apart from `REGISTRY`, which runs one instance per coin), with `FundingModule` booking funding into the engine account |
+| `crosscheck/book_independent.py` | An independent copy of the `trend_vol` book for parity, written again from the spec text |
 | `runs/*.toml` | The committed run files (baked into the image) |
 
 Pure rules (segments, variants, metrics, markouts, fill stats, funding, the loser band, parity compare, book diff) live in `packages/core/src/trading_core/lab/`. Keep new logic there and these files thin.
@@ -30,7 +33,9 @@ docker compose run --rm lab replay runs/random_taker.toml [--queue-bound] [--swe
 docker compose run --rm --no-deps lab import-tardis 2026-09-01 2026-09-01   # first of month days only
 docker compose run --rm --no-deps lab parity runs/placeholder_paper.toml /lab-reports/paper/<from>_<to>.csv
 docker compose run --rm --no-deps lab prune [--source tardis|own]
-docker compose --profile lab run --rm --no-deps -T --entrypoint pytest lab -q           # unit tests
+docker compose --profile lab run --rm --no-deps -T lab book replay --strategy trend_vol  # pure book replay over the candles tree
+docker compose --profile lab run --rm --no-deps -T lab book parity --band 0.3 [--engines nautilus]  # about 30 min a band
+docker compose --profile lab run --rm --no-deps -T --entrypoint pytest lab -q           # unit tests (about 45 min)
 docker compose --profile lab run --rm -T --entrypoint pytest lab -q -m postgres         # tests that need Postgres
 ```
 
@@ -41,7 +46,9 @@ docker compose --profile lab run --rm -T --entrypoint pytest lab -q -m postgres 
 - A strategy is never subclassed or patched for the lab; register the paper loop's own class and config in `strategies.py`.
 - Lab catalog data lives in the git ignored `./catalog-lab` (`tardis/` and `own/`), reports in `./lab-reports`. The whole catalog is capped at `LAB_CATALOG_CAP_GB` (40 GB, exit 3 when an import would pass it).
 - Run files are baked into the image, so a new or edited one needs a rebuild. Put scratch run files under `lab-reports/scratch/` and pass that path.
-- A new coin needs a pinned instrument JSON in `src/lab/instruments/` (BTC, ETH, PEPE, SOL, XRP today). Pin the tick the venue used over the stored history, not today's: XRP is pinned at 0.00001 because Kraken moved it to 0.0001 around 2026-08 (spec 0027 AC-15). The paper trader uses the venue's live instrument instead.
+- A new coin needs a pinned instrument JSON in `src/lab/instruments/` (the 12 trend_vol coins plus PEPE today). Pin the tick the venue used over the stored history, not today's: XRP is pinned at 0.00001 because Kraken moved it to 0.0001 around 2026-08 (spec 0027 AC-15). The paper trader uses the venue's live instrument instead. A pin may carry `_tick_history` (an older finer tick for older minutes) and `_drop_spans` (bad minutes stored as a gap) for `fetch-candles` (spec 0033 AC-9a); the loader drops every `_` key.
+- `crosscheck/` imports nothing from `trading_core` or `lab`, only the standard library, so a bug shared by the trader's pure functions and the replay shows up as a parity fail. Keep it that way.
+- The book mode passes `BOOK_QUOTE_SIZE` (1e9) to every `CandleStream`, so orders fill whole at the quote; the default `quote_size` of 1,000 would fill the rest of a larger order one tick worse on the L1 book (spec 0033 AC-10a).
 - A strategy of kind `trend` must expose `warmup_bars()`: the candle lab reads that many bars before each segment start (`trading_core.lab.pre_roll`) to feed bars and indicators only. Any decision, order, fill, or position before the segment start fails the variant (spec 0027 AC-10a). Other kinds start cold at the segment start.
 
 ## Gotchas
@@ -55,5 +62,6 @@ docker compose --profile lab run --rm -T --entrypoint pytest lab -q -m postgres 
 
 - [0008 scalping simulator](../../docs/specs/0008-scalping-simulator/index.md) (with `verify.md`)
 - [0007 order book recorder](../../docs/specs/0007-order-book-recorder/index.md), for the catalog layout
+- [0033 trend vol](../../docs/specs/0033-trend-vol/index.md) (with `verify.md`), for the book replay, book mode, and parity
 
 _Drafted by /audit from the repo, worth a quick human pass. Edit freely: once a line stops matching this draft, later runs treat it as curated and will flag rather than overwrite it._
