@@ -73,6 +73,21 @@ def test_quiet_start_is_skipped_then_trade_before_quote_and_a_final_quote(tmp_pa
     assert (warm.ts_init, warm.rate) == (T0 - HOUR_NS, D("0.0001"))
 
 
+def test_quotes_carry_the_default_size_or_the_one_passed(tmp_path):
+    rows = [_row(0, 100, 110, 95, 105)]
+    tree = _tree(tmp_path, rows, [])
+
+    def sizes(stream):
+        quotes = [e for c in stream.chunks() for e in c if isinstance(e, QuoteTick)]
+        assert quotes
+        return {(q.bid_size.as_decimal(), q.ask_size.as_decimal()) for q in quotes}
+
+    assert sizes(CandleStream(tree, T0, T0 + 10 * MINUTE_NS, D(0), SideFlag())) == {(D(1000), D(1000))}
+    # The book mode's size (spec 0033 AC-10a): no order reaches it, so nothing fills a tick worse.
+    big = CandleStream(tree, T0, T0 + 10 * MINUTE_NS, D(0), SideFlag(), quote_size=D(1_000_000_000))
+    assert sizes(big) == {(D(1_000_000_000), D(1_000_000_000))}
+
+
 def test_the_side_is_read_as_each_minute_is_generated(tmp_path):
     rows = [_row(0, 100, 110, 95, 105), _row(1, 100, 110, 95, 105)]
     flag = SideFlag()

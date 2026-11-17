@@ -68,6 +68,11 @@ FILL_OFFSET_NS: Final = 5 * MINUTE_NS
 # at 00:05:00.001 (``trading_core.lab.candle_path``).
 MARK_DELAY_NS: Final = 900_000
 DAY_NS: Final = 86_400 * SECOND_NS
+# The quote size on each side (spec 0033 AC-10a). The candle path's 1,000 made every larger order fill its rest
+# one tick worse on the L1 book, a depth the candles do not show: about 0.7 pp over the parity window, mostly
+# DOGE, TRX, XRP, and ADA. No order reaches this size, so every order fills whole at the quote, as in the pure
+# replay; the tick rounding of the quote itself stays (AC-9a Consumers).
+BOOK_QUOTE_SIZE: Final = Decimal(1_000_000_000)
 
 # Wide enough that ``check_rebalance`` never clips or refuses a book of gross 5 (the pure replay has no risk
 # check): parity compares the rule, not the trader's caps.
@@ -306,7 +311,7 @@ def run_book_mode(plan: BookModePlan) -> BookModeResult:
     streamed: list[str] = []
     for i in ids:
         tree = CandleTree(plan.candles_root, pinned_instrument(i.value))
-        stream = CandleStream(tree, start_ns, end_ns, Decimal(0), flags[i], quiet_lead=True)
+        stream = CandleStream(tree, start_ns, end_ns, Decimal(0), flags[i], quiet_lead=True, quote_size=BOOK_QUOTE_SIZE)
         if stream.last_point_ns() is not None:
             streams.append(stream)
             streamed.append(i.value)

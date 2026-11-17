@@ -86,6 +86,7 @@ class CandleStream:
         on_month: MonthDone | None = None,
         segment_start_ns: int | None = None,
         quiet_lead: bool = False,
+        quote_size: Decimal = QUOTE_SIZE,
     ) -> None:
         self._tree = tree
         self._start = start_ns
@@ -105,7 +106,9 @@ class CandleStream:
         self._size_precision = instrument.size_precision
         self._tick = instrument.price_increment.as_decimal()
         self._step = instrument.size_increment.as_decimal()
-        self._quote_size = Quantity(QUOTE_SIZE, instrument.size_precision)
+        # The size on each side of every quote. An order larger than this fills the rest one tick worse on the
+        # L1 book; the book mode passes a size no order reaches, so it fills whole at the quote (spec 0033 AC-10a).
+        self._quote_size = Quantity(quote_size, instrument.size_precision)
         self.events = 0
         self.last_point: PathPoint | None = None
         self.first_trade_ns: int | None = None
