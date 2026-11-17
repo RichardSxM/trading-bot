@@ -1,0 +1,196 @@
+# Pre registration of the trend_vol pre check (spec 0033 AC-12, AC-12a, AC-12b). Committed before the run;
+# `lab book precheck studies/trend_vol_precheck.toml` runs it once and the ledger refuses a second run.
+#
+# Window: from = the first UTC day all 12 coins have 120 daily closes at every cut hour 00 to 23 (computed from
+# the candles tree on 2026-11-17: 2025-05-23 at the earliest hour, 2025-05-24 at the latest, so 2025-05-24 for
+# every run); to = the last complete UTC day before this commit. 542 traded days; the second half starts on
+# day 272 (midpoint). Funding as stored in the candles tree.
+
+name = "trend_vol_precheck"
+from = 2025-05-24
+to = 2026-11-16
+midpoint = 2026-02-19
+cost = "0.0007"
+equity = "10000"
+baseline_cut_hours = [0, 6, 12, 18]
+pass_rule = """
+Net of costs and funding, Sharpe per half (first half before 2026-02-19), trend_vol as built otherwise.
+- Baseline reference per half: the mean Sharpe of trend_vol at cut hours 00, 06, 12, 18.
+- ewma: ewma20 beats the reference in both halves (strictly above); ewma10 and ewma40 are not below it in
+  either half.
+- tranche: tranche4 beats the reference in both halves; tranche2 and tranche8 are not below it in either
+  half; and the full window Sharpe spread (highest minus lowest) of tranche4 at start offsets 00 to 05
+  (tranche4 and tranche4_off01 to _off05) is under half the baseline's full window spread across its four
+  cut hours.
+- scale (AC-12a): scale3_stop8 beats the baseline at its own cut hour in both halves at each of 00, 06, 12,
+  18; scale2_stop8, scale5_stop8, scale3_stop5, scale3_stop12 (at 00) are not below the baseline at 00 in
+  either half; scale3_nostop is a control and decides nothing. Any pass is labelled "seen" (the trial was
+  found by a scratch replay that saw this window), or "seen, fragile" when scale3_stop8@00's Binance
+  information run has a lower full window Sharpe than the Binance baseline at 00.
+- A pass of ewma leads to trend_vol_r2 (AC-13); a pass of tranche or scale only unlocks /architect.
+- Binance 2018-01-01 to 2022-03-31 runs (AC-12b) are information only and decide nothing except the label.
+"""
+
+[binance]
+from = 2018-01-01
+to = 2022-03-31
+
+# EWMA vols, coin and book (AC-12).
+[[trial]]
+name = "ewma20"
+family = "ewma"
+role = "main"
+half_life = 20
+binance = true
+
+[[trial]]
+name = "ewma10"
+family = "ewma"
+role = "neighbour"
+half_life = 10
+binance = true
+
+[[trial]]
+name = "ewma40"
+family = "ewma"
+role = "neighbour"
+half_life = 40
+binance = true
+
+# Tranches: K sub books cut every 24/K hours from the cut hour (AC-12).
+[[trial]]
+name = "tranche4"
+family = "tranche"
+role = "main"
+tranches = 4
+cut_hour = 0
+binance = true
+
+[[trial]]
+name = "tranche2"
+family = "tranche"
+role = "neighbour"
+tranches = 2
+cut_hour = 0
+binance = true
+
+[[trial]]
+name = "tranche8"
+family = "tranche"
+role = "neighbour"
+tranches = 8
+cut_hour = 0
+binance = true
+
+[[trial]]
+name = "tranche4_off01"
+family = "tranche"
+role = "offset"
+tranches = 4
+cut_hour = 1
+
+[[trial]]
+name = "tranche4_off02"
+family = "tranche"
+role = "offset"
+tranches = 4
+cut_hour = 2
+
+[[trial]]
+name = "tranche4_off03"
+family = "tranche"
+role = "offset"
+tranches = 4
+cut_hour = 3
+
+[[trial]]
+name = "tranche4_off04"
+family = "tranche"
+role = "offset"
+tranches = 4
+cut_hour = 4
+
+[[trial]]
+name = "tranche4_off05"
+family = "tranche"
+role = "offset"
+tranches = 4
+cut_hour = 5
+
+# Scale in and stop (AC-12a): ramp_days n, stop at stop_vols entry vols on hourly closes.
+[[trial]]
+name = "scale3_stop8@00"
+family = "scale"
+role = "main"
+cut_hour = 0
+ramp_days = 3
+stop_vols = "8"
+binance = true
+
+[[trial]]
+name = "scale3_stop8@06"
+family = "scale"
+role = "main"
+cut_hour = 6
+ramp_days = 3
+stop_vols = "8"
+
+[[trial]]
+name = "scale3_stop8@12"
+family = "scale"
+role = "main"
+cut_hour = 12
+ramp_days = 3
+stop_vols = "8"
+
+[[trial]]
+name = "scale3_stop8@18"
+family = "scale"
+role = "main"
+cut_hour = 18
+ramp_days = 3
+stop_vols = "8"
+
+[[trial]]
+name = "scale2_stop8"
+family = "scale"
+role = "neighbour"
+cut_hour = 0
+ramp_days = 2
+stop_vols = "8"
+binance = true
+
+[[trial]]
+name = "scale5_stop8"
+family = "scale"
+role = "neighbour"
+cut_hour = 0
+ramp_days = 5
+stop_vols = "8"
+binance = true
+
+[[trial]]
+name = "scale3_stop5"
+family = "scale"
+role = "neighbour"
+cut_hour = 0
+ramp_days = 3
+stop_vols = "5"
+binance = true
+
+[[trial]]
+name = "scale3_stop12"
+family = "scale"
+role = "neighbour"
+cut_hour = 0
+ramp_days = 3
+stop_vols = "12"
+binance = true
+
+[[trial]]
+name = "scale3_nostop"
+family = "scale"
+role = "control"
+cut_hour = 0
+ramp_days = 3
+binance = true

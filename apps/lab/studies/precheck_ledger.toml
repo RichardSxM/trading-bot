@@ -1,0 +1,3 @@
+# Every pre check name already run (spec 0033 AC-12). `lab book precheck` refuses a name listed here.
+names = [
+]
