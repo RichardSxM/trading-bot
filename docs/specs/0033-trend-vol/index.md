@@ -265,7 +265,7 @@ Tracer Bullet: the sizing history goes end to end first (trader to Postgres to d
 6. Jesse profile, secret, cross check script on BTC and ETH, MCP in local scope, satisfies **AC-11**.
 7. [x] Commit the pre registration file and the empty ledger, build `lab book binance-fetch` and the trial mechanics, then run the pre check once and write `precheck.md`, satisfies **AC-12**, **AC-12a**, **AC-12b**.
 8. [x] If EWMA passed, confirm the wiring files are in no closure, then build `trend_vol_r2` (pure rule, node, wiring, tests, hash check); if tranches or `scale3_stop8` passed, stop for `/architect`, satisfies **AC-13**.
-9. In this order: time one rerun, bootstrap reruns, the target pick on in sample days with its 12 coin check, the candidate pick, the benchmark table, and the holdout trade count, satisfies **AC-14**, **AC-15**, **AC-16**, **AC-17**, **AC-19a**.
+9. [x] In this order: time one rerun, bootstrap reruns, the target pick on in sample days with its 12 coin check, the candidate pick, the benchmark table, and the holdout trade count, satisfies **AC-14**, **AC-15**, **AC-16**, **AC-17**, **AC-19a**.
 10. Thresholds v4 with the code and test change, the study file, `lab study`, `lab holdout` once, the gate verdict recorded, satisfies **AC-18**, **AC-19**.
 11. On a pass, the demo switch (frozen hash match, your promote) and the paper stage start; on a fail, record it and keep the demo as is, satisfies **AC-20**.
 

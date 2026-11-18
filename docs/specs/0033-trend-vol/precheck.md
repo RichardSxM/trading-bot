@@ -107,3 +107,58 @@ _Binance spot USDT hourly closes, 2018-01-01 to 2022-03-31, cut hour 00, fills a
 
 Nothing passed, so no `trend_vol_r2` is built and no `/architect` round is owed for tranches or scale in. The
 study (tasks 9 and 10) runs on `trend_vol` as built.
+
+## Study target (task 9: AC-15, AC-15a, AC-16, AC-17, AC-19a)
+
+_Block bootstrap of `trend_vol` (lookback 30, band 0.3, cap 5) on the 11 coins other than HYPE. Study `from` 2023-02-09 (AC-19b), in sample to 2025-10-18 (983 days), warmup the 120 real closes before it. Pool: 1101 days in 1 runs from 2022-10-14. 500 paths per target (one rerun 6.7 s; 13.1 h estimated at 1000), 120 day blocks, seed 7. Coin days with no stored funding rate (counted as 0): 7707._
+
+| Target | Sharpe p5 | Sharpe p50 | Sharpe p95 | Max DD p5 | Max DD p50 | Max DD p95 | Ruined | Unplanned days | Small skips |
+|---|---|---|---|---|---|---|---|---|---|
+| 4.0% | -0.104 | 0.773 | 1.669 | 3.3% | 5.3% | 9.2% | 0 | 0 | 4185 |
+| 6.0% | -0.100 | 0.768 | 1.668 | 4.9% | 8.0% | 13.6% | 0 | 0 | 1670 |
+| 8.0% | -0.108 | 0.769 | 1.668 | 6.5% | 10.5% | 17.6% | 0 | 0 | 799 |
+| 10.0% | -0.107 | 0.773 | 1.694 | 8.1% | 13.1% | 21.7% | 0 | 0 | 467 |
+| 12.0% | -0.110 | 0.771 | 1.659 | 9.6% | 15.6% | 25.5% | 0 | 0 | 244 |
+
+12 coin check on real in sample data (AC-16):
+
+- 4.0%: in sample max drawdown with HYPE 4.3%, without 4.3%, ok
+
+**Study target: `book_vol_target` 0.04 (4.0% a year).**
+
+- Sensitivity, 60 day blocks at 4.0%: max DD p95 12.0%, Sharpe p50 0.561 (report only)
+- Sensitivity, 180 day blocks at 4.0%: max DD p95 8.8%, Sharpe p50 0.891 (report only)
+
+Candidate (AC-17): `trend_vol` (no `trend_vol_r2`, the AC-12 pre check failed).
+
+Holdout closed positions (AC-19a, 2025-10-19 to 2026-11-16, from flat, lookback 30): **413** against `min_holdout_trades` 60, enough.
+
+Run note: `lab book bootstrap` at 6c00ab0, 2026-11-18. The 500 path choice follows the AC-15a timing rule
+(13.1 h estimated for 1000 paths against the 8 h budget). The small skips column counts planned trades
+below the coin's minimum size; at 4% and 10000 equity many positions are too small to place. The funding
+count reflects the known gap (2024 funding is stored only for BTC, ETH, SOL, and XRP).
+
+## Benchmarks (task 9: AC-14, AC-14a) at `book_vol_target` 0.04
+
+_Each benchmark runs at gross 1 with costs and funding, then its daily returns are scaled to the candidate's average gross over the same window. 12 coins, HYPE from its 120th close._
+
+### in sample: 2023-02-09 to 2025-10-18, average gross 0.16
+
+| Run | End | Sharpe | Sortino | Calmar | Max DD | Gross | Closed | BTC corr |
+|---|---|---|---|---|---|---|---|---|
+| trend_vol (candidate) | 1.13x | 1.010 | 1.575 | 1.062 | 4.3% | 0.16 | 907 | -0.038 |
+| hold BTC | 1.26x | 1.189 | 1.874 | 1.808 | 5.0% | 0.16 | 0 | 1.000 |
+| hold all 12 equally | 1.30x | 1.053 | 1.550 | 1.055 | 9.7% | 0.16 | 0 | 0.804 |
+| trend_daily | 1.09x | 0.494 | 0.715 | 0.431 | 7.2% | 0.16 | 907 | -0.123 |
+
+### full: 2023-02-09 to 2026-11-16, average gross 0.16
+
+| Run | End | Sharpe | Sortino | Calmar | Max DD | Gross | Closed | BTC corr |
+|---|---|---|---|---|---|---|---|---|
+| trend_vol (candidate) | 1.15x | 0.829 | 1.279 | 0.657 | 5.7% | 0.16 | 1320 | -0.104 |
+| hold BTC | 1.18x | 0.623 | 0.947 | 0.417 | 10.8% | 0.16 | 0 | 1.000 |
+| hold all 12 equally | 1.31x | 0.788 | 1.153 | 0.750 | 10.0% | 0.16 | 0 | 0.820 |
+| trend_daily | 1.12x | 0.481 | 0.700 | 0.338 | 9.0% | 0.16 | 1320 | -0.211 |
+
+Run note: `lab book benchmark --target 0.04` at 6c00ab0, 2026-11-18. trend_daily closes the same positions as the
+candidate because both flip on the sign of the 30 day return; only the size differs.
