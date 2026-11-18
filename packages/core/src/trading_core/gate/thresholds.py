@@ -12,7 +12,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Final
 
-SUPPORTED_VERSIONS: Final = (1, 2, 3)
+SUPPORTED_VERSIONS: Final = (1, 2, 3, 4)
 # A field added in a later version: absent before it (loads as None, its check skipped), required from it on.
 _ADDED_IN: Final[Mapping[str, int]] = {"instrument_max_share": 2, "trend": 3}
 # Integer fields where 0 is a valid value (every other integer must be at least 1).
