@@ -100,8 +100,8 @@ INDEPENDENT_FILE: Final = "book_independent.py"
 def add_book_parser[P: argparse.ArgumentParser](
     commands: argparse._SubParsersAction[P], day: Callable[[str], date]
 ) -> None:
-    """Add ``lab book`` and its ``replay``, ``parity``, ``jesse-export``, ``binance-fetch``, and ``precheck``
-    commands to the ``lab`` parser."""
+    """Add ``lab book`` and its ``replay``, ``parity``, ``jesse-export``, ``binance-fetch``, ``precheck``,
+    ``bootstrap``, and ``benchmark`` commands to the ``lab`` parser."""
     book = commands.add_parser("book", help="book strategies over the candles tree (spec 0033)")
     sub = book.add_subparsers(dest="book_command", required=True, parser_class=type(book))
     run = sub.add_parser("replay", help="the pure book replay of one strategy over the candles tree")
@@ -138,6 +138,9 @@ def add_book_parser[P: argparse.ArgumentParser](
     from lab.book_precheck import add_precheck_parser  # here, since book_precheck imports this module
 
     add_precheck_parser(sub)
+    from lab.book_study_prep import add_study_prep_parsers  # here, for the same reason
+
+    add_study_prep_parsers(sub)
 
 
 def _months(tree: CandleTree) -> list[Month]:

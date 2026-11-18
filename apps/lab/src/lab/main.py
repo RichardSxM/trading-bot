@@ -45,6 +45,7 @@ from lab.audit import AuditRangeError, audit_days, run_audit
 from lab.binance_fetch import run_binance_fetch
 from lab.book import add_book_parser, run_book_parity, run_book_replay
 from lab.book_precheck import run_precheck
+from lab.book_study_prep import run_benchmark, run_bootstrap
 from lab.candle_backtest import backtest
 from lab.candle_fetch import DEFAULT_INSTRUMENT_ID, fetch_candles
 from lab.candle_parity import candle_parity
@@ -481,7 +482,7 @@ def _screen(args: argparse.Namespace) -> int:
 
 def _book(args: argparse.Namespace) -> int:
     """``lab book replay`` (spec 0033 AC-9), ``parity`` (AC-10a), ``jesse-export`` (AC-11), ``binance-fetch``
-    (AC-12b), and ``precheck`` (AC-12): files only."""
+    (AC-12b), ``precheck`` (AC-12), ``bootstrap`` (AC-15, AC-16), and ``benchmark`` (AC-14): files only."""
     configure_logging(process=PROCESS, env=os.environ.get("TRADING_ENV", ""))
     started = boot("worker", settings_cls=LabSettings)
     if args.book_command == "parity":
@@ -492,6 +493,10 @@ def _book(args: argparse.Namespace) -> int:
         return run_binance_fetch(started.settings, args)
     if args.book_command == "precheck":
         return run_precheck(started.settings, args)
+    if args.book_command == "bootstrap":
+        return run_bootstrap(started.settings, args)
+    if args.book_command == "benchmark":
+        return run_benchmark(started.settings, args)
     return run_book_replay(started.settings, args)
 
 
