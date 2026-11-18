@@ -162,3 +162,10 @@ _Each benchmark runs at gross 1 with costs and funding, then its daily returns a
 
 Run note: `lab book benchmark --target 0.04` at 6c00ab0, 2026-11-18. trend_daily closes the same positions as the
 candidate because both flip on the sign of the 30 day return; only the size differs.
+
+## Study setup (task 10: AC-18, AC-19, AC-19c)
+
+- Thresholds v4 (AC-18): `prior_trials` 191, committed a529397 before the study.
+- Book mode in `lab study`: a book strategy runs each grid point as one book unit over the 12 coins (`lab/book_unit.py`), with the AC-19c funding rule (a charge time with no stored rate pays nothing and is counted) for the study and its `buy_and_hold` benchmark, which runs with `use_market_context` false.
+- HYPE late parity (AC-19): `lab book parity --band 0.3 --from 2025-04-01 --to 2025-07-31`, HYPE's first held day 2025-05-24 (its 120th close), held on 69 of 122 days. Independent copy PASS (0.00 bps worst day, gap 0.000 pp); Nautilus book mode PASS (worst day 0.63 bps on 2025-07-08, gap 0.035 pp, 563 decisions, 563 fills). The study's book unit fills as the book mode does (`test_book_study.py`).
+- Order cap: the AC-9 replay at `book_vol_target` 0.04 over every grid lookback, 2023-02-09 to 2026-11-16, largest single coin target 2093.99 USD (TRX, lookback 60, 2026-10-28); times 1.5 is 3140.99, so `max_order_notional` 3500.
