@@ -15,7 +15,7 @@ and feeds the coins' streams as one ``merged_chunks`` iterator.
 import logging
 import resource
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
@@ -141,9 +141,10 @@ def _sorted[R](rows: Iterable[tuple[int, R]]) -> Sequenced[R]:
     return tuple(sorted(rows, key=lambda pair: pair[0]))
 
 
-def make_candle_engine(plan: CandleUnitPlan) -> BacktestEngine:
+def make_candle_engine(plan: CandleUnitPlan, modules: Sequence[object] = ()) -> BacktestEngine:
     """The AC-8 venue: fills come only from the synthetic quotes, at the run's fees, with no latency; one
-    margin account for every coin of the plan (spec 0022 AC-4)."""
+    margin account for every coin of the plan (spec 0022 AC-4). ``modules`` are the venue's simulation
+    modules (a book unit's ``FundingModule``)."""
     engine = BacktestEngine(
         BacktestEngineConfig(trader_id=TraderId(TRADER_ID), logging=LoggingConfig(log_level="ERROR"))
     )
@@ -161,6 +162,7 @@ def make_candle_engine(plan: CandleUnitPlan) -> BacktestEngine:
         trade_execution=False,
         bar_execution=False,
         use_reduce_only=True,
+        modules=list(modules),
     )
     for instrument_id in plan.instrument_ids:
         engine.add_instrument(with_fees(instrument_id, plan.maker_fee, plan.taker_fee))

@@ -1,0 +1,67 @@
+# The trend_vol book study (spec 0033 AC-19): one book of the 12 demo coins, sized to a 4% a year book
+# volatility target (AC-16), with a 4 point lookback grid, committed before the study first runs.
+# Run it only through `lab study studies/trend_vol.toml`, then `lab holdout trend_vol` once (AC-19). The plan
+# is frozen by name: change anything here and it is a revision.
+#
+# Notes for the record (AC-19): the holdout (from 2025-10-19) was already seen by the 2026-11-11 replay and by
+# the AC-12 pre check, so it is not fully unseen; the gate's N counts those looks (prior_trials 191, AC-18).
+# HYPE trades from its own 120th daily close (AC-19b). Funding: a charge time with no stored rate pays nothing
+# and is counted, and the buy_and_hold benchmark buys every coin at the first hour close (AC-19c).
+instrument_ids = [
+    "PF_ADAUSD.KRAKEN",
+    "PF_DOGEUSD.KRAKEN",
+    "PF_ETHUSD.KRAKEN",
+    "PF_HYPEUSD.KRAKEN",
+    "PF_LINKUSD.KRAKEN",
+    "PF_QNTUSD.KRAKEN",
+    "PF_SOLUSD.KRAKEN",
+    "PF_TRXUSD.KRAKEN",
+    "PF_UNIUSD.KRAKEN",
+    "PF_XBTUSD.KRAKEN",
+    "PF_XRPUSD.KRAKEN",
+    "PF_ZECUSD.KRAKEN",
+]                                    # the demo's 12 (lab.book.BOOK_COINS)
+from = 2023-02-09                    # the first day the 11 coins other than HYPE all have 120 closes (AC-19b)
+to = 2025-10-18                      # the day before holdout_start
+seed = 7                             # the run seed
+stale_quote_s = 300
+maker_fee = "0.0002"                 # the lab's fees and slippage, as tsmom.toml
+taker_fee = "0.0005"
+slippage_bps = "2"
+starting_balance_usd = "10000"
+leverage = "5"
+
+[risk]
+max_order_notional = "3500"          # AC-9 replay at 0.04, grid and holdout: TRX 2094 x 1.5 = 3141, up to 3500
+max_leverage = "9"
+max_total_exposure = "50000"
+risk_per_trade = "0.005"
+maintenance_margin_rate = "0.01"
+min_liq_distance_pct = "10"
+liq_stop_multiple = "3"
+stop_slippage_bps = "5"
+
+[strategy]
+name = "trend_vol"
+[strategy.config]                    # every TV_* setting (AC-19), the trader's values but the AC-16 target
+vol_days = 30
+vol_target = "0.155"
+gross_cap = "5"
+book_vol_target = "0.04"
+rebalance_band = "0.3"
+min_history_days = 120
+rebalance_weekday = 0                # recorded but ignored, as in the trader
+run_at_utc = "00:05"
+retry_max = 3
+retry_wait_s = 60
+quote_wait_s = 60
+start_cooldown_s = 3600
+seed_days = 150
+seed_min_days = 121
+[strategy.grid]                      # 4 points; every point is a trial
+lookback_days = [20, 30, 40, 60]
+
+[study]
+name = "trend_vol"
+lab = "candle"
+seed = 42                            # the gate's bootstrap seed

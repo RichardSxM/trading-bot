@@ -55,6 +55,7 @@ from trading_core.marketdata.hours import SECOND_NS
 from trading_core.node import guard
 from trading_core.node.strategy import PauseGate
 from trading_core.recording.enums import Env
+from trading_core.recording.rows import FillRow
 from trading_core.risk.check import RiskLimits
 from trading_core.strategy.blocks import BlockReason, EntryBlocks
 from trading_core.strategy.trend_portfolio import DailyClose, close_day
@@ -135,6 +136,8 @@ class BookModeResult:
     funding_missing: int
     wall_seconds: float
     streamed: tuple[str, ...] = field(default=())
+    # Every fill row in recorded order (tests compare the study's book unit with it, spec 0033 AC-19).
+    fill_rows: tuple[FillRow, ...] = field(default=())
 
 
 class DailyMarksConfig(ActorConfig, frozen=True):
@@ -359,4 +362,5 @@ def run_book_mode(plan: BookModePlan) -> BookModeResult:
         funding_missing=funding.missing,
         wall_seconds=wall,
         streamed=tuple(streamed),
+        fill_rows=tuple(r for _, r in sorted(rows.fills.values(), key=lambda pair: pair[0])),
     )

@@ -55,7 +55,14 @@ from lab.runfile import (
     replay_run_from_raw,
 )
 from lab.settings import LabSettings
-from lab.strategies import ConfigValue, StrategyConfigError, StrategyEntry, registry_entry
+from lab.strategies import (
+    ConfigValue,
+    StrategyConfigError,
+    StrategyEntry,
+    candle_entry,
+    is_book_strategy,
+    registry_entry,
+)
 from lab.study_rows import StudyContext
 from trading_core.gate.checks import benchmark_names
 from trading_core.gate.thresholds import Thresholds
@@ -422,7 +429,7 @@ def _refuse(command: str, problems: list[str]) -> int:
 def run_study(settings: LabSettings, study: LoadedStudy, store: StudyStore) -> int:
     """``lab study`` after validation: store the study, then run every grid point not yet completed (AC-2, AC-3)."""
     run = study.loaded.run
-    entry = registry_entry(run.strategy.name, test_strategies=settings.lab_test_strategies)
+    entry = candle_entry(run.strategy.name, test_strategies=settings.lab_test_strategies)
     if study.section.candle_gate and not entry.candle_gate:
         return _refuse("study", [f"study.candle_gate: {run.strategy.name} may not take the candle gate path"])
     configs = {
@@ -579,18 +586,27 @@ def _coin_last_day(settings: LabSettings, instrument_id: str, start: date) -> da
     return None
 
 
-def _benchmark_run(path: str, market: Market, start: date, end: date) -> LoadedCandleRun:
+def _benchmark_run(path: str, market: Market, start: date, end: date, *, book: bool = False) -> LoadedCandleRun:
     """A committed benchmark run file with the study's coins and fees, over ``start``..``end`` (AC-4;
     spec 0022 AC-11: ``instrument_ids`` in place of the file's ``instrument_id`` for several coins, and a
-    ``notional_usd`` split evenly over them, so the benchmark holds the file's notional in total)."""
+    ``notional_usd`` split evenly over them, so the benchmark holds the file's notional in total).
+
+    For a book study (``book``, spec 0033 AC-19c) the benchmark also sets ``use_market_context`` false, so it
+    buys every coin at the first hour close even where no funding rate is stored yet (the risk check would
+    refuse those as ``funding_stale``)."""
     coins, maker_fee, taker_fee = market
     data, raw = read_toml(Path(path))
     coin_key: dict[str, object] = {"instrument_ids": list(coins)} if len(coins) > 1 else {"instrument_id": coins[0]}
     strategy = raw.get("strategy")
     config = strategy.get("config") if isinstance(strategy, Mapping) else None
-    if len(coins) > 1 and isinstance(strategy, Mapping) and isinstance(config, Mapping) and "notional_usd" in config:
-        share = Decimal(str(config["notional_usd"])) / len(coins)
-        coin_key["strategy"] = dict(strategy) | {"config": dict(config) | {"notional_usd": format(share, "f")}}
+    if isinstance(strategy, Mapping) and isinstance(config, Mapping):
+        changed = dict(config)
+        if len(coins) > 1 and "notional_usd" in config:
+            changed["notional_usd"] = format(Decimal(str(config["notional_usd"])) / len(coins), "f")
+        if book:
+            changed["use_market_context"] = False
+        if changed != dict(config):
+            coin_key["strategy"] = dict(strategy) | {"config": changed}
     merged = (
         {k: v for k, v in raw.items() if k not in ("instrument_id", "instrument_ids")}
         | coin_key
@@ -624,7 +640,7 @@ def _studied_kind(stored: StudyRow, settings: LabSettings) -> StrategyKind | Non
     strategy = run_file.get("strategy") if isinstance(run_file, Mapping) else None
     name = strategy.get("name") if isinstance(strategy, Mapping) else None
     try:
-        return registry_entry(str(name), test_strategies=settings.lab_test_strategies).kind
+        return candle_entry(str(name), test_strategies=settings.lab_test_strategies).kind
     except StrategyConfigError:
         return None
 
@@ -649,7 +665,7 @@ def _holdout_locked(settings: LabSettings, stored: StudyRow, store: StudyStore, 
         variants = expand_candle_variants(base.run.slippage_bps, base.run.strategy.grid)
         points = [(v.name, dict(v.grid_point)) for v in variants]
     market: Market = (_coins(base), base.run.maker_fee, base.run.taker_fee)
-    entry = registry_entry(base.run.strategy.name, test_strategies=settings.lab_test_strategies)
+    entry = candle_entry(base.run.strategy.name, test_strategies=settings.lab_test_strategies)
     with store.session() as session:
         done = repository.completed_grid_points(session, stored.id)
         missing = [name for i, (name, _) in enumerate(points) if i not in done]
@@ -803,9 +819,11 @@ def _run_benchmarks(
     """Each named benchmark once over ``start``..``end`` as a candle run (AC-4); stops at the first failure.
 
     Any failed benchmark exits 1 (AC-5), whatever the backtest's own code (2 for missing candles, for example).
+    A book study's benchmarks take its funding rule (spec 0033 AC-19c, ``_benchmark_run``).
     """
+    book = is_book_strategy(studied)
     for name in names:
-        bench = _benchmark_run(BENCHMARK_FILES[name], market, start, end)
+        bench = _benchmark_run(BENCHMARK_FILES[name], market, start, end, book=book)
         bench_entry = registry_entry(name)
         bench_variant = CandleVariantSpec("base", bench.run.slippage_bps)
         context = _context(
@@ -818,7 +836,7 @@ def _run_benchmarks(
             {bench_variant.name: None},
             studied=(studied, kind),
         )
-        code = backtest(settings, bench, store, variants=[bench_variant], study=context)
+        code = backtest(settings, bench, store, variants=[bench_variant], study=context, zero_missing_funding=book)
         if code != EXIT_OK:
             return EXIT_FAILED
     return EXIT_OK

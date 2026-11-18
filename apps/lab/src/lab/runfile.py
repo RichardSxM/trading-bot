@@ -31,6 +31,8 @@ from lab.strategies import (
     StrategyConfigError,
     StrategyEntry,
     bar_spec_problem,
+    candle_entry,
+    is_book_strategy,
     registry_entry,
 )
 from trading_core.lab.candles import CANDLE_RANGE_FLOOR
@@ -326,6 +328,8 @@ def replay_run_from_raw(
 
 # A candle run file's two ways to name its coins; the one not given is left out of every dump (spec 0022 AC-3).
 _COIN_KEYS: Final = frozenset({"instrument_id", "instrument_ids"})
+# The nominal bar of a book strategy's candle run (spec 0033 AC-19): it decides on daily closes.
+BOOK_BAR_SPEC: Final = "1-DAY-LAST"
 # A single coin command's refusal of a multi coin run file (spec 0022 AC-10).
 MULTI_REFUSED: Final = (
     "instrument_ids: this command runs one coin; only lab backtest, lab study, and lab holdout take several"
@@ -539,13 +543,17 @@ def candle_run_from_raw(
         raise RunFileError(problems) from None
     if run.multi and not allow_multi:
         raise RunFileError([MULTI_REFUSED])
+    book = is_book_strategy(run.strategy.name)
     try:
-        entry = registry_entry(run.strategy.name, test_strategies=test_strategies)
+        entry = candle_entry(run.strategy.name, test_strategies=test_strategies)
         entry.check_strategy(dict(run.strategy.config))
-        bar_spec = entry.config_value(dict(run.strategy.config), "bar_spec")
+        # A book strategy runs on daily closes with no bar subscription (spec 0033 AC-19): its nominal bar.
+        bar_spec = BOOK_BAR_SPEC if book else entry.config_value(dict(run.strategy.config), "bar_spec")
     except StrategyConfigError as exc:
         raise RunFileError([f"strategy.config: {p}" for p in exc.problems]) from None
     issues: list[str] = []
+    if book and not run.multi:
+        issues.append(f"strategy.name {run.strategy.name!r} is a book strategy; name its coins with instrument_ids")
     if entry.kind not in (StrategyKind.HOUR_LEVEL, StrategyKind.TREND) and not entry.candle_screen:
         issues.append(
             f"strategy.name {run.strategy.name!r} is a {entry.kind} strategy; lab backtest runs hour_level "
@@ -558,7 +566,7 @@ def candle_run_from_raw(
         entry,
         run.strategy,
         MAX_GRID_VARIANTS,
-        lambda point: bar_spec_problem(entry.config_value(point, "bar_spec")),
+        None if book else lambda point: bar_spec_problem(entry.config_value(point, "bar_spec")),
     )
     if issues:
         raise RunFileError(issues)
