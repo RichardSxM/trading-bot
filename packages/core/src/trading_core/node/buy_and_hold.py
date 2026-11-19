@@ -187,7 +187,9 @@ class BuyAndHold(KfsStrategy, StaleQuoteBlock):
                 size_step=step,
                 taker_fee=self._cfg.taker_fee,
                 instrument_maintenance_rate=guard.margin_maint(instrument),
-                funding_periods=funding_periods(now, None),
+                # With the context off (a book study's benchmark, spec 0033 AC-19c) no rate is ever known, so the
+                # risk check counts no funding period: the lab charges funding afterwards from the stored rates.
+                funding_periods=funding_periods(now, None) if self._cfg.use_market_context else 0,
                 funding_rate=self._funding_rate(),
                 fixed_quantity=hold_quantity(self._cfg.notional_usd, mid, step),
                 has_position=False,
