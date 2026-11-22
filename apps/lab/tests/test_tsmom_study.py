@@ -120,7 +120,7 @@ def test_a_four_coin_tsmom_study_runs_through_the_holdout_and_the_gate(tmp_path)
     store = StudyStore(create_engine(base.database_url(read_secret(POSTGRES_PASSWORD)), pool_size=2))
     try:
         study = load_study_text(tmp_path, STUDY.replace("NAME", name).replace("STOP", stop))
-        assert study.thresholds.version == 3
+        assert study.thresholds.version == 4
         assert run_study(settings, study, store) == EXIT_OK
         assert run_holdout(settings, name, store, today=TODAY) == EXIT_OK
 
@@ -145,13 +145,13 @@ def test_a_four_coin_tsmom_study_runs_through_the_holdout_and_the_gate(tmp_path)
         with store.session() as session:
             evidence = study_evidence(session, name)
         assert (evidence.inputs.strategy_kind, evidence.inputs.long_only) == ("trend", True)
-        assert evidence.inputs.prior_trials == 13
-        assert evidence.inputs.trial_count >= 13 + 1
+        assert evidence.inputs.prior_trials == 191
+        assert evidence.inputs.trial_count >= 191 + 1
         result = evaluate_candidate(evidence.inputs)
         assert result.verdict.value in {"pass", "fail", "insufficient"}
         assert result.metrics["direction_applicable"] is False
         assert result.metrics["top_trades_applicable"] is False
-        assert result.metrics["prior_trials"] == 13
+        assert result.metrics["prior_trials"] == 191
         assert "beats_macd_baseline_applicable" not in result.metrics
         assert "concentration_direction" not in {r.check for r in result.reasons}
         assert "concentration_top_trades" not in {r.check for r in result.reasons}

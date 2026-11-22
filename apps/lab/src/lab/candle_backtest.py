@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Final
 
 from lab.actors import LIQUIDATED, RANGE_END
+from lab.book_unit import run_book_unit
 from lab.candle_fetch import candle_tree
 from lab.candle_units import CandleUnitPlan, CandleUnitResult, run_candle_unit
 from lab.instruments import pinned_instrument
@@ -51,10 +52,11 @@ from lab.report import (
 )
 from lab.runfile import LoadedCandleRun
 from lab.settings import LabSettings
-from lab.strategies import registry_entry
+from lab.strategies import candle_entry, is_book_strategy
 from lab.study_rows import RATIO_KIND, StudyContext, daily_equity_rows, daily_sharpe, measures_row, ruin_close
 from lab.units import TRADER_ID
 from trading_core.catalog.candles import CandleTree
+from trading_core.lab.book_funding import book_payments, resolved_rates
 from trading_core.lab.candle_metrics import (
     MarkFill,
     TradeOutcome,
@@ -149,6 +151,28 @@ def range_problems(tree: CandleTree, start_ns: int, end_ns: int) -> list[str]:
     return problems
 
 
+def book_range_problems(tree: CandleTree, start_ns: int, end_ns: int) -> list[str]:
+    """Why a book run's range cannot run for this coin (spec 0033 AC-19), or nothing.
+
+    Each coin is checked from the later of the range start and the day of its first stored minute, so a coin
+    that lists inside the range (HYPE) is checked from its listing: every month from there to the range end
+    must be committed, and the last fetched minute must reach the range end. No
+    funding coverage is checked, since a charge time with no rate pays nothing and is counted (AC-19c).
+    """
+    months = range_months(start_ns, end_ns)
+    manifests = [tree.read_manifest(m) for m in months]
+    # The first month holding a minute: the fetcher commits the empty months before a listing too.
+    first = next((i for i, m in enumerate(manifests) if m is not None and m.first_ts_ns is not None), None)
+    if first is None:
+        return [f"no committed candles from {months[0]} to {months[-1]}; run lab fetch-candles"]
+    listed = manifests[first]
+    assert listed is not None
+    assert listed.first_ts_ns is not None
+    day_ns = 24 * HOUR_NS
+    coin_start = (listed.first_ts_ns - 60_000_000_000) // day_ns * day_ns
+    return span_problems(tree, max(start_ns, coin_start), end_ns)
+
+
 def span_problems(tree: CandleTree, start_ns: int, end_ns: int) -> list[str]:
     """Why the stored candles do not cover the range (AC-6, AC-21), or nothing: missing months, or the
     range starting before the first stored minute's day or ending after the last fetched minute.
@@ -191,6 +215,9 @@ class CandleBatch:
     # this batch belongs to (None for a plain ``lab backtest``).
     top_quantile: Decimal = Decimal("0.05")
     study: StudyContext | None = None
+    # A book run's funding rule (spec 0033 AC-19c), also a book study's benchmarks: a charge time no stored rate
+    # covers pays nothing and every held coin there is counted, so the range needs no full funding coverage.
+    zero_missing_funding: bool = False
 
 
 def candle_plan(batch: CandleBatch, variant: CandleVariantSpec) -> CandleUnitPlan:
@@ -244,6 +271,8 @@ def hour_marks(
     first_ns = last_ns = None
     hour = start_ns - start_ns % HOUR_NS + HOUR_NS
     for month in range_months(start_ns, end_ns):
+        if not tree.bar_file(month).is_file():  # before a late coin's listing (only a book run gets here)
+            continue
         for candle in tree.read_bars(month):
             if candle.open_ns < start_ns or candle.ts_ns > end_ns:
                 continue
@@ -316,7 +345,18 @@ def _coin_months(tree: CandleTree, start_ns: int, end_ns: int) -> list[MonthQual
     found = []
     for month in range_months(start_ns, end_ns):
         manifest = tree.read_manifest(month)
-        assert manifest is not None  # checked before the batch started
+        if manifest is None:  # before a late coin's listing: checked before the batch, only a book run gets here
+            found.append(
+                MonthQuality(
+                    month=str(month),
+                    missing_minutes=0,
+                    quiet_minutes=0,
+                    volume_rounded_rows=0,
+                    zero_volume_trade_rows=0,
+                    missing_funding_charges=0,
+                )
+            )
+            continue
         found.append(
             MonthQuality(
                 month=manifest.month,
@@ -348,24 +388,37 @@ def _months(batch: CandleBatch) -> list[MonthQuality]:
 
 def coin_funding(
     batch: CandleBatch, unit: CandleUnitResult, positions: Sequence[PositionRow], run_id: uuid.UUID
-) -> tuple[list[PositionRow], list[BundleFundingRow], dict[str, int]]:
+) -> tuple[list[PositionRow], list[BundleFundingRow], dict[str, int], dict[str, int]]:
     """Funding once per coin (spec 0022 AC-8): each coin's samples against its own stored rates and its
     own positions only, so a position never takes another coin's rate. Returns the positions with their
-    ``funding_total`` (in their original order), the payment rows in sorted coin order, and each coin's
-    charge times with no exact row."""
+    ``funding_total`` (in their original order), the payment rows in sorted coin order, each coin's
+    charge times with no exact row, and each coin's held charge times with no rate.
+
+    With ``batch.zero_missing_funding`` (spec 0033 AC-19c) each coin pays from ``resolved_rates``, the table a book
+    unit's engine account booked, and a held charge time with no rate pays nothing and is counted; otherwise a
+    missing rate fails the variant (``funding_pass``), so the count is always 0."""
     updated = {p.id: p for p in positions}
     funding: list[BundleFundingRow] = []
     carried: dict[str, int] = {}
+    missing: dict[str, int] = {}
     for coin, tree in batch.trees.items():
         rows = stored_funding(tree, batch.start_ns, batch.end_ns)
-        payments, coin_carried = funding_pass(unit.funding_samples[coin], rows, batch.start_ns, batch.end_ns)
+        samples = unit.funding_samples[coin]
+        if not batch.zero_missing_funding:
+            payments, coin_carried = funding_pass(samples, rows, batch.start_ns, batch.end_ns)
+            missing[coin] = 0
+        else:
+            times = expected_charge_times(batch.start_ns, batch.end_ns)
+            payments, missing[coin] = book_payments(samples, resolved_rates(rows, times))
+            exact = {r.charge_ns for r in rows}
+            coin_carried = sum(t not in exact for t in times)
         coin_positions, coin_rows = with_funding(
             [p for p in positions if p.instrument_id == coin], payments, run_id, coin
         )
         updated.update({p.id: p for p in coin_positions})
         funding += coin_rows
         carried[coin] = coin_carried
-    return [updated[p.id] for p in positions], funding, carried
+    return [updated[p.id] for p in positions], funding, carried, missing
 
 
 def build_candle_bundle(
@@ -380,7 +433,7 @@ def build_candle_bundle(
     order_events = stamp_run_id((r for _, r in unit.order_events), run_id)
     fills = stamp_run_id((r for _, r in unit.fills), run_id)
     positions = stamp_run_id((r for _, r in unit.positions), run_id)
-    positions, funding, carried = coin_funding(batch, unit, positions, run_id)
+    positions, funding, carried, funding_missing = coin_funding(batch, unit, positions, run_id)
 
     closed = [p for p in positions if p.status == PositionStatus.CLOSED]
     cash = [FundingCash(paid_ns=f.paid_ns, amount=f.amount) for f in funding]
@@ -498,7 +551,8 @@ def build_candle_bundle(
         status=RunStatus.COMPLETED,
         strategy_version_id=batch.version_ids[variant.name],
         trader_id=TRADER_ID,
-        run_config=_run_config(batch, variant, gaps),
+        run_config=_run_config(batch, variant, gaps)
+        | ({"funding_missing": dict(funding_missing)} if batch.zero_missing_funding else {}),
         data_start_at=ns_to_utc(batch.start_ns),
         data_end_at=ns_to_utc(batch.end_ns),
         started_at=started_at,
@@ -712,6 +766,7 @@ def backtest(
     target: Target[CandleUnitPlan, CandleUnitResult] = run_candle_unit,
     study: Callable[[Mapping[str, uuid.UUID]], StudyContext] | None = None,
     batch_id: uuid.UUID | None = None,
+    zero_missing_funding: bool = False,
 ) -> int:
     """Run ``lab backtest`` after validation; returns the exit code.
 
@@ -719,24 +774,30 @@ def backtest(
     is the run file's own (``base``, or its grid). ``lookahead_check`` runs the first variant again
     cut at ``LOOKAHEAD_CUTS`` times (AC-19). ``study`` builds the batch's study context from the
     variants' version ids (spec 0015: ``lab study`` and ``lab holdout``); ``batch_id`` names the
-    report folder (a new id when None).
+    report folder (a new id when None). A book strategy runs each variant as one book unit (spec 0033 AC-19);
+    it and ``zero_missing_funding`` (a book study's benchmarks) take the AC-19c funding rule.
     """
     run = loaded.run
     if variants is None:
         variants = expand_candle_variants(run.slippage_bps, run.strategy.grid)
     trees = {coin: candle_tree(settings.lab_catalog_dir, coin) for coin in run.instruments}
     start_ns, end_ns = range_ns(loaded)
+    book = is_book_strategy(run.strategy.name)
+    zero_missing_funding = zero_missing_funding or book
+    check = book_range_problems if zero_missing_funding else range_problems
     problems = [
         f"{coin}: {problem}" if run.multi else problem
         for coin, tree in trees.items()
-        for problem in range_problems(tree, start_ns, end_ns)
+        for problem in check(tree, start_ns, end_ns)
     ]
     if problems:
         for problem in problems:
             print(f"lab backtest: {problem}", file=sys.stderr)
         log.error("lab_candles_missing", extra={"fields": {"problems": problems}})
         return EXIT_MISSING
-    entry = registry_entry(run.strategy.name, test_strategies=settings.lab_test_strategies)
+    entry = candle_entry(run.strategy.name, test_strategies=settings.lab_test_strategies)
+    if book and target is run_candle_unit:
+        target = run_book_unit  # one instance over every coin (spec 0033 AC-19)
     instruments = [instrument_row(pinned_instrument(coin)) for coin in run.instruments]
     # One strategy version per distinct config; the slippage variants share base's.
     configs = {v.name: run.version_config(v.grid_point) for v in variants}
@@ -758,6 +819,7 @@ def backtest(
         trees=trees,
         top_quantile=packaged_thresholds().top_trades_quantile,
         study=None if study is None else study(version_ids),
+        zero_missing_funding=zero_missing_funding,
     )
     batch.folder.mkdir(parents=True, exist_ok=True)
     log.info(

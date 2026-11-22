@@ -487,6 +487,23 @@ def test_buy_and_hold_on_two_coins_opens_each_at_half_the_files_notional_and_nev
         assert D(4900) < notional <= D(5000) * D("1.001"), (coin, notional)
 
 
+def test_a_book_studys_buy_and_hold_buys_every_coin_with_the_context_off(tmp_path):
+    # Spec 0033 AC-19c: with use_market_context false no rate is known, and the entry must still pass the risk check.
+    _two_coin_day(tmp_path / "catalog")
+    loaded = _benchmark_run(BUY_AND_HOLD, ((ETH, BTC), D("0.0002"), D("0.0005")), DAY, DAY, book=True)
+    assert loaded.run.strategy.config["use_market_context"] is False
+    store = MemoryStore()
+    settings = worker_settings(tmp_path / "catalog", tmp_path / "reports", 1)
+    assert backtest(settings, loaded, store, zero_missing_funding=True) == 0
+
+    [bundle] = store.bundles
+    assert sorted(p.instrument_id for p in bundle.positions) == [ETH, BTC]
+    for coin in (ETH, BTC):
+        fills = sorted((f for f in bundle.fills if f.instrument_id == coin), key=lambda f: f.filled_ns)
+        assert [f.side for f in fills] == [OrderSide.BUY, OrderSide.SELL]
+    assert bundle.funding  # funding is still charged from the stored rates
+
+
 # AC-10: the single coin commands refuse a multi coin run file -------------------------------------
 
 

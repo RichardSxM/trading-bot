@@ -747,3 +747,20 @@ def registry_entry(name: str, *, test_strategies: bool = False) -> StrategyEntry
     if entry is None:
         raise StrategyConfigError([f"strategy.name {name!r} is not registered (known: {sorted(known)})"])
     return entry
+
+
+def is_book_strategy(name: str) -> bool:
+    """Whether ``name`` is a book strategy (one instance over every coin, spec 0033 AC-10)."""
+    return name in BOOK_REGISTRY
+
+
+def candle_entry(name: str, *, test_strategies: bool = False) -> StrategyEntry:
+    """The strategy a candle run, study, or holdout names: a ``registry_entry``, or a book strategy's entry.
+
+    A book strategy runs in the candle lab only as one book unit over a multi coin run (spec 0033 AC-19), never
+    one instance per coin; the replay lab still refuses it. ``StrategyConfigError`` when neither knows ``name``.
+    """
+    book = BOOK_REGISTRY.get(name)
+    if book is not None:
+        return book.entry
+    return registry_entry(name, test_strategies=test_strategies)

@@ -710,6 +710,49 @@ services:
     # Two workers at under 1 GB each plus the parent, inside the laptop's 4 GB Docker VM (AC-16).
     mem_limit: 3g
 
+  # The Jesse cross check (spec 0033 AC-11): laptop only, never deployed, like `lab`. Its own Python 3.13
+  # image and its own Postgres, never ours; no Kraken keys. `jesse run` serves the dashboard and the MCP
+  # (http://localhost:9000/mcp) on the laptop only; the cross check needs neither (`run --no-deps`).
+  jesse:
+    profiles: ["jesse"]
+    build:
+      context: .
+      dockerfile: docker/jesse/Dockerfile
+    image: kfs-jesse:local
+    logging: *logging
+    environment:
+      TZ: UTC
+    secrets:
+      - jesse_password
+    volumes:
+      - ./lab-reports:/lab-reports
+    ports:
+      - "127.0.0.1:9000:9000"
+    depends_on:
+      jesse-postgres:
+        condition: service_healthy
+    mem_limit: 2g
+
+  jesse-postgres:
+    profiles: ["jesse"]
+    image: timescale/timescaledb:2.19.3-pg17
+    logging: *logging
+    environment:
+      POSTGRES_DB: jesse_db
+      POSTGRES_USER: jesse_user
+      POSTGRES_PASSWORD_FILE: /run/secrets/jesse_password
+      TZ: UTC
+    secrets:
+      - jesse_password
+    volumes:
+      - jesse-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U jesse_user -d jesse_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    mem_limit: 512m
+
 networks:
   # Internal: no route out, shared only by the alerter and the socket proxy.
   dockerproxy:
@@ -728,6 +771,9 @@ secrets:
   # ${SECRETS_DIR}/<name> file it finds here (deploy/host/lib.sh kfs_secret_names).
   postgres_lab_password:
     file: ./secrets/postgres_lab_password
+  # Laptop only, the jesse profile (spec 0033 AC-11).
+  jesse_password:
+    file: ./secrets/jesse_password
   redis_trader_password:
     file: ${SECRETS_DIR:-./secrets}/redis_trader_password
   redis_dashboard_password:
@@ -768,3 +814,4 @@ volumes:
   trader-portfolio-spool:
   backup-staging:
   backup-state:
+  jesse-pgdata:

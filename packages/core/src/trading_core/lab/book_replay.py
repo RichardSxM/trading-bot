@@ -29,6 +29,7 @@ from trading_core.lab.candles import MINUTE_NS, expected_charge_times
 from trading_core.lab.funding import funding_amount
 from trading_core.marketdata.hours import HOUR_NS, SECOND_NS
 from trading_core.strategy.trend_portfolio import (
+    CoinPlan,
     DailyClose,
     PortfolioParams,
     PortfolioPlan,
@@ -103,10 +104,55 @@ def trend_vol_planner(params: PortfolioParams, book: BookVolParams) -> Planner:
     return plan
 
 
+# A band so wide that a position on the target's side is never resized: ``sign_planner`` holds until a flip.
+HOLD_BAND: Final = Decimal(1_000_000_000)
+
+
+def sign_planner(lookback_days: int, min_history_days: int) -> Planner:
+    """The plain sign rule for the Jesse cross check (spec 0033 AC-11): every coin with at least
+    ``min_history_days`` closes gets the sign of ``close[t] / close[t - lookback_days] - 1`` over N eligible
+    coins as its weight (gross 1, so one coin is all in), with ``HOLD_BAND``: a position is set at gross 1 when
+    it opens or flips and then held, as a single coin Jesse strategy trades it. Raises ``ValueError`` when
+    ``min_history_days`` is not above ``lookback_days``."""
+    if min_history_days <= lookback_days:
+        raise ValueError(f"min_history_days must be above lookback_days {lookback_days}, got {min_history_days}")
+
+    def plan(closes: Mapping[str, Sequence[DailyClose]], equity: Decimal) -> Planned:
+        if equity <= 0:
+            raise ValueError(f"equity must be above 0, got {equity}")
+        signals = {
+            coin: _sign(series[-1].close / series[-1 - lookback_days].close - 1)
+            for coin, series in closes.items()
+            if len(series) >= min_history_days
+        }
+        n = len(signals)
+        coins: dict[str, CoinPlan] = {}
+        for coin, series in closes.items():
+            last_day = series[-1].day if series else None
+            signal = signals.get(coin)
+            if signal is None:
+                coins[coin] = CoinPlan(False, 0, None, Decimal(0), Decimal(0), last_day)
+                continue
+            weight = Decimal(signal) / n
+            coins[coin] = CoinPlan(True, signal, None, weight, weight * equity, last_day)
+        gross: Decimal = sum((abs(c.weight) for c in coins.values()), Decimal(0))
+        dates = [c.close_date for c in coins.values() if c.close_date is not None]
+        book = PortfolioPlan(coins, n, gross, Decimal(1), equity, max(dates, default=None))
+        return Planned(book, HOLD_BAND, None, gross)
+
+    return plan
+
+
+def _sign(value: Decimal) -> int:
+    return 1 if value > 0 else -1 if value < 0 else 0
+
+
 @dataclass(frozen=True)
 class ReplayConfig:
     """The run: the cut hour (0 to 23), the first and last traded UTC day (both inclusive), the starting
-    equity, the cost a side, how many daily closes are kept, and the coin the correlation is taken with."""
+    equity, the cost a side, how many daily closes are kept, the coin the correlation is taken with, and how
+    long after the cut the trade fills (``FILL_DELAY_NS``, five minutes; one hour on hourly only data, spec
+    0033 AC-12b)."""
 
     cut_hour: int
     start: date
@@ -115,10 +161,11 @@ class ReplayConfig:
     cost: Decimal = DEFAULT_COST
     keep_days: int = 150
     btc: str = BTC
+    fill_delay_ns: int = FILL_DELAY_NS
 
     def __post_init__(self) -> None:
         """Refuse a cut hour outside 0 to 23, an end before the start, equity at or below 0, a negative cost,
-        or keeping fewer than 2 closes."""
+        keeping fewer than 2 closes, or a fill delay outside 1 minute to 1 hour."""
         if not 0 <= self.cut_hour <= 23:
             raise ValueError(f"cut_hour must be 0 to 23, got {self.cut_hour}")
         if self.end < self.start:
@@ -129,6 +176,8 @@ class ReplayConfig:
             raise ValueError(f"cost must be at least 0, got {self.cost}")
         if self.keep_days < 2:
             raise ValueError(f"keep_days must be at least 2, got {self.keep_days}")
+        if not MINUTE_NS <= self.fill_delay_ns <= HOUR_NS:
+            raise ValueError(f"fill_delay_ns must be 1 minute to 1 hour, got {self.fill_delay_ns}")
 
 
 @dataclass(frozen=True)
@@ -293,7 +342,7 @@ def replay_book(
     day = config.start
     while day <= config.end and not ruined:
         cut = cut_ns(day, config.cut_hour)
-        fill_ns = cut + FILL_DELAY_NS
+        fill_ns = cut + config.fill_delay_ns
         funding_paid = Decimal(0)
         if prev_fill_ns is not None:
             for charge in expected_charge_times(prev_fill_ns, fill_ns):

@@ -94,8 +94,8 @@ def test_a_trend_study_adds_its_prior_trials_to_n_and_other_kinds_do_not(session
     assert len(pool) - len(before_pool) == 4
     evidence = study_evidence(session, trend)
     assert evidence.inputs.thresholds.trend is not None
-    assert evidence.inputs.prior_trials == 13
-    assert evidence.inputs.trial_count == 13 + n
+    assert evidence.inputs.prior_trials == 191
+    assert evidence.inputs.trial_count == 191 + n
     assert evidence.inputs.trial_sharpes == pool  # the variance ignores the outside trials
     assert evidence.inputs.long_only is True
 
