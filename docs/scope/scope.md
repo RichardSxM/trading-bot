@@ -593,12 +593,12 @@ spec [0032](../specs/0032-trend-daily/index.md) · code in `packages/core/src/tr
 spec [0033](../specs/0033-trend-vol/index.md) · code in [strategy/trend_vol.py](../../packages/core/src/trading_core/strategy/trend_vol.py), [node/trend_vol.py](../../packages/core/src/trading_core/node/trend_vol.py) · on the VPS demo since 2026-11-11 22:47 UTC (PR #143)
 
 - [x] Design it (spec): `/architect trend vol`
-- [ ] Build it: `/develop trend vol`
+- [x] Build it: `/develop trend vol`
   - [x] Strategy and VPS switch: `book_vol_plan`, `within_band`, `TrendVol` on `TrendDaily`, `TV_*` settings, deploy, your promote (PR #143) (AC-1 to AC-3)
   - [x] Sizing history thin thread: hash baseline, `book_plans` migration, `write_book_plans` task, Portfolio panel, `book_plan_stale` alert, deploy on your go ahead (AC-4 to AC-8)
   - [x] Research tools: pure book replay, the DOGE/TRX tick history and QNT dropped span fetch rules, lab book mode, independent reimplementation and parity, Jesse profile and cross check (AC-9, AC-9a, AC-10, AC-10a, AC-11)
-  - [ ] Pre check and r2: pre registration, one run, `trend_vol_r2` only if EWMA passes, `/architect` again if tranches pass (AC-12, AC-13)
-  - [ ] Study and gate: benchmark, bootstrap target pick, trade count, thresholds v4, study, holdout, verdict, demo switch and paper stage on a pass (AC-14 to AC-20)
+  - [x] Pre check and r2: pre registration, one run, `trend_vol_r2` only if EWMA passes, `/architect` again if tranches pass (AC-12, AC-13)
+  - [x] Study and gate: benchmark, bootstrap target pick, trade count, thresholds v4, study, holdout, verdict, demo switch and paper stage on a pass (AC-14 to AC-20)
 - [ ] Verify it: `/check verify trend vol`
 - [ ] Test it: `/test trend vol`
 - [ ] Review it (fresh model): `/check review trend vol`

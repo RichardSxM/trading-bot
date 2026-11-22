@@ -263,12 +263,12 @@ Tracer Bullet: the sizing history goes end to end first (trader to Postgres to d
 3. [x] Thin thread: migration, rows, `record_book_plan`, the `write_book_plans` task, the Portfolio panel, the `book_plan_stale` alert, laptop demo run, then PR and a VPS deploy on your go ahead (pause, flatten, deploy, unpause; no promote, the version is unchanged), satisfies **AC-5**, **AC-6**, **AC-7**, **AC-8**.
 4. [x] Candles for the 12 coins, the pure book replay with its mechanics table, and the `lab book` group; the two fetch rules (`ticks`, `drop`, the loader change, the DOGE, TRX, and QNT pin keys) with their tests, then refetch DOGE, TRX, and QNT and record the per coin fetch figures (months, gap rows, roundings, the history months, the dropped span) in `verify.md`, satisfies **AC-9**, **AC-9a**.
 5. [x] Lab book mode (one instance, seeds) with `trend_vol` registered, the independent Decimal reimplementation, and the parity runs on both bands, satisfies **AC-10**, **AC-10a**.
-6. Jesse profile, secret, cross check script on BTC and ETH, MCP in local scope, satisfies **AC-11**.
+6. [x] Jesse profile, secret, cross check script on BTC and ETH, MCP in local scope, satisfies **AC-11**.
 7. [x] Commit the pre registration file and the empty ledger, build `lab book binance-fetch` and the trial mechanics, then run the pre check once and write `precheck.md`, satisfies **AC-12**, **AC-12a**, **AC-12b**.
 8. [x] If EWMA passed, confirm the wiring files are in no closure, then build `trend_vol_r2` (pure rule, node, wiring, tests, hash check); if tranches or `scale3_stop8` passed, stop for `/architect`, satisfies **AC-13**.
 9. [x] In this order: time one rerun, bootstrap reruns, the target pick on in sample days with its 12 coin check, the candidate pick, the benchmark table, and the holdout trade count, satisfies **AC-14**, **AC-15**, **AC-16**, **AC-17**, **AC-19a**.
-10. Thresholds v4 with the code and test change, the study file, `lab study`, `lab holdout` once, the gate verdict recorded, satisfies **AC-18**, **AC-19**.
-11. On a pass, the demo switch (frozen hash match, your promote) and the paper stage start; on a fail, record it and keep the demo as is, satisfies **AC-20**.
+10. [x] Thresholds v4 with the code and test change, the study file, `lab study`, `lab holdout` once, the gate verdict recorded, satisfies **AC-18**, **AC-19**.
+11. [x] On a pass, the demo switch (frozen hash match, your promote) and the paper stage start; on a fail, record it and keep the demo as is, satisfies **AC-20**.
 
 ## Consequences
 
@@ -304,5 +304,6 @@ Tracer Bullet: the sizing history goes end to end first (trader to Postgres to d
 ## Follow-up
 
 - [ ] `verify.md` for the VPS checks of AC-3, AC-6, AC-7, AC-8 (written by `/check verify`).
-- [ ] Gate verdict: record it here when AC-19 runs.
+- [x] Gate verdict: **FAIL** on 2026-11-22, promotion 01a20148-79d9-7013-b1e2-98cfd5e341f1. N 199. It failed deflated Sharpe (0.196), bootstrap lower bound (−0.000164), and fold, direction, and instrument concentration. The holdout made +1.77 % (Sharpe 0.382, against 0.378 for buy and hold). Details are in `precheck.md`. The demo keeps `trend_vol` (AC-20).
+- [ ] Lab bundles carry the lab's pinned instrument tick (XRP 0.00001), and the VPS `instruments` row holds the venue's live tick (0.0001), so the gate import refuses any bundle with XRP. The trend_vol bundles went in as copies with that one value changed. Decide the lasting fix with `/architect`: the importer accepting a tick only difference, or the lab writing the venue's current tick in bundle instrument rows.
 - [ ] Spec 0028 (go live) reads this verdict before any live step.
