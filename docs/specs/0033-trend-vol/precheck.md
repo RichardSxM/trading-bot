@@ -169,3 +169,48 @@ candidate because both flip on the sign of the 30 day return; only the size diff
 - Book mode in `lab study`: a book strategy runs each grid point as one book unit over the 12 coins (`lab/book_unit.py`), with the AC-19c funding rule (a charge time with no stored rate pays nothing and is counted) for the study and its `buy_and_hold` benchmark, which runs with `use_market_context` false.
 - HYPE late parity (AC-19): `lab book parity --band 0.3 --from 2025-04-01 --to 2025-07-31`, HYPE's first held day 2025-05-24 (its 120th close), held on 69 of 122 days. Independent copy PASS (0.00 bps worst day, gap 0.000 pp); Nautilus book mode PASS (worst day 0.63 bps on 2025-07-08, gap 0.035 pp, 563 decisions, 563 fills). The study's book unit fills as the book mode does (`test_book_study.py`).
 - Order cap: the AC-9 replay at `book_vol_target` 0.04 over every grid lookback, 2023-02-09 to 2026-11-16, largest single coin target 2093.99 USD (TRX, lookback 60, 2026-10-28); times 1.5 is 3140.99, so `max_order_notional` 3500.
+
+## Study, holdout, and gate verdict (task 10: AC-19, AC-19c; task 11: AC-20)
+
+### Development: `lab study studies/trend_vol.toml`, 2023-02-09 to 2025-10-18
+
+Batch 01a1f0e8-2dd7-773e-b193-131ddcbd8a07, 2026-11-18 23:05 to 2026-11-19 08:51 UTC (about 10 h, two points at a time), exit 0, no point failed. On 10,000 USD:
+
+| Point | `lookback_days` | Run | Net P&L | Trades | Held charge times with no rate |
+|---|---|---|---|---|---|
+| grid-1 | 20 | 89545387 | −235.55 | 1196 | 168,616 |
+| grid-2 | 30 | 614b7c1a | +1,208.31 | 920 | 168,616 |
+| grid-3 | 40 | e2748190 | +360.66 | 774 | 168,664 |
+| grid-4 | 60 | 4d2b61aa | +240.00 | 660 | 168,640 |
+
+The log's 1432 `rebalance_coin_failed` warnings (`stale_quote`) are all HYPE before its first stored minute (2025-01-24). Its target is 0 there, and a failed coin does not hold back the other coins' grows, so they change nothing.
+
+### Holdout: `lab holdout trend_vol`, run once, 2025-10-19 to 2026-11-16
+
+Final point grid-2 (lookback 30, the best development daily Sharpe). Run e0f8faa4-e89a-4c08-99ac-dcd86cffa00c (batch 01a1f302): +177.17 USD, 425 trades, 4,600 held charge times with no rate.
+
+The first `buy_and_hold` benchmark (run 87203c65, batch 01a1f32c) bought nothing. With `use_market_context` false, no funding rate is ever known, so the risk check refused every entry as `funding_stale`. The fix is f1cd1db: with the context off, the entry counts no funding period, and the lab still charges funding from the stored rates. That run was marked `failed` in the laptop `study_runs` and never pushed. `lab holdout trend_vol` then filled in only the benchmark (the holdout is never rerun): run fb01c456 (batch 01a1f395), +397.20 USD, 12 trades (one buy per coin, sold at the range end).
+
+### Import on the VPS
+
+The first push was refused whole: the VPS `instruments` row for PF_XRPUSD carries Kraken's live tick 0.0001 (written by the trader on 2026-11-01), and the lab bundles carry the historical pin 0.00001 (spec 0027 AC-15). Your choice: push copies (`lab-reports/scratch/xrp-tick/`) that change only that one `tick_size` value. A JSON compare showed nothing else differs. Loaded 6, already there 63. The 7 tsmom files still refused are the same conflict on batches that were judged on 2026-11-01.
+
+The VPS gate supported thresholds 1 to 3 only, so PR #154 (tasks 6 to 10) was merged as 2f89c94 and only the gate image was pulled on the VPS. The trader and recorder stay on 6161476.
+
+### Gate: FAIL
+
+`gate evaluate trend_vol`, 2026-11-22 03:24 UTC, gate 2f89c94, promotion 01a20148-79d9-7013-b1e2-98cfd5e341f1. N is 199 (`prior_trials` 191 plus a trial pool of 8, scope kind and lab).
+
+| Check | Value | Threshold | Result |
+|---|---|---|---|
+| `deflated_sharpe` | 0.196 | 0.95 | fail |
+| `bootstrap_lower_bound` | −0.000164 | 0 | fail |
+| `concentration_fold` | 0.703 | 0.60 | fail |
+| `concentration_direction` | 1.654 | 0.60 | fail |
+| `concentration_instrument` | 1.026 | 0.60 | fail |
+
+Other figures: holdout return 1.77 %, Sharpe 0.382 (`buy_and_hold` 0.378), max drawdown 5.85 %, 425 trades over 394 days, win rate 33 %, average gross edge 0.69 against a round trip cost of 0.30, PBO 0.17, walk forward return 8.67 % (Sharpe 1.24 over 3 folds), trade return lower bound −0.000188.
+
+What it means: the candidate barely matches holding the 12 coins on the seen holdout, its daily mean is not clearly above zero, and the gain leans on one direction, one coin, and one fold. At N 199 the deflated Sharpe is far from the bar. Never evaluate this study again.
+
+Under AC-20 the demo keeps `trend_vol` at 50 % as an open forward test, with no switch and no promote.
