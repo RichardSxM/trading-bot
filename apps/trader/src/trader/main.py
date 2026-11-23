@@ -45,6 +45,8 @@ from nautilus_trader.config import (
     LoggingConfig,
     TradingNodeConfig,
 )
+from nautilus_trader.live.data_engine import LiveDataEngine
+from nautilus_trader.live.execution_engine import LiveExecutionEngine
 from nautilus_trader.live.node import TradingNode
 from nautilus_trader.model.identifiers import InstrumentId, TraderId, Venue
 from nautilus_trader.model.objects import Currency
@@ -59,6 +61,7 @@ from trader import paper_strategy
 from trader.book_plans import write_book_plans
 from trader.coin_blocks import coin_blocks
 from trader.instrument_check import InstrumentCheck
+from trader.load_probe import watch_load
 from trader.paper_strategy import (
     CONNORS_SEED_BARS,
     CONNORS_SEED_MIN_BARS,
@@ -281,6 +284,18 @@ def build_config(
         timeout_post_stop=POST_STOP_S,
         timeout_reconciliation=settings.reconcile_nautilus_timeout_s,
     )
+
+
+def engine_queue_sizes(node: TradingNode) -> dict[str, int]:
+    """The live data and execution engines' queue sizes, for the load probe (the OOM probe)."""
+    sizes: dict[str, int] = {}
+    data = node.kernel.data_engine
+    if isinstance(data, LiveDataEngine):
+        sizes |= {"data_q": data.data_qsize(), "data_cmd_q": data.cmd_qsize(), "data_res_q": data.res_qsize()}
+    execution = node.kernel.exec_engine
+    if isinstance(execution, LiveExecutionEngine):
+        sizes |= {"exec_cmd_q": execution.cmd_qsize(), "exec_evt_q": execution.evt_qsize()}
+    return sizes
 
 
 def exec_engine_config(settings: TraderSettings) -> LiveExecEngineConfig:
@@ -1021,6 +1036,7 @@ def run_node(
                 write_book_plans(read_plan, Env(settings.trading_env), paper.run_id, gross_cap, paper.sessions)
             )
         )
+    writers.append(loop.create_task(watch_load(loop, functools.partial(engine_queue_sizes, node))))
     for task in writers:
         task.add_done_callback(log_writer_crash)
     stop_signals = (signal.SIGTERM, signal.SIGINT)
