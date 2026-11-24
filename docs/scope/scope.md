@@ -605,7 +605,7 @@ spec [0033](../specs/0033-trend-vol/index.md) · code in [strategy/trend_vol.py]
 - [ ] Review it (fresh model): `/check review trend vol`
 - [ ] Document it: `/document trend vol`
 
-**Carried over (2026-11-24), entry timing:** you want trend_vol to enter at a better moment than at once at the rebalance. Pullback entries and take profits were already tested and hurt (2026-11-17); scale in over 3 days was the only soft lead and failed the lab pre check at 12 and 18 UTC. Any new entry idea gets a pre check before a spec.
+**Carried over (2026-11-24), entry timing:** you want trend_vol to enter at a better moment than at once at the rebalance. Pullback entries and take profits were already tested and hurt (2026-11-17); scale in over 3 days was the only soft lead and failed the lab pre check at 12 and 18 UTC, and splitting the rebalance across the day (tranches) failed the same pre check ([precheck.md](../specs/0033-trend-vol/precheck.md)). Any new entry idea gets a pre check before a spec.
 
 ### 35. Per coin close and hold · planned · needs a decision
 A button beside each coin on the dashboard closes that coin's position and holds it flat while the rest of the book keeps trading. A resume button lets it back in, and if you never press it, the coin rejoins at the next daily rebalance. For the main trader's trend_vol book (feature 34) first.
