@@ -121,6 +121,8 @@ PROMISES: Final[tuple[Promise, ...]] = (
     Promise("0024", "ECB rates over 6 days old", "fx_rates_stale"),
     _line("review 2026-11-13", "portfolio_run_failed", "portfolio_run_failed", "trader", instrument="PF_XBTUSD.KRAKEN"),
     _line("review 2026-11-13", "coin_exit_failed", "portfolio_run_failed", "trader-portfolio"),
+    _line("0034", "ramp_stop_hit", "ramp_stop_hit", "trader", "WARNING", instrument="PF_XBTUSD.KRAKEN"),
+    _line("0034", "ramp_stop_check_failed", "portfolio_run_failed", "trader", instrument="PF_XBTUSD.KRAKEN"),
     # The second trader's safety lines push like the main trader's (review 2026-11-13, spec 0030 AC-17).
     _line("review 2026-11-13", "loss_limit_halt", "loss_limit_halt", "trader-portfolio", "CRITICAL", halt_id="H-2"),
     Promise(

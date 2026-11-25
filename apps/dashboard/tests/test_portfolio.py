@@ -278,3 +278,32 @@ def test_the_board_is_one_of_the_live_events(redis, clock):
     events = asyncio.run(first_events())
     [board] = [event for event in events if event.startswith("event: portfolio-board\n")]
     assert "BTC" in board
+
+
+def _ramp_plan():
+    # A trend_vol_ramp snapshot (spec 0034 AC-7): BTC stopped, ETH a third in, SOL at 70 % held, the rest bare.
+    data = plan()
+    data["ramp_steps"], data["stop_vols"] = 3, "8"
+    extra = {
+        "PF_XBTUSD.KRAKEN": {"stopped_side": "long", "held_pct": "0.00"},
+        "PF_ETHUSD.KRAKEN": {"stopped_side": None, "held_pct": "33.33"},
+        "PF_XRPUSD.KRAKEN": {"stopped_side": None, "held_pct": "70.00"},
+        "PF_ADAUSD.KRAKEN": {"stopped_side": "short", "held_pct": None},
+    }
+    for coin in data["coins"]:
+        coin.update(extra.get(coin["instrument_id"], {"stopped_side": None, "held_pct": None}))
+    return data
+
+
+def test_a_ramp_snapshot_names_stopped_and_building_coins_and_leaves_the_rest_as_before():
+    values = snapshots()
+    values["demo:snapshot:portfolio_plan"] = encode(NOW_NS, _ramp_plan())
+
+    rows = {row.instrument_id: row for row in view(values).rows}
+
+    assert rows["PF_XBTUSD.KRAKEN"].signal == "Stopped (long)"
+    assert rows["PF_ETHUSD.KRAKEN"].signal == "Building 33.33%"
+    assert rows["PF_XRPUSD.KRAKEN"].signal == "Long"  # 70 % held is no longer building
+    assert rows["PF_ADAUSD.KRAKEN"].signal == "Stopped (short)"
+    assert rows["PF_SOLUSD.KRAKEN"].signal == "Flat"  # target 0: never building
+    assert rows["PF_SUIUSD.KRAKEN"].signal == "Not eligible"

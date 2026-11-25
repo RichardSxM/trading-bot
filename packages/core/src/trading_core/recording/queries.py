@@ -829,3 +829,22 @@ def last_decision_ns(session: Session, env: Env, trader_id: str, reason: str) ->
         .where(run.env == env, run.trader_id == trader_id, decision.env == env, decision.reason == reason)
     ).scalar_one()
     return newest
+
+
+def latest_decisions_by_coin(
+    session: Session, env: Env, trader_id: str, reason: str
+) -> dict[str, tuple[int, OrderSide]]:
+    """The newest decision with ``reason`` per instrument in any of ``trader_id``'s ``env`` runs, as
+    ``{instrument: (decided_ns, side)}``; a decision with no side is left out.
+
+    ``trend_vol_ramp`` reads its last ``stop_vol`` per coin with it, so a stop survives a restart (spec 0034 AC-6).
+    """
+    decision, run = models.Decision, models.StrategyRun
+    rows = session.execute(
+        select(decision.instrument_id, decision.decided_ns, decision.side)
+        .join(run, run.id == decision.run_id)
+        .where(run.env == env, run.trader_id == trader_id, decision.env == env, decision.reason == reason)
+        .distinct(decision.instrument_id)
+        .order_by(decision.instrument_id, decision.decided_ns.desc(), decision.id.desc())
+    ).all()
+    return {row.instrument_id: (row.decided_ns, OrderSide(row.side)) for row in rows if row.side is not None}

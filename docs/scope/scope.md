@@ -41,6 +41,8 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 31 | Trend portfolio beside six vote | Slice 7 | done |
 | 33 | Trend daily on the main trader | Slice 7 | dropped |
 | 34 | Trend vol on the main trader | Slice 7 | in-progress |
+| 35 | Per coin close and hold | Slice 7 | planned |
+| 36 | Trend vol ramp entries | Slice 7 | in-progress |
 | 17 | Hour level strategy candidates | Slice 7 | dropped |
 | 18 | Trade journal export | Slice 8 | done |
 | 19 | Go live with small capital | Slice 9 | in-progress |
@@ -603,6 +605,29 @@ spec [0033](../specs/0033-trend-vol/index.md) · code in [strategy/trend_vol.py]
 - [ ] Test it: `/test trend vol`
 - [ ] Review it (fresh model): `/check review trend vol`
 - [ ] Document it: `/document trend vol`
+
+**Carried over (2026-11-24), entry timing:** you want trend_vol to enter at a better moment than at once at the rebalance. Pullback entries and take profits were already tested and hurt (2026-11-17); scale in over 3 days was the only soft lead and failed the lab pre check at 12 and 18 UTC, and splitting the rebalance across the day (tranches) failed the same pre check ([precheck.md](../specs/0033-trend-vol/precheck.md)). Any new entry idea gets a pre check before a spec.
+
+### 35. Per coin close and hold · planned · needs a decision
+A button beside each coin on the dashboard closes that coin's position and holds it flat while the rest of the book keeps trading. A resume button lets it back in, and if you never press it, the coin rejoins at the next daily rebalance. For the main trader's trend_vol book (feature 34) first.
+**Done when:** in demo, closing one coin flattens only that coin within seconds and the rebalance leaves it flat while held; resume, or the next daily rebalance, brings it back to its target; every close and resume is recorded with who sent it, and a restart keeps the hold.
+- [ ] Design it (spec): `/architect per coin close and hold`
+
+### 36. Trend vol ramp entries · in-progress
+`trend_vol_ramp`, a new strategy on top of `trend_vol` that replaces it on the demo main trader. It enters a new or flipped position a third per daily run over 3 days, and only the 00:05 UTC run may add size, so restarts and unpauses never pick entry prices. An hourly 8 vol stop closes a coin and keeps it flat until its trend signal turns. It is a way to limit pain from a bad entry, not a source of profit.
+**Done when:** every existing strategy hash is unchanged, the VPS main trader runs `trend_vol_ramp` on the 12 coins, the first daily run enters each coin at a third of its target, and stops are recorded, alerted, and survive a restart.
+spec [0034](../specs/0034-trend-vol-ramp/index.md)
+
+- [x] Design it (spec): `/architect trend vol scale in`
+- [ ] Build it: `/develop trend vol ramp`
+  - [x] Ramp thin thread: pure rule, `TrendVolRamp` working plan, daily only growth, wiring, hash test (AC-1, AC-3, AC-9)
+  - [x] Stop: hourly check, block and clear, restart rebuild from decisions (AC-2, AC-4 to AC-6)
+  - [x] Visibility and alert: snapshot fields, dashboard words, `ramp_stop_hit` rule (AC-7, AC-8)
+  - [ ] VPS switch: pause, flatten, deploy, your promote, first run checks (AC-10)
+- [ ] Verify it: `/check verify trend vol ramp`
+- [ ] Test it: `/test trend vol ramp`
+- [ ] Review it (fresh model): `/check review trend vol ramp`
+- [ ] Document it: `/document trend vol ramp`
 
 ### 17. Hour level strategy candidates · dropped
 The fallback set: trend following and mean reversion on 1h to 4h candles, tested in the candle lab.

@@ -74,11 +74,14 @@ from trader.paper_strategy import (
     TP_SEED_MIN_DAYS,
     TV_SEED_DAYS,
     TV_SEED_MIN_DAYS,
+    TVR_SEED_DAYS,
+    TVR_SEED_MIN_DAYS,
     StrategySettings,
     build_paper_strategy,
     build_trend_daily,
     build_trend_portfolio,
     build_trend_vol,
+    build_trend_vol_ramp,
     paper_version,
 )
 from trader.snapshot_writer import log_writer_crash, write_heartbeats, write_snapshot
@@ -92,7 +95,7 @@ from trading_core.control.records import PostgresCommandRecorder
 from trading_core.control.slots import TraderSlot, snapshot_name
 from trading_core.env_guard import SANDBOX, ExecClientAllowlist, allowed_exec_clients
 from trading_core.naming import node_id
-from trading_core.node import connors_rsi_tp, six_vote_trend, trend_daily, trend_portfolio, trend_vol
+from trading_core.node import connors_rsi_tp, six_vote_trend, trend_daily, trend_portfolio, trend_vol, trend_vol_ramp
 from trading_core.node.context_feed import ContextFeedActor, ContextFeedConfig
 from trading_core.node.control import (
     ControlActor,
@@ -134,11 +137,12 @@ from trading_core.node.untrusted import UntrustedCache
 from trading_core.reconcile.recover import cache_untrusted_key
 from trading_core.reconcile.views import ExchangePort, ExchangeUnavailable
 from trading_core.recording import repository
-from trading_core.recording.enums import Env, RunMode, RunStatus
+from trading_core.recording.enums import Env, OrderSide, RunMode, RunStatus
 from trading_core.recording.errors import PromotionRequiredError
 from trading_core.recording.queries import (
     LossSeed,
     last_decision_ns,
+    latest_decisions_by_coin,
     loss_seed,
     recorded_stop_trigger,
     run_funding_total,
@@ -519,11 +523,18 @@ class PaperLoop:
     ledger: FundingLedger
     # A book strategy's last ``start`` rebalance of this trader, its crash loop guard (spec 0030 AC-4).
     last_start_ns: int | None = None
+    # ``trend_vol_ramp``'s recorded stops per coin: (decided_ns, stopped side +1 long or -1 short) (spec 0034 AC-6).
+    stops: Mapping[str, tuple[int, int]] = field(default_factory=dict)
 
 
 # The paper strategies that hold one book over every coin: one instance, a daily seed, the ``portfolio_plan``
 # snapshot, the start cooldown, and the ``book`` flag (spec 0030, spec 0032 AC-5, AC-6).
-BOOK_STRATEGIES: Final = (trend_portfolio.STRATEGY_NAME, trend_daily.STRATEGY_NAME, trend_vol.STRATEGY_NAME)
+BOOK_STRATEGIES: Final = (
+    trend_portfolio.STRATEGY_NAME,
+    trend_daily.STRATEGY_NAME,
+    trend_vol.STRATEGY_NAME,
+    trend_vol_ramp.STRATEGY_NAME,
+)
 
 
 def is_book(settings: StrategySettings, paper_built: bool) -> bool:
@@ -567,6 +578,11 @@ def start_paper_loop(settings: TraderSettings, secrets: Mapping[str, SecretStr],
     if settings.paper_strategy in BOOK_STRATEGIES:
         with sessions.begin() as session:
             last_start_ns = last_decision_ns(session, env, trader_id, trend_portfolio.START)
+    stops: dict[str, tuple[int, int]] = {}
+    if settings.paper_strategy == trend_vol_ramp.STRATEGY_NAME:
+        # A read failure raises, so the start is refused, as the seed read is (spec 0034 AC-6).
+        with sessions.begin() as session:
+            stops = recorded_stops(latest_decisions_by_coin(session, env, trader_id, trend_vol_ramp.STOP_REASON))
     with sessions.begin() as session:
         run_id = repository.start_run(
             session,
@@ -597,8 +613,20 @@ def start_paper_loop(settings: TraderSettings, secrets: Mapping[str, SecretStr],
         extra={"fields": {"code": "paper_run_started", "run_id": str(run_id), "spool_replayed": replayed}},
     )
     return PaperLoop(
-        run_id=run_id, blocks=blocks, writer=writer, sessions=sessions, ledger=ledger, last_start_ns=last_start_ns
+        run_id=run_id,
+        blocks=blocks,
+        writer=writer,
+        sessions=sessions,
+        ledger=ledger,
+        last_start_ns=last_start_ns,
+        stops=stops,
     )
+
+
+def recorded_stops(decisions: Mapping[str, tuple[int, OrderSide]]) -> dict[str, tuple[int, int]]:
+    """``latest_decisions_by_coin``'s ``stop_vol`` rows as ``trend_vol_ramp``'s ``stops``: a ``SELL`` close
+    stopped a long (+1), a ``BUY`` close a short (-1) (spec 0034 AC-6)."""
+    return {coin: (ns, 1 if side == OrderSide.SELL else -1) for coin, (ns, side) in decisions.items()}
 
 
 def finish_paper_loop(paper: PaperLoop, settings: PaperLoopSettings, positions_open: int) -> None:
@@ -876,7 +904,18 @@ def run_node(
             )
         )
         views: list[PaperStrategyView] = []
-        if settings.paper_strategy in BOOK_STRATEGIES:
+        if settings.paper_strategy == trend_vol_ramp.STRATEGY_NAME:
+            portfolio, portfolio_views = build_trend_vol_ramp(
+                settings,
+                paper.run_id,
+                control.gate,
+                paper.blocks,
+                record,
+                daily_seeds or {},
+                paper.last_start_ns,
+                paper.stops,
+            )
+        elif settings.paper_strategy in BOOK_STRATEGIES:
             build_book = (
                 build_trend_vol
                 if settings.paper_strategy == trend_vol.STRATEGY_NAME
@@ -887,6 +926,7 @@ def run_node(
             portfolio, portfolio_views = build_book(
                 settings, paper.run_id, control.gate, paper.blocks, record, daily_seeds or {}, paper.last_start_ns
             )
+        if settings.paper_strategy in BOOK_STRATEGIES:
             node.trader.add_strategy(portfolio)
             views.extend(portfolio_views)
             snapshot_readers.append((plan_snapshot_base(slot), portfolio.plan_snapshot))
@@ -1205,6 +1245,8 @@ def main() -> None:
 def seed_fetch(strategy: str) -> Callable[[str], tuple[BarInput, ...]]:
     """The seed fetch for ``strategy``: 1 hour candles (300, at least 250) for ``six_vote_trend``, daily candles
     (150, at least 121) for the book strategies, else 5 minute."""
+    if strategy == trend_vol_ramp.STRATEGY_NAME:
+        return functools.partial(warmup_seed, interval="1d", keep_bars=TVR_SEED_DAYS, min_bars=TVR_SEED_MIN_DAYS)
     if strategy == trend_vol.STRATEGY_NAME:
         return functools.partial(warmup_seed, interval="1d", keep_bars=TV_SEED_DAYS, min_bars=TV_SEED_MIN_DAYS)
     if strategy == trend_daily.STRATEGY_NAME:

@@ -169,6 +169,24 @@ def signal_words(eligible: object, signal: object) -> str:
     return "No plan yet"
 
 
+STOPPED_SIDES: Final = {"long": "Stopped (long)", "short": "Stopped (short)"}
+BUILDING_BELOW_PCT: Final = Decimal(70)
+
+
+def ramp_words(words: str, item: Mapping[str, object]) -> str:
+    """``trend_vol_ramp``'s words on top of ``signal_words`` (spec 0034 AC-7): a stopped coin reads
+    ``Stopped (long)`` or ``Stopped (short)``, a coin with a target held under 70 % reads ``Building <pct>%``.
+    A snapshot without the ramp fields keeps ``words``."""
+    stopped = item.get("stopped_side")
+    if isinstance(stopped, str) and stopped in STOPPED_SIDES:
+        return STOPPED_SIDES[stopped]
+    held = _decimal(item.get("held_pct"))
+    target = _decimal(item.get("target_notional"))
+    if held is not None and target is not None and target != 0 and held < BUILDING_BELOW_PCT:
+        return f"Building {held}%"
+    return words
+
+
 DAILY: Final = "daily"
 
 
@@ -214,7 +232,7 @@ def _rows(plan: Mapping[str, object] | None, positions: Snapshot | None) -> tupl
             PlanRow(
                 key,
                 (position.base if position is not None and position.base else None) or base_of(key),
-                signal_words(item.get("eligible"), item.get("signal")),
+                ramp_words(signal_words(item.get("eligible"), item.get("signal")), item),
                 None if weight is None else (weight * 100).quantize(CENT),
                 _cents(_decimal(item.get("target_notional"))),
                 _decimal(item.get("target_qty")),

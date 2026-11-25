@@ -281,8 +281,15 @@ BOOK_PLAN_STALE: Final = Rule(
 PORTFOLIO_RUN_FAILED: Final = _code_rule(
     "portfolio_run_failed",
     Tier.WARNING,
-    ["portfolio_run_failed", "coin_exit_failed", "coin_reenter_failed"],
+    ["portfolio_run_failed", "coin_exit_failed", "coin_reenter_failed", "ramp_stop_check_failed"],
     key=_code_and_service,
+)
+# trend_vol_ramp closed a coin on its 8 vol stop (spec 0034 AC-8): one push per coin.
+RAMP_STOP_HIT: Final = _code_rule(
+    "ramp_stop_hit",
+    Tier.WARNING,
+    ["ramp_stop_hit"],
+    key=_subject("ramp_stop_hit", "instrument"),
 )
 CONTEXT_FEED_DOWN: Final = _code_rule(
     "context_feed_down",
@@ -387,6 +394,7 @@ RULES: Final[tuple[Rule, ...]] = (
     PORTFOLIO_COINS_FAILED,
     PORTFOLIO_CLOSE_MISSING,
     PORTFOLIO_RUN_FAILED,
+    RAMP_STOP_HIT,
     BOOK_PLAN_STALE,
     CONTEXT_FEED_DOWN,
     CONTEXT_HOUR_MISSING,
