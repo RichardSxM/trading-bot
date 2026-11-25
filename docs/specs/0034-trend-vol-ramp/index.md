@@ -125,7 +125,7 @@ Tracer Bullet: a thin real thread first (the ramp alone, wired and running in th
 2. [x] Thin thread: `TrendVolRamp` with `full_plan`, the per round working plan, and `may_grow` only on daily; `TVR_*` constants and `PAPER_STRATEGY` wiring after the closure check; node tests for ramp, retry, flip, cut; hash test, satisfies **AC-3**, **AC-9**.
 3. [x] Stop: the hourly H:00 timer, entry vol, the `stop_vol` decision and close, the block and the clear on the daily plan, satisfies **AC-4**, **AC-5**.
 4. [x] Restart: `latest_decisions_by_coin` (integration test on Postgres), wiring in `trader/main.py`, signal rebuild from seeds, satisfies **AC-6**.
-5. Visibility and alert: snapshot fields, dashboard plan view words, the `ramp_stop_hit` rule and the `portfolio_run_failed` list, satisfies **AC-7**, **AC-8**.
+5. [x] Visibility and alert: snapshot fields, dashboard plan view words, the `ramp_stop_hit` rule and the `portfolio_run_failed` list, satisfies **AC-7**, **AC-8**.
 6. Rollout on the VPS demo (pause, flatten, deploy, promote you run, unpause) and the first run checks, satisfies **AC-10**.
 
 ## Migration plan
