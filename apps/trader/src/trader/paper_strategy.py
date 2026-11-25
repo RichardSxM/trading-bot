@@ -39,6 +39,7 @@ from trading_core.node import (
     trend_daily,
     trend_portfolio,
     trend_vol,
+    trend_vol_ramp,
 )
 from trading_core.node.bar_rule import BarRuleStrategy, Phase
 from trading_core.node.bar_rule_maker import MakerBarRuleStrategy
@@ -57,6 +58,7 @@ from trading_core.node.strategy import KfsStrategy, PauseGate
 from trading_core.node.trend_daily import TrendDaily, TrendDailyConfig
 from trading_core.node.trend_portfolio import TrendPortfolio, TrendPortfolioConfig
 from trading_core.node.trend_vol import TrendVol, TrendVolConfig
+from trading_core.node.trend_vol_ramp import Stops, TrendVolRamp, TrendVolRampConfig
 from trading_core.recording.enums import StrategyKind
 from trading_core.recording.rows import JsonObject
 from trading_core.recording.spool import WriteItem
@@ -78,6 +80,7 @@ type PaperStrategyName = Literal[
     "donchian_scalp_tp",
     "trend_daily",
     "trend_vol",
+    "trend_vol_ramp",
 ]
 
 # The donchian_4h_pair study's chosen grid point (spec 0022 Results: grid-2), also used by donchian_scalp.
@@ -182,6 +185,25 @@ TV_QUOTE_WAIT_S: Final = 60
 TV_START_COOLDOWN_S: Final = 3600
 TV_SEED_DAYS: Final = 150
 TV_SEED_MIN_DAYS: Final = 121
+# trend_vol_ramp's settings (spec 0034): trend_vol's, plus a third of a new position per daily run and an
+# 8 entry vol stop.
+TVR_LOOKBACK_DAYS: Final = TV_LOOKBACK_DAYS
+TVR_VOL_DAYS: Final = TV_VOL_DAYS
+TVR_VOL_TARGET: Final = TV_VOL_TARGET
+TVR_GROSS_CAP: Final = TV_GROSS_CAP
+TVR_BOOK_VOL_TARGET: Final = TV_BOOK_VOL_TARGET
+TVR_REBALANCE_BAND: Final = TV_REBALANCE_BAND
+TVR_MIN_HISTORY_DAYS: Final = TV_MIN_HISTORY_DAYS
+TVR_REBALANCE_WEEKDAY: Final = TV_REBALANCE_WEEKDAY
+TVR_RUN_AT_UTC: Final = TV_RUN_AT_UTC
+TVR_RETRY_MAX: Final = TV_RETRY_MAX
+TVR_RETRY_WAIT_S: Final = TV_RETRY_WAIT_S
+TVR_QUOTE_WAIT_S: Final = TV_QUOTE_WAIT_S
+TVR_START_COOLDOWN_S: Final = TV_START_COOLDOWN_S
+TVR_SEED_DAYS: Final = TV_SEED_DAYS
+TVR_SEED_MIN_DAYS: Final = TV_SEED_MIN_DAYS
+TVR_RAMP_STEPS: Final = 3
+TVR_STOP_VOLS: Final = Decimal(8)
 # The strategies that trade more than one coin (spec 0025 AC-15, spec 0026 AC-16, spec 0029 AC-10).
 _MULTI_COIN: Final = (
     donchian_scalp_r1.STRATEGY_NAME,
@@ -192,6 +214,7 @@ _MULTI_COIN: Final = (
     donchian_scalp_tp.STRATEGY_NAME,
     trend_daily.STRATEGY_NAME,
     trend_vol.STRATEGY_NAME,
+    trend_vol_ramp.STRATEGY_NAME,
 )
 # The strategies the trader fetches a warmup seed for before the node (spec 0025 AC-7, spec 0026 AC-16, spec 0029).
 SEEDED_STRATEGIES: Final = (
@@ -203,6 +226,7 @@ SEEDED_STRATEGIES: Final = (
     donchian_scalp_tp.STRATEGY_NAME,
     trend_daily.STRATEGY_NAME,
     trend_vol.STRATEGY_NAME,
+    trend_vol_ramp.STRATEGY_NAME,
 )
 # A PAPER_INSTRUMENTS entry: a Kraken perpetual (spec 0025 AC-15).
 _PAPER_INSTRUMENT: Final = re.compile(r"PF_[A-Z0-9]+\.KRAKEN")
@@ -275,6 +299,16 @@ def paper_version(settings: StrategySettings) -> PaperVersion:
         }
         frozen = versioning.freeze(TrendVol.__module__, tv_config)
         return PaperVersion(trend_vol.STRATEGY_NAME, StrategyKind.TREND, tv_config, frozen)
+    if settings.paper_strategy == trend_vol_ramp.STRATEGY_NAME:
+        tvr_config: JsonObject = {
+            "paper_strategy": trend_vol_ramp.STRATEGY_NAME,
+            "bar_spec": trend_portfolio.BAR_SPEC,
+            **_trend_vol_ramp_settings(),
+            **{key: value for key, value in settings.strategy_config().items() if key.startswith("risk_")},
+            "instruments": list(settings.instrument_list),
+        }
+        frozen = versioning.freeze(TrendVolRamp.__module__, tvr_config)
+        return PaperVersion(trend_vol_ramp.STRATEGY_NAME, StrategyKind.TREND, tvr_config, frozen)
     if settings.paper_strategy == connors_rsi_tp.STRATEGY_NAME:
         connors_config: JsonObject = {
             "paper_strategy": connors_rsi_tp.STRATEGY_NAME,
@@ -434,6 +468,36 @@ def _trend_vol_settings() -> JsonObject:
         "coin_take_profit_usd": None,
         "coin_stop_loss_usd": None,
         "uses_stop": TrendVol.uses_stop,
+    }
+
+
+def _trend_vol_ramp_settings() -> JsonObject:
+    # Every trend_vol_ramp setting, as the version records it: no dollar exits, no resting protective stop
+    # (the 8 vol stop is checked hourly and closes at market).
+    return {
+        "order_id_tag": trend_vol_ramp.ORDER_ID_TAG,
+        "instrument_id": BTC_PERP,
+        "lookback_days": TVR_LOOKBACK_DAYS,
+        "vol_days": TVR_VOL_DAYS,
+        "vol_target": str(TVR_VOL_TARGET),
+        "gross_cap": str(TVR_GROSS_CAP),
+        "book_vol_target": str(TVR_BOOK_VOL_TARGET),
+        "rebalance_band": str(TVR_REBALANCE_BAND),
+        "min_history_days": TVR_MIN_HISTORY_DAYS,
+        "rebalance_weekday": TVR_REBALANCE_WEEKDAY,
+        "run_at_utc": TVR_RUN_AT_UTC,
+        "retry_max": TVR_RETRY_MAX,
+        "retry_wait_s": TVR_RETRY_WAIT_S,
+        "quote_wait_s": TVR_QUOTE_WAIT_S,
+        "start_cooldown_s": TVR_START_COOLDOWN_S,
+        "seed_days": TVR_SEED_DAYS,
+        "seed_min_days": TVR_SEED_MIN_DAYS,
+        "ramp_steps": TVR_RAMP_STEPS,
+        "stop_vols": str(TVR_STOP_VOLS),
+        "stop_check": "hourly",
+        "coin_take_profit_usd": None,
+        "coin_stop_loss_usd": None,
+        "uses_stop": TrendVolRamp.uses_stop,
     }
 
 
@@ -894,6 +958,50 @@ def trend_vol_config(settings: StrategySettings, run_id: UUID) -> TrendVolConfig
     )
 
 
+def trend_vol_ramp_config(settings: StrategySettings, run_id: UUID) -> TrendVolRampConfig:
+    """``trend_vol_ramp`` over every ``PAPER_INSTRUMENTS`` coin, with the ``RISK_*`` settings.
+
+    One instance trades every coin under ``order_id_tag`` ``TVR``; ``instrument_id`` is BTC, the base's context
+    instrument only. Raises ``ValueError`` outside demo, and when ``PAPER_INSTRUMENTS`` does not hold BTC.
+    """
+    _demo_only(settings)
+    return TrendVolRampConfig(
+        order_id_tag=trend_vol_ramp.ORDER_ID_TAG,
+        env=settings.trading_env,
+        run_id=str(run_id),
+        instrument_id=BTC_PERP,
+        instruments=tuple(settings.instrument_list),
+        lookback_days=TVR_LOOKBACK_DAYS,
+        vol_days=TVR_VOL_DAYS,
+        vol_target=TVR_VOL_TARGET,
+        gross_cap=TVR_GROSS_CAP,
+        book_vol_target=TVR_BOOK_VOL_TARGET,
+        rebalance_band=TVR_REBALANCE_BAND,
+        min_history_days=TVR_MIN_HISTORY_DAYS,
+        rebalance_weekday=TVR_REBALANCE_WEEKDAY,
+        run_at_utc=TVR_RUN_AT_UTC,
+        retry_max=TVR_RETRY_MAX,
+        retry_wait_s=TVR_RETRY_WAIT_S,
+        quote_wait_s=TVR_QUOTE_WAIT_S,
+        start_cooldown_s=TVR_START_COOLDOWN_S,
+        seed_days=TVR_SEED_DAYS,
+        seed_min_days=TVR_SEED_MIN_DAYS,
+        ramp_steps=TVR_RAMP_STEPS,
+        stop_vols=TVR_STOP_VOLS,
+        stale_quote_s=settings.risk_stale_quote_s,
+        max_order_notional_usd=settings.risk_max_order_notional_usd,
+        max_leverage=settings.risk_max_leverage,
+        max_total_exposure_usd=settings.risk_max_total_exposure_usd,
+        risk_per_trade=settings.risk_per_trade,
+        maintenance_margin_rate=settings.risk_maintenance_margin_rate,
+        min_liq_distance_pct=settings.risk_min_liq_distance_pct,
+        liq_stop_multiple=settings.risk_liq_stop_multiple,
+        stop_slippage_bps=settings.risk_stop_slippage_bps,
+        taker_fee=settings.sandbox_taker_fee,
+        use_market_context=False,
+    )
+
+
 class TrendPortfolioView:
     """``PaperStrategyView`` for one coin of a ``TrendPortfolio`` (spec 0030 AC-10): no stop, no exit time.
 
@@ -967,6 +1075,21 @@ def build_trend_vol(
 ) -> tuple[TrendVol, list[TrendPortfolioView]]:
     """The single ``trend_vol`` instance and one view per coin, in ``PAPER_INSTRUMENTS`` order."""
     strategy = TrendVol(trend_vol_config(settings, run_id), gate, blocks, record, seeds, last_start_ns)
+    return strategy, [TrendPortfolioView(strategy, coin) for coin in settings.instrument_list]
+
+
+def build_trend_vol_ramp(
+    settings: StrategySettings,
+    run_id: UUID,
+    gate: PauseGate,
+    blocks: EntryBlocks,
+    record: Callable[[WriteItem], None],
+    seeds: Mapping[str, Sequence[DailyClose]],
+    last_start_ns: int | None,
+    stops: Stops,
+) -> tuple[TrendVolRamp, list[TrendPortfolioView]]:
+    """The single ``trend_vol_ramp`` instance and one view per coin, in ``PAPER_INSTRUMENTS`` order."""
+    strategy = TrendVolRamp(trend_vol_ramp_config(settings, run_id), gate, blocks, record, seeds, last_start_ns, stops)
     return strategy, [TrendPortfolioView(strategy, coin) for coin in settings.instrument_list]
 
 

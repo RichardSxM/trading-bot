@@ -123,6 +123,7 @@ def test_r1_r2_six_vote_trend_trend_portfolio_and_connors_rsi_tp_take_the_warmup
         "trend_portfolio",
         "trend_daily",
         "trend_vol",
+        "trend_vol_ramp",
     }
 
 
