@@ -121,9 +121,9 @@ Each daily rebalance may add at most a third of a coin's target to what it holds
 
 Tracer Bullet: a thin real thread first (the ramp alone, wired and running in the node), then thicken with the stop, restart, and visibility.
 
-1. Pure rule: `RampParams`, `ramp_target`, `stop_hit`, `stop_holds` with unit tests, satisfies **AC-1**, **AC-2**.
+1. [x] Pure rule: `RampParams`, `ramp_target`, `stop_hit`, `stop_holds` with unit tests, satisfies **AC-1**, **AC-2**.
 2. Thin thread: `TrendVolRamp` with `full_plan`, the per round working plan, and `may_grow` only on daily; `TVR_*` constants and `PAPER_STRATEGY` wiring after the closure check; node tests for ramp, retry, flip, cut; hash test, satisfies **AC-3**, **AC-9**.
-3. Stop: the hourly H:00 timer, entry vol, the `stop_vol` decision and close, the block and the clear on the daily plan, satisfies **AC-4**, **AC-5**.
+3. [x] Stop: the hourly H:00 timer, entry vol, the `stop_vol` decision and close, the block and the clear on the daily plan, satisfies **AC-4**, **AC-5**.
 4. Restart: `latest_decisions_by_coin` (integration test on Postgres), wiring in `trader/main.py`, signal rebuild from seeds, satisfies **AC-6**.
 5. Visibility and alert: snapshot fields, dashboard plan view words, the `ramp_stop_hit` rule and the `portfolio_run_failed` list, satisfies **AC-7**, **AC-8**.
 6. Rollout on the VPS demo (pause, flatten, deploy, promote you run, unpause) and the first run checks, satisfies **AC-10**.
