@@ -210,7 +210,14 @@ def build_config(
         )
     return TradingNodeConfig(
         trader_id=TraderId(node_id("TRADER", env, os.environ.get("TRADER_ID"))),
-        logging=LoggingConfig(log_level=settings.log_level, log_colors=False),
+        logging=LoggingConfig(
+            log_level=settings.log_level,
+            log_colors=False,
+            # The demo sandbox's matching engine warns on every trade tick older than the
+            # book (about 1,000 lines a minute on 9 coins), which costs real CPU on the
+            # 2 vCPU VPS. Keep its errors only. Nautilus matches the full component name.
+            log_component_levels={"OrderMatchingEngine(KRAKEN)": "ERROR"},
+        ),
         # Keys stay stable across restarts (trader-TRADER-<ENV>:...) so the trader
         # reloads its state, then reconciles with Kraken (feature 11).
         cache=CacheConfig(
