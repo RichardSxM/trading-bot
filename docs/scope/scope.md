@@ -619,11 +619,11 @@ A button beside each coin on the dashboard closes that coin's position and holds
 spec [0034](../specs/0034-trend-vol-ramp/index.md)
 
 - [x] Design it (spec): `/architect trend vol scale in`
-- [ ] Build it: `/develop trend vol ramp`
+- [x] Build it: `/develop trend vol ramp`
   - [x] Ramp thin thread: pure rule, `TrendVolRamp` working plan, daily only growth, wiring, hash test (AC-1, AC-3, AC-9)
   - [x] Stop: hourly check, block and clear, restart rebuild from decisions (AC-2, AC-4 to AC-6)
   - [x] Visibility and alert: snapshot fields, dashboard words, `ramp_stop_hit` rule (AC-7, AC-8)
-  - [ ] VPS switch: pause, flatten, deploy, your promote, first run checks (AC-10)
+  - [x] VPS switch: pause, flatten, deploy, your promote, first run checks (AC-10)
 - [ ] Verify it: `/check verify trend vol ramp`
 - [ ] Test it: `/test trend vol ramp`
 - [ ] Review it (fresh model): `/check review trend vol ramp`
